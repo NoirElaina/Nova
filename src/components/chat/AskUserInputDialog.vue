@@ -39,6 +39,7 @@ const emit = defineEmits<{
 
 const selectedAnswers = reactive<Record<string, string[]>>({});
 const activePreview = reactive<Record<string, string>>({});
+const freeformAnswers = reactive<Record<string, string>>({});
 const freeform = ref('');
 const currentIndex = ref(0);
 
@@ -59,11 +60,24 @@ function optionAnswerValue(option: AskUserOption): string {
   return (option.value?.trim() || option.label).trim();
 }
 
+function saveCurrentFreeform() {
+  const key = currentQuestion.value?.question;
+  if (key !== undefined) {
+    freeformAnswers[key] = freeform.value;
+  }
+}
+
+function restoreFreeform(index: number) {
+  const key = questions.value[index]?.question;
+  freeform.value = key !== undefined ? (freeformAnswers[key] ?? '') : '';
+}
+
 watch(
   () => props.request,
   () => {
     Object.keys(selectedAnswers).forEach((key) => delete selectedAnswers[key]);
     Object.keys(activePreview).forEach((key) => delete activePreview[key]);
+    Object.keys(freeformAnswers).forEach((key) => delete freeformAnswers[key]);
     freeform.value = '';
     currentIndex.value = 0;
   },
@@ -94,31 +108,48 @@ const canSubmit = computed(() => {
   const question = currentQuestion.value;
   if (!question) return false;
   const answers = selectedAnswers[question.question] ?? [];
-  return answers.length > 0;
+  return answers.length > 0 || freeform.value.trim().length > 0;
 });
 
 function buildSubmission(): AskUserAnswerSubmission {
+  saveCurrentFreeform();
   const answers: Record<string, string | string[]> = {};
 
   for (const question of questions.value) {
     const values = selectedAnswers[question.question] ?? [];
-    answers[question.question] = question.multi_select ? values : values[0] ?? '';
+    const qFreeform = (freeformAnswers[question.question] ?? '').trim();
+    if (question.multi_select) {
+      answers[question.question] = values.length > 0 ? values : (qFreeform ? [qFreeform] : []);
+    } else {
+      answers[question.question] = values[0] ?? qFreeform ?? '';
+    }
   }
+
+  const freeformParts = questions.value
+    .map((q) => {
+      const value = (freeformAnswers[q.question] ?? '').trim();
+      return value ? `${q.header}: ${value}` : '';
+    })
+    .filter(Boolean);
 
   return {
     answers,
-    freeform: freeform.value.trim() || undefined,
+    freeform: freeformParts.join('\n') || undefined,
   };
 }
 
 function goNext() {
   if (!canSubmit.value || isLastQuestion.value) return;
+  saveCurrentFreeform();
   currentIndex.value += 1;
+  restoreFreeform(currentIndex.value);
 }
 
 function goPrevious() {
   if (currentIndex.value <= 0) return;
+  saveCurrentFreeform();
   currentIndex.value -= 1;
+  restoreFreeform(currentIndex.value);
 }
 
 function submitAnswers() {
@@ -128,7 +159,7 @@ function submitAnswers() {
     return;
   }
 
-  if (!(selectedAnswers[currentQuestion.value.question] ?? []).length) return;
+  if (!canSubmit.value) return;
   emit('submit', buildSubmission());
 }
 </script>

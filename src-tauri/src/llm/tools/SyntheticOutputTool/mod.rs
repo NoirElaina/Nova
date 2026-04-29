@@ -1,5 +1,10 @@
+use crate::llm::tools::{sync_tool, ToolRegistration};
 use crate::llm::types::Tool;
 use serde_json::{json, Value};
+
+pub(crate) fn registration() -> ToolRegistration {
+    sync_tool(tool, execute, false)
+}
 
 pub fn tool() -> Tool {
     Tool {

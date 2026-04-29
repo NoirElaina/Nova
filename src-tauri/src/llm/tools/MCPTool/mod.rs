@@ -1,6 +1,22 @@
+use crate::llm::services::mcp_tools::parse_mcp_tool_name;
+use crate::llm::tools::{
+    app_tool, AppExecuteFuture, ToolPermissionDescriptor, ToolRegistration,
+};
 use crate::llm::types::Tool;
 use serde_json::{json, Value};
 use tauri::AppHandle;
+
+fn execute_with_app_boxed(
+    app: AppHandle,
+    _conversation_id: Option<String>,
+    input: Value,
+) -> AppExecuteFuture {
+    Box::pin(async move { execute_with_app(&app, input).await })
+}
+
+pub(crate) fn registration() -> ToolRegistration {
+    app_tool(tool, execute, execute_with_app_boxed, false)
+}
 
 pub fn tool() -> Tool {
     Tool {
@@ -60,4 +76,40 @@ pub async fn execute_with_app(app: &AppHandle, input: Value) -> String {
         Ok(v) => v.to_string(),
         Err(e) => json!({ "ok": false, "error": e }).to_string(),
     }
+}
+
+pub(crate) fn dynamic_tool_read_only(name: &str) -> Option<bool> {
+    let (_server_name, tool_name) = parse_mcp_tool_name(name)?;
+    let tool_lower = tool_name.to_ascii_lowercase();
+    Some(
+        ["read", "list", "search", "get", "fetch", "glob", "grep"]
+            .iter()
+            .any(|kw| tool_lower.contains(kw)),
+    )
+}
+
+pub(crate) fn dynamic_tool_permission_descriptor(
+    _name: &str,
+    _input: &Value,
+) -> Option<ToolPermissionDescriptor> {
+    None
+}
+
+pub(crate) async fn execute_dynamic_with_app(
+    app: &AppHandle,
+    name: &str,
+    arguments: Value,
+) -> Option<String> {
+    let (server_name, tool_name) = parse_mcp_tool_name(name)?;
+    Some(
+        execute_with_app(
+            app,
+            json!({
+                "server": server_name,
+                "tool": tool_name,
+                "arguments": arguments,
+            }),
+        )
+        .await,
+    )
 }

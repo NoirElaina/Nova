@@ -1,9 +1,22 @@
+use crate::llm::tools::{app_tool, AppExecuteFuture, ToolRegistration};
 use crate::llm::types::Tool;
 use serde::Serialize;
 use serde_json::{json, Value};
 use std::fs;
 use std::path::{Path, PathBuf};
 use tauri::{AppHandle, Manager};
+
+fn execute_with_app_boxed(
+    app: AppHandle,
+    _conversation_id: Option<String>,
+    input: Value,
+) -> AppExecuteFuture {
+    Box::pin(async move { execute_with_app(&app, input).await })
+}
+
+pub(crate) fn registration() -> ToolRegistration {
+    app_tool(tool, execute, execute_with_app_boxed, true)
+}
 
 #[derive(Debug, Clone)]
 struct SkillEntry {

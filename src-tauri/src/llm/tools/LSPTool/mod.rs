@@ -1,6 +1,19 @@
+use crate::llm::tools::{app_tool, AppExecuteFuture, ToolRegistration};
 use crate::llm::types::Tool;
 use serde_json::{json, Value};
 use tauri::AppHandle;
+
+fn execute_with_app_boxed(
+    app: AppHandle,
+    conversation_id: Option<String>,
+    input: Value,
+) -> AppExecuteFuture {
+    Box::pin(async move { execute_with_app(&app, conversation_id.as_deref(), input).await })
+}
+
+pub(crate) fn registration() -> ToolRegistration {
+    app_tool(tool, execute, execute_with_app_boxed, true)
+}
 
 pub fn tool() -> Tool {
     Tool {

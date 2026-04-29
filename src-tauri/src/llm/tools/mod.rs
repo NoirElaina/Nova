@@ -1,99 +1,155 @@
 // 这是工具注册入口模块，定义了所有内置工具（Bash/PowerShell/File/Task/... 等）
 // 以及工具发现、执行、权限检查的统一接口。
-#[path = "BashTool/mod.rs"]
-pub mod bash_tool;
-#[path = "WriteFileTool/mod.rs"]
-pub mod write_file_tool;
-#[path = "GrepSearchTool/mod.rs"]
-pub mod grep_search_tool;
+macro_rules! declare_builtin_tools {
+    ($( $module:ident => $path:literal ),* $(,)?) => {
+        $(
+            #[path = $path]
+            pub mod $module;
+        )*
+
+        fn builtin_tool_registrations() -> Vec<ToolRegistration> {
+            vec![
+                $(
+                    $module::registration(),
+                )*
+            ]
+        }
+    };
+}
+
+declare_builtin_tools! {
+    bash_tool => "BashTool/mod.rs",
+    write_file_tool => "WriteFileTool/mod.rs",
+    grep_search_tool => "GrepSearchTool/mod.rs",
+    glob_tool => "GlobTool/mod.rs",
+    powershell_tool => "PowerShellTool/mod.rs",
+    web_fetch_tool => "WebFetchTool/mod.rs",
+    web_search_tool => "WebSearchTool/mod.rs",
+    task_create_tool => "TaskCreateTool/mod.rs",
+    task_list_tool => "TaskListTool/mod.rs",
+    task_update_tool => "TaskUpdateTool/mod.rs",
+    task_get_tool => "TaskGetTool/mod.rs",
+    task_output_tool => "TaskOutputTool/mod.rs",
+    task_stop_tool => "TaskStopTool/mod.rs",
+    task_create_compat_tool => "TaskCreateCompatTool/mod.rs",
+    task_list_compat_tool => "TaskListCompatTool/mod.rs",
+    task_update_compat_tool => "TaskUpdateCompatTool/mod.rs",
+    skill_tool => "SkillTool/mod.rs",
+    todo_write_tool => "TodoWriteTool/mod.rs",
+    tool_search_tool => "ToolSearchTool/mod.rs",
+    mcp_tool => "MCPTool/mod.rs",
+    list_mcp_resources_tool => "ListMcpResourcesTool/mod.rs",
+    read_mcp_resource_tool => "ReadMcpResourceTool/mod.rs",
+    mcp_auth_tool => "McpAuthTool/mod.rs",
+    lsp_tool => "LSPTool/mod.rs",
+    file_read_tool => "FileReadTool/mod.rs",
+    file_edit_tool => "FileEditTool/mod.rs",
+    ask_user_question_tool => "AskUserQuestionTool/mod.rs",
+    plan_for_approval_tool => "PlanForApprovalTool/mod.rs",
+    remember_global_memory_tool => "RememberGlobalMemoryTool/mod.rs",
+    config_tool => "ConfigTool/mod.rs",
+    enter_plan_mode_tool => "EnterPlanModeTool/mod.rs",
+    exit_plan_mode_tool => "ExitPlanModeTool/mod.rs",
+    rag_tool => "RagTool/mod.rs",
+    synthetic_output_tool => "SyntheticOutputTool/mod.rs",
+    sleep_tool => "SleepTool/mod.rs",
+    cron_create_tool => "CronCreateTool/mod.rs",
+    cron_list_tool => "CronListTool/mod.rs",
+    cron_delete_tool => "CronDeleteTool/mod.rs",
+    computer_use_tool => "ComputerUseTool/mod.rs",
+}
+
 pub mod shared;
-#[path = "GlobTool/mod.rs"]
-pub mod glob_tool;
-#[path = "PowerShellTool/mod.rs"]
-pub mod powershell_tool;
-#[path = "WebFetchTool/mod.rs"]
-pub mod web_fetch_tool;
-#[path = "WebSearchTool/mod.rs"]
-pub mod web_search_tool;
-#[path = "TaskCreateTool/mod.rs"]
-pub mod task_create_tool;
-#[path = "TaskListTool/mod.rs"]
-pub mod task_list_tool;
-#[path = "TaskUpdateTool/mod.rs"]
-pub mod task_update_tool;
-#[path = "TaskGetTool/mod.rs"]
-pub mod task_get_tool;
-#[path = "TaskOutputTool/mod.rs"]
-pub mod task_output_tool;
-#[path = "TaskStopTool/mod.rs"]
-pub mod task_stop_tool;
-#[path = "TaskCreateCompatTool/mod.rs"]
-pub mod task_create_compat_tool;
-#[path = "TaskListCompatTool/mod.rs"]
-pub mod task_list_compat_tool;
-#[path = "TaskUpdateCompatTool/mod.rs"]
-pub mod task_update_compat_tool;
-#[path = "SkillTool/mod.rs"]
-pub mod skill_tool;
-#[path = "TodoWriteTool/mod.rs"]
-pub mod todo_write_tool;
-#[path = "ToolSearchTool/mod.rs"]
-pub mod tool_search_tool;
-#[path = "MCPTool/mod.rs"]
-pub mod mcp_tool;
-#[path = "ListMcpResourcesTool/mod.rs"]
-pub mod list_mcp_resources_tool;
-#[path = "ReadMcpResourceTool/mod.rs"]
-pub mod read_mcp_resource_tool;
-#[path = "McpAuthTool/mod.rs"]
-pub mod mcp_auth_tool;
-#[path = "LSPTool/mod.rs"]
-pub mod lsp_tool;
-#[path = "FileReadTool/mod.rs"]
-pub mod file_read_tool;
-#[path = "FileEditTool/mod.rs"]
-pub mod file_edit_tool;
-#[path = "AskUserQuestionTool/mod.rs"]
-pub mod ask_user_question_tool;
-#[path = "PlanForApprovalTool/mod.rs"]
-pub mod plan_for_approval_tool;
-#[path = "RememberGlobalMemoryTool/mod.rs"]
-pub mod remember_global_memory_tool;
-#[path = "ConfigTool/mod.rs"]
-pub mod config_tool;
-#[path = "EnterPlanModeTool/mod.rs"]
-pub mod enter_plan_mode_tool;
-#[path = "ExitPlanModeTool/mod.rs"]
-pub mod exit_plan_mode_tool;
-#[path = "RagTool/mod.rs"]
-pub mod rag_tool;
-#[path = "SyntheticOutputTool/mod.rs"]
-pub mod synthetic_output_tool;
-#[path = "SleepTool/mod.rs"]
-pub mod sleep_tool;
-#[path = "CronCreateTool/mod.rs"]
-pub mod cron_create_tool;
-#[path = "CronListTool/mod.rs"]
-pub mod cron_list_tool;
-#[path = "CronDeleteTool/mod.rs"]
-pub mod cron_delete_tool;
-#[path = "ComputerUseTool/mod.rs"]
-pub mod computer_use_tool;
 
 // Placeholder migration modules stay out of `registered_tools()` until their
 // runtime bridge is complete. This avoids exposing Claude-style folders as if
 // they were fully migrated Nova tools.
 
-use crate::llm::types::Tool;
+use crate::llm::types::{Message, Tool};
 use std::collections::{BTreeMap, VecDeque};
-use crate::llm::services::mcp_tools::parse_mcp_tool_name;
+use std::future::Future;
+use std::pin::Pin;
+use std::sync::OnceLock;
 use serde_json::{json, Value};
 use tauri::AppHandle;
 use tokio::task::JoinSet;
 
-struct RegisteredTool {
+pub(crate) type AppExecuteFuture = Pin<Box<dyn Future<Output = String> + Send>>;
+pub(crate) type AppExecuteFn = fn(AppHandle, Option<String>, Value) -> AppExecuteFuture;
+pub(crate) type PostprocessFn = fn(&str) -> (String, Vec<Message>);
+pub(crate) type PermissionFn = fn(&Value) -> Option<ToolPermissionDescriptor>;
+
+#[derive(Debug, Clone)]
+pub(crate) struct ToolPermissionDescriptor {
+    pub signature: String,
+    pub preview: String,
+    pub warning: Option<String>,
+    pub needs_approval: bool,
+}
+
+#[derive(Clone, Copy)]
+pub(crate) struct ToolRegistration {
     tool: fn() -> Tool,
     execute: fn(Value) -> String,
+    execute_with_app: Option<AppExecuteFn>,
+    postprocess: Option<PostprocessFn>,
+    permission: Option<PermissionFn>,
+    read_only: bool,
+}
+
+pub(crate) const fn sync_tool(
+    tool: fn() -> Tool,
+    execute: fn(Value) -> String,
+    read_only: bool,
+) -> ToolRegistration {
+    ToolRegistration {
+        tool,
+        execute,
+        execute_with_app: None,
+        postprocess: None,
+        permission: None,
+        read_only,
+    }
+}
+
+pub(crate) const fn app_tool(
+    tool: fn() -> Tool,
+    execute: fn(Value) -> String,
+    execute_with_app: AppExecuteFn,
+    read_only: bool,
+) -> ToolRegistration {
+    ToolRegistration {
+        tool,
+        execute,
+        execute_with_app: Some(execute_with_app),
+        postprocess: None,
+        permission: None,
+        read_only,
+    }
+}
+
+pub(crate) const fn app_tool_with_extras(
+    tool: fn() -> Tool,
+    execute: fn(Value) -> String,
+    execute_with_app: AppExecuteFn,
+    read_only: bool,
+    permission: Option<PermissionFn>,
+    postprocess: Option<PostprocessFn>,
+) -> ToolRegistration {
+    ToolRegistration {
+        tool,
+        execute,
+        execute_with_app: Some(execute_with_app),
+        postprocess,
+        permission,
+        read_only,
+    }
+}
+fn registered_tools() -> &'static [ToolRegistration] {
+    static REGISTERED_TOOLS: OnceLock<Vec<ToolRegistration>> = OnceLock::new();
+    REGISTERED_TOOLS
+        .get_or_init(builtin_tool_registrations)
+        .as_slice()
 }
 
 #[derive(Debug, Clone)]
@@ -116,13 +172,20 @@ pub struct ToolCallResult {
 }
 
 fn find_tool_definition(name: &str) -> Option<Tool> {
-    registered_tools().into_iter().find_map(|entry| {
+    registered_tools().iter().find_map(|entry| {
         let tool = (entry.tool)();
         if tool.name == name {
             Some(tool)
         } else {
             None
         }
+    })
+}
+
+fn find_registered_tool(name: &str) -> Option<ToolRegistration> {
+    registered_tools().iter().copied().find(|entry| {
+        let tool = (entry.tool)();
+        tool.name == name
     })
 }
 
@@ -259,39 +322,15 @@ fn is_subagent_stop_tool(name: &str) -> bool {
 }
 
 pub(crate) fn is_read_only_tool(name: &str) -> bool {
-    let lower = name.to_ascii_lowercase();
-    match lower.as_str() {
-        "read_file"
-        | "grep_search"
-        | "glob_search"
-        | "web_fetch"
-        | "web_search"
-        | "task_list"
-        | "taskget"
-        | "taskoutput"
-        | "task_get"
-        | "task_output"
-        | "tool_search"
-        | "list_mcp_resources"
-        | "read_mcp_resource"
-        | "rag_tool"
-        | "structuredoutput"
-        | "structured_output"
-        | "sleep"
-        | "cronlist"
-        | "cron_list"
-        | "skill"
-        | "lsp_tool" => true,
-        _ => {
-            if let Some((_server, tool_name)) = parse_mcp_tool_name(name) {
-                let tool_lower = tool_name.to_ascii_lowercase();
-                return ["read", "list", "search", "get", "fetch", "glob", "grep"]
-                    .iter()
-                    .any(|kw| tool_lower.contains(kw));
-            }
-            false
-        }
+    if let Some(entry) = find_registered_tool(name) {
+        return entry.read_only;
     }
+
+    if let Some(read_only) = mcp_tool::dynamic_tool_read_only(name) {
+        return read_only;
+    }
+
+    false
 }
 
 fn max_tool_use_concurrency() -> usize {
@@ -394,29 +433,17 @@ pub(crate) async fn execute_single_tool_call(
         };
     }
 
-    let output = if let Some((server_name, tool_name)) = parse_mcp_tool_name(&name) {
-        execute_tool_with_app(
-            app,
-            conversation_id,
-            "mcp_tool",
-            json!({
-                "server": server_name,
-                "tool": tool_name,
-                "arguments": input.clone(),
-            }),
-        )
-        .await
-    } else {
-        execute_tool_with_app(app, conversation_id, &name, input.clone()).await
-    };
+    let output = execute_tool_with_app(app, conversation_id, &name, input.clone()).await;
 
     let validated_output = match validate_tool_output(&name, &output) {
         Ok(()) => output,
         Err(e) => json!({ "ok": false, "error": e }).to_string(),
     };
-    let (validated_output, tool_side_channel_messages) = match name.as_str() {
-        "computer_use" => computer_use_tool::postprocess_output(&validated_output),
-        _ => (validated_output, Vec::new()),
+    let (validated_output, tool_side_channel_messages) = match find_registered_tool(&name)
+        .and_then(|entry| entry.postprocess)
+    {
+        Some(postprocess) => postprocess(&validated_output),
+        None => (validated_output, Vec::new()),
     };
     additional_messages.extend(tool_side_channel_messages);
 
@@ -629,182 +656,30 @@ pub async fn execute_tool_calls_with_app(
     results
 }
 
-fn registered_tools() -> Vec<RegisteredTool> {
-    vec![
-        RegisteredTool {
-            tool: bash_tool::tool,
-            execute: bash_tool::execute,
-        },
-        RegisteredTool {
-            tool: powershell_tool::tool,
-            execute: powershell_tool::execute,
-        },
-        RegisteredTool {
-            tool: file_read_tool::tool,
-            execute: file_read_tool::execute,
-        },
-        RegisteredTool {
-            tool: write_file_tool::tool,
-            execute: write_file_tool::execute,
-        },
-        RegisteredTool {
-            tool: file_edit_tool::tool,
-            execute: file_edit_tool::execute,
-        },
-        RegisteredTool {
-            tool: grep_search_tool::tool,
-            execute: grep_search_tool::execute,
-        },
-        RegisteredTool {
-            tool: glob_tool::tool,
-            execute: glob_tool::execute,
-        },
-        RegisteredTool {
-            tool: web_fetch_tool::tool,
-            execute: web_fetch_tool::execute,
-        },
-        RegisteredTool {
-            tool: web_search_tool::tool,
-            execute: web_search_tool::execute,
-        },
-        RegisteredTool {
-            tool: task_create_tool::tool,
-            execute: task_create_tool::execute,
-        },
-        RegisteredTool {
-            tool: task_create_compat_tool::tool,
-            execute: task_create_compat_tool::execute,
-        },
-        RegisteredTool {
-            tool: task_list_tool::tool,
-            execute: task_list_tool::execute,
-        },
-        RegisteredTool {
-            tool: task_list_compat_tool::tool,
-            execute: task_list_compat_tool::execute,
-        },
-        RegisteredTool {
-            tool: task_update_tool::tool,
-            execute: task_update_tool::execute,
-        },
-        RegisteredTool {
-            tool: task_update_compat_tool::tool,
-            execute: task_update_compat_tool::execute,
-        },
-        RegisteredTool {
-            tool: task_get_tool::tool,
-            execute: task_get_tool::execute,
-        },
-        RegisteredTool {
-            tool: task_output_tool::tool,
-            execute: task_output_tool::execute,
-        },
-        RegisteredTool {
-            tool: task_stop_tool::tool,
-            execute: task_stop_tool::execute,
-        },
-        RegisteredTool {
-            tool: skill_tool::tool,
-            execute: skill_tool::execute,
-        },
-        RegisteredTool {
-            tool: todo_write_tool::tool,
-            execute: todo_write_tool::execute,
-        },
-        RegisteredTool {
-            tool: tool_search_tool::tool,
-            execute: tool_search_tool::execute,
-        },
-        RegisteredTool {
-            tool: mcp_tool::tool,
-            execute: mcp_tool::execute,
-        },
-        RegisteredTool {
-            tool: list_mcp_resources_tool::tool,
-            execute: list_mcp_resources_tool::execute,
-        },
-        RegisteredTool {
-            tool: read_mcp_resource_tool::tool,
-            execute: read_mcp_resource_tool::execute,
-        },
-        RegisteredTool {
-            tool: mcp_auth_tool::tool,
-            execute: mcp_auth_tool::execute,
-        },
-        RegisteredTool {
-            tool: lsp_tool::tool,
-            execute: lsp_tool::execute,
-        },
-        RegisteredTool {
-            tool: ask_user_question_tool::tool,
-            execute: ask_user_question_tool::execute,
-        },
-        RegisteredTool {
-            tool: plan_for_approval_tool::tool,
-            execute: plan_for_approval_tool::execute,
-        },
-        RegisteredTool {
-            tool: remember_global_memory_tool::tool,
-            execute: remember_global_memory_tool::execute,
-        },
-        RegisteredTool {
-            tool: enter_plan_mode_tool::tool,
-            execute: enter_plan_mode_tool::execute,
-        },
-        RegisteredTool {
-            tool: exit_plan_mode_tool::tool,
-            execute: exit_plan_mode_tool::execute,
-        },
-        RegisteredTool {
-            tool: config_tool::tool,
-            execute: config_tool::execute,
-        },
-        RegisteredTool {
-            tool: rag_tool::tool,
-            execute: rag_tool::execute,
-        },
-        RegisteredTool {
-            tool: synthetic_output_tool::tool,
-            execute: synthetic_output_tool::execute,
-        },
-        RegisteredTool {
-            tool: sleep_tool::tool,
-            execute: sleep_tool::execute,
-        },
-        RegisteredTool {
-            tool: cron_create_tool::tool,
-            execute: cron_create_tool::execute,
-        },
-        RegisteredTool {
-            tool: cron_list_tool::tool,
-            execute: cron_list_tool::execute,
-        },
-        RegisteredTool {
-            tool: cron_delete_tool::tool,
-            execute: cron_delete_tool::execute,
-        },
-        RegisteredTool {
-            tool: computer_use_tool::tool,
-            execute: computer_use_tool::execute,
-        },
-    ]
+pub(crate) fn permission_descriptor_for_tool(
+    name: &str,
+    input: &Value,
+) -> Option<ToolPermissionDescriptor> {
+    if let Some(permission) = mcp_tool::dynamic_tool_permission_descriptor(name, input) {
+        return Some(permission);
+    }
+
+    find_registered_tool(name)
+        .and_then(|entry| entry.permission.and_then(|permission| permission(input)))
 }
 
 // 取当前注册工具列表，用于在 LLM 提示里传给模型，告诉模型可调用哪些功能。
 pub fn get_available_tools() -> Vec<Tool> {
     registered_tools()
-        .into_iter()
+        .iter()
         .map(|entry| (entry.tool)())
         .collect()
 }
 
 // 在后端直接执行工具，输入来自模型返回的 tool call 名称和参数，只在同步模式下使用。
 pub fn execute_tool(name: &str, input: Value) -> String {
-    for entry in registered_tools() {
-        let tool = (entry.tool)();
-        if tool.name == name {
-            return (entry.execute)(input);
-        }
+    if let Some(entry) = find_registered_tool(name) {
+        return (entry.execute)(input);
     }
 
     format!("Unknown tool: {}", name)
@@ -847,20 +722,16 @@ pub async fn execute_tool_with_app(
         }
     }
 
-    match name {
-        "Skill" | "skill" => skill_tool::execute_with_app(app, input).await,
-        "config_tool" => config_tool::execute_with_app(app, input).await,
-        "rag_tool" => rag_tool::execute_with_app(app, input).await,
-        "CronCreate" | "cron_create" => cron_create_tool::execute_with_app(app, input).await,
-        "CronList" | "cron_list" => cron_list_tool::execute_with_app(app, input).await,
-        "CronDelete" | "cron_delete" => cron_delete_tool::execute_with_app(app, input).await,
-        "mcp_tool" => mcp_tool::execute_with_app(app, input).await,
-        "list_mcp_resources" => list_mcp_resources_tool::execute_with_app(app, input).await,
-        "read_mcp_resource" => read_mcp_resource_tool::execute_with_app(app, input).await,
-        "mcp_auth" => mcp_auth_tool::execute_with_app(app, conversation_id, input).await,
-        "lsp_tool" => lsp_tool::execute_with_app(app, conversation_id, input).await,
-        "remember_global_memory" => remember_global_memory_tool::execute_with_app(app, input).await,
-        "computer_use" => computer_use_tool::execute_with_app(app, conversation_id, input).await,
-        _ => execute_tool(name, input),
+    if let Some(output) = mcp_tool::execute_dynamic_with_app(app, name, input.clone()).await {
+        return output;
     }
+
+    if let Some(entry) = find_registered_tool(name) {
+        if let Some(execute_with_app) = entry.execute_with_app {
+            return execute_with_app(app.clone(), conversation_id.map(str::to_string), input).await;
+        }
+        return (entry.execute)(input);
+    }
+
+    format!("Unknown tool: {}", name)
 }

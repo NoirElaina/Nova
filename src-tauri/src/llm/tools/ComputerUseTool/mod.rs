@@ -11,12 +11,52 @@ use serde_json::{json, Value};
 use tauri::AppHandle;
 use tokio::sync::Mutex;
 
+use crate::llm::tools::{
+    app_tool_with_extras, AppExecuteFuture, ToolPermissionDescriptor, ToolRegistration,
+};
 use crate::llm::types::{Content, ContentBlock, ImageSource, Message, Role, Tool};
 
 const SCREENSHOT_MEDIA_TYPE: &str = "image/png";
 const DEFAULT_WAIT_MS: u64 = 500;
 const MAX_WAIT_MS: u64 = 10_000;
 const DEFAULT_DRAG_SETTLE_MS: u64 = 50;
+
+fn execute_with_app_boxed(
+    app: AppHandle,
+    conversation_id: Option<String>,
+    input: Value,
+) -> AppExecuteFuture {
+    Box::pin(async move { execute_with_app(&app, conversation_id.as_deref(), input).await })
+}
+
+fn permission(input: &Value) -> Option<ToolPermissionDescriptor> {
+    let action = input
+        .get("action")
+        .and_then(|v| v.as_str())
+        .unwrap_or("unknown")
+        .trim();
+
+    Some(ToolPermissionDescriptor {
+        signature: "computer_use:session_access".to_string(),
+        preview: format!("桌面控制（computer_use:{}）", action),
+        warning: Some(
+            "该操作会读取屏幕内容并注入鼠标或键盘输入，请仅在确认目标桌面环境安全时授权"
+                .to_string(),
+        ),
+        needs_approval: true,
+    })
+}
+
+pub(crate) fn registration() -> ToolRegistration {
+    app_tool_with_extras(
+        tool,
+        execute,
+        execute_with_app_boxed,
+        false,
+        Some(permission),
+        Some(postprocess_output),
+    )
+}
 
 fn session_lock() -> &'static Mutex<()> {
     static LOCK: OnceLock<Mutex<()>> = OnceLock::new();

@@ -33,7 +33,6 @@ async fn get_pool(app: &AppHandle) -> Result<SqlitePool, String> {
 }
 
 // Ensure required schema exists.
-// This includes base tables and lightweight backward-compatible column migrations.
 async fn ensure_schema(pool: &SqlitePool) -> Result<(), String> {
     sqlx::query(
         r#"
@@ -117,58 +116,6 @@ async fn ensure_schema(pool: &SqlitePool) -> Result<(), String> {
     .execute(pool)
     .await
     .map_err(|e| e.to_string())?;
-
-    // Backward-compatible migration: add token_usage for older DB files.
-    // Ignore "duplicate column" so startup remains idempotent.
-    let alter_result = sqlx::query("ALTER TABLE conversation_messages ADD COLUMN token_usage INTEGER")
-        .execute(pool)
-        .await;
-
-    if let Err(e) = alter_result {
-        let msg = e.to_string().to_lowercase();
-        if !msg.contains("duplicate column") {
-            return Err(e.to_string());
-        }
-    }
-
-    // Backward-compatible migration: add attachments_json for older DB files.
-    // Ignore duplicate-column errors for repeated startup runs.
-    let alter_attachments_result =
-        sqlx::query("ALTER TABLE conversation_messages ADD COLUMN attachments_json TEXT")
-            .execute(pool)
-            .await;
-
-    if let Err(e) = alter_attachments_result {
-        let msg = e.to_string().to_lowercase();
-        if !msg.contains("duplicate column") {
-            return Err(e.to_string());
-        }
-    }
-
-    let alter_reasoning_result =
-        sqlx::query("ALTER TABLE conversation_messages ADD COLUMN reasoning TEXT")
-            .execute(pool)
-            .await;
-
-    if let Err(e) = alter_reasoning_result {
-        let msg = e.to_string().to_lowercase();
-        if !msg.contains("duplicate column") {
-            return Err(e.to_string());
-        }
-    }
-
-    // Backward-compatible migration: add cost_json for older DB files.
-    // Ignore duplicate-column errors for repeated startup runs.
-    let alter_cost_result = sqlx::query("ALTER TABLE conversation_messages ADD COLUMN cost_json TEXT")
-        .execute(pool)
-        .await;
-
-    if let Err(e) = alter_cost_result {
-        let msg = e.to_string().to_lowercase();
-        if !msg.contains("duplicate column") {
-            return Err(e.to_string());
-        }
-    }
 
     Ok(())
 }
@@ -331,7 +278,6 @@ async fn conversation_exists(pool: &SqlitePool, conversation_id: &str) -> Result
 }
 
 // Create a new conversation row with generated UUID and optional title.
-// If title is empty, fallback to default "New chat".
 pub async fn create_conversation(
     app: &AppHandle,
     title: Option<String>,
@@ -343,7 +289,7 @@ pub async fn create_conversation(
     let conv_title = title
         .map(|t| t.trim().to_string())
         .filter(|t| !t.is_empty())
-        .unwrap_or_else(|| "New chat".to_string());
+        .unwrap_or_default();
 
     sqlx::query("INSERT INTO conversations (id, title, created_at, updated_at) VALUES (?, ?, ?, ?)")
         .bind(&id)
@@ -463,7 +409,7 @@ pub async fn append_history(
     .await
     .map_err(|e| e.to_string())?;
 
-    // Auto-title only when first user message arrives and current title is default/empty.
+    // Auto-title only when first user message arrives and current title is empty.
     if role.eq_ignore_ascii_case("user") {
         let user_count: i64 = sqlx::query_scalar(
             "SELECT COUNT(1) FROM conversation_messages WHERE conversation_id = ? AND role = 'user'",
@@ -481,10 +427,10 @@ pub async fn append_history(
                     .await
                     .map_err(|e| e.to_string())?;
 
-            let should_update = matches!(
-                current_title.as_deref(),
-                Some("New chat") | Some("新会话") | Some("") | None
-            );
+            let should_update = current_title
+                .as_deref()
+                .map(|title| title.trim().is_empty())
+                .unwrap_or(true);
 
             if should_update {
                 let new_title = memory::derive_title_from_message(&content);

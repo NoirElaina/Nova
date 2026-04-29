@@ -35,26 +35,76 @@ fn env_context_message() -> Option<Message> {
     })
 }
 
-async fn global_memory_message(app: &AppHandle) -> Option<Message> {
-    let entries = crate::llm::history::list_global_memory(app, Some(8))
+fn text_from_content(content: &Content) -> String {
+    match content {
+        Content::Text(text) => text.trim().to_string(),
+        Content::Blocks(blocks) => blocks
+            .iter()
+            .filter_map(|block| {
+                if let ContentBlock::Text { text } = block {
+                    let trimmed = text.trim();
+                    if trimmed.is_empty() {
+                        None
+                    } else {
+                        Some(trimmed.to_string())
+                    }
+                } else {
+                    None
+                }
+            })
+            .collect::<Vec<_>>()
+            .join("\n"),
+    }
+}
+
+fn latest_user_query_text(messages: &[Message]) -> Option<String> {
+    messages.iter().rev().find_map(|message| {
+        if message.role != Role::User {
+            return None;
+        }
+
+        let text = text_from_content(&message.content);
+        let trimmed = text.trim();
+        if trimmed.is_empty() {
+            None
+        } else {
+            Some(trimmed.to_string())
+        }
+    })
+}
+
+async fn global_memory_message(app: &AppHandle, incoming: &[Message]) -> Option<Message> {
+    let query = latest_user_query_text(incoming);
+    let entries = crate::llm::services::memory_dir::relevant_global_memory(app, query.as_deref(), 8)
         .await
         .ok()?;
     if entries.is_empty() {
         return None;
     }
 
-    let mut lines = vec![
-        GLOBAL_MEMORY_MARKER.to_string(),
-        "Use these persistent preferences/facts across sessions when relevant.".to_string(),
-    ];
+    let mut lines = vec![GLOBAL_MEMORY_MARKER.to_string()];
 
-    for (idx, item) in entries.iter().enumerate() {
-        lines.push(format!(
-            "{}. [{}] {}",
-            idx + 1,
-            item.kind,
-            item.content
-        ));
+    let persistent_rules = entries
+        .iter()
+        .filter(|item| matches!(item.kind.as_str(), "preference" | "rule"))
+        .collect::<Vec<_>>();
+    let relevant_facts = entries
+        .iter()
+        .filter(|item| item.kind == "fact")
+        .collect::<Vec<_>>();
+
+    if !persistent_rules.is_empty() {
+        lines.push("Persistent rules and preferences:".to_string());
+        for (idx, item) in persistent_rules.iter().enumerate() {
+            lines.push(format!("{}. [{}] {}", idx + 1, item.kind, item.content));
+        }
+    }
+
+    if !relevant_facts.is_empty() {
+        lines.push("Relevant facts for this request:".to_string());
+        for (idx, item) in relevant_facts.iter().enumerate() {
+            lines.push(format!("{}. [{}] {}", idx + 1, item.kind, item.content));
+        }
     }
 
     Some(Message {
@@ -103,7 +153,7 @@ pub async fn assemble_messages_for_turn(
     let mut assembled = incoming.to_vec();
 
     if !has_global_memory_marker(&assembled) {
-        if let Some(global_msg) = global_memory_message(app).await {
+        if let Some(global_msg) = global_memory_message(app, incoming).await {
             assembled.insert(0, global_msg);
         }
     }

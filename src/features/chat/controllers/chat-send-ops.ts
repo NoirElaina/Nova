@@ -109,7 +109,7 @@ export function createSendOperations(deps: SendOpsDeps) {
     resetPendingPromptState(activeRuntimeRefs);
 
     if (!activeConversationId.value) {
-      const seedTitle = text || filesToSend[0]?.sourceName || "New chat";
+      const seedTitle = text || filesToSend[0]?.sourceName;
       const id = await createNewConversation(seedTitle);
       if (!id) return;
       activeConversationId.value = id;

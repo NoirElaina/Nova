@@ -189,7 +189,7 @@ export function useChatController() {
   onMounted(async () => {
     await conversationOps.refreshConversations();
     if (conversations.value.length === 0) {
-      const id = await conversationOps.createNewConversation("New chat");
+      const id = await conversationOps.createNewConversation();
       if (id) {
         await conversationOps.loadConversation(id);
       }

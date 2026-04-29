@@ -215,7 +215,7 @@ export function createConversationOperations(deps: ConversationOpsDeps) {
 
     isCreatingNewChat.value = true;
     try {
-      const id = await createNewConversation("New chat");
+      const id = await createNewConversation();
       if (!id) {
         return;
       }
@@ -258,7 +258,7 @@ export function createConversationOperations(deps: ConversationOpsDeps) {
         if (conversations.value.length > 0) {
           await loadConversation(conversations.value[0].id);
         } else {
-          const newId = await createNewConversation("New chat");
+          const newId = await createNewConversation();
           if (newId) {
             await loadConversation(newId);
           } else {
@@ -298,7 +298,7 @@ export function createConversationOperations(deps: ConversationOpsDeps) {
 
     await refreshConversations();
     if (conversations.value.length === 0) {
-      const newId = await createNewConversation("New chat");
+      const newId = await createNewConversation();
       if (newId) {
         await loadConversation(newId);
       } else {

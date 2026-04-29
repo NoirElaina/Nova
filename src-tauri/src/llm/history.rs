@@ -98,19 +98,6 @@ async fn ensure_schema(pool: &SqlitePool) -> Result<(), String> {
             created_at INTEGER NOT NULL,
             FOREIGN KEY (conversation_id) REFERENCES conversations(id)
         );
-
-        CREATE TABLE IF NOT EXISTS global_memory (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            content TEXT NOT NULL,
-            kind TEXT NOT NULL,
-            source TEXT NOT NULL,
-            content_hash TEXT NOT NULL UNIQUE,
-            hits INTEGER NOT NULL DEFAULT 1,
-            created_at INTEGER NOT NULL,
-            updated_at INTEGER NOT NULL
-        );
-
-        CREATE INDEX IF NOT EXISTS idx_global_memory_updated_at ON global_memory(updated_at DESC);
         "#,
     )
     .execute(pool)
@@ -128,138 +115,31 @@ pub async fn get_pool_with_schema(app: &AppHandle) -> Result<SqlitePool, String>
     Ok(pool)
 }
 
-fn normalize_global_memory_content(raw: &str) -> String {
-    raw.split_whitespace().collect::<Vec<_>>().join(" ")
-}
-
-fn normalize_global_memory_kind(raw: Option<&str>) -> String {
-    match raw.unwrap_or("fact").trim().to_ascii_lowercase().as_str() {
-        "preference" => "preference".to_string(),
-        "rule" => "rule".to_string(),
-        _ => "fact".to_string(),
-    }
-}
-
-fn normalize_global_memory_source(raw: Option<&str>) -> String {
-    let normalized = raw.unwrap_or("assistant").trim().to_ascii_lowercase();
-    if normalized.is_empty() {
-        "assistant".to_string()
-    } else {
-        normalized
-    }
-}
-
-fn hash_global_memory_content(content: &str) -> String {
-    use std::collections::hash_map::DefaultHasher;
-    use std::hash::{Hash, Hasher};
-
-    let mut hasher = DefaultHasher::new();
-    content.hash(&mut hasher);
-    format!("{:016x}", hasher.finish())
-}
-
-fn map_global_memory_row(row: sqlx::sqlite::SqliteRow) -> GlobalMemoryEntry {
-    GlobalMemoryEntry {
-        id: row.get::<i64, _>("id"),
-        content: row.get::<String, _>("content"),
-        kind: row.get::<String, _>("kind"),
-        source: row.get::<String, _>("source"),
-        hits: row.get::<i64, _>("hits"),
-        created_at: row.get::<i64, _>("created_at"),
-        updated_at: row.get::<i64, _>("updated_at"),
-    }
-}
-
 pub async fn upsert_global_memory(
     app: &AppHandle,
     content: &str,
     kind: Option<&str>,
     source: Option<&str>,
 ) -> Result<GlobalMemoryEntry, String> {
-    let pool = get_pool_with_schema(app).await?;
-    let normalized_content = normalize_global_memory_content(content);
-    if normalized_content.is_empty() {
-        return Err("global memory content is empty".to_string());
-    }
-
-    let kind = normalize_global_memory_kind(kind);
-    let source = normalize_global_memory_source(source);
-    let content_hash = hash_global_memory_content(&normalized_content);
-    let now = chrono::Utc::now().timestamp();
-
-    sqlx::query(
-        r#"
-        INSERT INTO global_memory (content, kind, source, content_hash, hits, created_at, updated_at)
-        VALUES (?, ?, ?, ?, 1, ?, ?)
-        ON CONFLICT(content_hash) DO UPDATE SET
-            content = excluded.content,
-            kind = excluded.kind,
-            source = excluded.source,
-            hits = global_memory.hits + 1,
-            updated_at = excluded.updated_at
-        "#,
-    )
-    .bind(&normalized_content)
-    .bind(&kind)
-    .bind(&source)
-    .bind(&content_hash)
-    .bind(now)
-    .bind(now)
-    .execute(&pool)
-    .await
-    .map_err(|e| e.to_string())?;
-
-    let row = sqlx::query(
-        "SELECT id, content, kind, source, hits, created_at, updated_at FROM global_memory WHERE content_hash = ?",
-    )
-    .bind(&content_hash)
-    .fetch_one(&pool)
-    .await
-    .map_err(|e| e.to_string())?;
-
-    Ok(map_global_memory_row(row))
+    crate::llm::services::memory_dir::upsert_global_memory(app, content, kind, source).await
 }
 
 pub async fn list_global_memory(
     app: &AppHandle,
     limit: Option<i64>,
 ) -> Result<Vec<GlobalMemoryEntry>, String> {
-    let pool = get_pool_with_schema(app).await?;
-    let normalized_limit = limit.unwrap_or(12).clamp(1, 100);
-
-    let rows = sqlx::query(
-        "SELECT id, content, kind, source, hits, created_at, updated_at FROM global_memory ORDER BY updated_at DESC, id DESC LIMIT ?",
-    )
-    .bind(normalized_limit)
-    .fetch_all(&pool)
-    .await
-    .map_err(|e| e.to_string())?;
-
-    Ok(rows.into_iter().map(map_global_memory_row).collect::<Vec<_>>())
+    crate::llm::services::memory_dir::list_global_memory(app, limit).await
 }
 
 pub async fn delete_global_memory(
     app: &AppHandle,
     id: i64,
 ) -> Result<bool, String> {
-    let pool = get_pool_with_schema(app).await?;
-    let result = sqlx::query("DELETE FROM global_memory WHERE id = ?")
-        .bind(id)
-        .execute(&pool)
-        .await
-        .map_err(|e| e.to_string())?;
-
-    Ok(result.rows_affected() > 0)
+    crate::llm::services::memory_dir::delete_global_memory(app, id).await
 }
 
 pub async fn clear_global_memory(app: &AppHandle) -> Result<i64, String> {
-    let pool = get_pool_with_schema(app).await?;
-    let result = sqlx::query("DELETE FROM global_memory")
-        .execute(&pool)
-        .await
-        .map_err(|e| e.to_string())?;
-
-    Ok(result.rows_affected() as i64)
+    crate::llm::services::memory_dir::clear_global_memory(app).await
 }
 
 async fn conversation_exists(pool: &SqlitePool, conversation_id: &str) -> Result<bool, String> {
@@ -275,6 +155,17 @@ async fn conversation_exists(pool: &SqlitePool, conversation_id: &str) -> Result
         .map_err(|e| e.to_string())?;
 
     Ok(exists != 0)
+}
+
+fn resolved_conversation_title(current_title: &str, first_user_message: Option<&str>) -> String {
+    let trimmed = current_title.trim();
+    if !trimmed.is_empty() && trimmed != "New chat" {
+        return trimmed.to_string();
+    }
+
+    first_user_message
+        .map(memory::derive_title_from_message)
+        .unwrap_or_else(|| trimmed.to_string())
 }
 
 // Create a new conversation row with generated UUID and optional title.
@@ -311,7 +202,23 @@ pub async fn create_conversation(
 pub async fn list_conversations(app: &AppHandle) -> Result<Vec<ConversationMeta>, String> {
     let pool = get_pool_with_schema(app).await?;
 
-    let rows = sqlx::query("SELECT id, title, updated_at FROM conversations ORDER BY updated_at DESC")
+    let rows = sqlx::query(
+        r#"
+        SELECT
+            c.id,
+            c.title,
+            c.updated_at,
+            (
+                SELECT m.content
+                FROM conversation_messages m
+                WHERE m.conversation_id = c.id AND m.role = 'user'
+                ORDER BY m.created_at ASC, m.id ASC
+                LIMIT 1
+            ) AS first_user_content
+        FROM conversations c
+        ORDER BY c.updated_at DESC
+        "#,
+    )
         .fetch_all(&pool)
         .await
         .map_err(|e| e.to_string())?;
@@ -320,7 +227,10 @@ pub async fn list_conversations(app: &AppHandle) -> Result<Vec<ConversationMeta>
         .into_iter()
         .map(|row| ConversationMeta {
             id: row.get::<String, _>("id"),
-            title: row.get::<String, _>("title"),
+            title: resolved_conversation_title(
+                &row.get::<String, _>("title"),
+                row.get::<Option<String>, _>("first_user_content").as_deref(),
+            ),
             updated_at: row.get::<i64, _>("updated_at"),
         })
         .collect();
@@ -409,38 +319,41 @@ pub async fn append_history(
     .await
     .map_err(|e| e.to_string())?;
 
-    // Auto-title only when first user message arrives and current title is empty.
+    // Auto-title whenever a placeholder title is still present.
     if role.eq_ignore_ascii_case("user") {
-        let user_count: i64 = sqlx::query_scalar(
-            "SELECT COUNT(1) FROM conversation_messages WHERE conversation_id = ? AND role = 'user'",
-        )
-        .bind(normalized_conversation_id)
-        .fetch_one(&pool)
-        .await
-        .map_err(|e| e.to_string())?;
+        let current_title: Option<String> = sqlx::query_scalar("SELECT title FROM conversations WHERE id = ?")
+            .bind(normalized_conversation_id)
+            .fetch_optional(&pool)
+            .await
+            .map_err(|e| e.to_string())?;
 
-        if user_count == 1 {
-            let current_title: Option<String> =
-                sqlx::query_scalar("SELECT title FROM conversations WHERE id = ?")
-                    .bind(normalized_conversation_id)
-                    .fetch_optional(&pool)
-                    .await
-                    .map_err(|e| e.to_string())?;
+        let should_update = current_title
+            .as_deref()
+            .map(|title| {
+                let trimmed = title.trim();
+                trimmed.is_empty() || trimmed == "New chat"
+            })
+            .unwrap_or(true);
 
-            let should_update = current_title
+        if should_update {
+            let first_user_content: Option<String> = sqlx::query_scalar(
+                "SELECT content FROM conversation_messages WHERE conversation_id = ? AND role = 'user' ORDER BY created_at ASC, id ASC LIMIT 1",
+            )
+            .bind(normalized_conversation_id)
+            .fetch_optional(&pool)
+            .await
+            .map_err(|e| e.to_string())?;
+
+            let new_title = first_user_content
                 .as_deref()
-                .map(|title| title.trim().is_empty())
-                .unwrap_or(true);
-
-            if should_update {
-                let new_title = memory::derive_title_from_message(&content);
-                sqlx::query("UPDATE conversations SET title = ? WHERE id = ?")
-                    .bind(new_title)
-                    .bind(normalized_conversation_id)
-                    .execute(&pool)
-                    .await
-                    .map_err(|e| e.to_string())?;
-            }
+                .map(memory::derive_title_from_message)
+                .unwrap_or_else(|| memory::derive_title_from_message(&content));
+            sqlx::query("UPDATE conversations SET title = ? WHERE id = ?")
+                .bind(new_title)
+                .bind(normalized_conversation_id)
+                .execute(&pool)
+                .await
+                .map_err(|e| e.to_string())?;
         }
     }
 
@@ -454,6 +367,14 @@ pub async fn append_history(
 
     // Keep summary memory in sync after each append.
     memory::refresh_conversation_memory(&pool, normalized_conversation_id, now).await?;
+
+    if role.eq_ignore_ascii_case("user") {
+        if let Err(error) =
+            crate::llm::services::memory_dir::remember_from_user_message(app, &content).await
+        {
+            eprintln!("[memory] auto remember failed: {}", error);
+        }
+    }
 
     Ok(())
 }

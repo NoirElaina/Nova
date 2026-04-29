@@ -43,7 +43,9 @@ const filteredRecents = computed(() => {
     return props.recents;
   }
 
-  return props.recents.filter((item) => item.title.toLocaleLowerCase().includes(keyword));
+  return props.recents.filter((item) =>
+    (item.title || "New chat").toLocaleLowerCase().includes(keyword),
+  );
 });
 
 const resolveSearchInputElement = (): HTMLInputElement | null => {
@@ -266,7 +268,7 @@ onBeforeUnmount(() => {
         @keydown.enter="emit('select-conversation', recent.id)"
         @keydown.space.prevent="emit('select-conversation', recent.id)"
       >
-        <span class="truncate block flex-1">{{ recent.title }}</span>
+        <span class="truncate block flex-1">{{ recent.title || "New chat" }}</span>
         <Button
           variant="ghost"
           size="icon-sm"

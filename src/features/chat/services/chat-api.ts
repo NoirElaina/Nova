@@ -56,7 +56,7 @@ export async function listConversations(): Promise<ConversationMeta[]> {
 
 export async function createConversation(seedTitle?: string): Promise<ConversationMeta> {
   return invoke<ConversationMeta>("create_conversation", {
-    title: seedTitle?.trim() ? buildConversationTitle(seedTitle) : "New chat",
+    title: seedTitle?.trim() ? buildConversationTitle(seedTitle) : undefined,
   });
 }
 

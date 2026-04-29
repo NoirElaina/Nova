@@ -77,6 +77,8 @@ pub mod cron_create_tool;
 pub mod cron_list_tool;
 #[path = "CronDeleteTool/mod.rs"]
 pub mod cron_delete_tool;
+#[path = "ComputerUseTool/mod.rs"]
+pub mod computer_use_tool;
 
 // Placeholder migration modules stay out of `registered_tools()` until their
 // runtime bridge is complete. This avoids exposing Claude-style folders as if
@@ -412,6 +414,11 @@ pub(crate) async fn execute_single_tool_call(
         Ok(()) => output,
         Err(e) => json!({ "ok": false, "error": e }).to_string(),
     };
+    let (validated_output, tool_side_channel_messages) = match name.as_str() {
+        "computer_use" => computer_use_tool::postprocess_output(&validated_output),
+        _ => (validated_output, Vec::new()),
+    };
+    additional_messages.extend(tool_side_channel_messages);
 
     let mut is_error = infer_is_error(&validated_output);
 
@@ -776,6 +783,10 @@ fn registered_tools() -> Vec<RegisteredTool> {
             tool: cron_delete_tool::tool,
             execute: cron_delete_tool::execute,
         },
+        RegisteredTool {
+            tool: computer_use_tool::tool,
+            execute: computer_use_tool::execute,
+        },
     ]
 }
 
@@ -849,6 +860,7 @@ pub async fn execute_tool_with_app(
         "mcp_auth" => mcp_auth_tool::execute_with_app(app, conversation_id, input).await,
         "lsp_tool" => lsp_tool::execute_with_app(app, conversation_id, input).await,
         "remember_global_memory" => remember_global_memory_tool::execute_with_app(app, input).await,
+        "computer_use" => computer_use_tool::execute_with_app(app, conversation_id, input).await,
         _ => execute_tool(name, input),
     }
 }

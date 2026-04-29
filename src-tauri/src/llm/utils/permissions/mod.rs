@@ -455,6 +455,23 @@ fn operation_from_input(tool_name: &str, input: &Value) -> Option<ProtectedOpera
                 needs_approval: risk.is_some(),
             })
         }
+        "computer_use" => {
+            let action = input
+                .get("action")
+                .and_then(|v| v.as_str())
+                .unwrap_or("unknown")
+                .trim();
+
+            Some(ProtectedOperation {
+                signature: "computer_use:session_access".to_string(),
+                preview: format!("桌面控制（computer_use:{}）", truncate_chars(action, 80)),
+                warning: Some(
+                    "该操作会读取屏幕内容并注入鼠标或键盘输入，请仅在确认目标桌面环境安全时授权"
+                        .to_string(),
+                ),
+                needs_approval: true,
+            })
+        }
         _ => None,
     }
 }

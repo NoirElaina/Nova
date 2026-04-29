@@ -96,6 +96,15 @@ export interface ToolExecutionEntry {
   finishedAt?: number;
 }
 
+export interface FlowNodeEntry {
+  nodeId: string;
+  label: string;
+  status: "running" | "completed" | "skipped" | "error";
+  detail?: string;
+  conversationId?: string;
+  timestamp: number;
+}
+
 export interface AskUserOption {
   label: string;
   description: string;

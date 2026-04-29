@@ -1,10 +1,12 @@
 <script setup lang="ts">
+import { computed, ref } from 'vue';
 import { Button } from "@/components/ui/button";
 import Sidebar from "./components/layout/Sidebar.vue";
 import WelcomeScreen from "./components/chat/WelcomeScreen.vue";
 import ChatScreen from "./components/chat/ChatScreen.vue";
 import SessionFilesPopover from "./components/chat/files/SessionFilesPopover.vue";
 import ExecutionTracePopover from "./components/chat/files/ExecutionTracePopover.vue";
+import WorkspaceDrawer from "./components/chat/WorkspaceDrawer.vue";
 import HooksConfigScreen from "./components/hooks/HooksConfigScreen.vue";
 import AgentConfigScreen from "./components/agent/AgentConfigScreen.vue";
 import ScheduleTaskScreen from "./components/schedule/ScheduleTaskScreen.vue";
@@ -44,6 +46,23 @@ const {
 } = useChatController();
 
 void chatScreenRef;
+
+const isDrawerOpen = ref(false);
+const flowNodes = computed(() => []);
+
+const lastUserMessage = computed<string>(() => {
+  for (let i = messages.value.length - 1; i >= 0; i -= 1) {
+    if (messages.value[i].role === "user") return messages.value[i].content ?? "";
+  }
+  return "";
+});
+
+const lastAssistantMessage = computed<string>(() => {
+  for (let i = messages.value.length - 1; i >= 0; i -= 1) {
+    if (messages.value[i].role === "assistant") return messages.value[i].content ?? "";
+  }
+  return isGenerating.value ? assistantResponse.value : "";
+});
 </script>
 
 <template>
@@ -89,6 +108,19 @@ void chatScreenRef;
             @remove-pending-upload="handleRemovePendingUpload"
           />
           <ExecutionTracePopover :entries="toolExecutionLogs" />
+          <Button
+            variant="ghost"
+            size="icon-sm"
+            class="h-8 w-8 text-muted-foreground hover:bg-black/5 dark:hover:bg-white/5"
+            :class="{ 'bg-black/5 dark:bg-white/10': isDrawerOpen }"
+            title="工作区面板"
+            @click="isDrawerOpen = !isDrawerOpen"
+          >
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <rect x="3" y="3" width="18" height="18" rx="2"/>
+              <line x1="15" y1="3" x2="15" y2="21"/>
+            </svg>
+          </Button>
         </div>
       </header>
 
@@ -142,6 +174,18 @@ void chatScreenRef;
           @ask-skip="handlePendingQuestionSkip"
         />
       </template>
+
+      <WorkspaceDrawer
+        v-if="mainView === 'chat'"
+        :open="isDrawerOpen"
+        :entries="toolExecutionLogs"
+        :flowNodes="flowNodes"
+        :isGenerating="isGenerating"
+        :hasMessages="messages.length > 0"
+        :lastUserMessage="lastUserMessage"
+        :lastAssistantMessage="lastAssistantMessage"
+        @close="isDrawerOpen = false"
+      />
 
     </main>
   </div>

@@ -2,34 +2,15 @@
 import { computed, reactive, ref, watch } from 'vue';
 import { Button } from '@/components/ui/button';
 import { Textarea } from '@/components/ui/textarea';
-
-interface AskUserOption {
-  label: string;
-  description: string;
-  value?: string;
-  preview?: string;
-}
-
-interface PendingQuestionItem {
-  question: string;
-  header: string;
-  options: AskUserOption[];
-  multi_select?: boolean;
-}
-
-interface PendingQuestion {
-  context?: string;
-  questions?: PendingQuestionItem[];
-  allow_freeform?: boolean;
-}
-
-interface AskUserAnswerSubmission {
-  answers: Record<string, string | string[]>;
-  freeform?: string;
-}
+import type {
+  AskUserAnswerSubmission,
+  AskUserOption,
+  AskUserQuestionItem,
+  NeedsUserInputPayload,
+} from '@/lib/chat-types';
 
 const props = defineProps<{
-  request: PendingQuestion | null;
+  request: NeedsUserInputPayload | null;
 }>();
 
 const emit = defineEmits<{
@@ -45,6 +26,10 @@ const currentIndex = ref(0);
 
 const questions = computed(() => props.request?.questions ?? []);
 const currentQuestion = computed(() => questions.value[currentIndex.value] ?? null);
+const currentQuestionKey = computed(() => {
+  const question = currentQuestion.value;
+  return question ? questionStateKey(question, currentIndex.value) : '';
+});
 const isLastQuestion = computed(() => currentIndex.value >= questions.value.length - 1);
 const progressText = computed(() => {
   if (questions.value.length <= 1) return '';
@@ -60,16 +45,27 @@ function optionAnswerValue(option: AskUserOption): string {
   return (option.value?.trim() || option.label).trim();
 }
 
+function questionStateKey(question: AskUserQuestionItem, index: number): string {
+  const explicitId = question.id?.trim();
+  return explicitId || `question-${index}`;
+}
+
+function questionAnswerLabel(question: AskUserQuestionItem, index: number): string {
+  const base = question.question.trim() || question.header.trim() || `问题 ${index + 1}`;
+  return base;
+}
+
 function saveCurrentFreeform() {
-  const key = currentQuestion.value?.question;
-  if (key !== undefined) {
+  const key = currentQuestionKey.value;
+  if (key) {
     freeformAnswers[key] = freeform.value;
   }
 }
 
 function restoreFreeform(index: number) {
-  const key = questions.value[index]?.question;
-  freeform.value = key !== undefined ? (freeformAnswers[key] ?? '') : '';
+  const question = questions.value[index];
+  const key = question ? questionStateKey(question, index) : '';
+  freeform.value = key ? (freeformAnswers[key] ?? '') : '';
 }
 
 watch(
@@ -84,8 +80,8 @@ watch(
   { immediate: true },
 );
 
-function toggleOption(question: PendingQuestionItem, option: AskUserOption) {
-  const key = question.question;
+function toggleOption(question: AskUserQuestionItem, index: number, option: AskUserOption) {
+  const key = questionStateKey(question, index);
   const current = selectedAnswers[key] ?? [];
   const target = optionAnswerValue(option);
 
@@ -100,40 +96,55 @@ function toggleOption(question: PendingQuestionItem, option: AskUserOption) {
   activePreview[key] = option.preview ?? '';
 }
 
-function isSelected(question: PendingQuestionItem, option: AskUserOption) {
-  return (selectedAnswers[question.question] ?? []).includes(optionAnswerValue(option));
+function isSelected(question: AskUserQuestionItem, index: number, option: AskUserOption) {
+  return (selectedAnswers[questionStateKey(question, index)] ?? []).includes(optionAnswerValue(option));
 }
 
 const canSubmit = computed(() => {
-  const question = currentQuestion.value;
-  if (!question) return false;
-  const answers = selectedAnswers[question.question] ?? [];
+  const key = currentQuestionKey.value;
+  if (!key) return false;
+  const answers = selectedAnswers[key] ?? [];
   return answers.length > 0 || freeform.value.trim().length > 0;
 });
 
 function buildSubmission(): AskUserAnswerSubmission {
   saveCurrentFreeform();
   const answers: Record<string, string | string[]> = {};
+  const answerItems: NonNullable<AskUserAnswerSubmission['answerItems']> = [];
+  const answerLabelCounts = new Map<string, number>();
 
-  for (const question of questions.value) {
-    const values = selectedAnswers[question.question] ?? [];
-    const qFreeform = (freeformAnswers[question.question] ?? '').trim();
-    if (question.multi_select) {
-      answers[question.question] = values.length > 0 ? values : (qFreeform ? [qFreeform] : []);
-    } else {
-      answers[question.question] = values[0] ?? qFreeform ?? '';
-    }
+  for (const [index, question] of questions.value.entries()) {
+    const stateKey = questionStateKey(question, index);
+    const values = selectedAnswers[stateKey] ?? [];
+    const qFreeform = (freeformAnswers[stateKey] ?? '').trim();
+    const answer =
+      question.multi_select
+        ? values.length > 0 ? values : (qFreeform ? [qFreeform] : [])
+        : values[0] ?? qFreeform ?? '';
+    const baseLabel = questionAnswerLabel(question, index);
+    const count = (answerLabelCounts.get(baseLabel) ?? 0) + 1;
+    answerLabelCounts.set(baseLabel, count);
+    const answerLabel = count === 1 ? baseLabel : `${baseLabel} (${count})`;
+
+    answers[answerLabel] = answer;
+    answerItems.push({
+      key: stateKey,
+      question: question.question,
+      header: question.header,
+      answer,
+    });
   }
 
   const freeformParts = questions.value
-    .map((q) => {
-      const value = (freeformAnswers[q.question] ?? '').trim();
+    .map((q, index) => {
+      const value = (freeformAnswers[questionStateKey(q, index)] ?? '').trim();
       return value ? `${q.header}: ${value}` : '';
     })
     .filter(Boolean);
 
   return {
     answers,
+    answerItems,
     freeform: freeformParts.join('\n') || undefined,
   };
 }
@@ -194,10 +205,10 @@ function submitAnswers() {
             <Button
               variant="ghost"
               v-for="(option, index) in currentQuestion.options"
-              :key="`${currentQuestion.question}-${option.label}`"
+              :key="`${currentQuestionKey}-${option.label}-${index}`"
               class="ask-option"
-              :class="{ 'is-selected': isSelected(currentQuestion, option) }"
-              @click="toggleOption(currentQuestion, option)"
+              :class="{ 'is-selected': isSelected(currentQuestion, currentIndex, option) }"
+              @click="toggleOption(currentQuestion, currentIndex, option)"
             >
               <span class="ask-index">{{ index + 1 }}</span>
               <span class="ask-option-body">
@@ -208,11 +219,11 @@ function submitAnswers() {
           </div>
 
           <div
-            v-if="activePreview[currentQuestion.question]"
+            v-if="activePreview[currentQuestionKey]"
             class="ask-preview"
           >
             <div class="ask-preview-title">Preview</div>
-            <pre class="ask-preview-body">{{ activePreview[currentQuestion.question] }}</pre>
+            <pre class="ask-preview-body">{{ activePreview[currentQuestionKey] }}</pre>
           </div>
 
         </section>

@@ -25,7 +25,9 @@ function detectPermissionActionFromText(text: string): PermissionActionName | nu
 export function extractPermissionActionFromAnswers(
   payload: AskUserAnswerSubmission,
 ): PermissionActionName | null {
-  for (const answer of Object.values(payload.answers)) {
+  const answerCandidates = payload.answerItems?.map((item) => item.answer) ?? Object.values(payload.answers);
+
+  for (const answer of answerCandidates) {
     if (Array.isArray(answer)) {
       for (const candidate of answer) {
         const action = detectPermissionActionFromText(candidate);
@@ -54,10 +56,20 @@ export function buildPendingQuestionReply(
   }
 
   const lines: string[] = ["用户补充了以下澄清信息："];
-  for (const [question, answer] of Object.entries(payload.answers)) {
-    const answerText = Array.isArray(answer) ? answer.join("、") : answer;
+  const answerItems =
+    payload.answerItems?.map((item) => ({
+      label: item.question.trim() || item.header.trim() || item.key,
+      answer: item.answer,
+    })) ??
+    Object.entries(payload.answers).map(([question, answer]) => ({
+      label: question,
+      answer,
+    }));
+
+  for (const item of answerItems) {
+    const answerText = Array.isArray(item.answer) ? item.answer.join("、") : item.answer;
     if (answerText.trim()) {
-      lines.push(`- ${question}：${answerText}`);
+      lines.push(`- ${item.label}：${answerText}`);
     }
   }
 

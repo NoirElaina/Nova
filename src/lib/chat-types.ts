@@ -113,6 +113,7 @@ export interface AskUserOption {
 }
 
 export interface AskUserQuestionItem {
+  id?: string;
   question: string;
   header: string;
   options: AskUserOption[];
@@ -126,8 +127,16 @@ export interface NeedsUserInputPayload {
   questions?: AskUserQuestionItem[];
 }
 
+export interface AskUserAnswerItem {
+  key: string;
+  question: string;
+  header: string;
+  answer: string | string[];
+}
+
 export interface AskUserAnswerSubmission {
   answers: Record<string, string | string[]>;
+  answerItems?: AskUserAnswerItem[];
   freeform?: string;
 }
 

@@ -1,6 +1,10 @@
+mod state;
+mod summary;
+
 use tauri::AppHandle;
 use serde_json::Value;
 
+use crate::llm::commands::types::CompactContext;
 use crate::llm::types::{Content, ContentBlock, Message, Role};
 
 // 每条消息、块、工具使用/工具结果的静态开销。用于 token 估算近似，防止只依赖字符数导致低估。
@@ -29,6 +33,7 @@ const SESSION_RESTORE_MARKER: &str = "[Session Restore Context]";
 const REACTIVE_FULL_COMPACT_TOKEN_BUDGET: i64 = 1400;
 const REACTIVE_FULL_COMPACT_RECENT_LIMIT: i64 = 6;
 const REACTIVE_FALLBACK_KEEP_MESSAGES: usize = 8;
+const AUTO_COMPACT_SUMMARY_PREFIX: &str = "[Auto Compact Summary]";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum CompactLevel {
@@ -205,6 +210,17 @@ fn split_session_restore_message(messages: &[Message]) -> (Option<Message>, Vec<
     }
 
     (Some(messages[marker_index].clone()), rest)
+}
+
+fn build_auto_compact_summary_message(summary: &str) -> Message {
+    Message {
+        role: Role::User,
+        content: Content::Text(format!(
+            "{}\n{}",
+            AUTO_COMPACT_SUMMARY_PREFIX,
+            summary.trim()
+        )),
+    }
 }
 
 pub fn estimate_tokens_for_messages(messages: &[Message]) -> i64 {
@@ -463,6 +479,69 @@ async fn apply_full_compact(
     .await
 }
 
+async fn try_model_driven_full_compact(
+    app: &AppHandle,
+    conversation_id: &str,
+    messages: &[Message],
+    recent_limit: i64,
+) -> Result<Option<Vec<Message>>, String> {
+    let (session_restore_message, messages_without_restore) =
+        split_session_restore_message(messages);
+    let keep_count = recent_limit.clamp(6, 30) as usize;
+    if messages_without_restore.len() <= keep_count + 1 {
+        return Ok(None);
+    }
+
+    let split_index = messages_without_restore.len().saturating_sub(keep_count);
+    if split_index == 0 {
+        return Ok(None);
+    }
+
+    let messages_to_summarize = &messages_without_restore[..split_index];
+    let recent_messages = messages_without_restore[split_index..].to_vec();
+    let summary = summary::summarize_messages_for_compact(app, messages_to_summarize).await?;
+    let compact_message = build_auto_compact_summary_message(&summary);
+
+    if let Ok(handover) = crate::command::history::get_conversation_handover(
+        app.clone(),
+        conversation_id.to_string(),
+        Some(recent_limit),
+    )
+    .await
+    {
+        let compact_context = CompactContext {
+            conversation_id: conversation_id.to_string(),
+            context_text: match &compact_message.content {
+                Content::Text(text) => text.clone(),
+                Content::Blocks(_) => summary.clone(),
+            },
+            recent_limit,
+            omitted_message_count: handover.omitted_message_count,
+            total_message_count: handover.total_message_count,
+            estimated_tokens: estimate_text_tokens(&summary),
+            updated_at: handover.updated_at,
+        };
+
+        let _ = crate::command::history::record_compact_boundary(
+            app.clone(),
+            &compact_context,
+            &summary,
+            &Vec::new(),
+        )
+        .await;
+    }
+
+    let mut prepared = Vec::with_capacity(
+        recent_messages.len() + 1 + usize::from(session_restore_message.is_some()),
+    );
+    if let Some(restore) = session_restore_message {
+        prepared.push(restore);
+    }
+    prepared.push(compact_message);
+    prepared.extend(recent_messages);
+    Ok(Some(prepared))
+}
+
 async fn apply_full_compact_with_limits(
     app: &AppHandle,
     conversation_id: Option<&str>,
@@ -474,6 +553,25 @@ async fn apply_full_compact_with_limits(
     let Some(conversation_id) = conversation_id.filter(|id| !id.trim().is_empty()) else {
         return messages.to_vec();
     };
+
+    if !state::is_auto_compact_circuit_open(Some(conversation_id)) {
+        match try_model_driven_full_compact(app, conversation_id, messages, recent_limit).await {
+            Ok(Some(compacted)) => {
+                state::record_auto_compact_success(Some(conversation_id));
+                return compacted;
+            }
+            Ok(None) => {}
+            Err(error) => {
+                let failures = state::record_auto_compact_failure(Some(conversation_id));
+                eprintln!(
+                    "[compact] model-driven auto compact failed consecutive_failures={} error={}",
+                    failures, error
+                );
+            }
+        }
+    } else {
+        eprintln!("[compact] model-driven auto compact skipped because circuit breaker is open");
+    }
 
     // 获取 compact 上下文（历史摘要），使用较大的 token 限制与条目限制
     let compact = match crate::command::history::get_conversation_compact_context(

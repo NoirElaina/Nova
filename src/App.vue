@@ -147,7 +147,6 @@ const isDrawerOpen = ref(false);
           :assistantResponse="assistantResponse"
           :assistantReasoning="assistantReasoning"
           :assistantTokenUsage="assistantTokenUsage"
-          :assistantTurnCost="assistantTurnCost"
           :currentTurnToolEntries="currentTurnToolExecutionLogs"
           :pendingQuestion="pendingQuestion"
           :pendingPermissionRequestId="pendingPermissionRequestId"

@@ -7,7 +7,6 @@ import type {
   NeedsUserInputPayload,
   PendingUploadFile,
   ToolExecutionEntry,
-  TurnCost,
 } from '../../lib/chat-types';
 import InputArea from '../layout/InputArea.vue';
 import AskUserInputDialog from './AskUserInputDialog.vue';
@@ -22,7 +21,6 @@ const props = defineProps<{
   assistantResponse: string;
   assistantReasoning?: string;
   assistantTokenUsage?: number;
-  assistantTurnCost?: TurnCost;
   currentTurnToolEntries: ToolExecutionEntry[];
   pendingQuestion?: NeedsUserInputPayload | null;
   pendingPermissionRequestId?: string | null;
@@ -45,11 +43,6 @@ const chatAreaRef = ref<HTMLElement | null>(null);
 const reactionMap = ref<Record<number, 'up' | 'down' | undefined>>({});
 const copiedMap = ref<Record<string, boolean>>({});
 const copyTimers: Record<string, ReturnType<typeof setTimeout> | undefined> = {};
-const legacyToolTranscriptPatterns = [
-  /^(?:>\s*)?Using tool:\s*(.+?)\.{0,3}\s*$/i,
-  /^(?:>\s*)?Tool info:\s*(.+?)\s*$/i,
-  /^(?:>\s*)?Tool done:\s*(.+?)\s*$/i,
-];
 
 const formatNowTime = () => {
   const now = new Date();
@@ -92,23 +85,13 @@ const retryFromAssistant = (assistantIndex: number) => {
   scrollToBottom();
 };
 
-// Older conversations may still contain inline tool transcript text that was persisted
-// before the structured activity rail existed. New turns no longer write these lines.
-const removeLegacyToolTranscript = (content: string): string => {
-  if (!content) return '';
-  const lines = content
-    .split('\n')
-    .filter((line) => !legacyToolTranscriptPatterns.some((pattern) => pattern.test(line.trim())));
-  return lines.join('\n').replace(/\n{3,}/g, '\n\n').trim();
-};
-
 const buildAssistantCopyText = (message: ChatMessage) => {
   const sections = [];
   if (message.reasoning?.trim()) {
     sections.push(`AI 思考过程\n${message.reasoning.trim()}`);
   }
   if (message.content?.trim()) {
-    sections.push(removeLegacyToolTranscript(message.content));
+    sections.push(message.content.trim());
   }
   return sections.join('\n\n');
 };
@@ -214,7 +197,7 @@ defineExpose({
 
           <AssistantMessageBubble
             v-else
-            :message="{ ...msg, content: removeLegacyToolTranscript(msg.content) }"
+            :message="msg"
             :index="index"
             :copied="!!copiedMap[`assistant-${index}`]"
             :conversationTokenUsage="conversationTokenUsage(index)"

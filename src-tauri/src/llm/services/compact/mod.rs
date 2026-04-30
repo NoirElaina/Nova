@@ -1,8 +1,10 @@
 mod state;
 mod summary;
 
+use std::collections::{HashMap, HashSet};
+
 use tauri::AppHandle;
-use serde_json::Value;
+use serde_json::{json, Value};
 
 use crate::llm::commands::types::CompactContext;
 use crate::llm::types::{Content, ContentBlock, Message, Role};
@@ -33,6 +35,14 @@ const SESSION_RESTORE_MARKER: &str = "[Session Restore Context]";
 const REACTIVE_FULL_COMPACT_RECENT_LIMIT: i64 = 6;
 const REACTIVE_FALLBACK_KEEP_MESSAGES: usize = 8;
 const AUTO_COMPACT_SUMMARY_PREFIX: &str = "[Auto Compact Summary]";
+const CONTEXT_EDIT_TRIGGER_TOKENS: i64 = 100_000;
+const CONTEXT_EDIT_KEEP_RECENT_TOOL_PAIRS: usize = 3;
+const CONTEXT_EDIT_CLEAR_AT_LEAST_PAIRS: usize = 1;
+const CONTEXT_EDIT_CLEAR_TOOL_INPUTS: bool = false;
+const CONTEXT_EDIT_TOOL_RESULT_PLACEHOLDER: &str =
+    "[tool_result removed by context editing to save prompt space]";
+const CONTEXT_EDIT_TOOL_INPUT_PLACEHOLDER: &str =
+    "[tool_use input removed by context editing]";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum CompactLevel {
@@ -59,6 +69,14 @@ impl CompactionOutcome {
     pub fn did_compact(&self) -> bool {
         self.level != "none"
     }
+}
+
+pub struct ToolResultContextEditingOutcome {
+    pub messages: Vec<Message>,
+    pub applied: bool,
+    pub original_estimated_tokens: i64,
+    pub edited_estimated_tokens: i64,
+    pub cleared_tool_pairs: usize,
 }
 
 // 判断字符是否属于中日韩Unicode块。此处通过字节范围直接判断，避免调用 heavy regex。
@@ -209,6 +227,187 @@ fn split_session_restore_message(messages: &[Message]) -> (Option<Message>, Vec<
     }
 
     (Some(messages[marker_index].clone()), rest)
+}
+
+fn collect_tool_use_names(messages: &[Message]) -> HashMap<String, String> {
+    let mut names = HashMap::new();
+
+    for message in messages {
+        let Content::Blocks(blocks) = &message.content else {
+            continue;
+        };
+
+        for block in blocks {
+            if let ContentBlock::ToolUse { id, name, .. } = block {
+                names.insert(id.clone(), name.clone());
+            }
+        }
+    }
+
+    names
+}
+
+fn collect_clearable_tool_result_ids(messages: &[Message]) -> Vec<String> {
+    let tool_names = collect_tool_use_names(messages);
+    let mut ids = Vec::new();
+    let mut seen = HashSet::new();
+
+    for message in messages {
+        let Content::Blocks(blocks) = &message.content else {
+            continue;
+        };
+
+        for block in blocks {
+            let ContentBlock::ToolResult { tool_use_id, content, .. } = block else {
+                continue;
+            };
+
+            if !seen.insert(tool_use_id.clone()) {
+                continue;
+            }
+
+            let excluded = tool_names
+                .get(tool_use_id)
+                .map(|_name| false)
+                .unwrap_or(false);
+            if excluded {
+                continue;
+            }
+
+            let has_needs_user_input = content.iter().any(|inner| {
+                let ContentBlock::Text { text } = inner else {
+                    return false;
+                };
+                maybe_needs_user_input_payload(text)
+            });
+            if has_needs_user_input {
+                continue;
+            }
+
+            ids.push(tool_use_id.clone());
+        }
+    }
+
+    ids
+}
+
+pub fn apply_tool_result_context_editing(messages: &[Message]) -> ToolResultContextEditingOutcome {
+    let original_estimated_tokens = estimate_message_tokens(messages);
+    if original_estimated_tokens < CONTEXT_EDIT_TRIGGER_TOKENS {
+        return ToolResultContextEditingOutcome {
+            messages: messages.to_vec(),
+            applied: false,
+            original_estimated_tokens,
+            edited_estimated_tokens: original_estimated_tokens,
+            cleared_tool_pairs: 0,
+        };
+    }
+
+    let clearable_ids = collect_clearable_tool_result_ids(messages);
+    if clearable_ids.len() <= CONTEXT_EDIT_KEEP_RECENT_TOOL_PAIRS {
+        return ToolResultContextEditingOutcome {
+            messages: messages.to_vec(),
+            applied: false,
+            original_estimated_tokens,
+            edited_estimated_tokens: original_estimated_tokens,
+            cleared_tool_pairs: 0,
+        };
+    }
+
+    let clear_count = clearable_ids
+        .len()
+        .saturating_sub(CONTEXT_EDIT_KEEP_RECENT_TOOL_PAIRS);
+    if clear_count < CONTEXT_EDIT_CLEAR_AT_LEAST_PAIRS {
+        return ToolResultContextEditingOutcome {
+            messages: messages.to_vec(),
+            applied: false,
+            original_estimated_tokens,
+            edited_estimated_tokens: original_estimated_tokens,
+            cleared_tool_pairs: 0,
+        };
+    }
+
+    let clear_ids: HashSet<String> = clearable_ids.into_iter().take(clear_count).collect();
+    let cleared_tool_pairs = clear_ids.len();
+
+    let edited_messages = messages
+        .iter()
+        .map(|message| {
+            let content = match &message.content {
+                Content::Text(text) => Content::Text(text.clone()),
+                Content::Blocks(blocks) => Content::Blocks(
+                    blocks
+                        .iter()
+                        .map(|block| match block {
+                            ContentBlock::ToolUse { id, name, input } => {
+                                if CONTEXT_EDIT_CLEAR_TOOL_INPUTS && clear_ids.contains(id) {
+                                    ContentBlock::ToolUse {
+                                        id: id.clone(),
+                                        name: name.clone(),
+                                        input: json!({
+                                            "_omitted": CONTEXT_EDIT_TOOL_INPUT_PLACEHOLDER
+                                        }),
+                                    }
+                                } else {
+                                    ContentBlock::ToolUse {
+                                        id: id.clone(),
+                                        name: name.clone(),
+                                        input: input.clone(),
+                                    }
+                                }
+                            }
+                            ContentBlock::ToolResult {
+                                tool_use_id,
+                                is_error,
+                                content,
+                            } => {
+                                if clear_ids.contains(tool_use_id) {
+                                    ContentBlock::ToolResult {
+                                        tool_use_id: tool_use_id.clone(),
+                                        is_error: *is_error,
+                                        content: vec![ContentBlock::Text {
+                                            text: CONTEXT_EDIT_TOOL_RESULT_PLACEHOLDER.to_string(),
+                                        }],
+                                    }
+                                } else {
+                                    ContentBlock::ToolResult {
+                                        tool_use_id: tool_use_id.clone(),
+                                        is_error: *is_error,
+                                        content: content.clone(),
+                                    }
+                                }
+                            }
+                            _ => block.clone(),
+                        })
+                        .collect(),
+                ),
+            };
+
+            Message {
+                role: message.role.clone(),
+                content,
+            }
+        })
+        .collect::<Vec<_>>();
+
+    let edited_estimated_tokens = estimate_message_tokens(&edited_messages);
+    let applied = edited_estimated_tokens < original_estimated_tokens && cleared_tool_pairs > 0;
+
+    ToolResultContextEditingOutcome {
+        messages: if applied {
+            edited_messages
+        } else {
+            messages.to_vec()
+        },
+        applied,
+        original_estimated_tokens,
+        edited_estimated_tokens: if applied {
+            edited_estimated_tokens
+        } else {
+            original_estimated_tokens
+        },
+        cleared_tool_pairs: if applied { cleared_tool_pairs } else { 0 },
+    }
 }
 
 fn build_auto_compact_summary_message(summary: &str) -> Message {

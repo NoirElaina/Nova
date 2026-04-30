@@ -15,6 +15,7 @@ const SESSION_RAG_CONTEXT_MARKER: &str = "[Session RAG Context]";
 const SESSION_RAG_SEARCH_LIMIT: usize = 5;
 const DIRECT_ATTACHMENT_CONTEXT_LIMIT: usize = 2;
 const DIRECT_ATTACHMENT_SNIPPET_CHARS: usize = 2200;
+const MCP_SERVER_CONTEXT_MARKER: &str = "[MCP Server Catalog]";
 
 fn clamp_i64_to_u32(value: i64) -> u32 {
 	if value <= 0 {
@@ -242,6 +243,32 @@ fn build_session_rag_context_message(
 	}))
 }
 
+async fn build_mcp_server_context_message(app: &AppHandle) -> Option<Message> {
+	let statuses = crate::llm::services::mcp_tools::connected_server_catalog(app).await;
+	if statuses.is_empty() {
+		return None;
+	}
+
+	let mut lines = vec![
+		MCP_SERVER_CONTEXT_MARKER.to_string(),
+		"Connected MCP servers are available. Do not assume their internal tools up front.".to_string(),
+		"Use `mcp_auth` with `action=\"list_tools\"` to inspect a server before calling one of its tools.".to_string(),
+		"Use `mcp_auth` with `action=\"call_tool\"` to invoke a specific MCP tool after inspection.".to_string(),
+	];
+
+	for status in statuses {
+		lines.push(format!(
+			"- {} (type={}, tools={})",
+			status.name, status.r#type, status.tool_count
+		));
+	}
+
+	Some(Message {
+		role: Role::User,
+		content: Content::Text(lines.join("\n")),
+	})
+}
+
 fn is_session_start_turn(messages: &[Message]) -> bool {
 	let assistant_count = messages
 		.iter()
@@ -381,6 +408,10 @@ pub async fn send_chat_message(
 		}
 	}
 
+	if let Some(mcp_context) = build_mcp_server_context_message(&app).await {
+		current_messages.push(mcp_context);
+	}
+
 	// 2. 根据设置选择模型提供方（Anthropic/OpenAI）。
 	// Provider 实例封装了底层调用细节。
 	let provider = LlmProvider::new(&app);
@@ -393,6 +424,17 @@ pub async fn send_chat_message(
 		// 若收到取消请求，则立即以 cancelled 结束。
 		if crate::llm::cancellation::is_cancelled(conversation_id.as_deref()) {
 			break TurnOutcome::cancelled();
+		}
+
+		let context_editing = compact::apply_tool_result_context_editing(&current_messages);
+		if context_editing.applied {
+			eprintln!(
+				"[context_editing] cleared_tool_pairs={} estimated_tokens {} -> {}",
+				context_editing.cleared_tool_pairs,
+				context_editing.original_estimated_tokens,
+				context_editing.edited_estimated_tokens
+			);
+			current_messages = context_editing.messages;
 		}
 
 		// 消费用户在前端对权限问题做出的审批决策。

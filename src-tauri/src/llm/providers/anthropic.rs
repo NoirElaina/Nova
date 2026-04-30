@@ -6,7 +6,6 @@ use tokio::time::timeout;
 
 use crate::llm::query_engine::ChatMessageEvent;
 use crate::llm::providers::ProviderTurnResult;
-use crate::llm::services::mcp_tools;
 use crate::llm::tools;
 use crate::llm::types::{
     AnthropicRequest, ContentBlock, Message, Role, StreamContentBlock, StreamDelta, StreamEvent,
@@ -130,9 +129,8 @@ impl AnthropicProvider {
             return Err("API error: No API key configured. Please set it in Settings.".to_string());
         }
 
-        // 收集本地工具和 MCP 动态工具。
-        let mut available_tools = tools::get_available_tools();
-        available_tools.extend(mcp_tools::collect_mcp_tools(app).await);
+        // 仅注入内置工具；MCP 采用 server 级发现，避免每轮发送全部动态工具 schema。
+        let available_tools = tools::get_available_tools();
 
         // 构造 Anthropic 请求体。
         let request = AnthropicRequest {

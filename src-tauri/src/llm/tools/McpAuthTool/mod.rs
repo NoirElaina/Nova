@@ -24,13 +24,13 @@ pub(crate) fn registration() -> ToolRegistration {
 pub fn tool() -> Tool {
     Tool {
         name: "mcp_auth".into(),
-        description: "Manage MCP connection/auth lifecycle: status, reload, enable/disable server, list tools, and probe tool access.".into(),
+        description: "Gateway for MCP discovery and invocation: inspect connected servers, list a server's tools, and call a specific MCP tool on demand.".into(),
         input_schema: json!({
             "type": "object",
             "properties": {
                 "action": {
                     "type": "string",
-                    "enum": ["status", "reload_all", "enable", "disable", "list_tools", "probe_tool"]
+                    "enum": ["status", "reload_all", "enable", "disable", "list_tools", "probe_tool", "call_tool"]
                 },
                 "server": { "type": "string" },
                 "tool": { "type": "string" },
@@ -149,7 +149,7 @@ pub async fn execute_with_app(
                 Err(e) => json!({ "ok": false, "error": e }).to_string(),
             }
         }
-        "probe_tool" => {
+        "probe_tool" | "call_tool" => {
             let server_name = input
                 .get("server")
                 .and_then(|v| v.as_str())
@@ -187,7 +187,7 @@ pub async fn execute_with_app(
         }
         _ => json!({
             "ok": false,
-            "error": "mcp_auth action must be one of: status, reload_all, enable, disable, list_tools, probe_tool"
+            "error": "mcp_auth action must be one of: status, reload_all, enable, disable, list_tools, probe_tool, call_tool"
         })
         .to_string(),
     }

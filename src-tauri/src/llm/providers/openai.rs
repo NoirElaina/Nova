@@ -9,7 +9,6 @@ use tokio::time::timeout;
 
 use crate::llm::query_engine::ChatMessageEvent;
 use crate::llm::providers::ProviderTurnResult;
-use crate::llm::services::mcp_tools;
 use crate::llm::tools;
 use crate::llm::types::{AgentMode, ContentBlock, Message, Role};
 use crate::llm::utils::error_event::emit_backend_error;
@@ -210,9 +209,8 @@ impl OpenAiProvider {
         let settings = crate::command::settings::get_settings(app.clone());
         let profile = settings.active_provider_profile();
         
-        // 合并本地工具与 MCP 动态工具。
-        let mut available_tools = tools::get_available_tools();
-        available_tools.extend(mcp_tools::collect_mcp_tools(app).await);
+        // 仅注入内置工具；MCP 采用 server 级发现，避免每轮发送全部动态工具 schema。
+        let available_tools = tools::get_available_tools();
 
         // 加载系统提示词（含 Agent/Plan/Auto 模式逻辑）。
         let system_prompt = load_system_prompt(app, agent_mode)?;

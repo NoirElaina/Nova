@@ -49,9 +49,7 @@ pub async fn execute_dynamic_with_app(
     )
 }
 
-// 查询已启用并已连接的 MCP 服务器，收集每个 server 的 tool 列表并转成本地 Tool 格式。
-// 这将使模型可调用 "mcp__<server>__<tool>"。
-pub async fn collect_mcp_tools(app: &AppHandle) -> Vec<Tool> {
+pub async fn connected_server_catalog(app: &AppHandle) -> Vec<crate::llm::services::mcp::McpServerStatus> {
     let mut statuses = match crate::llm::services::mcp::get_mcp_server_statuses(app.clone()).await {
         Ok(v) => v,
         Err(_) => return Vec::new(),
@@ -69,11 +67,17 @@ pub async fn collect_mcp_tools(app: &AppHandle) -> Vec<Tool> {
         };
     }
 
-    let mut tools_vec = Vec::new();
-    for status in statuses
+    statuses
         .into_iter()
         .filter(|s| s.enabled && s.status == "connected")
-    {
+        .collect()
+}
+
+// 查询已启用并已连接的 MCP 服务器，收集每个 server 的 tool 列表并转成本地 Tool 格式。
+// 这将使模型可调用 "mcp__<server>__<tool>"。
+pub async fn collect_mcp_tools(app: &AppHandle) -> Vec<Tool> {
+    let mut tools_vec = Vec::new();
+    for status in connected_server_catalog(app).await {
         let listed = match crate::llm::services::mcp::list_mcp_tools(app.clone(), status.name.clone()).await
         {
             Ok(v) => v,

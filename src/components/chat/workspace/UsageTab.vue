@@ -12,10 +12,6 @@ const assistantMessages = computed(() =>
   props.messages.filter((message) => message.role === 'assistant'),
 );
 
-const totalSessionTokens = computed(() =>
-  props.messages.reduce((sum, message) => sum + (message.tokenUsage ?? 0), 0),
-);
-
 const totalInputTokens = computed(() =>
   assistantMessages.value.reduce((sum, message) => sum + (message.cost?.inputTokens ?? 0), 0),
 );
@@ -23,6 +19,8 @@ const totalInputTokens = computed(() =>
 const totalOutputTokens = computed(() =>
   assistantMessages.value.reduce((sum, message) => sum + (message.cost?.outputTokens ?? 0), 0),
 );
+
+const totalTokens = computed(() => totalInputTokens.value + totalOutputTokens.value);
 
 const totalToolCalls = computed(() =>
   assistantMessages.value.reduce((sum, message) => sum + (message.cost?.toolCalls ?? 0), 0),
@@ -68,11 +66,11 @@ const formatDuration = (value: number) =>
   <div class="h-full overflow-y-auto px-4 py-4">
     <div class="grid grid-cols-2 gap-3 lg:grid-cols-4">
       <div class="usage-card">
-        <div class="usage-label">会话 Tokens</div>
-        <div class="usage-value">{{ formatNumber(totalSessionTokens) }}</div>
+        <div class="usage-label">总 Tokens</div>
+        <div class="usage-value">{{ formatNumber(totalTokens) }}</div>
       </div>
       <div class="usage-card">
-        <div class="usage-label">输入 Tokens</div>
+        <div class="usage-label">Prompt Tokens</div>
         <div class="usage-value">{{ formatNumber(totalInputTokens) }}</div>
       </div>
       <div class="usage-card">
@@ -111,7 +109,7 @@ const formatDuration = (value: number) =>
         class="mt-3 grid grid-cols-2 gap-3 lg:grid-cols-4"
       >
         <div>
-          <div class="usage-label">输入</div>
+          <div class="usage-label">Prompt</div>
           <div class="usage-detail">{{ formatNumber(latestAssistantCost.inputTokens) }}</div>
         </div>
         <div>

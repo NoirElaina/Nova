@@ -316,17 +316,11 @@ fn infer_is_error(output: &str) -> bool {
 }
 
 fn is_subagent_start_tool(name: &str) -> bool {
-    matches!(
-        name.to_ascii_lowercase().as_str(),
-        "taskcreate" | "task_create"
-    )
+    matches!(name.to_ascii_lowercase().as_str(), "task_create")
 }
 
 fn is_subagent_stop_tool(name: &str) -> bool {
-    matches!(
-        name.to_ascii_lowercase().as_str(),
-        "taskstop" | "task_stop"
-    )
+    matches!(name.to_ascii_lowercase().as_str(), "taskstop")
 }
 
 pub(crate) fn is_read_only_tool(name: &str) -> bool {

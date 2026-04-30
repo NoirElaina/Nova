@@ -1,21 +1,13 @@
 use crate::llm::tools::{
-    app_tool, app_tool_with_extras, sync_tool, AppExecuteFuture, ToolPermissionDescriptor,
-    ToolRegistration,
+    app_tool_with_extras, AppExecuteFuture, ToolPermissionDescriptor, ToolRegistration,
 };
 use crate::llm::types::{Message, Tool};
 use serde_json::{json, Value};
 use tauri::AppHandle;
 
-// Copy this file into a new tool folder, then rename:
-// - NewToolTemplate -> YourToolName
-// - new_tool -> your real tool name
-//
-// See README.md in this folder for the recommended workflow and the smaller
-// template variants (read-only / app-aware / privileged).
-//
-// After copying, add one line to the `declare_builtin_tools!` list in
-// src-tauri/src/llm/tools/mod.rs:
-// - your_tool => "YourTool/mod.rs",
+// 这是当前的全功能模板。
+// 复制后只保留这一条最新路径：AppHandle-aware 执行 + 显式权限声明 + 可选后处理。
+// 如果你的工具更简单，再去用子模板目录里的只读版或 App 版。
 
 pub fn tool() -> Tool {
     Tool {
@@ -34,8 +26,20 @@ pub fn tool() -> Tool {
     }
 }
 
-// Use this for pure sync tools with no AppHandle dependency.
 pub fn execute(input: Value) -> String {
+    json!({
+        "ok": false,
+        "message": "new_tool requires AppHandle-aware execution and should be routed via execute_tool_with_app.",
+        "input": input
+    })
+    .to_string()
+}
+
+pub async fn execute_with_app(
+    _app: &AppHandle,
+    _conversation_id: Option<&str>,
+    input: Value,
+) -> String {
     let value = match input.get("input").and_then(|v| v.as_str()) {
         Some(v) if !v.trim().is_empty() => v.trim(),
         _ => return json!({ "ok": false, "error": "Missing 'input'" }).to_string(),
@@ -48,16 +52,7 @@ pub fn execute(input: Value) -> String {
     .to_string()
 }
 
-// Keep this only when the tool needs AppHandle, async work, or conversation scope.
-pub async fn execute_with_app(
-    _app: &AppHandle,
-    _conversation_id: Option<&str>,
-    input: Value,
-) -> String {
-    execute(input)
-}
-
-// Bridge async execution into the registry metadata.
+// 把 async 执行函数桥接成注册表需要的 future 形态。
 fn execute_with_app_boxed(
     app: AppHandle,
     conversation_id: Option<String>,
@@ -66,14 +61,12 @@ fn execute_with_app_boxed(
     Box::pin(async move { execute_with_app(&app, conversation_id.as_deref(), input).await })
 }
 
-// Optional: return side-channel messages such as screenshots, extra context, etc.
-// Delete this if your tool only returns normal JSON/text output.
+// 可选后处理：需要 side-channel 消息时在这里补。
 pub fn postprocess_output(output: &str) -> (String, Vec<Message>) {
     (output.to_string(), Vec::new())
 }
 
-// Optional: declare permission behavior here instead of editing permissions/mod.rs.
-// Delete this if the tool does not need a custom permission gate.
+// 显式权限声明：敏感工具在这里返回稳定的签名和提示文案。
 fn permission(input: &Value) -> Option<ToolPermissionDescriptor> {
     let preview = input
         .get("input")
@@ -90,15 +83,6 @@ fn permission(input: &Value) -> Option<ToolPermissionDescriptor> {
 }
 
 pub(crate) fn registration() -> ToolRegistration {
-    // Pick one pattern and delete the others:
-
-    // 1. Pure sync tool:
-    // sync_tool(tool, execute, true, None)
-
-    // 2. App-aware tool:
-    // app_tool(tool, execute, execute_with_app_boxed, false, None)
-
-    // 3. App-aware tool with permission/postprocess:
     app_tool_with_extras(
         tool,
         execute,

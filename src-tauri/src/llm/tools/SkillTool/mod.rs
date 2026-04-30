@@ -42,7 +42,7 @@ pub struct SkillSummary {
 pub fn tool() -> Tool {
     Tool {
         name: "Skill".into(),
-        description: "Execute a skill by name (Claude-compatible Skill tool). Use action=list to discover available skills, then action=run to load one.".into(),
+        description: "Execute a skill by name. Use action=list to discover available skills, then action=run to load one.".into(),
         input_schema: json!({
             "type": "object",
             "properties": {

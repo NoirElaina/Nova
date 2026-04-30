@@ -25,15 +25,10 @@ pub fn tool() -> Tool {
 }
 
 pub fn execute(input: Value) -> String {
-    let value = match input.get("input").and_then(|v| v.as_str()) {
-        Some(v) if !v.trim().is_empty() => v.trim(),
-        _ => return json!({ "ok": false, "error": "Missing 'input'" }).to_string(),
-    };
-
     json!({
-        "ok": true,
-        "input": value,
-        "message": "Replace this fallback with your real sync behavior if needed."
+        "ok": false,
+        "message": "app_tool requires AppHandle-aware execution and should be routed via execute_tool_with_app.",
+        "input": input
     })
     .to_string()
 }
@@ -43,7 +38,17 @@ pub async fn execute_with_app(
     _conversation_id: Option<&str>,
     input: Value,
 ) -> String {
-    execute(input)
+    let value = match input.get("input").and_then(|v| v.as_str()) {
+        Some(v) if !v.trim().is_empty() => v.trim(),
+        _ => return json!({ "ok": false, "error": "Missing 'input'" }).to_string(),
+    };
+
+    json!({
+        "ok": true,
+        "input": value,
+        "message": "Replace this with your real AppHandle-aware logic."
+    })
+    .to_string()
 }
 
 fn execute_with_app_boxed(

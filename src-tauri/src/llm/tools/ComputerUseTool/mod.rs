@@ -120,13 +120,11 @@ pub fn tool() -> Tool {
                 "count": { "type": "integer" },
                 "text": { "type": "string" },
                 "key_name": { "type": "string" },
-                "key": { "type": "string" },
                 "keys": {
                     "type": "array",
                     "items": { "type": "string" }
                 },
-                "duration_ms": { "type": "integer" },
-                "ms": { "type": "integer" }
+                "duration_ms": { "type": "integer" }
             },
             "required": ["action"]
         }),
@@ -560,9 +558,8 @@ fn execute_blocking(action: String, input: Value) -> Result<Value, String> {
         "key" => {
             let key_name = input
                 .get("key_name")
-                .or_else(|| input.get("key"))
                 .and_then(|v| v.as_str())
-                .ok_or_else(|| "computer_use key requires 'key_name' or 'key'".to_string())?;
+                .ok_or_else(|| "computer_use key requires string 'key_name'".to_string())?;
             let repeat = input.get("count").and_then(|v| v.as_u64()).unwrap_or(1).clamp(1, 20);
             let key = parse_key_name(key_name)?;
             let mut enigo = new_enigo()?;
@@ -611,9 +608,8 @@ pub async fn execute_with_app(
         .to_ascii_lowercase();
 
     if action == "wait" {
-        // wait_ms: 等待毫秒数，兼容 duration_ms 和 ms 两个字段。
+        // wait_ms: 等待毫秒数，只读取当前协议里的 `duration_ms`。
         let wait_ms = parse_u64_field(&input, "duration_ms")
-            .or_else(|| parse_u64_field(&input, "ms"))
             .unwrap_or(DEFAULT_WAIT_MS)
             .clamp(1, MAX_WAIT_MS);
         tokio::time::sleep(Duration::from_millis(wait_ms)).await;

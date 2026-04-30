@@ -19,7 +19,7 @@ pub(crate) fn registration() -> ToolRegistration {
 }
 
 // 返回模型可见的 read_mcp_resource 元数据。
-// `resource` 和 `uri` 是同义字段，工具内部会统一成一个资源标识。
+// 当前接口统一使用 `uri` 作为 MCP 资源标识。
 pub fn tool() -> Tool {
     Tool {
         name: "read_mcp_resource".into(),
@@ -28,10 +28,9 @@ pub fn tool() -> Tool {
             "type": "object",
             "properties": {
                 "server": { "type": "string" },
-                "resource": { "type": "string" },
                 "uri": { "type": "string" }
             },
-            "required": ["server", "resource"]
+            "required": ["server", "uri"]
         }),
     }
 }
@@ -39,15 +38,11 @@ pub fn tool() -> Tool {
 // 同步入口只返回提示，要求调用方改走带 AppHandle 的 MCP 读取逻辑。
 pub fn execute(input: Value) -> String {
     let server = input.get("server").and_then(|v| v.as_str()).unwrap_or("");
-    let resource = input
-        .get("resource")
-        .or_else(|| input.get("uri"))
-        .and_then(|v| v.as_str())
-        .unwrap_or("");
+    let uri = input.get("uri").and_then(|v| v.as_str()).unwrap_or("");
     json!({
         "ok": false,
         "server": server,
-        "resource": resource,
+        "uri": uri,
         "message": "read_mcp_resource requires AppHandle-aware execution and should be routed via execute_tool_with_app."
     })
     .to_string()
@@ -63,8 +58,7 @@ pub async fn execute_with_app(app: &AppHandle, input: Value) -> String {
         .trim()
         .to_string();
     let uri = input
-        .get("resource")
-        .or_else(|| input.get("uri"))
+        .get("uri")
         .and_then(|v| v.as_str())
         .unwrap_or_default()
         .trim()
@@ -73,7 +67,7 @@ pub async fn execute_with_app(app: &AppHandle, input: Value) -> String {
     if server_name.is_empty() || uri.is_empty() {
         return json!({
             "ok": false,
-            "error": "read_mcp_resource requires non-empty 'server' and 'resource'/'uri'"
+            "error": "read_mcp_resource requires non-empty 'server' and 'uri'"
         })
         .to_string();
     }

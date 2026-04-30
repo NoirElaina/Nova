@@ -9,7 +9,7 @@ pub(crate) fn registration() -> ToolRegistration {
 }
 
 // 返回 ask_user_question 暴露给模型的元数据。
-// schema 支持新格式的 `questions[]`，也兼容旧格式的单个 `question`。
+// 当前接口只接受 `questions[]`，即使只问一个问题也要放进数组里。
 pub fn tool() -> Tool {
     Tool {
         name: "ask_user_question".into(),
@@ -64,10 +64,6 @@ pub fn tool() -> Tool {
                         "required": ["question", "header", "options"]
                     }
                 },
-                "question": {
-                    "type": "string",
-                    "description": "Legacy single-question field"
-                },
                 "context": {
                     "type": "string",
                     "description": "Short reason why these questions are needed"
@@ -77,10 +73,7 @@ pub fn tool() -> Tool {
                     "description": "Whether user can answer outside provided options"
                 }
             },
-            "anyOf": [
-                { "required": ["questions"] },
-                { "required": ["question"] }
-            ]
+            "required": ["questions"]
         }),
     }
 }
@@ -137,7 +130,6 @@ fn normalize_question(question: &Value) -> Option<Value> {
         .unwrap_or_default();
     let multi_select = question
         .get("multi_select")
-        .or_else(|| question.get("multiSelect"))
         .and_then(|v| v.as_bool())
         .unwrap_or(false);
 
@@ -168,47 +160,15 @@ pub fn execute(input: Value) -> String {
         .and_then(|v| v.as_bool())
         .unwrap_or(true);
 
-    // questions: 先尝试读取新格式 questions[]；如果没有，再降级兼容旧格式 question/options。
-    let mut questions = input
+    // questions: 当前接口要求模型直接传标准 questions[] 数组。
+    let questions = input
         .get("questions")
         .and_then(|v| v.as_array())
         .map(|arr| arr.iter().filter_map(normalize_question).collect::<Vec<_>>())
         .unwrap_or_default();
 
     if questions.is_empty() {
-        let question = match input.get("question").and_then(|v| v.as_str()) {
-            Some(q) if !q.trim().is_empty() => q.trim().to_string(),
-            _ => return "Error: Missing or empty 'question' argument".into(),
-        };
-
-        let options: Vec<Value> = input
-            .get("options")
-            .and_then(|v| v.as_array())
-            .map(|arr| {
-                arr.iter()
-                    .filter_map(|x| x.as_str())
-                    .map(|s| s.trim().to_string())
-                    .filter(|s| !s.is_empty())
-                    .map(|label| {
-                        json!({
-                            "label": label,
-                            "description": "Select this option"
-                        })
-                    })
-                    .collect()
-            })
-            .unwrap_or_default();
-
-        if options.len() < 2 {
-            return "Error: ask_user_question requires at least two options".into();
-        }
-
-        questions.push(json!({
-            "question": question,
-            "header": "Clarify",
-            "multi_select": false,
-            "options": options
-        }));
+        return "Error: ask_user_question requires non-empty 'questions'".into();
     }
 
     json!({

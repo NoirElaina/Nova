@@ -1,6 +1,6 @@
 # New Tool Template
 
-这个目录是 Nova 工具系统的模板包。
+这个目录是 Nova 工具系统的最新模板包。
 
 目标是让你新增工具时尽量只做两件事：
 
@@ -25,10 +25,16 @@ my_tool => "MyTool/mod.rs",
 - 权限总表分支
 - 后处理 special-case
 
+现在模板只保留当前写法，不保留旧兼容路径：
+
+- 不写字段别名
+- 不留 fallback 执行路径
+- 不保留“任选一种注册方式再删别的”的混合模板
+
 ## 目录说明
 
 - `mod.rs`
-  - 通用大模板，适合第一次做新工具时参考全部能力
+  - 当前全功能模板：`app_tool_with_extras + execute_with_app + permission + postprocess`
 - `ReadOnlyToolTemplate/mod.rs`
   - 只读、同步、无 `AppHandle` 的简单工具
 - `AppToolTemplate/mod.rs`
@@ -50,11 +56,11 @@ my_tool => "MyTool/mod.rs",
    - `description`
    - `input_schema`
    改成真实定义
-3. 实现 `execute()`，如果需要再实现：
-   - `execute_with_app()`
-   - `permission()`
-   - `postprocess_output()`
-4. 检查 `registration()` 选对了挂载方式
+3. 按模板实现真实逻辑：
+   - `ReadOnlyToolTemplate` 只实现 `execute()`
+   - `AppToolTemplate` 实现 `execute_with_app()`
+   - `PrivilegedToolTemplate` / `mod.rs` 实现 `execute_with_app()`，并按需补 `permission()`、`postprocess_output()`
+4. 不要加兼容字段、别名字段或 fallback 路径
 5. 在 `tools/mod.rs` 的 `declare_builtin_tools!` 中加一行
 6. 运行：
 
@@ -70,7 +76,7 @@ cargo check --manifest-path src-tauri/Cargo.toml
 
 - 同步工具
 - 不需要 `AppHandle`
-- 权限策略可显式传 `None` 或 `Some(permission)`
+- 权限策略显式传 `None` 或 `Some(permission)`
 - 不需要 side-channel 后处理
 
 ### `app_tool(...)`
@@ -89,6 +95,8 @@ cargo check --manifest-path src-tauri/Cargo.toml
 - 需要权限确认
 - 需要 side-channel 消息
 - 或者你想把复杂行为显式写在工具模块里
+
+不要在一个工具文件里同时保留多套注册方式，选定一种就只留一种。
 
 ## 常见实现建议
 
@@ -130,7 +138,7 @@ json!({
 1. 复制 `AppToolTemplate` 到 `OpenProjectTool`
 2. 改 `tool().name = "open_project"`
 3. 实现 `execute_with_app()`
-4. 保留 `registration()`
+4. 保留单一 `registration()`
 5. 在 `declare_builtin_tools!` 中添加：
 
 ```rust

@@ -4,7 +4,7 @@ use serde_json::{json, Value};
 use tauri::AppHandle;
 
 // 把 RAG 工具的 async 执行逻辑包装成统一 future。
-// `input` 里会带 action/query/documentId/limit 这些查询参数。
+// `input` 里会带 action/query/document_id/limit 这些查询参数。
 fn execute_with_app_boxed(
     app: AppHandle,
     _conversation_id: Option<String>,
@@ -33,8 +33,7 @@ pub fn tool() -> Tool {
                     "enum": ["stats", "search", "read"]
                 },
                 "query": { "type": "string" },
-                "documentId": { "type": "string" },
-                "id": { "type": "string" },
+                "document_id": { "type": "string" },
                 "limit": { "type": "integer" }
             },
             "required": ["action"]
@@ -105,15 +104,14 @@ pub async fn execute_with_app(app: &AppHandle, input: Value) -> String {
         }
         "read" => {
             let Some(document_id) = input
-                .get("documentId")
-                .or_else(|| input.get("id"))
+                .get("document_id")
                 .and_then(|v| v.as_str())
                 .map(str::trim)
                 .filter(|s| !s.is_empty())
             else {
                 return json!({
                     "ok": false,
-                    "error": "rag_tool read requires non-empty 'documentId' or 'id'"
+                    "error": "rag_tool read requires non-empty 'document_id'"
                 })
                 .to_string();
             };

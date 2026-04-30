@@ -13,7 +13,7 @@ pub(crate) fn registration() -> ToolRegistration {
 }
 
 // 返回模型可见的 Sleep 元数据。
-// schema 同时兼容毫秒和秒两组字段名。
+// 当前接口统一使用 `duration_ms`。
 pub fn tool() -> Tool {
     Tool {
         name: "Sleep".into(),
@@ -21,11 +21,9 @@ pub fn tool() -> Tool {
         input_schema: json!({
             "type": "object",
             "properties": {
-                "duration_ms": { "type": "integer", "description": "Sleep duration in milliseconds" },
-                "ms": { "type": "integer", "description": "Alias of duration_ms" },
-                "duration_seconds": { "type": "number", "description": "Sleep duration in seconds" },
-                "seconds": { "type": "number", "description": "Alias of duration_seconds" }
-            }
+                "duration_ms": { "type": "integer", "description": "Sleep duration in milliseconds" }
+            },
+            "required": ["duration_ms"]
         }),
     }
 }
@@ -51,26 +49,9 @@ fn parse_positive_u64(value: &Value) -> Option<u64> {
     None
 }
 
-// 从 input 中按优先级读取等待时长，并统一转换成毫秒。
-// 优先读取 `duration_ms/ms`，其次才是 `duration_seconds/seconds`。
+// 从 input 中读取 `duration_ms` 并做基础校验。
 fn parse_sleep_ms(input: &Value) -> Option<u64> {
-    if let Some(v) = input.get("duration_ms").and_then(parse_positive_u64) {
-        return Some(v);
-    }
-
-    if let Some(v) = input.get("ms").and_then(parse_positive_u64) {
-        return Some(v);
-    }
-
-    if let Some(v) = input.get("duration_seconds").and_then(parse_positive_u64) {
-        return Some(v.saturating_mul(1000));
-    }
-
-    if let Some(v) = input.get("seconds").and_then(parse_positive_u64) {
-        return Some(v.saturating_mul(1000));
-    }
-
-    None
+    input.get("duration_ms").and_then(parse_positive_u64)
 }
 
 // 阻塞当前线程等待指定时长，并返回实际等待结果。
@@ -81,7 +62,7 @@ pub fn execute(input: Value) -> String {
         None => {
             return json!({
                 "ok": false,
-                "error": "Sleep requires one of: duration_ms | ms | duration_seconds | seconds (positive number)"
+                "error": "Sleep requires positive integer 'duration_ms'"
             })
             .to_string();
         }

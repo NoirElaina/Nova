@@ -34,6 +34,19 @@ pub fn tool() -> Tool {
 }
 
 pub fn execute(input: Value) -> String {
+    json!({
+        "ok": false,
+        "message": "privileged_tool requires AppHandle-aware execution and should be routed via execute_tool_with_app.",
+        "input": input
+    })
+    .to_string()
+}
+
+pub async fn execute_with_app(
+    _app: &AppHandle,
+    _conversation_id: Option<&str>,
+    input: Value,
+) -> String {
     let target = match input.get("target").and_then(|v| v.as_str()) {
         Some(v) if !v.trim().is_empty() => v.trim(),
         _ => return json!({ "ok": false, "error": "Missing 'target'" }).to_string(),
@@ -45,14 +58,6 @@ pub fn execute(input: Value) -> String {
         "message": "Replace this with your actual sensitive operation."
     })
     .to_string()
-}
-
-pub async fn execute_with_app(
-    _app: &AppHandle,
-    _conversation_id: Option<&str>,
-    input: Value,
-) -> String {
-    execute(input)
 }
 
 fn execute_with_app_boxed(

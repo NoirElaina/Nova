@@ -12,7 +12,6 @@ import InputArea from '../layout/InputArea.vue';
 import AskUserInputDialog from './AskUserInputDialog.vue';
 import AssistantMessageBubble from './messages/AssistantMessageBubble.vue';
 import MarkdownRenderer from './MarkdownRenderer.vue';
-import ToolLogPanel from './messages/ToolLogPanel.vue';
 import UserMessageBubble from './messages/UserMessageBubble.vue';
 
 const props = defineProps<{
@@ -135,42 +134,6 @@ const handleRemoveUpload = (index: number) => {
   emit('remove-upload', index);
 };
 
-const extractToolLog = (content: string): string[] => {
-  if (!content) return [];
-  const items: string[] = [];
-  let pendingIndex = -1;
-  for (const rawLine of content.split('\n')) {
-    const line = rawLine.trim();
-    const start = line.match(toolStartPattern);
-    if (start) {
-      items.push(`Using tool: ${start[1]}`);
-      pendingIndex = items.length - 1;
-      continue;
-    }
-
-    const info = line.match(toolInfoPattern);
-    if (info) {
-      if (pendingIndex >= 0) {
-        items[pendingIndex] = `${items[pendingIndex]} | ${info[1]}`;
-      } else {
-        items.push(`Tool info: ${info[1]}`);
-      }
-      continue;
-    }
-
-    const done = line.match(toolDonePattern);
-    if (done) {
-      if (pendingIndex >= 0) {
-        items[pendingIndex] = `${items[pendingIndex]} | done`;
-        pendingIndex = -1;
-      } else {
-        items.push(`Tool done: ${done[1]}`);
-      }
-    }
-  }
-  return items;
-};
-
 const stripToolLog = (content: string): string => {
   if (!content) return '';
   const lines = content
@@ -241,7 +204,6 @@ defineExpose({
             :index="index"
             :copied="!!copiedMap[`assistant-${index}`]"
             :conversationTokenUsage="conversationTokenUsage(index)"
-            :toolLogs="extractToolLog(msg.content)"
             @copy="copyText(buildAssistantCopyText(msg), `assistant-${index}`)"
             @retry="retryFromAssistant"
             @react="setReaction($event.index, $event.value)"
@@ -277,7 +239,6 @@ defineExpose({
                 <MarkdownRenderer :content="props.assistantReasoning || ''" />
               </details>
               <MarkdownRenderer :content="stripToolLog(assistantResponse)" />
-              <ToolLogPanel :items="extractToolLog(assistantResponse)" />
               <span class="inline-block w-1.5 h-[1em] bg-current ml-1 align-middle animate-pulse opacity-70"></span>
             </div>
           </div>

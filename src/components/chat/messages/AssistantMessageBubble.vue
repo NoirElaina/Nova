@@ -1,7 +1,6 @@
 <script setup lang="ts">
 import { Button } from '@/components/ui/button';
 import MarkdownRenderer from '../MarkdownRenderer.vue';
-import ToolLogPanel from './ToolLogPanel.vue';
 import type { ChatMessage } from '../../../lib/chat-types';
 
 defineProps<{
@@ -9,7 +8,6 @@ defineProps<{
   index: number;
   copied: boolean;
   conversationTokenUsage: number;
-  toolLogs: string[];
 }>();
 
 const emit = defineEmits<{
@@ -47,7 +45,6 @@ const emit = defineEmits<{
         <MarkdownRenderer :content="message.reasoning" />
       </details>
       <MarkdownRenderer :content="message.content" />
-      <ToolLogPanel :items="toolLogs" />
       <div class="msg-toolbar">
         <Button variant="ghost" size="icon-sm" class="msg-icon-btn" :class="{ 'is-copied': copied }" aria-label="Copy assistant message" @click="emit('copy', index)">
           <svg v-if="!copied" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>

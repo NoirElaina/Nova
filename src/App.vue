@@ -13,6 +13,8 @@ import ScheduleTaskScreen from "./components/schedule/ScheduleTaskScreen.vue";
 import GlobalToastHost from "./components/layout/GlobalToastHost.vue";
 import { useChatController } from "./features/chat/controllers/useChatController";
 
+type WorkspaceTabId = "diff" | "usage" | "files";
+
 const {
   messages,
   isGenerating,
@@ -52,6 +54,15 @@ const {
 void chatScreenRef;
 
 const isDrawerOpen = ref(false);
+const activeWorkspaceTab = ref<WorkspaceTabId>("diff");
+const activeWorkspaceFileId = ref<string | null>(null);
+
+const openWorkspaceFile = (fileId: string) => {
+  activeWorkspaceTab.value = "files";
+  activeWorkspaceFileId.value = fileId;
+  isDrawerOpen.value = true;
+  void refreshActiveConversationFiles();
+};
 </script>
 
 <template>
@@ -94,6 +105,7 @@ const isDrawerOpen = ref(false);
             :files="conversationFiles"
             :pendingUploads="pendingUploads"
             @open="refreshActiveConversationFiles"
+            @open-workspace-file="openWorkspaceFile"
             @remove-pending-upload="handleRemovePendingUpload"
           />
           <ExecutionTracePopover :entries="toolExecutionLogs" />
@@ -171,9 +183,12 @@ const isDrawerOpen = ref(false);
 
       <WorkspaceDrawer
         v-if="mainView === 'chat'"
-        :open="isDrawerOpen"
-        :entries="toolExecutionLogs"
+          :open="isDrawerOpen"
+          :activeTab="activeWorkspaceTab"
+          :selectedFileId="activeWorkspaceFileId"
+          :entries="toolExecutionLogs"
         :messages="messages"
+        :files="conversationFiles"
         :assistantTurnCost="assistantTurnCost"
         @close="isDrawerOpen = false"
       />

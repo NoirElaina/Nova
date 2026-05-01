@@ -49,6 +49,10 @@ export type RagDocumentMeta = {
   updatedAt: number;
 };
 
+export type RagDocumentContent = RagDocumentMeta & {
+  content: string;
+};
+
 export async function listConversations(): Promise<ConversationMeta[]> {
   const items = await invoke<ConversationMeta[]>("list_conversations");
   return items || [];
@@ -142,6 +146,12 @@ export async function listConversationRagDocuments(
 ): Promise<RagDocumentMeta[]> {
   return invoke<RagDocumentMeta[]>("rag_list_conversation_documents", {
     conversationId,
+  });
+}
+
+export async function readRagDocument(documentId: string): Promise<RagDocumentContent | null> {
+  return invoke<RagDocumentContent | null>("rag_read_document", {
+    documentId,
   });
 }
 

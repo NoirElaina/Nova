@@ -337,6 +337,7 @@ pub fn rag_search_conversation_documents(
     rag_search_documents_with_scope(app, query, limit, Some(normalized_conversation_id))
 }
 
+#[tauri::command]
 pub fn rag_read_document(
     app: AppHandle,
     document_id: String,

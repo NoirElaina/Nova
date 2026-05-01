@@ -1,19 +1,24 @@
 <script setup lang="ts">
-import { ref } from 'vue';
+import { ref, watch } from 'vue';
 import type { ChatMessage, ToolExecutionEntry, TurnCost } from '../../lib/chat-types';
+import type { RagDocumentMeta } from '../../features/chat/services/chat-api';
 import CodeDiffTab from './workspace/CodeDiffTab.vue';
+import FilesTab from './workspace/FilesTab.vue';
 import UsageTab from './workspace/UsageTab.vue';
 
 const emit = defineEmits<{
   (e: 'close'): void;
 }>();
 
-type TabId = 'diff' | 'usage';
+type TabId = 'diff' | 'usage' | 'files';
 
-defineProps<{
+const props = defineProps<{
   open: boolean;
+  activeTab?: TabId;
+  selectedFileId?: string | null;
   entries: ToolExecutionEntry[];
   messages: ChatMessage[];
+  files: RagDocumentMeta[];
   assistantTurnCost?: TurnCost;
 }>();
 
@@ -22,7 +27,18 @@ const activeTab = ref<TabId>('diff');
 const tabs: { id: TabId; label: string }[] = [
   { id: 'diff', label: 'Code Diff' },
   { id: 'usage', label: 'Usage' },
+  { id: 'files', label: 'Files' },
 ];
+
+watch(
+  () => props.activeTab,
+  (tab) => {
+    if (tab) {
+      activeTab.value = tab;
+    }
+  },
+  { immediate: true },
+);
 </script>
 
 <template>
@@ -75,10 +91,16 @@ const tabs: { id: TabId; label: string }[] = [
           />
 
           <UsageTab
-            v-else
+            v-else-if="activeTab === 'usage'"
             :entries="entries"
             :messages="messages"
             :assistantTurnCost="assistantTurnCost"
+          />
+
+          <FilesTab
+            v-else
+            :files="files"
+            :selectedFileId="selectedFileId"
           />
         </div>
       </div>

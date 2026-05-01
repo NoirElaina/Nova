@@ -23,6 +23,7 @@ const props = defineProps<{
 
 const emit = defineEmits<{
   (e: "open"): void;
+  (e: "open-workspace-file", fileId: string): void;
   (e: "remove-pending-upload", index: number): void;
 }>();
 
@@ -126,6 +127,8 @@ onBeforeUnmount(() => {
           v-for="doc in props.files"
           :key="doc.id"
           :file="doc"
+          class="cursor-pointer"
+          @click="emit('open-workspace-file', doc.id)"
         />
       </div>
     </div>

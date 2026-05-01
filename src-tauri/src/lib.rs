@@ -76,6 +76,7 @@ pub fn run() {
             command::rag::rag_get_stats,
             command::rag::rag_list_documents,
             command::rag::rag_list_conversation_documents,
+            command::rag::rag_read_document,
             command::rag::rag_upsert_documents,
             command::rag::rag_upsert_conversation_documents,
             command::rag::rag_remove_document,

@@ -551,8 +551,8 @@ pub async fn send_chat_message(
 			Err(e) => {
 				emit_backend_error(
 					&app,
-					"llm.query.session_rag_context",
-					e,
+					"rag.session_search",
+					format!("会话知识库检索失败，本轮将跳过 RAG 上下文增强：{}", e),
 					Some("build_session_rag_context_message"),
 				);
 			}

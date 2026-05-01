@@ -16,11 +16,9 @@ const TOKEN_OVERHEAD_TOOL_USE: i64 = 20;
 const TOKEN_OVERHEAD_TOOL_RESULT: i64 = 14;
 const TOKEN_OVERHEAD_IMAGE_INPUT: i64 = 512;
 
-// 策略阈值：当前默认上下文窗口较大，自动压缩只在接近高水位时触发。
+// 策略阈值：token 阈值按模型上下文窗口比例动态计算（Micro 40%，Full 62%），不再使用硬编码绝对值。
 const MICRO_COMPACT_MESSAGE_THRESHOLD: usize = 80;
-const MICRO_COMPACT_TOKEN_THRESHOLD: i64 = 80_000;
 const FULL_COMPACT_MESSAGE_THRESHOLD: usize = 140;
-const FULL_COMPACT_TOKEN_THRESHOLD: i64 = 125_000;
 
 // 工具结果体积判断：超过这个阈值时，直接走 Micro 压缩。
 const LARGE_TOOL_RESULT_CHAR_THRESHOLD: usize = 2800;
@@ -35,7 +33,7 @@ const SESSION_RESTORE_MARKER: &str = "[Session Restore Context]";
 const REACTIVE_FULL_COMPACT_RECENT_LIMIT: i64 = 6;
 const REACTIVE_FALLBACK_KEEP_MESSAGES: usize = 8;
 const AUTO_COMPACT_SUMMARY_PREFIX: &str = "[Auto Compact Summary]";
-const CONTEXT_EDIT_TRIGGER_TOKENS: i64 = 100_000;
+// CONTEXT_EDIT 触发阈值按 50% 窗口大小动态计算，不再使用硬编码常量。
 const CONTEXT_EDIT_KEEP_RECENT_TOOL_PAIRS: usize = 3;
 const CONTEXT_EDIT_CLEAR_AT_LEAST_PAIRS: usize = 1;
 const CONTEXT_EDIT_CLEAR_TOOL_INPUTS: bool = false;
@@ -289,9 +287,11 @@ fn collect_clearable_tool_result_ids(messages: &[Message]) -> Vec<String> {
     ids
 }
 
-pub fn apply_tool_result_context_editing(messages: &[Message]) -> ToolResultContextEditingOutcome {
+pub fn apply_tool_result_context_editing(messages: &[Message], window_tokens: i64) -> ToolResultContextEditingOutcome {
     let original_estimated_tokens = estimate_message_tokens(messages);
-    if original_estimated_tokens < CONTEXT_EDIT_TRIGGER_TOKENS {
+    // 触发阈值 = 50% 窗口大小，比例与 decide_compact_strategy 的 Micro 阈值对齐。
+    let context_edit_trigger = (window_tokens * 50) / 100;
+    if original_estimated_tokens < context_edit_trigger {
         return ToolResultContextEditingOutcome {
             messages: messages.to_vec(),
             applied: false,
@@ -453,7 +453,7 @@ fn max_tool_result_text_chars(messages: &[Message]) -> usize {
 
 
 // 根据消息数量、估算 token 数和是否存在超大工具结果文本来决定压缩策略。
-fn decide_compact_strategy(messages: &[Message]) -> CompactDecision {
+fn decide_compact_strategy(messages: &[Message], window_tokens: i64) -> CompactDecision {
     // 估算消息总体 token 与消息数，用于决定压缩等级
     let estimated_tokens = estimate_message_tokens(messages);
     // estimated_tokens: 全部消息的 token 估算值
@@ -463,14 +463,19 @@ fn decide_compact_strategy(messages: &[Message]) -> CompactDecision {
         max_tool_result_text_chars(messages) >= LARGE_TOOL_RESULT_CHAR_THRESHOLD;
     // has_large_tool_result: 是否存在超长的工具结果文本
 
+    // 阈值按窗口大小比例计算，避免硬编码绝对值对不同大小窗口的模型失准。
+    // Micro: 40% 窗口触发轻压缩；Full: 62% 窗口触发全压缩。
+    let micro_token_threshold = (window_tokens * 40) / 100;
+    let full_token_threshold = (window_tokens * 62) / 100;
+
     // 决策逻辑：优先判断 Full，再判断 Micro，否则 None
     let level = if message_count >= FULL_COMPACT_MESSAGE_THRESHOLD
-        || estimated_tokens >= FULL_COMPACT_TOKEN_THRESHOLD
+        || estimated_tokens >= full_token_threshold
     {
         // 满足任一 Full 条件时使用 Full 压缩
         CompactLevel::Full
     } else if message_count >= MICRO_COMPACT_MESSAGE_THRESHOLD
-        || estimated_tokens >= MICRO_COMPACT_TOKEN_THRESHOLD
+        || estimated_tokens >= micro_token_threshold
         || has_large_tool_result
     {
         // 满足任一 Micro 条件时使用 Micro 压缩
@@ -849,8 +854,15 @@ pub async fn compact_messages_for_turn_with_report(
     conversation_id: Option<&str>,
     messages: &[Message],
 ) -> CompactionOutcome {
+    // 从 settings 读取当前模型的上下文窗口大小，用于动态计算压缩阈值。
+    let model = crate::command::settings::get_settings(app.clone())
+        .active_provider_profile()
+        .model;
+    let window_tokens =
+        crate::llm::utils::model_context::get_context_window_tokens(&model) as i64;
+
     // 决策并记录调试信息
-    let decision = decide_compact_strategy(messages);
+    let decision = decide_compact_strategy(messages, window_tokens);
     // 根据决策执行对应的压缩流程
     let level = match decision.level {
         CompactLevel::None => "none",

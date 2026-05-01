@@ -346,3 +346,10 @@ pub fn save_settings(app: AppHandle, settings: AppSettings) -> Result<(), String
     // 写入文件。
     std::fs::write(path, content).map_err(|e| e.to_string())
 }
+
+/// 返回指定模型名对应的上下文窗口大小（token 数）。
+/// 前端在无活跃对话时用此命令初始化 ContextUsageIndicator 的分母。
+#[tauri::command]
+pub fn get_model_window_tokens(model: String) -> u32 {
+    crate::llm::utils::model_context::get_context_window_tokens(&model)
+}

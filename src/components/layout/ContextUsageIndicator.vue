@@ -1,28 +1,60 @@
 <script setup lang="ts">
-import { computed } from 'vue';
+import { computed, ref, watch } from 'vue';
+import { invoke } from '@tauri-apps/api/core';
 import type { ContextUsage } from '../../lib/chat-types';
 
 const props = defineProps<{
   usage?: ContextUsage;
   usedTokens?: number;
+  model?: string;
 }>();
 
-const DEFAULT_WINDOW_TOKENS = 160_000;
+const DEFAULT_WINDOW_TOKENS = 200_000;
+
+// 当没有 usage.windowTokens 时，从后端按模型名查询窗口大小。
+const modelWindowTokens = ref<number>(DEFAULT_WINDOW_TOKENS);
+
+watch(
+  () => props.model,
+  async (model) => {
+    if (!model) return;
+    try {
+      const v = await invoke<number>('get_model_window_tokens', { model });
+      if (v > 0) modelWindowTokens.value = v;
+    } catch {
+      // 查询失败时保留 default，不影响显示
+    }
+  },
+  { immediate: true }
+);
 
 const resolvedUsage = computed<ContextUsage>(() => ({
   usedTokens: Math.max(0, Math.round(props.usage?.usedTokens ?? props.usedTokens ?? 0)),
-  windowTokens: props.usage?.windowTokens ?? DEFAULT_WINDOW_TOKENS,
+  windowTokens: props.usage?.windowTokens ?? modelWindowTokens.value,
   responseReserveTokens: props.usage?.responseReserveTokens ?? 0,
   source: props.usage?.source,
   breakdown: props.usage?.breakdown,
 }));
 
 const usedTokens = computed(() => resolvedUsage.value.usedTokens);
-const windowTokens = computed(() => Math.max(1, Math.round(resolvedUsage.value.windowTokens ?? DEFAULT_WINDOW_TOKENS)));
+const windowTokens = computed(() => Math.max(1, Math.round(resolvedUsage.value.windowTokens ?? modelWindowTokens.value)));
 const responseReserveTokens = computed(() => Math.max(0, Math.round(resolvedUsage.value.responseReserveTokens ?? 0)));
 const usedPercent = computed(() => Math.min(100, Math.round((usedTokens.value / windowTokens.value) * 100)));
 const barPercent = computed(() => Math.min(100, Math.max(0, (usedTokens.value / windowTokens.value) * 100)));
 const reservePercent = computed(() => Math.min(100, Math.max(0, (responseReserveTokens.value / windowTokens.value) * 100)));
+
+const RING_RADIUS = 6.2;
+const RING_CIRCUMFERENCE = 2 * Math.PI * RING_RADIUS; // ≈ 38.96
+const ringOffset = computed(() => {
+  const filled = (barPercent.value / 100) * RING_CIRCUMFERENCE;
+  return RING_CIRCUMFERENCE - filled;
+});
+const ringColor = computed(() => {
+  const p = barPercent.value;
+  if (p >= 90) return 'var(--ring-danger, #d04f2a)';
+  if (p >= 70) return 'var(--ring-warn, #d57956)';
+  return 'currentColor';
+});
 
 const formatTokens = (value: number) => {
   const rounded = Math.max(0, Math.round(value));
@@ -78,7 +110,16 @@ const breakdownRows = computed(() => {
       :aria-label="`上下文已用 ${formatTokens(usedTokens)} 个令牌`"
     >
       <svg class="context-usage-ring" width="18" height="18" viewBox="0 0 18 18" aria-hidden="true">
-        <circle cx="9" cy="9" r="6.2" />
+        <!-- 轨道圆 -->
+        <circle class="ring-track" cx="9" cy="9" r="6.2" />
+        <!-- 进度圆：从顶部 (-90°) 顺时针填充 -->
+        <circle
+          class="ring-progress"
+          cx="9" cy="9" r="6.2"
+          :stroke="ringColor"
+          :stroke-dasharray="RING_CIRCUMFERENCE"
+          :stroke-dashoffset="ringOffset"
+        />
       </svg>
     </button>
 
@@ -150,10 +191,23 @@ const breakdownRows = computed(() => {
 
 .context-usage-ring {
   fill: none;
-  stroke: currentColor;
-  stroke-width: 2.4;
   stroke-linecap: round;
+  /* 让进度从 12 点钟方向开始顺时针填充 */
+  transform: rotate(-90deg);
+  transform-origin: center;
+}
+
+.ring-track {
+  stroke: currentColor;
+  stroke-width: 2;
+  opacity: 0.18;
+}
+
+.ring-progress {
+  stroke-width: 2.4;
   opacity: 0.9;
+  transition: stroke-dashoffset 600ms cubic-bezier(0.4, 0, 0.2, 1),
+              stroke 400ms ease;
 }
 
 .context-usage-popover {

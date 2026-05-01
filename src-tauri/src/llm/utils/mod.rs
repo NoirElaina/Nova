@@ -13,6 +13,10 @@ pub mod permissions;
 // 负责从历史边界提取摘要并生成恢复消息。
 pub mod session_restore;
 
+// 模型上下文窗口与输出 token 查询：从 litellm JSON 数据库按模型名精确/前缀匹配。
+// 提供 get_context_window_tokens / get_max_output_tokens，未命中时返回保守默认值。
+pub mod model_context;
+
 // 上下文组装入口：整合会话恢复与可选扩展上下文。
 pub mod context_assembler;
 

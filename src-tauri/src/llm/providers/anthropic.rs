@@ -171,10 +171,13 @@ impl AnthropicProvider {
         // 仅注入内置工具；MCP 采用 server 级发现，避免每轮发送全部动态工具 schema。
         let available_tools = tools::get_available_tools();
 
+        // 从模型数据库查询最大输出 token 数，找不到时 fallback 到 8192。
+        let max_output_tokens = crate::llm::utils::model_context::get_max_output_tokens(&profile.model);
+
         // 构造 Anthropic 请求体。
         let request = AnthropicRequest {
             model: profile.model.clone(),
-            max_tokens: 4096,
+            max_tokens: max_output_tokens,
             system: Some(load_system_prompt(app, agent_mode)?),
             messages: messages.to_vec(),
             tools: available_tools,

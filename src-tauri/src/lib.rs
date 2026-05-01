@@ -85,7 +85,8 @@ pub fn run() {
             command::skill::delete_skill,
             command::cron::list_scheduled_tasks,
             command::cron::create_scheduled_task,
-            command::cron::delete_scheduled_task
+            command::cron::delete_scheduled_task,
+            command::settings::get_model_window_tokens
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

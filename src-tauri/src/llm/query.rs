@@ -18,7 +18,6 @@ const SESSION_RAG_SEARCH_LIMIT: usize = 5;
 const DIRECT_ATTACHMENT_CONTEXT_LIMIT: usize = 2;
 const DIRECT_ATTACHMENT_SNIPPET_CHARS: usize = 2200;
 const MCP_SERVER_CONTEXT_MARKER: &str = "[MCP Server Catalog]";
-const CONTEXT_WINDOW_TOKENS: u32 = 160_000;
 const RESPONSE_RESERVE_TOKENS: u32 = 8_000;
 
 fn clamp_i64_to_u32(value: i64) -> u32 {
@@ -193,9 +192,14 @@ fn context_usage_breakdown(
 		.saturating_add(tool_results)
 		.saturating_add(other);
 
+	let model = crate::command::settings::get_settings(app.clone())
+		.active_provider_profile()
+		.model;
+	let window_tokens = crate::llm::utils::model_context::get_context_window_tokens(&model);
+
 	serde_json::json!({
 		"usedTokens": used_tokens,
-		"windowTokens": CONTEXT_WINDOW_TOKENS,
+		"windowTokens": window_tokens,
 		"responseReserveTokens": RESPONSE_RESERVE_TOKENS,
 		"source": "estimated",
 		"breakdown": {
@@ -577,7 +581,12 @@ pub async fn send_chat_message(
 			break TurnOutcome::cancelled();
 		}
 
-		let context_editing = compact::apply_tool_result_context_editing(&current_messages);
+		let model = crate::command::settings::get_settings(app.clone())
+			.active_provider_profile()
+			.model;
+		let window_tokens =
+			crate::llm::utils::model_context::get_context_window_tokens(&model) as i64;
+		let context_editing = compact::apply_tool_result_context_editing(&current_messages, window_tokens);
 		if context_editing.applied {
 			emit_context_compact_event(
 				&app,

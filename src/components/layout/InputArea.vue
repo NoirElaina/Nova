@@ -480,7 +480,7 @@ defineExpose({
                 </SelectItem>
               </SelectContent>
             </Select>
-            <ContextUsageIndicator :usage="contextUsage" :usedTokens="contextTokens" />
+            <ContextUsageIndicator :usage="contextUsage" :usedTokens="contextTokens" :model="currentModel" />
           </div>
         </div>
         <button class="w-8 h-8 rounded-full flex items-center justify-center transition-colors shadow-sm"

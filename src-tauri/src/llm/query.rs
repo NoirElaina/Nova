@@ -3,11 +3,9 @@ use tauri::{AppHandle, Emitter};
 use crate::llm::providers::LlmProvider;
 use crate::llm::query_engine::ChatMessageEvent;
 use crate::llm::services::compact;
-use crate::llm::tools;
 use crate::llm::types::{AgentMode, Content, ContentBlock, Message, Role};
 use crate::llm::utils::context_assembler::{self, AssembleOptions};
 use crate::llm::utils::error_event::emit_backend_error;
-use crate::llm::utils::system_prompt::load_system_prompt;
 
 mod state_machine;
 
@@ -60,7 +58,7 @@ fn emit_token_usage_event(
 			tool_use_name: None,
 			tool_use_input: None,
 			tool_result: None,
-			token_usage: output_tokens,
+			token_usage: total_tokens,
 			stop_reason: None,
 			turn_state: Some("usage".into()),
 			conversation_id: conversation_id.map(str::to_string),
@@ -112,104 +110,37 @@ fn emit_context_compact_event(
 	.ok();
 }
 
-fn estimate_text_for_context_usage(text: &str) -> u32 {
-	clamp_i64_to_u32(compact::estimate_tokens_for_messages(&[Message {
-		role: Role::User,
-		content: Content::Text(text.to_string()),
-	}]))
-}
-
-fn estimate_messages_for_context_usage(messages: Vec<Message>) -> u32 {
-	clamp_i64_to_u32(compact::estimate_tokens_for_messages(&messages))
-}
-
-fn message_is_uncategorized_context(message: &Message) -> bool {
-	let text = text_from_content(&message.content);
-	text.contains(SESSION_RAG_CONTEXT_MARKER)
-		|| text.contains(MCP_SERVER_CONTEXT_MARKER)
-		|| text.contains("[Session Restore Context]")
-		|| text.contains("[Auto Compact Summary]")
-}
-
-fn context_usage_breakdown(
+fn emit_context_usage_event(
 	app: &AppHandle,
-	agent_mode: AgentMode,
-	current_messages: &[Message],
-) -> serde_json::Value {
-	let system_instructions = load_system_prompt(app, agent_mode)
-		.map(|prompt| estimate_text_for_context_usage(&prompt))
-		.unwrap_or(0);
-	let tool_definitions = serde_json::to_string(&tools::get_available_tools())
-		.map(|tools_json| estimate_text_for_context_usage(&tools_json))
-		.unwrap_or(0);
-
-	let mut message_estimate_inputs = Vec::new();
-	let mut tool_result_estimate_inputs = Vec::new();
-	let mut other_estimate_inputs = Vec::new();
-
-	for message in current_messages {
-		if message_is_uncategorized_context(message) {
-			other_estimate_inputs.push(message.clone());
-			continue;
-		}
-
-		match &message.content {
-			Content::Text(_) => message_estimate_inputs.push(message.clone()),
-			Content::Blocks(blocks) => {
-				let mut normal_blocks = Vec::new();
-				let mut tool_result_blocks = Vec::new();
-
-				for block in blocks {
-					if matches!(block, ContentBlock::ToolResult { .. }) {
-						tool_result_blocks.push(block.clone());
-					} else {
-						normal_blocks.push(block.clone());
-					}
-				}
-
-				if !normal_blocks.is_empty() {
-					message_estimate_inputs.push(Message {
-						role: message.role.clone(),
-						content: Content::Blocks(normal_blocks),
-					});
-				}
-				if !tool_result_blocks.is_empty() {
-					tool_result_estimate_inputs.push(Message {
-						role: message.role.clone(),
-						content: Content::Blocks(tool_result_blocks),
-					});
-				}
-			}
-		}
-	}
-
-	let messages = estimate_messages_for_context_usage(message_estimate_inputs);
-	let tool_results = estimate_messages_for_context_usage(tool_result_estimate_inputs);
-	let other = estimate_messages_for_context_usage(other_estimate_inputs);
-	let used_tokens = system_instructions
-		.saturating_add(tool_definitions)
-		.saturating_add(messages)
-		.saturating_add(tool_results)
-		.saturating_add(other);
-
-	let model = crate::command::settings::get_settings(app.clone())
-		.active_provider_profile()
-		.model;
-	let window_tokens = crate::llm::utils::model_context::get_context_window_tokens(&model);
-
-	serde_json::json!({
-		"usedTokens": used_tokens,
-		"windowTokens": window_tokens,
-		"responseReserveTokens": RESPONSE_RESERVE_TOKENS,
-		"source": "estimated",
-		"breakdown": {
-			"systemInstructions": system_instructions,
-			"toolDefinitions": tool_definitions,
-			"messages": messages,
-			"toolResults": tool_results,
-			"other": other,
+	conversation_id: Option<&str>,
+	used_tokens: u32,
+	window_tokens: u32,
+	source: &str,
+) {
+	app.emit(
+		"chat-stream",
+		ChatMessageEvent {
+			r#type: "context-usage".into(),
+			text: Some(
+				serde_json::json!({
+					"usedTokens": used_tokens,
+					"windowTokens": window_tokens,
+					"responseReserveTokens": RESPONSE_RESERVE_TOKENS,
+					"source": source,
+				})
+				.to_string(),
+			),
+			tool_use_id: None,
+			tool_use_name: None,
+			tool_use_input: None,
+			tool_result: None,
+			token_usage: None,
+			stop_reason: None,
+			turn_state: Some("usage".into()),
+			conversation_id: conversation_id.map(str::to_string),
 		},
-	})
+	)
+	.ok();
 }
 
 fn text_from_content(content: &Content) -> String {
@@ -615,24 +546,13 @@ pub async fn send_chat_message(
 
 		let request_input_estimate =
 			clamp_i64_to_u32(compact::estimate_tokens_for_messages(&current_messages));
-		app.emit(
-			"chat-stream",
-			ChatMessageEvent {
-				r#type: "context-usage".into(),
-				text: Some(
-					context_usage_breakdown(&app, agent_mode, &current_messages).to_string(),
-				),
-				tool_use_id: None,
-				tool_use_name: None,
-				tool_use_input: None,
-				tool_result: None,
-				token_usage: None,
-				stop_reason: None,
-				turn_state: Some("usage".into()),
-				conversation_id: conversation_id.clone(),
-			},
-		)
-		.ok();
+		emit_context_usage_event(
+			&app,
+			conversation_id.as_deref(),
+			request_input_estimate,
+			window_tokens as u32,
+			"estimated",
+		);
 
 		// 发起 provider 请求并等待结果。
 		let provider_result = match provider
@@ -733,6 +653,17 @@ pub async fn send_chat_message(
 			provider_result.output_tokens,
 			input_token_source,
 		);
+
+		// 若 provider 返回了实际 input_tokens，用真实值刷新上下文用量显示。
+		if let Some(actual_input) = provider_result.input_tokens {
+			emit_context_usage_event(
+				&app,
+				conversation_id.as_deref(),
+				actual_input,
+				window_tokens as u32,
+				"actual",
+			);
+		}
 
 		// 本轮 provider 输出合并到 current_messages 以支持工具环回。
 		// 取出本轮新增消息。

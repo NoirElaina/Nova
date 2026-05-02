@@ -33,7 +33,6 @@ const resolvedUsage = computed<ContextUsage>(() => ({
   windowTokens: props.usage?.windowTokens ?? modelWindowTokens.value,
   responseReserveTokens: props.usage?.responseReserveTokens ?? 0,
   source: props.usage?.source,
-  breakdown: props.usage?.breakdown,
 }));
 
 const usedTokens = computed(() => resolvedUsage.value.usedTokens);
@@ -67,39 +66,6 @@ const formatTokens = (value: number) => {
   return String(rounded);
 };
 
-const percentOfWindow = (value?: number) => {
-  if (!value || value <= 0) {
-    return '0%';
-  }
-  const percent = (value / windowTokens.value) * 100;
-  return `${percent < 0.1 ? '<0.1' : percent.toFixed(1)}%`;
-};
-
-const breakdownRows = computed(() => {
-  const breakdown = resolvedUsage.value.breakdown ?? {};
-  return [
-    {
-      section: 'System',
-      rows: [
-        { label: 'System Instructions', value: breakdown.systemInstructions ?? 0 },
-        { label: 'Tool Definitions', value: breakdown.toolDefinitions ?? 0 },
-      ],
-    },
-    {
-      section: 'User Context',
-      rows: [
-        { label: 'Messages', value: breakdown.messages ?? 0 },
-        { label: 'Tool Results', value: breakdown.toolResults ?? 0 },
-      ],
-    },
-    {
-      section: '未分类',
-      rows: [
-        { label: '其他', value: breakdown.other ?? 0 },
-      ],
-    },
-  ];
-});
 </script>
 
 <template>
@@ -140,14 +106,6 @@ const breakdownRows = computed(() => {
       <div class="reserve-row">
         <span class="reserve-mark"></span>
         <span>保留用于响应</span>
-      </div>
-
-      <div v-for="group in breakdownRows" :key="group.section" class="context-section">
-        <div class="context-section-title">{{ group.section }}</div>
-        <div v-for="row in group.rows" :key="row.label" class="context-row">
-          <span>{{ row.label }}</span>
-          <span>{{ percentOfWindow(row.value) }}</span>
-        </div>
       </div>
 
       <button type="button" class="compact-button">
@@ -318,32 +276,6 @@ const breakdownRows = computed(() => {
   );
 }
 
-.context-section {
-  margin-top: 12px;
-}
-
-.context-section-title {
-  margin-bottom: 6px;
-  color: #8c8376;
-  font-size: 11px;
-  font-weight: 700;
-}
-
-.context-row {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  margin-top: 5px;
-  color: #574f44;
-  font-size: 12px;
-  line-height: 1.25;
-}
-
-.context-row span:last-child {
-  color: #9b9286;
-  font-variant-numeric: tabular-nums;
-}
-
 .compact-button {
   width: 100%;
   margin-top: 12px;
@@ -374,14 +306,11 @@ const breakdownRows = computed(() => {
 }
 
 .dark .context-title,
-.dark .context-summary,
-.dark .context-row {
+.dark .context-summary {
   color: #ddd5c7;
 }
 
-.dark .context-section-title,
-.dark .reserve-row,
-.dark .context-row span:last-child {
+.dark .reserve-row {
   color: #a79f92;
 }
 

@@ -179,7 +179,10 @@ const streamingTokenUsage = (): number => {
 };
 
 const streamingConversationTokenUsage = (): number => {
-  const base = props.messages.reduce((sum, m) => sum + (m.tokenUsage ?? 0), 0);
+  const base = props.messages.reduce((sum, m) => {
+    const costTotal = (m.cost?.inputTokens ?? 0) + (m.cost?.outputTokens ?? 0);
+    return sum + (costTotal > 0 ? costTotal : (m.tokenUsage ?? 0));
+  }, 0);
   return base + streamingTokenUsage();
 };
 

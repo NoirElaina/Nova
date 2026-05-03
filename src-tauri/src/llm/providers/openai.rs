@@ -514,6 +514,16 @@ impl OpenAiProvider {
                             tool_call_id: None,
                         });
                     } else {
+                        // 必须先回灌 tool 角色消息（OpenAI 要求 tool_result 紧跟在 assistant 的 tool_calls 之后）。
+                        for (tid, tr_text) in tool_results {
+                            oai_messages.push(OpenAiMessage {
+                                role: "tool".into(),
+                                content: Some(Value::String(tr_text)),
+                                tool_calls: None,
+                                tool_call_id: Some(tid),
+                            });
+                        }
+
                         // User message might contain text/image/tool results.
                         if !image_parts.is_empty() {
                             let mut user_content_parts = Vec::new();
@@ -536,16 +546,6 @@ impl OpenAiProvider {
                                 content: Some(Value::String(text_parts.join("\n"))),
                                 tool_calls: None,
                                 tool_call_id: None,
-                            });
-                        }
-                        
-                        // tool 角色消息用于回灌工具结果。
-                        for (tid, tr_text) in tool_results {
-                            oai_messages.push(OpenAiMessage {
-                                role: "tool".into(),
-                                content: Some(Value::String(tr_text)),
-                                tool_calls: None,
-                                tool_call_id: Some(tid),
                             });
                         }
                     }

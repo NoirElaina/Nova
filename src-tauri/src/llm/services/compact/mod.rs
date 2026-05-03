@@ -16,12 +16,11 @@ const TOKEN_OVERHEAD_TOOL_USE: i64 = 20;
 const TOKEN_OVERHEAD_TOOL_RESULT: i64 = 14;
 const TOKEN_OVERHEAD_IMAGE_INPUT: i64 = 512;
 
-// 策略阈值：token 阈值按模型上下文窗口比例动态计算（Micro 40%，Full 62%），不再使用硬编码绝对值。
-const MICRO_COMPACT_MESSAGE_THRESHOLD: usize = 80;
-const FULL_COMPACT_MESSAGE_THRESHOLD: usize = 140;
-
-// 工具结果体积判断：超过这个阈值时，直接走 Micro 压缩。
-const LARGE_TOOL_RESULT_CHAR_THRESHOLD: usize = 2800;
+// 策略阈值：完全按 token 比例触发（对标 Claude Code 的 autoCompact 策略）。
+// 不再使用消息条数或工具结果字符数等硬编码阈值。
+// Micro: 80% 窗口时做本地工具结果截断（不调用模型）
+// Full: (窗口 - BUFFER) 时做模型摘要压缩（对标 Claude Code 的 windowSize - 13k）
+const FULL_COMPACT_BUFFER_TOKENS: i64 = 13_000;
 
 // 截断值：在 tool_result 里保持头尾信息, 避免 payload 过长。
 const TOOL_RESULT_TEXT_TRUNCATE_LIMIT: usize = 1200;
@@ -423,65 +422,25 @@ pub fn estimate_tokens_for_messages(messages: &[Message]) -> i64 {
     estimate_message_tokens(messages)
 }
 
-fn max_tool_result_text_chars(messages: &[Message]) -> usize {
-    // 计算 messages 中所有 ToolResult 内文本块的最大字符数
-    messages
-        .iter()
-        // 只关注 Content::Blocks 类型消息，丢弃纯文本消息
-        .filter_map(|m| match &m.content {
-            Content::Blocks(blocks) => Some(blocks),
-            Content::Text(_) => None,
-        })
-        // 将消息的块集合扁平化为单个块序列
-        .flat_map(|blocks| blocks.iter())
-        // 仅保留 ToolResult 块，提取其内部 content（嵌套块数组）
-        .filter_map(|b| match b {
-            ContentBlock::ToolResult { content, .. } => Some(content),
-            _ => None,
-        })
-        // 展开每个 ToolResult 的内部块序列
-        .flat_map(|content| content.iter())
-        // 仅统计内部的 Text 块的字符数
-        .filter_map(|inner| match inner {
-            ContentBlock::Text { text } => Some(text.chars().count()),
-            _ => None,
-        })
-        // 取得最大字符数，若无任何文本块则返回 0
-        .max()
-        .unwrap_or(0)
-}
 
 
 // 根据消息数量、估算 token 数和是否存在超大工具结果文本来决定压缩策略。
 fn decide_compact_strategy(messages: &[Message], window_tokens: i64) -> CompactDecision {
-    // 估算消息总体 token 与消息数，用于决定压缩等级
+    // 估算消息总体 token，纯粹基于 token 用量决定压缩等级。
+    // 对标 Claude Code 策略：不使用消息条数或工具结果字符数等辅助条件。
     let estimated_tokens = estimate_message_tokens(messages);
-    // estimated_tokens: 全部消息的 token 估算值
-    let message_count = messages.len();
-    // message_count: 当前消息数量
-    let has_large_tool_result =
-        max_tool_result_text_chars(messages) >= LARGE_TOOL_RESULT_CHAR_THRESHOLD;
-    // has_large_tool_result: 是否存在超长的工具结果文本
 
-    // 阈值按窗口大小比例计算，避免硬编码绝对值对不同大小窗口的模型失准。
-    // Micro: 40% 窗口触发轻压缩；Full: 62% 窗口触发全压缩。
-    let micro_token_threshold = (window_tokens * 40) / 100;
-    let full_token_threshold = (window_tokens * 62) / 100;
+    // Micro: 80% 窗口触发本地工具结果截断（不调用模型）
+    // Full: (窗口 - 13k buffer) 触发模型摘要压缩
+    let micro_token_threshold = (window_tokens * 80) / 100;
+    let full_token_threshold = window_tokens - FULL_COMPACT_BUFFER_TOKENS;
 
     // 决策逻辑：优先判断 Full，再判断 Micro，否则 None
-    let level = if message_count >= FULL_COMPACT_MESSAGE_THRESHOLD
-        || estimated_tokens >= full_token_threshold
-    {
-        // 满足任一 Full 条件时使用 Full 压缩
+    let level = if estimated_tokens >= full_token_threshold {
         CompactLevel::Full
-    } else if message_count >= MICRO_COMPACT_MESSAGE_THRESHOLD
-        || estimated_tokens >= micro_token_threshold
-        || has_large_tool_result
-    {
-        // 满足任一 Micro 条件时使用 Micro 压缩
+    } else if estimated_tokens >= micro_token_threshold {
         CompactLevel::Micro
     } else {
-        // 否则不压缩
         CompactLevel::None
     };
 

@@ -540,11 +540,13 @@ export function createChatStreamOperations(deps: StreamOpsDeps) {
             : 0;
 
       if (nextInputTokens > 0) {
-        state.currentInputTokens += nextInputTokens;
-        state.currentContextTokens = state.currentInputTokens;
+        // inputTokens 是每轮请求的完整 prompt token 数（非增量），
+        // 取最新一轮的值而非累加，避免多轮工具调用后 token 数成倍膨胀。
+        state.currentInputTokens = nextInputTokens;
+        state.currentContextTokens = nextInputTokens;
         state.currentContextUsage = {
-          ...(state.currentContextUsage ?? { usedTokens: state.currentInputTokens }),
-          usedTokens: state.currentInputTokens,
+          ...(state.currentContextUsage ?? { usedTokens: nextInputTokens }),
+          usedTokens: nextInputTokens,
           source: "actual",
         };
       }

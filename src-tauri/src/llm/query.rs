@@ -684,6 +684,37 @@ pub async fn send_chat_message(
 
 		// provider 主动报告取消时，统一收敛为 cancelled。
 		if provider_result.stop_reason.as_deref() == Some("cancelled") {
+			// 1. 保留模型说到一半的半截话，避免上下文丢失。
+			current_messages.extend(provider_result.messages.clone());
+
+			// 2. 查找并闭合这半截话里所有未完成的 tool_use，防止 API 语法校验报错。
+			let mut user_blocks = Vec::new();
+			for msg in &provider_result.messages {
+				if let Content::Blocks(blocks) = &msg.content {
+					for block in blocks {
+						if let ContentBlock::ToolUse { id, .. } = block {
+							user_blocks.push(ContentBlock::ToolResult {
+								tool_use_id: id.clone(),
+								is_error: false,
+								content: vec![ContentBlock::Text {
+									text: "Interrupted by user".to_string(),
+								}],
+							});
+						}
+					}
+				}
+			}
+
+			// 3. 追加中断标记，确保模型在下一轮明确知道这是被用户主动打断的。
+			user_blocks.push(ContentBlock::Text {
+				text: "[Request interrupted by user]".to_string(),
+			});
+
+			current_messages.push(Message {
+				role: Role::User,
+				content: Content::Blocks(user_blocks),
+			});
+
 			break TurnOutcome::cancelled();
 		}
 

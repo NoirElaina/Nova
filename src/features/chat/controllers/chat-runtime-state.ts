@@ -8,12 +8,7 @@ import type {
 import type { ConversationTurnRuntimeState } from "./chat-controller-types";
 
 function cloneContextUsage(usage: ContextUsage | undefined): ContextUsage | undefined {
-  return usage
-    ? {
-        ...usage,
-        breakdown: usage.breakdown ? { ...usage.breakdown } : undefined,
-      }
-    : undefined;
+  return usage ? { ...usage } : undefined;
 }
 
 export type ActiveRuntimeRefs = {

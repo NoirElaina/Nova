@@ -67,7 +67,7 @@ pub enum ContentBlock {
     // 图片输入块（用于多模态请求）。
     #[serde(rename = "image")]
     Image { source: ImageSource },
-    
+
     // 模型发起的工具调用请求。
     // id/name/input 对应 provider 的 tool_use 事件。
     #[serde(rename = "tool_use")]
@@ -76,7 +76,7 @@ pub enum ContentBlock {
         name: String,
         input: Value,
     },
-    
+
     // 工具执行后的结果回填。
     // tool_use_id 对应 ToolUse 的 id，用于将结果与调用关联。
     #[serde(rename = "tool_result")]
@@ -147,27 +147,33 @@ pub enum StreamEvent {
     // 一条新消息开始，包含 message 元数据。
     #[serde(rename = "message_start")]
     MessageStart { message: AnthropicResponse },
-    
+
     // 一个内容块开始（可能是 text 或 tool_use）。
     #[serde(rename = "content_block_start")]
-    ContentBlockStart { index: usize, content_block: StreamContentBlock },
-    
+    ContentBlockStart {
+        index: usize,
+        content_block: StreamContentBlock,
+    },
+
     // 内容块增量（text_delta / input_json_delta）。
     #[serde(rename = "content_block_delta")]
     ContentBlockDelta { index: usize, delta: StreamDelta },
-    
+
     // 内容块结束。
     #[serde(rename = "content_block_stop")]
     ContentBlockStop { index: usize },
-    
+
     // 消息级增量（例如 stop_reason 更新、usage 更新）。
     #[serde(rename = "message_delta")]
-    MessageDelta { delta: MessageDelta, usage: StreamUsage },
-    
+    MessageDelta {
+        delta: MessageDelta,
+        usage: StreamUsage,
+    },
+
     // 消息结束。
     #[serde(rename = "message_stop")]
     MessageStop,
-    
+
     // 保活事件。
     #[serde(rename = "ping")]
     Ping,
@@ -182,7 +188,11 @@ pub enum StreamContentBlock {
     #[serde(rename = "thinking")]
     Thinking { thinking: String },
     #[serde(rename = "tool_use")]
-    ToolUse { id: String, name: String, input: Value },
+    ToolUse {
+        id: String,
+        name: String,
+        input: Value,
+    },
 }
 
 // content_block_delta 的增量类型。

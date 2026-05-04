@@ -66,6 +66,7 @@ impl CompactionOutcome {
     }
 }
 
+#[derive(Debug)]
 pub struct ToolResultContextEditingOutcome {
     pub messages: Vec<Message>,
     pub applied: bool,

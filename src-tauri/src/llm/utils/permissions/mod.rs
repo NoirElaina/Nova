@@ -6,7 +6,6 @@ use serde_json::{json, Value};
 use tauri::AppHandle;
 use tokio::sync::oneshot;
 
-use crate::llm::types::Message;
 use crate::llm::tools::ToolPermissionDescriptor;
 
 // Command fragments considered destructive enough to always be gated.
@@ -591,25 +590,6 @@ fn apply_decision(
     notify_permission_waiter(request_id, action);
 
     true
-}
-
-pub fn consume_user_permission_decisions(
-    conversation_id: Option<&str>,
-    _messages: &[Message],
-) -> usize {
-    let mut guard = match permission_state().lock() {
-        Ok(g) => g,
-        Err(_) => return 0,
-    };
-    // guard: permission_state 的锁保护引用。
-
-    let state = conversation_state_mut(&mut guard, conversation_id);
-    // state: 当前会话的权限状态。
-    prune_expired_pending(state);
-    prune_resolved_decisions(state);
-
-    // 审批决策只接受 submit_permission_decision 的显式动作值，不再从聊天文本兜底提取。
-    0
 }
 
 pub fn submit_permission_decision(

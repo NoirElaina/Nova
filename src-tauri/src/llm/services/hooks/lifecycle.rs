@@ -13,6 +13,8 @@ const SUBAGENT_STOP_HOOK_CONTEXT_KEY: &str = "NOVA_SUBAGENT_STOP_HOOK_CONTEXT";
 const SESSION_END_HOOK_CONTEXT_KEY: &str = "NOVA_SESSION_END_HOOK_CONTEXT";
 const ERROR_HOOK_CONTEXT_KEY: &str = "NOVA_ERROR_HOOK_CONTEXT";
 
+
+// 如果配置里存在某个 key，就把对应内容包装成一条上下文消息，追加到结果里
 fn append_context_hook_message(out: &mut HookOutcome, config: &HookConfig, key: &str, prefix: &str) {
     if let Some(extra) = config.value(key) {
         out.additional_messages.push(context_message(prefix, extra));

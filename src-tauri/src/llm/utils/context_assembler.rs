@@ -140,24 +140,42 @@ fn has_global_memory_marker(messages: &[Message]) -> bool {
     })
 }
 
-// 组装本轮上下文：
-// 1) 以传入消息为基础
-// 2) 视配置插入会话恢复消息（幂等）
-// 3) 视配置附加组装器自定义上下文
+// 组装本轮发给模型前的临时上下文；query 每轮都会调用这个函数。
+//
+// `incoming` 已经由 query 层决定来源：
+// - 有 turn snapshot 时：snapshot + 本轮新增输入。
+// - 首轮无 snapshot 时：前端当前输入。
+//
+// 本函数只做请求前的临时注入，不负责保存历史：
+// 1) 在最前面插入全局记忆 `[Global Memory]`，让模型看到跨会话偏好/规则/事实。
+// 2) 当调用方显式允许 `include_session_restore` 时，才尝试插入 `[Session Restore Context]`。
+//    当前正常 agent 流默认关闭它，只信任 turn snapshot，避免用摘要恢复污染模型上下文。
+// 3) 可选追加环境上下文 `[AssemblerContext]`，默认关闭。
+//
+// 所有注入都通过 marker 做幂等检查，避免同一轮重复塞入相同类别的上下文。
 pub async fn assemble_messages_for_turn(
     app: &AppHandle,
     conversation_id: Option<&str>,
     incoming: &[Message],
     options: AssembleOptions,
 ) -> Vec<Message> {
+    // 从 query 层传入的基础上下文开始；后面只做本轮请求的临时追加/前置。
     let mut assembled = incoming.to_vec();
 
+    // 全局记忆是跨会话的偏好/规则/事实。
+    // 插到最前面，让它在本轮上下文里更像高优先级背景；如果已经存在 marker 就不重复插入。
+    // 这个函数每轮都会跑，但只有当全局记忆功能有内容时才会实际插入消息；即使插入了消息，模型看到的也是带有全局记忆标记的文本，不会直接暴露底层数据结构。
     if !has_global_memory_marker(&assembled) {
         if let Some(global_msg) = global_memory_message(app, incoming).await {
             assembled.insert(0, global_msg);
         }
     }
 
+    // 会话恢复上下文来自 compact/resume 记录。
+    // 这个函数每轮都会跑，但只有调用方打开 include_session_restore 时才会进入此分支。
+    // 当前正常 agent 流默认关闭它；保留该分支仅供显式恢复/调试入口复用。
+    // 同样用 marker 防止重复注入。
+    // 暂时不使用
     if options.include_session_restore
         && !has_session_restore_marker(&assembled)
         && conversation_id.is_some()
@@ -173,11 +191,17 @@ pub async fn assemble_messages_for_turn(
         }
     }
 
+    // 调试/实验用的额外环境上下文，主流程默认关闭。
+    // 追加到尾部，避免盖过真实历史和记忆。
     if options.include_env_contexts {
         if let Some(msg) = env_context_message() {
             assembled.push(msg);
         }
     }
-
+    println!("Assembled messages for turn ({} messages):", assembled.len());
+    for (idx, msg) in assembled.iter().enumerate() {
+        println!("  {}. [{:?}] {}", idx + 1, msg.role, text_from_content(&msg.content));
+    }
+    // 返回的是本轮模型请求候选上下文；是否 compact、是否保存 snapshot 由 query 层处理。
     assembled
 }

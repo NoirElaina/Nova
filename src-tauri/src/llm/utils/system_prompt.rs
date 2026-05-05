@@ -2,6 +2,7 @@ use std::path::PathBuf;
 
 use tauri::{AppHandle, Manager};
 
+use crate::llm::tools::skill_tool::list_skill_summaries_with_app;
 use crate::llm::types::AgentMode;
 
 // 系统提示文件名（相对工程目录 src/prompt）
@@ -87,6 +88,22 @@ pub fn load_system_prompt(app: &AppHandle, agent_mode: AgentMode) -> Result<Stri
     let prompt = prompt.replace("{{NOVA_WORKSPACE}}", &ws.display().to_string());
 
     let prompt_with_memory = format!("{}{}", prompt, GLOBAL_MEMORY_SECTION);
+
+    // 注入可用 skill 元数据，AI 无需先 list 即可直接 run。
+    let prompt_with_memory = match list_skill_summaries_with_app(app) {
+        Ok(skills) if !skills.is_empty() => {
+            let lines: String = skills
+                .iter()
+                .map(|s| format!("- **{}**: {}", s.name, s.description))
+                .collect::<Vec<String>>()
+                .join("\n");
+            format!(
+                "{}\n\n## Available Skills\n{}\n",
+                prompt_with_memory, lines
+            )
+        }
+        _ => prompt_with_memory,
+    };
 
     // 按执行模式拼接附加段。
     match agent_mode {

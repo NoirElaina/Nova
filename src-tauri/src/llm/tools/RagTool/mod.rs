@@ -30,10 +30,11 @@ pub fn tool() -> Tool {
             "properties": {
                 "action": {
                     "type": "string",
-                    "enum": ["stats", "search", "read"]
+                    "enum": ["stats", "search", "read", "fetch"]
                 },
-                "query": { "type": "string" },
-                "document_id": { "type": "string" },
+                "query": { "type": "string", "description": "Used by 'search': keyword query terms." },
+                "document_id": { "type": "string", "description": "Used by 'read': group_id returned by search." },
+                "source_name": { "type": "string", "description": "Used by 'fetch': exact file name. Returns full document text in one step." },
                 "limit": { "type": "integer" }
             },
             "required": ["action"]
@@ -153,9 +154,68 @@ pub async fn execute_with_app(
                 Err(e) => json!({ "ok": false, "error": e }).to_string(),
             }
         }
+        "fetch" => {
+            let Some(source_name) = input
+                .get("source_name")
+                .and_then(|v| v.as_str())
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+            else {
+                return json!({
+                    "ok": false,
+                    "error": "rag_tool fetch requires non-empty 'source_name'"
+                })
+                .to_string();
+            };
+
+            let docs = if let Some(scope_id) = conversation_id
+                .as_deref()
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+            {
+                crate::command::rag::rag_list_conversation_documents(
+                    app.clone(),
+                    scope_id.to_string(),
+                )
+            } else {
+                crate::command::rag::rag_list_documents(app.clone())
+            };
+
+            let docs = match docs {
+                Ok(d) => d,
+                Err(e) => return json!({ "ok": false, "error": e }).to_string(),
+            };
+
+            let Some(meta) = docs.iter().find(|d| d.source_name == source_name) else {
+                return json!({
+                    "ok": true,
+                    "action": "fetch",
+                    "retrieval_status": "not_found",
+                    "document": Value::Null
+                })
+                .to_string();
+            };
+
+            match crate::command::rag::rag_read_document(app.clone(), meta.id.clone()) {
+                Ok(Some(document)) => json!({
+                    "ok": true,
+                    "action": "fetch",
+                    "document": document
+                })
+                .to_string(),
+                Ok(None) => json!({
+                    "ok": true,
+                    "action": "fetch",
+                    "retrieval_status": "not_found",
+                    "document": Value::Null
+                })
+                .to_string(),
+                Err(e) => json!({ "ok": false, "error": e }).to_string(),
+            }
+        }
         _ => json!({
             "ok": false,
-            "error": "rag_tool action must be one of: stats, search, read"
+            "error": "rag_tool action must be one of: stats, search, read, fetch"
         })
         .to_string(),
     }

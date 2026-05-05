@@ -51,7 +51,7 @@ use std::io::Write as IoWrite;
 use tauri::{AppHandle, Manager};
 
 /// 设为 false 可全局关闭 turn_log 日志输出。
-const TURN_LOG_ENABLED: bool = false;
+const TURN_LOG_ENABLED: bool = true;
 
 fn log_path(app: &AppHandle, conversation_id: Option<&str>) -> Option<std::path::PathBuf> {
 	let base = app.path().app_data_dir().ok()?;

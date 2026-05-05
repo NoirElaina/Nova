@@ -430,7 +430,7 @@ fn rag_search_documents_with_scope(
     Ok(scored
         .into_iter()
         .map(|(score, doc)| RagSearchHit {
-            id: doc.id.clone(),
+            id: doc.group_id.clone(),
             source_name: doc.source_name.clone(),
             source_type: doc.source_type.clone(),
             mime_type: doc.mime_type.clone(),

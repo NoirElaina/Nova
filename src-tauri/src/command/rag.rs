@@ -1,12 +1,14 @@
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::path::PathBuf;
 use tauri::{AppHandle, Manager};
 use uuid::Uuid;
 
-const RAG_STORE_VERSION: u32 = 1;
+const RAG_STORE_VERSION: u32 = 2;
 const MAX_DOCUMENT_CHARS: usize = 200_000;
 const MAX_BATCH_SIZE: usize = 200;
+const CHUNK_SIZE: usize = 800;
 
 fn default_store_version() -> u32 {
     RAG_STORE_VERSION
@@ -35,6 +37,13 @@ struct RagDocument {
     pub checksum: String,
     pub created_at: i64,
     pub updated_at: i64,
+    /// All chunks from the same source document share this value (= fnv1a_64 of full content).
+    /// Pre-v2 records: set to id in load_store fixup.
+    #[serde(default)]
+    pub group_id: String,
+    /// 0-based position of this chunk within its group.
+    #[serde(default)]
+    pub chunk_index: u32,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -145,6 +154,12 @@ fn load_store(app: &AppHandle) -> Result<RagStore, String> {
     if store.version == 0 {
         store.version = RAG_STORE_VERSION;
     }
+    // Migrate pre-v2 records: set group_id = id if empty (legacy single-chunk documents)
+    for doc in &mut store.documents {
+        if doc.group_id.is_empty() {
+            doc.group_id = doc.id.clone();
+        }
+    }
     Ok(store)
 }
 
@@ -222,11 +237,81 @@ fn fnv1a_64_hex(input: &str) -> String {
     format!("{:016x}", hash)
 }
 
+fn split_into_chunks(content: &str) -> Vec<String> {
+    let chars: Vec<char> = content.chars().collect();
+    let total = chars.len();
+    if total <= CHUNK_SIZE {
+        return vec![content.to_string()];
+    }
+
+    let mut chunks = Vec::new();
+    let mut start = 0usize;
+    while start < total {
+        let end = (start + CHUNK_SIZE).min(total);
+        let break_at = if end < total {
+            let mut bp = end;
+            while bp > start && !chars[bp - 1].is_whitespace() {
+                bp -= 1;
+            }
+            if bp > start { bp } else { end }
+        } else {
+            end
+        };
+        let chunk: String = chars[start..break_at].iter().collect();
+        let trimmed = chunk.trim().to_string();
+        if !trimmed.is_empty() {
+            chunks.push(trimmed);
+        }
+        start = break_at;
+        while start < total && chars[start].is_whitespace() {
+            start += 1;
+        }
+    }
+    if chunks.is_empty() {
+        chunks.push(content.to_string());
+    }
+    chunks
+}
+
+fn group_chunks_by_source(docs: &[RagDocument]) -> Vec<RagDocumentMeta> {
+    let mut by_group: HashMap<&str, Vec<&RagDocument>> = HashMap::new();
+    for doc in docs {
+        by_group.entry(doc.group_id.as_str()).or_default().push(doc);
+    }
+    let mut metas = Vec::with_capacity(by_group.len());
+    for (group_id, mut chunks) in by_group {
+        chunks.sort_by_key(|c| c.chunk_index);
+        let first = chunks[0];
+        let total_chars: usize = chunks.iter().map(|c| c.content_chars).sum();
+        let created_at = chunks.iter().map(|c| c.created_at).min().unwrap_or(0);
+        let updated_at = chunks.iter().map(|c| c.updated_at).max().unwrap_or(0);
+        metas.push(RagDocumentMeta {
+            id: group_id.to_string(),
+            source_name: first.source_name.clone(),
+            source_type: first.source_type.clone(),
+            mime_type: first.mime_type.clone(),
+            content_chars: total_chars,
+            preview: preview_text(&first.content),
+            checksum: first.checksum.clone(),
+            created_at,
+            updated_at,
+        });
+    }
+    metas
+}
+
 fn calculate_stats(docs: &[RagDocument]) -> RagStats {
     let total_chars = docs.iter().map(|d| d.content_chars).sum::<usize>();
     let last_updated_at = docs.iter().map(|d| d.updated_at).max();
+    let document_count = {
+        let mut seen = std::collections::HashSet::new();
+        for doc in docs {
+            seen.insert(doc.group_id.as_str());
+        }
+        seen.len()
+    };
     RagStats {
-        document_count: docs.len(),
+        document_count,
         total_chars,
         last_updated_at,
     }
@@ -238,21 +323,6 @@ fn split_query_terms(query: &str) -> Vec<String> {
         .map(|part| part.trim().to_lowercase())
         .filter(|part| !part.is_empty())
         .collect::<Vec<_>>()
-}
-
-fn calculate_search_score(source_name: &str, content: &str, terms: &[String]) -> u32 {
-    let mut score = 0u32;
-    let source_lower = source_name.to_lowercase();
-    let content_lower = content.to_lowercase();
-
-    for term in terms {
-        if source_lower.contains(term) {
-            score += 5;
-        }
-        score += content_lower.match_indices(term).count() as u32;
-    }
-
-    score
 }
 
 fn rag_document_matches_scope(doc: &RagDocument, conversation_id: Option<&str>) -> bool {
@@ -282,40 +352,94 @@ fn rag_search_documents_with_scope(
     let max_hits = limit.unwrap_or(5).clamp(1, 50);
     let store = load_store(&app)?;
 
-    let mut hits = store
+    // Collect all in-scope chunks
+    let candidates: Vec<&RagDocument> = store
         .documents
-        .into_iter()
-        .filter_map(|doc| {
-            if !rag_document_matches_scope(&doc, scope.as_deref()) {
+        .iter()
+        .filter(|doc| rag_document_matches_scope(doc, scope.as_deref()))
+        .collect();
+
+    if candidates.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let corpus_size = candidates.len();
+
+    // Tokenize each chunk into lowercase words (reused for TF and DF)
+    let tokenized: Vec<Vec<String>> = candidates
+        .iter()
+        .map(|doc| doc.content.split_whitespace().map(|w| w.to_lowercase()).collect())
+        .collect();
+
+    // Average chunk length in terms
+    let avg_doc_terms = tokenized.iter().map(|t| t.len()).sum::<usize>() as f64
+        / corpus_size as f64;
+
+    // Document frequency per query term (number of chunks containing the term)
+    let mut doc_freq: HashMap<String, usize> = HashMap::new();
+    for term in &terms {
+        let df = tokenized
+            .iter()
+            .filter(|words| words.iter().any(|w| w.contains(term.as_str())))
+            .count();
+        doc_freq.insert(term.clone(), df.max(1));
+    }
+
+    // BM25 parameters
+    const K1: f64 = 1.5;
+    const B: f64 = 0.75;
+
+    let mut scored: Vec<(f64, &RagDocument)> = candidates
+        .iter()
+        .zip(tokenized.iter())
+        .filter_map(|(doc, doc_words)| {
+            let doc_len = doc_words.len() as f64;
+            let source_lower = doc.source_name.to_lowercase();
+            let mut score = 0.0f64;
+
+            for term in &terms {
+                if source_lower.contains(term.as_str()) {
+                    score += 3.0;
+                }
+                let tf = doc_words.iter().filter(|w| w.contains(term.as_str())).count() as f64;
+                if tf == 0.0 {
+                    continue;
+                }
+                let df = *doc_freq.get(term).unwrap_or(&1) as f64;
+                let idf = ((corpus_size as f64 - df + 0.5) / (df + 0.5) + 1.0).ln().max(0.0);
+                let norm_len = if avg_doc_terms > 0.0 { doc_len / avg_doc_terms } else { 1.0 };
+                let norm_tf = tf * (K1 + 1.0) / (tf + K1 * (1.0 - B + B * norm_len));
+                score += idf * norm_tf;
+            }
+
+            if score <= 0.0 {
                 return None;
             }
 
-            let score = calculate_search_score(&doc.source_name, &doc.content, &terms);
-            if score == 0 {
-                return None;
-            }
-
-            Some(RagSearchHit {
-                id: doc.id,
-                source_name: doc.source_name,
-                source_type: doc.source_type,
-                mime_type: doc.mime_type,
-                score,
-                snippet: preview_text(&doc.content),
-                content_chars: doc.content_chars,
-                updated_at: doc.updated_at,
-            })
+            Some((score, *doc))
         })
-        .collect::<Vec<_>>();
+        .collect();
 
-    hits.sort_by(|a, b| {
-        b.score
-            .cmp(&a.score)
-            .then_with(|| b.updated_at.cmp(&a.updated_at))
+    scored.sort_by(|a, b| {
+        b.0.partial_cmp(&a.0)
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then_with(|| b.1.updated_at.cmp(&a.1.updated_at))
     });
-    hits.truncate(max_hits);
+    scored.truncate(max_hits);
 
-    Ok(hits)
+    Ok(scored
+        .into_iter()
+        .map(|(score, doc)| RagSearchHit {
+            id: doc.id.clone(),
+            source_name: doc.source_name.clone(),
+            source_type: doc.source_type.clone(),
+            mime_type: doc.mime_type.clone(),
+            score: (score * 1000.0).min(u32::MAX as f64) as u32,
+            snippet: doc.content.clone(),
+            content_chars: doc.content_chars,
+            updated_at: doc.updated_at,
+        })
+        .collect())
 }
 
 pub fn rag_search_documents(
@@ -348,18 +472,33 @@ pub fn rag_read_document(
     }
 
     let store = load_store(&app)?;
-    let found = store.documents.into_iter().find(|doc| doc.id == id);
+    let mut chunks: Vec<RagDocument> = store
+        .documents
+        .into_iter()
+        .filter(|doc| doc.group_id == id)
+        .collect();
 
-    Ok(found.map(|doc| RagDocumentContent {
-        id: doc.id,
-        source_name: doc.source_name,
-        source_type: doc.source_type,
-        mime_type: doc.mime_type,
-        content: doc.content,
-        content_chars: doc.content_chars,
-        checksum: doc.checksum,
-        created_at: doc.created_at,
-        updated_at: doc.updated_at,
+    if chunks.is_empty() {
+        return Ok(None);
+    }
+
+    chunks.sort_by_key(|c| c.chunk_index);
+    let first = &chunks[0];
+    let full_content = chunks.iter().map(|c| c.content.as_str()).collect::<Vec<_>>().join("\n\n");
+    let total_chars: usize = chunks.iter().map(|c| c.content_chars).sum();
+    let created_at = chunks.iter().map(|c| c.created_at).min().unwrap_or(0);
+    let updated_at = chunks.iter().map(|c| c.updated_at).max().unwrap_or(0);
+
+    Ok(Some(RagDocumentContent {
+        id: id.to_string(),
+        source_name: first.source_name.clone(),
+        source_type: first.source_type.clone(),
+        mime_type: first.mime_type.clone(),
+        content: full_content,
+        content_chars: total_chars,
+        checksum: first.checksum.clone(),
+        created_at,
+        updated_at,
     }))
 }
 
@@ -377,23 +516,12 @@ pub fn rag_get_stats(app: AppHandle) -> Result<RagStats, String> {
 #[tauri::command]
 pub fn rag_list_documents(app: AppHandle) -> Result<Vec<RagDocumentMeta>, String> {
     let store = load_store(&app)?;
-    let mut items = store
+    let global_docs: Vec<RagDocument> = store
         .documents
         .into_iter()
         .filter(|doc| doc.conversation_id.is_none())
-        .map(|doc| RagDocumentMeta {
-            id: doc.id,
-            source_name: doc.source_name,
-            source_type: doc.source_type,
-            mime_type: doc.mime_type,
-            content_chars: doc.content_chars,
-            preview: preview_text(&doc.content),
-            checksum: doc.checksum,
-            created_at: doc.created_at,
-            updated_at: doc.updated_at,
-        })
-        .collect::<Vec<_>>();
-
+        .collect();
+    let mut items = group_chunks_by_source(&global_docs);
     items.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
     Ok(items)
 }
@@ -407,23 +535,12 @@ pub fn rag_list_conversation_documents(
         .ok_or_else(|| "conversation_id is required".to_string())?;
 
     let store = load_store(&app)?;
-    let mut items = store
+    let scoped_docs: Vec<RagDocument> = store
         .documents
         .into_iter()
         .filter(|doc| doc.conversation_id.as_deref() == Some(scope_id.as_str()))
-        .map(|doc| RagDocumentMeta {
-            id: doc.id,
-            source_name: doc.source_name,
-            source_type: doc.source_type,
-            mime_type: doc.mime_type,
-            content_chars: doc.content_chars,
-            preview: preview_text(&doc.content),
-            checksum: doc.checksum,
-            created_at: doc.created_at,
-            updated_at: doc.updated_at,
-        })
-        .collect::<Vec<_>>();
-
+        .collect();
+    let mut items = group_chunks_by_source(&scoped_docs);
     items.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
     Ok(items)
 }
@@ -472,40 +589,55 @@ pub fn rag_upsert_documents(
             continue;
         }
 
-        let checksum = fnv1a_64_hex(&content);
+        let group_id = fnv1a_64_hex(&content);
         let source_type = normalize_source_type(&item.source_type);
         let mime_type = normalize_optional_string(item.mime_type);
         let scope_key = conversation_id.clone();
 
-        if let Some(existing) = store
-            .documents
-            .iter_mut()
-            .find(|d| d.checksum == checksum && d.conversation_id == scope_key)
-        {
-            existing.source_name = source_name;
-            existing.source_type = source_type;
-            existing.mime_type = mime_type;
-            existing.conversation_id = conversation_id;
-            existing.content = content;
-            existing.content_chars = content_chars;
-            existing.updated_at = now;
+        // Same content already stored — only update metadata
+        if store.documents.iter().any(|d| d.group_id == group_id && d.conversation_id == scope_key) {
+            for doc in store.documents.iter_mut() {
+                if doc.group_id == group_id && doc.conversation_id == scope_key {
+                    doc.source_name = source_name.clone();
+                    doc.source_type = source_type.clone();
+                    doc.mime_type = mime_type.clone();
+                    doc.updated_at = now;
+                }
+            }
             updated += 1;
             continue;
         }
 
-        store.documents.push(RagDocument {
-            id: Uuid::new_v4().to_string(),
-            source_name,
-            source_type,
-            mime_type,
-            conversation_id,
-            content,
-            content_chars,
-            checksum,
-            created_at: now,
-            updated_at: now,
+        // Track whether a previous version existed under this source_name
+        let had_previous = store.documents.iter().any(|d| {
+            d.source_name == source_name && d.conversation_id == scope_key
         });
-        added += 1;
+
+        // Remove any previous chunks for this source_name in scope
+        store.documents.retain(|d| {
+            !(d.source_name == source_name && d.conversation_id == scope_key)
+        });
+
+        // Split into chunks and insert
+        for (chunk_index, chunk_content) in split_into_chunks(&content).into_iter().enumerate() {
+            let chunk_chars = chunk_content.chars().count();
+            store.documents.push(RagDocument {
+                id: Uuid::new_v4().to_string(),
+                source_name: source_name.clone(),
+                source_type: source_type.clone(),
+                mime_type: mime_type.clone(),
+                conversation_id: conversation_id.clone(),
+                content: chunk_content,
+                content_chars: chunk_chars,
+                checksum: group_id.clone(),
+                created_at: now,
+                updated_at: now,
+                group_id: group_id.clone(),
+                chunk_index: chunk_index as u32,
+            });
+        }
+
+        if had_previous { updated += 1; } else { added += 1; }
     }
 
     if added > 0 || updated > 0 {
@@ -586,7 +718,7 @@ pub fn rag_remove_document(app: AppHandle, document_id: String) -> Result<bool, 
 
     let mut store = load_store(&app)?;
     let before = store.documents.len();
-    store.documents.retain(|doc| doc.id != id);
+    store.documents.retain(|doc| doc.group_id != id);
     let removed = before != store.documents.len();
 
     if removed {

@@ -170,7 +170,15 @@ fn latest_user_query_text(messages: &[Message]) -> Option<String> {
         }
 
         let text = text_from_content(&message.content);
-        let trimmed = text.trim();
+        // Strip the RAG notice lines appended by the frontend so they don't
+        // pollute BM25 query terms. The notice starts with the marker line and
+        // continues to the end of the text.
+        let clean = text
+            .lines()
+            .take_while(|line| !line.trim().starts_with("已上传文件（可在会话RAG中检索）："))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let trimmed = clean.trim();
         if trimmed.is_empty() {
             None
         } else {

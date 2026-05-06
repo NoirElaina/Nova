@@ -188,8 +188,12 @@ pub async fn upsert_global_memory(
 }
 
 #[tauri::command]
-pub async fn delete_global_memory(app: AppHandle, id: i64) -> Result<bool, String> {
-    history::delete_global_memory(&app, id).await
+pub async fn delete_global_memory(app: AppHandle, id: String) -> Result<bool, String> {
+    let parsed_id = id
+        .trim()
+        .parse::<i64>()
+        .map_err(|e| format!("invalid global memory id '{}': {}", id, e))?;
+    history::delete_global_memory(&app, parsed_id).await
 }
 
 #[tauri::command]

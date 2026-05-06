@@ -15,7 +15,7 @@ import {
 type GlobalMemoryKind = 'preference' | 'fact' | 'rule'
 
 type GlobalMemoryEntry = {
-  id: number
+  id: string
   content: string
   kind: GlobalMemoryKind | string
   source: string
@@ -28,7 +28,7 @@ const uiLanguage = ref<UiLanguage>(getStoredUiLanguage())
 const isLoadingGlobalMemory = ref(false)
 const isSavingGlobalMemory = ref(false)
 const isClearingGlobalMemory = ref(false)
-const isRemovingGlobalMemoryId = ref<number | null>(null)
+const isRemovingGlobalMemoryId = ref<string | null>(null)
 const confirmDialogOpen = ref(false)
 const globalMemoryEntries = ref<GlobalMemoryEntry[]>([])
 const newGlobalMemoryContent = ref('')
@@ -152,7 +152,7 @@ const saveGlobalMemory = async () => {
   }
 }
 
-const removeGlobalMemory = async (id: number) => {
+const removeGlobalMemory = async (id: string) => {
   if (isRemovingGlobalMemoryId.value !== null) return
   isRemovingGlobalMemoryId.value = id
   try {

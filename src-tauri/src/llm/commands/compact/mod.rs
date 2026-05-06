@@ -3,15 +3,25 @@ use sqlx::{Row, SqlitePool};
 use crate::llm::commands::types::{CompactBoundary, CompactContext, ConversationHandover};
 
 pub fn estimate_tokens(text: &str) -> i64 {
-    // 去掉首尾空白，避免空白文本被高估。
     let trimmed = text.trim();
-    // 空文本 token 估算为 0。
     if trimmed.is_empty() {
-        0
-    } else {
-        // 用 4 字符约等于 1 token 的简化估算。
-        ((trimmed.chars().count() as i64) + 3) / 4
+        return 0;
     }
+    // 按 tokenizer 家族分流估算，与 command::settings::estimate_text_tokens 保持一致。
+    let mut tokens: f64 = 0.0;
+    for ch in trimmed.chars() {
+        let cp = ch as u32;
+        if (ch as u8 as char).is_ascii_whitespace() && cp < 0x80 {
+            tokens += 0.0;
+        } else if cp >= 0x2E80 {
+            tokens += 1.5;
+        } else if cp >= 0x0080 {
+            tokens += 1.0;
+        } else {
+            tokens += 0.25;
+        }
+    }
+    tokens.ceil() as i64
 }
 
 pub fn build_compact_context(

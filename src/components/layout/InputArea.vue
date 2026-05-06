@@ -112,6 +112,53 @@ const pendingUploads = computed(() => props.pendingUploads ?? []);
 const hasPendingUploads = computed(() => pendingUploads.value.length > 0);
 const canSend = computed(() => !!currentInput.value.trim() || hasPendingUploads.value);
 
+// key: `${sourceName}-${index}` → 估算 token 数（异步填入）
+const uploadTokenCache = ref<Map<string, number>>(new Map());
+
+const getUploadTokenCacheKey = (file: PendingUploadFile, index: number) =>
+  `${file.sourceName}-${index}`;
+
+const formatTokenCount = (file: PendingUploadFile, index: number): string | null => {
+  if (file.kind !== 'document') return null;
+  const key = getUploadTokenCacheKey(file, index);
+  const n = uploadTokenCache.value.get(key);
+  if (n === undefined) return '…';
+  if (n >= 1_000_000) return `~${(n / 1_000_000).toFixed(1)}m tokens`;
+  if (n >= 1_000) return `~${(n / 1_000).toFixed(1)}k tokens`;
+  return `~${n} tokens`;
+};
+
+const computeUploadTokens = async (file: PendingUploadFile, index: number) => {
+  if (file.kind !== 'document') return;
+  const key = getUploadTokenCacheKey(file, index);
+  if (uploadTokenCache.value.has(key)) return;
+  try {
+    const n = await invoke<number>('estimate_text_tokens', {
+      text: (file as UploadedRagFile).content,
+      protocol: 'anthropic',
+    });
+    uploadTokenCache.value = new Map(uploadTokenCache.value).set(key, n);
+  } catch {
+    // 降级：chars / 4
+    const n = Math.ceil((file as UploadedRagFile).content.trim().length / 4);
+    uploadTokenCache.value = new Map(uploadTokenCache.value).set(key, n);
+  }
+};
+
+watch(
+  pendingUploads,
+  (files) => {
+    // 清理已移除文件的缓存
+    const validKeys = new Set(files.map((f, i) => getUploadTokenCacheKey(f, i)));
+    for (const k of uploadTokenCache.value.keys()) {
+      if (!validKeys.has(k)) uploadTokenCache.value.delete(k);
+    }
+    // 计算新增文件
+    files.forEach((f, i) => computeUploadTokens(f, i));
+  },
+  { immediate: true, deep: false },
+);
+
 const loadSettings = async () => {
   try {
     settings.value = await invoke('get_settings');
@@ -335,14 +382,6 @@ const sendMessage = (e?: KeyboardEvent) => {
 
 const estimateTokens = (text: string) => Math.ceil(text.trim().length / 4);
 
-const formatTokenCount = (file: PendingUploadFile) => {
-  if (file.kind !== 'document') return null;
-  const n = estimateTokens((file as UploadedRagFile).content);
-  if (n >= 1_000_000) return `~${(n / 1_000_000).toFixed(1)}m tokens`;
-  if (n >= 1_000) return `~${(n / 1_000).toFixed(1)}k tokens`;
-  return `~${n} tokens`;
-};
-
 const formatFileSize = (bytes: number) => {
   if (!Number.isFinite(bytes) || bytes <= 0) {
     return '0 B';
@@ -437,7 +476,7 @@ defineExpose({
             </svg>
             <span class="max-w-[160px] truncate" :title="file.sourceName">{{ file.sourceName }}</span>
             <span class="text-[11px] opacity-75">{{ formatFileSize(file.size) }}</span>
-            <span v-if="formatTokenCount(file)" class="text-[11px] opacity-50">{{ formatTokenCount(file) }}</span>
+            <span v-if="file.kind === 'document'" class="text-[11px] opacity-50">{{ formatTokenCount(file, index) }}</span>
             <button
               type="button"
               class="w-4 h-4 inline-flex items-center justify-center rounded hover:bg-black/5 dark:hover:bg-white/10"

@@ -1,3 +1,4 @@
+import { invoke } from "@tauri-apps/api/core";
 import type { ChatMessage } from "../../../lib/chat-types";
 
 export function buildConversationTitle(source: string): string {
@@ -5,10 +6,21 @@ export function buildConversationTitle(source: string): string {
   return t.length > 24 ? `${t.slice(0, 24)}...` : t;
 }
 
+/** 同步粗估（兜底用，已有调用点保持兼容） */
 export function estimateTokens(text: string): number {
   const n = text.trim().length;
   if (n <= 0) return 0;
   return Math.ceil(n / 4);
+}
+
+/** 异步精估：调后端 estimate_text_tokens，按 tokenizer 家族分流。 */
+export async function estimateTokensAsync(text: string, protocol = "anthropic"): Promise<number> {
+  if (!text.trim()) return 0;
+  try {
+    return await invoke<number>("estimate_text_tokens", { text, protocol });
+  } catch {
+    return estimateTokens(text);
+  }
 }
 
 export function extractSessionMemory(messages: ChatMessage[]): { summary: string; keyFacts: string[] } {

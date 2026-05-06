@@ -6,7 +6,7 @@ use tauri::{AppHandle, Manager};
 use uuid::Uuid;
 
 const RAG_STORE_VERSION: u32 = 2;
-const MAX_DOCUMENT_CHARS: usize = 200_000;
+const MAX_DOCUMENT_CHARS: usize = usize::MAX;
 const MAX_BATCH_SIZE: usize = 200;
 const CHUNK_SIZE: usize = 800;
 

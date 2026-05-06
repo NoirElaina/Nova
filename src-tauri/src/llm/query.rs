@@ -187,6 +187,21 @@ fn latest_user_query_text(messages: &[Message]) -> Option<String> {
     })
 }
 
+fn latest_user_raw_text(messages: &[Message]) -> Option<String> {
+    messages.iter().rev().find_map(|message| {
+        if message.role != Role::User {
+            return None;
+        }
+        let text = text_from_content(&message.content);
+        let trimmed = text.trim();
+        if trimmed.is_empty() {
+            None
+        } else {
+            Some(trimmed.to_string())
+        }
+    })
+}
+
 fn truncate_chars(input: &str, limit: usize) -> String {
     let mut chars = input.chars();
     let snippet: String = chars.by_ref().take(limit).collect();
@@ -256,6 +271,7 @@ fn build_session_rag_context_message(
     app: &AppHandle,
     conversation_id: Option<&str>,
     query: &str,
+    raw_text: &str,
 ) -> Result<Option<Message>, String> {
     let Some(scope_id) = conversation_id
         .map(|id| id.trim())
@@ -269,7 +285,8 @@ fn build_session_rag_context_message(
         return Ok(None);
     }
 
-    let attached_source_names = extract_uploaded_document_names(query_text);
+    // 用原始文本（含文件名行）提取附件名，用清洁 query 做 BM25 检索。
+    let attached_source_names = extract_uploaded_document_names(raw_text);
     let direct_attachment_lines =
         build_direct_attachment_context(app, scope_id, &attached_source_names)?;
 
@@ -426,6 +443,7 @@ pub async fn send_chat_message(
     agent_mode: AgentMode,
 ) -> Result<(), String> {
     let rag_query = latest_user_query_text(&messages);
+    let rag_raw_text = latest_user_raw_text(&messages);
     let session_start_turn = is_session_start_turn(&messages);
     // 记录前端传入消息数量，用于之后从 turn_messages 中定位"本轮新消息"起始位置。
     let frontend_msg_count = messages.len();
@@ -535,7 +553,8 @@ pub async fn send_chat_message(
     // 使用最新用户文本检索当前 conversation 绑定的文档，并把命中的片段追加到 current_messages。
     // 检索失败只发 backend-error，不中断主对话；保存 snapshot 前会剥掉该类临时注入。
     if let Some(query_text) = rag_query.as_deref() {
-        match build_session_rag_context_message(&app, conversation_id.as_deref(), query_text) {
+        let raw_text = rag_raw_text.as_deref().unwrap_or(query_text);
+        match build_session_rag_context_message(&app, conversation_id.as_deref(), query_text, raw_text) {
             Ok(Some(rag_context)) => current_messages.push(rag_context),
             Ok(None) => {}
             Err(e) => {

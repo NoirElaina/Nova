@@ -39,7 +39,7 @@ const fileInputRef = ref<HTMLInputElement | null>(null);
 
 const MAX_UPLOAD_FILE_SIZE_BYTES = 100 * 1024 * 1024;
 const MAX_IMAGE_FILE_SIZE_BYTES = 5 * 1024 * 1024;
-const MAX_UPLOAD_FILE_CHARS = 200_000;
+const MAX_UPLOAD_FILE_CHARS = Infinity;
 const SUPPORTED_IMAGE_MIME_TYPES = new Set([
   'image/png',
   'image/jpeg',
@@ -333,6 +333,16 @@ const sendMessage = (e?: KeyboardEvent) => {
   });
 };
 
+const estimateTokens = (text: string) => Math.ceil(text.trim().length / 4);
+
+const formatTokenCount = (file: PendingUploadFile) => {
+  if (file.kind !== 'document') return null;
+  const n = estimateTokens((file as UploadedRagFile).content);
+  if (n >= 1_000_000) return `~${(n / 1_000_000).toFixed(1)}m tokens`;
+  if (n >= 1_000) return `~${(n / 1_000).toFixed(1)}k tokens`;
+  return `~${n} tokens`;
+};
+
 const formatFileSize = (bytes: number) => {
   if (!Number.isFinite(bytes) || bytes <= 0) {
     return '0 B';
@@ -427,6 +437,7 @@ defineExpose({
             </svg>
             <span class="max-w-[160px] truncate" :title="file.sourceName">{{ file.sourceName }}</span>
             <span class="text-[11px] opacity-75">{{ formatFileSize(file.size) }}</span>
+            <span v-if="formatTokenCount(file)" class="text-[11px] opacity-50">{{ formatTokenCount(file) }}</span>
             <button
               type="button"
               class="w-4 h-4 inline-flex items-center justify-center rounded hover:bg-black/5 dark:hover:bg-white/10"

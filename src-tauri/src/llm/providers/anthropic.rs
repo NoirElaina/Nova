@@ -1,7 +1,7 @@
 ﻿use reqwest::Client;
 use tauri::AppHandle;
 
-use crate::llm::providers::ProviderTurnResult;
+use crate::llm::providers::{ProviderTurnError, ProviderTurnResult};
 use crate::llm::providers::stream_runner::{Delta, ReadyToolCall, StreamParser, run_streaming};
 use crate::llm::tools;
 use crate::llm::types::{
@@ -188,7 +188,7 @@ impl AnthropicProvider {
         messages: &[Message],
         agent_mode: AgentMode,
         conversation_id: Option<&str>,
-    ) -> Result<ProviderTurnResult, String> {
+    ) -> Result<ProviderTurnResult, ProviderTurnError> {
         // 读取设置与当前 provider profile。
         let settings = crate::command::settings::get_settings(app.clone());
         let profile = settings.active_provider_profile();
@@ -197,7 +197,7 @@ impl AnthropicProvider {
 
         // API key 缺失时直接失败。
         if api_key.is_empty() {
-            return Err("API error: No API key configured. Please set it in Settings.".to_string());
+            return Err(ProviderTurnError::new("API error: No API key configured. Please set it in Settings.".to_string()));
         }
 
         // 仅注入内置工具；MCP 采用 server 级发现，避免每轮发送全部动态工具 schema。
@@ -268,7 +268,7 @@ impl AnthropicProvider {
                     eprintln!("API Error: {}", error_text);
                     let msg = format!("API Error [{}] {} => {}", status, url, error_text);
                     emit_backend_error(app, "llm.providers.anthropic", msg.clone(), Some("http.non_success"));
-                    return Err(msg);
+                    return Err(ProviderTurnError::new(msg));
                 }
 
                 let mut parser = AnthropicStreamParser::new();
@@ -277,7 +277,7 @@ impl AnthropicProvider {
             Err(e) => {
                 let msg = e.to_string();
                 emit_backend_error(app, "llm.providers.anthropic", msg.clone(), Some("http.request"));
-                Err(msg)
+                Err(ProviderTurnError::new(msg))
             }
         }
     }

@@ -1,5 +1,7 @@
 use tauri::{AppHandle, Emitter};
 
+use std::collections::HashSet;
+
 use crate::llm::providers::LlmProvider;
 use crate::llm::query_engine::ChatMessageEvent;
 use crate::llm::services::compact;
@@ -381,7 +383,7 @@ fn apply_post_compact_hook(
     }
 }
 
-// 从消息列表中移除每轮动态注入的上下文消息（RAG、MCP catalog、会话恢复、全局记忆）。
+// 从消息列表中移除每轮动态注入的上下文消息（RAG、MCP catalog、会话恢复、全局记忆、所有 hook 注入）。
 // 保存快照前调用，确保快照只包含真实对话内容。
 fn strip_injected_context(messages: &mut Vec<Message>) {
     const MARKERS: &[&str] = &[
@@ -389,6 +391,19 @@ fn strip_injected_context(messages: &mut Vec<Message>) {
         MCP_SERVER_CONTEXT_MARKER,
         "[Session Restore Context]",
         "[Global Memory]",
+        // lifecycle hooks — 每轮动态注入，不应固化进 snapshot
+        "[SessionStart]",
+        "[UserPromptSubmit]",
+        "[PreCompact]",
+        "[PostCompact]",
+        "[SubagentStart]",
+        "[SubagentStop]",
+        // tool flow hooks
+        "[PreToolUse]",
+        "[PostToolUse]",
+        "[PostToolUseFailure]",
+        // stop hooks
+        "[StopHookContext]",
     ];
     messages.retain(|m| {
         let text = text_from_content(&m.content);
@@ -654,7 +669,8 @@ pub async fn send_chat_message(
         {
             // 请求成功时拿到结果对象。
             Ok(v) => v,
-            Err(e) => {
+            Err(provider_err) => {
+                let e = provider_err.message.clone();
                 if !has_attempted_reactive_compact && compact::is_prompt_too_long_error(&e) {
                     if let Some(recovered_messages) = compact::reactive_compact_messages_for_retry(
                         &app,
@@ -685,6 +701,17 @@ pub async fn send_chat_message(
                         );
                         has_attempted_reactive_compact = true;
                         continue;
+                    }
+                }
+
+                // 流中断前已有部分输出时，保存 partial snapshot，避免下轮上下文丢失。
+                if !provider_err.partial_messages.is_empty() {
+                    if let Some(conv_id) = conversation_id.as_deref() {
+                        let mut snapshot = current_messages.clone();
+                        snapshot.extend(provider_err.partial_messages);
+                        strip_injected_context(&mut snapshot);
+                        // 错误路径的 snapshot 保存是 best-effort，失败不阻断错误返回。
+                        let _ = crate::llm::history::save_turn_snapshot(&app, conv_id, &snapshot).await;
                     }
                 }
 
@@ -737,11 +764,34 @@ pub async fn send_chat_message(
             current_messages.extend(provider_result.messages.clone());
 
             // 2. 查找并闭合这半截话里所有未完成的 tool_use，防止 API 语法校验报错。
+            let existing_tool_result_ids = provider_result
+                .messages
+                .iter()
+                .filter_map(|msg| {
+                    if let Content::Blocks(blocks) = &msg.content {
+                        Some(blocks)
+                    } else {
+                        None
+                    }
+                })
+                .flat_map(|blocks| blocks.iter())
+                .filter_map(|block| {
+                    if let ContentBlock::ToolResult { tool_use_id, .. } = block {
+                        Some(tool_use_id.clone())
+                    } else {
+                        None
+                    }
+                })
+                .collect::<HashSet<_>>();
+
             let mut user_blocks = Vec::new();
             for msg in &provider_result.messages {
                 if let Content::Blocks(blocks) = &msg.content {
                     for block in blocks {
                         if let ContentBlock::ToolUse { id, .. } = block {
+                            if existing_tool_result_ids.contains(id) {
+                                continue;
+                            }
                             user_blocks.push(ContentBlock::ToolResult {
                                 tool_use_id: id.clone(),
                                 is_error: false,

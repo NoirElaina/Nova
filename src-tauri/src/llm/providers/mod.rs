@@ -26,6 +26,32 @@ pub struct ProviderTurnResult {
     pub prevent_continuation: bool,
 }
 
+/// 流式请求失败时携带的错误信息。
+/// 除错误文本外，还包含流中断前已生成的 partial 消息，
+/// 供上层保存 snapshot 避免上下文丢失。
+#[derive(Debug, Clone)]
+pub struct ProviderTurnError {
+    pub message: String,
+    /// 流中断前已生成的 partial assistant 消息（可能为空）。
+    pub partial_messages: Vec<Message>,
+}
+
+impl ProviderTurnError {
+    pub fn new(message: String) -> Self {
+        Self { message, partial_messages: Vec::new() }
+    }
+    pub fn with_partial(message: String, partial_messages: Vec<Message>) -> Self {
+        Self { message, partial_messages }
+    }
+}
+
+/// 允许 `?` 运算符自动从 `String` 转换（用于 load_system_prompt 等场合）。
+impl From<String> for ProviderTurnError {
+    fn from(message: String) -> Self {
+        Self::new(message)
+    }
+}
+
 pub enum LlmProvider {
     // Anthropic provider 分支。
     Anthropic(anthropic::AnthropicProvider),
@@ -58,7 +84,7 @@ impl LlmProvider {
         messages: &[Message],
         agent_mode: AgentMode,
         conversation_id: Option<&str>,
-    ) -> Result<ProviderTurnResult, String> {
+    ) -> Result<ProviderTurnResult, ProviderTurnError> {
         // 根据当前枚举分支转发到具体 provider 实现。
         match self {
             LlmProvider::Anthropic(p) => p.send_request(app, messages, agent_mode, conversation_id).await,

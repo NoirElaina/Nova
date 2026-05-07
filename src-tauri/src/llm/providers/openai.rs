@@ -4,7 +4,7 @@ use serde_json::Value;
 use std::collections::{BTreeMap, HashMap, VecDeque};
 use tauri::AppHandle;
 
-use crate::llm::providers::ProviderTurnResult;
+use crate::llm::providers::{ProviderTurnError, ProviderTurnResult};
 use crate::llm::providers::stream_runner::{Delta, ReadyToolCall, StreamParser, run_streaming};
 use crate::llm::tools;
 use crate::llm::types::{AgentMode, ContentBlock, Message, Role};
@@ -544,7 +544,7 @@ impl OpenAiProvider {
         messages: &[Message],
         agent_mode: AgentMode,
         conversation_id: Option<&str>,
-    ) -> Result<ProviderTurnResult, String> {
+    ) -> Result<ProviderTurnResult, ProviderTurnError> {
         // 读取设置并拿到当前 provider profile。
         let settings = crate::command::settings::get_settings(app.clone());
         let profile = settings.active_provider_profile();
@@ -614,7 +614,7 @@ impl OpenAiProvider {
                                             msg.clone(),
                                             Some("tool.arguments_serialize"),
                                         );
-                                        return Err(msg);
+                                        return Err(ProviderTurnError::new(msg));
                                     }
                                 };
                                 // 组装 assistant.tool_calls 条目。
@@ -784,7 +784,7 @@ impl OpenAiProvider {
                     eprintln!("API Error: {}", error_text);
                     let msg = format!("API Error [{}] {} => {}", status, url, error_text);
                     emit_backend_error(app, "llm.providers.openai", msg.clone(), Some("http.non_success"));
-                    return Err(msg);
+                    return Err(ProviderTurnError::new(msg));
                 }
 
                 {
@@ -795,7 +795,7 @@ impl OpenAiProvider {
             Err(e) => {
                 let msg = e.to_string();
                 emit_backend_error(app, "llm.providers.openai", msg.clone(), Some("http.request"));
-                Err(msg)
+                Err(ProviderTurnError::new(msg))
             }
         }
     }

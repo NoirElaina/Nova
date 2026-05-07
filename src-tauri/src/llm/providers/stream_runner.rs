@@ -13,7 +13,7 @@ use tauri::{AppHandle, Emitter};
 use tokio::time::timeout;
 
 use crate::llm::query_engine::ChatMessageEvent;
-use crate::llm::providers::ProviderTurnResult;
+use crate::llm::providers::{ProviderTurnError, ProviderTurnResult};
 use crate::llm::tools;
 use crate::llm::types::{ContentBlock, Message, Role};
 use crate::llm::utils::error_event::emit_backend_error;
@@ -109,7 +109,7 @@ pub async fn run_streaming<P: StreamParser>(
     app: &AppHandle,
     response: reqwest::Response,
     conversation_id: Option<&str>,
-) -> Result<ProviderTurnResult, String> {
+) -> Result<ProviderTurnResult, ProviderTurnError> {
     let provider = parser.provider_name();
     let mut stream = response.bytes_stream();
     let mut sse_buffer: Vec<u8> = Vec::new();
@@ -143,6 +143,7 @@ pub async fn run_streaming<P: StreamParser>(
             let partial_messages = build_partial_cancelled_messages(
                 &generated_text,
                 &mut output_blocks,
+                &mut tool_result_blocks,
             );
             return Ok(ProviderTurnResult {
                 messages: partial_messages,
@@ -170,7 +171,7 @@ pub async fn run_streaming<P: StreamParser>(
             Err(e) => {
                 let msg = format!("{} stream chunk error: {}", provider, e);
                 emit_backend_error(app, &format!("llm.providers.{}", provider), msg.clone(), Some("stream.chunk"));
-                return Err(msg);
+                return Err(ProviderTurnError::with_partial(msg, build_partial_cancelled_messages(&generated_text, &mut output_blocks, &mut tool_result_blocks)));
             }
         };
         sse_buffer.extend_from_slice(&bytes);
@@ -191,7 +192,7 @@ pub async fn run_streaming<P: StreamParser>(
                         truncate_for_log(&preview, 800)
                     );
                     emit_backend_error(app, &format!("llm.providers.{}", provider), msg.clone(), Some("stream.utf8"));
-                    return Err(msg);
+                    return Err(ProviderTurnError::with_partial(msg, build_partial_cancelled_messages(&generated_text, &mut output_blocks, &mut tool_result_blocks)));
                 }
             };
 
@@ -222,7 +223,7 @@ pub async fn run_streaming<P: StreamParser>(
                 Ok(d) => d,
                 Err(e) => {
                     emit_backend_error(app, &format!("llm.providers.{}", provider), e.clone(), Some("stream.parse"));
-                    return Err(e);
+                    return Err(ProviderTurnError::with_partial(e, build_partial_cancelled_messages(&generated_text, &mut output_blocks, &mut tool_result_blocks)));
                 }
             };
 
@@ -244,7 +245,7 @@ pub async fn run_streaming<P: StreamParser>(
                     &mut current_input_tokens,
                     &mut current_output_tokens,
                 ).await {
-                    return Err(e);
+                    return Err(ProviderTurnError::with_partial(e, build_partial_cancelled_messages(&generated_text, &mut output_blocks, &mut tool_result_blocks)));
                 }
             }
         }
@@ -269,7 +270,7 @@ pub async fn run_streaming<P: StreamParser>(
             &mut current_input_tokens,
             &mut current_output_tokens,
         ).await {
-            return Err(e);
+            return Err(ProviderTurnError::with_partial(e, build_partial_cancelled_messages(&generated_text, &mut output_blocks, &mut tool_result_blocks)));
         }
     }
 
@@ -283,7 +284,7 @@ pub async fn run_streaming<P: StreamParser>(
             truncate_for_log(&preview, 800)
         );
         emit_backend_error(app, &format!("llm.providers.{}", provider), msg.clone(), Some("stream.incomplete_event"));
-        return Err(msg);
+        return Err(ProviderTurnError::with_partial(msg, build_partial_cancelled_messages(&generated_text, &mut output_blocks, &mut tool_result_blocks)));
     }
 
     // 将剩余累积文本写入输出块。
@@ -352,7 +353,7 @@ pub async fn run_streaming<P: StreamParser>(
             provider, final_stop_reason, current_input_tokens, current_output_tokens
         );
         emit_backend_error(app, &format!("llm.providers.{}", provider), msg.clone(), Some("stream.empty_assistant"));
-        return Err(msg);
+        return Err(ProviderTurnError::new(msg));
     }
 
     Ok(ProviderTurnResult {
@@ -368,12 +369,15 @@ pub async fn run_streaming<P: StreamParser>(
 // build_partial_cancelled_messages — 取消时组装已输出的部分 assistant 消息
 // ─────────────────────────────────────────────
 
-/// 取消时将已积累的流式输出打包成 assistant Message，
+/// 中断（取消或错误）时将已积累的流式输出打包成消息列表返回，
 /// 使 turn_snapshot 与前端 conversation_messages 保持一致。
-/// 若尚无任何内容，返回空 Vec（query.rs 侧会补 [Request interrupted by user]）。
+/// - 若 output_blocks 含 ToolUse，必须同时携带 tool_result_blocks，
+///   否则 snapshot 会处于"有 ToolUse 无 ToolResult"的非法状态。
+/// - 若尚无任何内容，返回空 Vec（query.rs 侧会补 [Request interrupted by user]）。
 fn build_partial_cancelled_messages(
     generated_text: &str,
     output_blocks: &mut Vec<ContentBlock>,
+    tool_result_blocks: &mut Vec<ContentBlock>,
 ) -> Vec<Message> {
     if !generated_text.is_empty() {
         output_blocks.push(ContentBlock::Text { text: generated_text.to_string() });
@@ -381,10 +385,18 @@ fn build_partial_cancelled_messages(
     if output_blocks.is_empty() {
         return Vec::new();
     }
-    vec![Message {
+    let mut messages = vec![Message {
         role: Role::Assistant,
         content: crate::llm::types::Content::Blocks(std::mem::take(output_blocks)),
-    }]
+    }];
+    // 有 tool_result 时一并打包，保证 ToolUse/ToolResult 成对出现。
+    if !tool_result_blocks.is_empty() {
+        messages.push(Message {
+            role: Role::User,
+            content: crate::llm::types::Content::Blocks(std::mem::take(tool_result_blocks)),
+        });
+    }
+    messages
 }
 
 // ─────────────────────────────────────────────

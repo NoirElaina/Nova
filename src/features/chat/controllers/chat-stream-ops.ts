@@ -593,14 +593,22 @@ export function createChatStreamOperations(deps: StreamOpsDeps) {
       );
 
       if (isActive) {
-        state.isGenerating = false;
-        state.assistantResponse = "";
-        state.assistantReasoning = "";
-        state.assistantTokenUsage = undefined;
-        state.assistantTurnCost = undefined;
-        resetTurnRuntimeState(activeRuntimeRefs);
-        if (activeConversationId.value) {
-          runtimeStateByConversation.delete(normalizeConversationId(activeConversationId.value));
+        // 若流中断前已输出部分内容，提交为消息而非丢弃，与 cancel 行为保持一致。
+        if (
+          activeRuntimeRefs.assistantResponse.value.trim().length > 0 ||
+          activeRuntimeRefs.assistantReasoning.value.trim().length > 0
+        ) {
+          finalizeOrStopTurn(undefined);
+        } else {
+          state.isGenerating = false;
+          state.assistantResponse = "";
+          state.assistantReasoning = "";
+          state.assistantTokenUsage = undefined;
+          state.assistantTurnCost = undefined;
+          resetTurnRuntimeState(activeRuntimeRefs);
+          if (activeConversationId.value) {
+            runtimeStateByConversation.delete(normalizeConversationId(activeConversationId.value));
+          }
         }
       } else {
         resetBackgroundRuntimeState(conversationId, state);

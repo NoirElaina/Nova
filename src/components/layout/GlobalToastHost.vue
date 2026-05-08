@@ -6,7 +6,7 @@ import { NOVA_TOAST_EVENT, type ToastPayload } from '../../lib/toast';
 type ToastItem = {
   id: number;
   message: string;
-  variant: 'error' | 'success' | 'info';
+  variant: 'error' | 'success' | 'info' | 'warning';
   createdAt: number;
 };
 

@@ -380,8 +380,6 @@ const sendMessage = (e?: KeyboardEvent) => {
   });
 };
 
-const estimateTokens = (text: string) => Math.ceil(text.trim().length / 4);
-
 const formatFileSize = (bytes: number) => {
   if (!Number.isFinite(bytes) || bytes <= 0) {
     return '0 B';

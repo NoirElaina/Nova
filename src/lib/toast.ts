@@ -1,6 +1,6 @@
 export const NOVA_TOAST_EVENT = 'nova-toast';
 
-export type ToastVariant = 'error' | 'success' | 'info';
+export type ToastVariant = 'error' | 'success' | 'info' | 'warning';
 
 export type ToastPayload = {
   message: string;

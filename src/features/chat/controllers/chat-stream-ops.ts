@@ -17,6 +17,7 @@ import { estimateTokens } from "../utils/session-memory";
 import { buildToolTurnSummary } from "../utils/tool-activity-summary";
 import type {
   ConversationTurnRuntimeState,
+  LiveTurnStage,
 } from "./chat-controller-types";
 import type { ActiveRuntimeRefs } from "./chat-runtime-state";
 import {
@@ -119,6 +120,10 @@ function toContextCompactSummary(
   };
 }
 
+function switchStage(state: ConversationTurnRuntimeState, nextStage: LiveTurnStage) {
+  state.currentStage = nextStage;
+}
+
 type StreamOpsDeps = {
   activeRuntimeRefs: ActiveRuntimeRefs;
   activeRuntimeState: ConversationTurnRuntimeState;
@@ -167,6 +172,7 @@ export function createChatStreamOperations(deps: StreamOpsDeps) {
     activeRuntimeRefs.assistantTokenUsage.value = undefined;
     activeRuntimeRefs.assistantTurnCost.value = undefined;
     activeRuntimeRefs.isGenerating.value = false;
+    activeRuntimeRefs.currentStage.value = "processing";
   }
 
   async function finalizeBackgroundTurn(
@@ -209,6 +215,7 @@ export function createChatStreamOperations(deps: StreamOpsDeps) {
     state.assistantTokenUsage = undefined;
     state.assistantTurnCost = undefined;
     state.isGenerating = false;
+    state.currentStage = "processing";
     state.currentToolStartedAt = null;
     state.currentToolCalls = 0;
     state.currentToolDurationMs = 0;
@@ -276,6 +283,7 @@ export function createChatStreamOperations(deps: StreamOpsDeps) {
     activeRuntimeRefs.assistantReasoning.value = "";
     activeRuntimeRefs.assistantTokenUsage.value = undefined;
     activeRuntimeRefs.isGenerating.value = false;
+    activeRuntimeRefs.currentStage.value = "processing";
     if (activeConversationId.value) {
       runtimeStateByConversation.delete(normalizeConversationId(activeConversationId.value));
     }
@@ -287,6 +295,7 @@ export function createChatStreamOperations(deps: StreamOpsDeps) {
     preservePendingPrompt = false,
   ) {
     state.isGenerating = false;
+    state.currentStage = "processing";
     state.assistantResponse = "";
     state.assistantReasoning = "";
     state.assistantTokenUsage = undefined;
@@ -324,18 +333,21 @@ export function createChatStreamOperations(deps: StreamOpsDeps) {
 
     if (payload.type === "text" && payload.text) {
       state.isGenerating = true;
+      switchStage(state, "processing");
       state.assistantResponse += payload.text;
       return;
     }
 
     if (payload.type === "reasoning" && payload.text) {
       state.isGenerating = true;
+      switchStage(state, "processing");
       state.assistantReasoning += payload.text;
       return;
     }
 
     if (payload.type === "tool-use-start") {
       state.isGenerating = true;
+      switchStage(state, "processing");
       state.currentToolCalls += 1;
       state.currentToolStartedAt = Date.now();
 
@@ -484,6 +496,7 @@ export function createChatStreamOperations(deps: StreamOpsDeps) {
           state.pendingPermissionRequestId = null;
           state.pendingQuestion = needsUserInput;
           state.isGenerating = false;
+          switchStage(state, "processing");
           const rendered = renderToolResult(result);
           const preview =
             rendered.length > 1200 ? `${rendered.slice(0, 1200)}\n...(truncated)` : rendered;
@@ -523,6 +536,8 @@ export function createChatStreamOperations(deps: StreamOpsDeps) {
       if (!summary) {
         return;
       }
+      state.isGenerating = true;
+      switchStage(state, "compacting");
       state.currentContextCompacts = [...state.currentContextCompacts, summary];
       return;
     }
@@ -602,6 +617,7 @@ export function createChatStreamOperations(deps: StreamOpsDeps) {
           finalizeOrStopTurn(undefined);
         } else {
           state.isGenerating = false;
+          switchStage(state, "processing");
           state.assistantResponse = "";
           state.assistantReasoning = "";
           state.assistantTokenUsage = undefined;

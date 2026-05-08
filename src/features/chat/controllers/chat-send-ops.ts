@@ -20,7 +20,11 @@ import {
   submitPermissionDecision,
   upsertConversationRagDocuments,
 } from "../services/chat-api";
-import type { ChatScreenHandle, ConversationTurnRuntimeState } from "./chat-controller-types";
+import type {
+  ChatScreenHandle,
+  ConversationTurnRuntimeState,
+  LiveTurnStage,
+} from "./chat-controller-types";
 import type { ActiveRuntimeRefs } from "./chat-runtime-state";
 import {
   ensureRuntimeState,
@@ -39,6 +43,7 @@ import {
 type SendOpsDeps = {
   activeConversationId: Ref<string>;
   isGenerating: Ref<boolean>;
+  currentStage: Ref<LiveTurnStage>;
   messages: Ref<ChatMessage[]>;
   pendingUploads: Ref<PendingUploadFile[]>;
   pendingPermissionRequestId: Ref<string | null>;
@@ -74,6 +79,7 @@ export function createSendOperations(deps: SendOpsDeps) {
   const {
     activeConversationId,
     isGenerating,
+    currentStage,
     messages,
     pendingUploads,
     pendingPermissionRequestId,
@@ -195,6 +201,7 @@ export function createSendOperations(deps: SendOpsDeps) {
     await persistMessage(userMessage, sendingConversationId);
     chatScreenRef.value?.scrollLastUserMessageToBottom();
     isGenerating.value = true;
+    currentStage.value = "processing";
     assistantResponse.value = "";
     assistantReasoning.value = "";
     assistantTokenUsage.value = undefined;

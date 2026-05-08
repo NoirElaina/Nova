@@ -6,7 +6,10 @@ import type {
   ToolExecutionEntry,
   TurnCost,
 } from "../../../lib/chat-types";
-import type { ConversationTurnRuntimeState } from "./chat-controller-types";
+import type {
+  ConversationTurnRuntimeState,
+  LiveTurnStage,
+} from "./chat-controller-types";
 
 function cloneContextUsage(usage: ContextUsage | undefined): ContextUsage | undefined {
   return usage ? { ...usage } : undefined;
@@ -18,6 +21,7 @@ function cloneContextCompacts(items: ContextCompactSummary[]): ContextCompactSum
 
 export type ActiveRuntimeRefs = {
   isGenerating: Ref<boolean>;
+  currentStage: Ref<LiveTurnStage>;
   assistantResponse: Ref<string>;
   assistantReasoning: Ref<string>;
   assistantTokenUsage: Ref<number | undefined>;
@@ -45,6 +49,12 @@ export function bindActiveRuntimeState(active: ActiveRuntimeRefs): ConversationT
     },
     set isGenerating(value: boolean) {
       active.isGenerating.value = value;
+    },
+    get currentStage() {
+      return active.currentStage.value;
+    },
+    set currentStage(value: LiveTurnStage) {
+      active.currentStage.value = value;
     },
     get assistantResponse() {
       return active.assistantResponse.value;
@@ -166,6 +176,7 @@ export function bindActiveRuntimeState(active: ActiveRuntimeRefs): ConversationT
 export function createEmptyRuntimeState(): ConversationTurnRuntimeState {
   return {
     isGenerating: false,
+    currentStage: "processing",
     assistantResponse: "",
     assistantReasoning: "",
     assistantTokenUsage: undefined,
@@ -210,6 +221,7 @@ export function snapshotActiveRuntimeState(
 ): ConversationTurnRuntimeState {
   return {
     isGenerating: active.isGenerating.value,
+    currentStage: active.currentStage.value,
     assistantResponse: active.assistantResponse.value,
     assistantReasoning: active.assistantReasoning.value,
     assistantTokenUsage: active.assistantTokenUsage.value,
@@ -236,6 +248,7 @@ export function applyRuntimeStateToActive(
   active: ActiveRuntimeRefs,
 ) {
   active.isGenerating.value = state.isGenerating;
+  active.currentStage.value = state.currentStage;
   active.assistantResponse.value = state.assistantResponse;
   active.assistantReasoning.value = state.assistantReasoning;
   active.assistantTokenUsage.value = state.assistantTokenUsage;
@@ -266,6 +279,7 @@ export function applyRuntimeStateToActive(
 
 export function clearActiveRuntimeState(active: ActiveRuntimeRefs) {
   active.isGenerating.value = false;
+  active.currentStage.value = "processing";
   active.assistantResponse.value = "";
   active.assistantReasoning.value = "";
   active.assistantTokenUsage.value = undefined;

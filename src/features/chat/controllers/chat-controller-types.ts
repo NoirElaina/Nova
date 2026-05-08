@@ -7,6 +7,7 @@ import type {
 } from "../../../lib/chat-types";
 
 export type MainView = "chat" | "hooks" | "agent" | "schedule";
+export type LiveTurnStage = "processing" | "compacting";
 
 export type BackendErrorEvent = {
   source?: string;
@@ -54,6 +55,7 @@ export const SCHEDULED_CONVERSATION_TITLE_PREFIX = "Scheduled [";
 
 export type ConversationTurnRuntimeState = {
   isGenerating: boolean;
+  currentStage: LiveTurnStage;
   assistantResponse: string;
   assistantReasoning: string;
   assistantTokenUsage?: number;

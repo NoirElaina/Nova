@@ -21,6 +21,7 @@ import type {
   ContextUsage,
 } from "../../../lib/chat-types";
 import {
+  type LiveTurnStage,
   type BackendErrorEvent,
   type ChatScreenHandle,
   type ConversationTurnRuntimeState,
@@ -38,6 +39,7 @@ import { createSendOperations } from "./chat-send-ops";
 export function useChatController() {
   const messages = ref<ChatMessage[]>([]);
   const isGenerating = ref(false);
+  const currentStage = ref<LiveTurnStage>("processing");
   const assistantResponse = ref("");
   const assistantReasoning = ref("");
   const assistantTokenUsage = ref<number | undefined>(undefined);
@@ -70,6 +72,7 @@ export function useChatController() {
   const runtimeStateByConversation = new Map<string, ConversationTurnRuntimeState>();
   const activeRuntimeRefs = {
     isGenerating,
+    currentStage,
     assistantResponse,
     assistantReasoning,
     assistantTokenUsage,
@@ -186,6 +189,7 @@ export function useChatController() {
   const sendOps = createSendOperations({
     activeConversationId,
     isGenerating,
+    currentStage,
     messages,
     pendingUploads,
     pendingPermissionRequestId,
@@ -308,6 +312,7 @@ export function useChatController() {
   return {
     messages,
     isGenerating,
+    currentStage,
     assistantResponse,
     assistantReasoning,
     assistantTokenUsage,

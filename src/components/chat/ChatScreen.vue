@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { nextTick, onMounted, ref } from 'vue';
+import { computed, nextTick, onMounted, ref } from 'vue';
 import type {
   AgentMode,
   AskUserAnswerSubmission,
@@ -10,6 +10,7 @@ import type {
   PendingUploadFile,
   ToolExecutionEntry,
 } from '../../lib/chat-types';
+import type { LiveTurnStage } from '../../features/chat/controllers/chat-controller-types';
 import InputArea from '../layout/InputArea.vue';
 import AskUserInputDialog from './AskUserInputDialog.vue';
 import AssistantMessageBubble from './messages/AssistantMessageBubble.vue';
@@ -21,6 +22,7 @@ import UserMessageBubble from './messages/UserMessageBubble.vue';
 const props = defineProps<{
   messages: ChatMessage[];
   isGenerating: boolean;
+  currentStage?: LiveTurnStage;
   assistantResponse: string;
   assistantReasoning?: string;
   assistantTokenUsage?: number;
@@ -201,6 +203,13 @@ const liveWaitKind = () => {
   return props.pendingPermissionRequestId ? 'permission' : 'question';
 };
 
+const liveStatusText = computed(() => {
+  if (props.currentStage === 'compacting') {
+    return '正在压缩上下文';
+  }
+  return '正在处理你的请求';
+});
+
 defineExpose({
   scrollToBottom,
   scrollLastUserMessageToTop,
@@ -281,9 +290,14 @@ defineExpose({
               <MarkdownRenderer v-if="streamingBodyText()" :content="assistantResponse" />
               <p
                 v-else-if="props.currentTurnToolEntries.length > 0 || props.isGenerating"
-                class="text-[13px] text-[#8e8678] dark:text-[#b2aa9c]"
+                class="live-status text-[13px] text-[#8e8678] dark:text-[#b2aa9c]"
               >
-                正在处理你的请求...
+                <span>{{ liveStatusText }}</span>
+                <span class="live-status-dots" aria-hidden="true">
+                  <span></span>
+                  <span></span>
+                  <span></span>
+                </span>
               </p>
               <span
                 v-if="isGenerating"
@@ -393,6 +407,47 @@ defineExpose({
 
 .reasoning-panel[open] summary::before {
   transform: rotate(90deg);
+}
+
+.live-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.live-status-dots {
+  display: inline-flex;
+  align-items: flex-end;
+  gap: 5px;
+  min-width: 24px;
+}
+
+.live-status-dots span {
+  width: 5px;
+  height: 5px;
+  border-radius: 999px;
+  background: currentColor;
+  opacity: 0.45;
+  animation: live-status-bounce 1s ease-in-out infinite;
+}
+
+.live-status-dots span:nth-child(2) {
+  animation-delay: 0.15s;
+}
+
+.live-status-dots span:nth-child(3) {
+  animation-delay: 0.3s;
+}
+
+@keyframes live-status-bounce {
+  0%, 80%, 100% {
+    transform: translateY(0) scale(0.92);
+    opacity: 0.35;
+  }
+  40% {
+    transform: translateY(-4px) scale(1);
+    opacity: 0.95;
+  }
 }
 
 .reasoning-panel :deep(.markdown-body) {

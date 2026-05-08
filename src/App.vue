@@ -18,6 +18,7 @@ type WorkspaceTabId = "diff" | "usage" | "files";
 const {
   messages,
   isGenerating,
+  currentStage,
   assistantResponse,
   assistantReasoning,
   assistantTokenUsage,
@@ -162,6 +163,7 @@ const openWorkspaceFile = (fileId: string) => {
           ref="chatScreenRef"
           :messages="messages"
           :isGenerating="isGenerating"
+          :currentStage="currentStage"
           :assistantResponse="assistantResponse"
           :assistantReasoning="assistantReasoning"
           :assistantTokenUsage="assistantTokenUsage"

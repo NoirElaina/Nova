@@ -11,10 +11,10 @@ const formatTokens = (value?: number) => {
     return '0';
   }
   if (value >= 1_000_000) {
-    return `${(value / 1_000_000).toFixed(value >= 10_000_000 ? 0 : 1)}m`;
+    return `${(value / 1_000_000).toFixed(1)}m`;
   }
   if (value >= 1_000) {
-    return `${(value / 1_000).toFixed(value >= 100_000 ? 0 : 1)}k`;
+    return `${(value / 1_000).toFixed(1)}k`;
   }
   return String(Math.round(value));
 };

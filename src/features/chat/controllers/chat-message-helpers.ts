@@ -22,7 +22,7 @@ export function buildAssistantCost(
   currentOutputTokens: number,
   currentToolCalls: number,
   currentToolDurationMs: number,
-  contextCompacts?: ContextCompactSummary[],
+  contextCompacts: ContextCompactSummary[],
   toolSummary?: ToolTurnSummary,
 ): TurnCost {
   return {
@@ -30,7 +30,7 @@ export function buildAssistantCost(
     outputTokens: currentOutputTokens,
     toolCalls: currentToolCalls,
     toolDurationMs: currentToolDurationMs,
-    contextCompacts: contextCompacts ?? [],
+    contextCompacts,
     toolSummary,
   };
 }

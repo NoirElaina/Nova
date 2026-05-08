@@ -51,8 +51,8 @@ const emit = defineEmits<{
         :summary="message.cost.toolSummary"
       />
       <ContextCompactNotice
-        v-if="(message.cost?.contextCompacts?.length ?? 0) > 0"
-        :items="message.cost?.contextCompacts || []"
+        v-if="message.cost && message.cost.contextCompacts.length > 0"
+        :items="message.cost.contextCompacts"
       />
       <MarkdownRenderer :content="message.content" />
       <div class="msg-toolbar">

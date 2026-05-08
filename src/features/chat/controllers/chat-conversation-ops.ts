@@ -172,12 +172,7 @@ export function createConversationOperations(deps: ConversationOpsDeps) {
           reasoning: message.reasoning,
           attachments: message.attachments,
           tokenUsage: message.tokenUsage,
-          cost: message.cost
-            ? {
-                ...message.cost,
-                contextCompacts: message.cost.contextCompacts ?? [],
-              }
-            : undefined,
+          cost: message.cost,
         }));
 
       const restored = restoreRuntimeState(

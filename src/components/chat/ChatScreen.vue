@@ -269,8 +269,8 @@ defineExpose({
                 <MarkdownRenderer :content="props.assistantReasoning || ''" />
               </details>
               <ContextCompactNotice
-                v-if="(props.contextCompacts?.length ?? 0) > 0"
-                :items="props.contextCompacts || []"
+                v-if="props.contextCompacts && props.contextCompacts.length > 0"
+                :items="props.contextCompacts"
                 compact
               />
               <CurrentTurnActivityRail

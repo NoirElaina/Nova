@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, nextTick, onMounted, ref } from 'vue';
+import { computed, nextTick, onMounted, ref, watch } from 'vue';
 import type {
   AgentMode,
   AskUserAnswerSubmission,
@@ -50,6 +50,7 @@ const emit = defineEmits<{
 const chatAreaRef = ref<HTMLElement | null>(null);
 const reactionMap = ref<Record<number, 'up' | 'down' | undefined>>({});
 const copiedMap = ref<Record<string, boolean>>({});
+const showScrollToBottom = ref(false);
 const copyTimers: Record<string, ReturnType<typeof setTimeout> | undefined> = {};
 
 const formatNowTime = () => {
@@ -109,6 +110,7 @@ const scrollToBottom = async () => {
   if (chatAreaRef.value) {
     chatAreaRef.value.scrollTop = chatAreaRef.value.scrollHeight;
   }
+  updateScrollToBottomVisibility();
 };
 
 const scrollLastUserMessageToTop = async () => {
@@ -133,11 +135,48 @@ const scrollLastUserMessageToBottom = async () => {
   } else {
     chatAreaRef.value.scrollTop = chatAreaRef.value.scrollHeight;
   }
+  updateScrollToBottomVisibility();
+};
+
+const updateScrollToBottomVisibility = () => {
+  if (!chatAreaRef.value) {
+    showScrollToBottom.value = false;
+    return;
+  }
+  const distanceFromBottom =
+    chatAreaRef.value.scrollHeight - chatAreaRef.value.clientHeight - chatAreaRef.value.scrollTop;
+  showScrollToBottom.value = distanceFromBottom > 120;
+};
+
+const handleChatScroll = () => {
+  updateScrollToBottomVisibility();
+};
+
+const scrollToBottomSmooth = async () => {
+  await nextTick();
+  chatAreaRef.value?.scrollTo({
+    top: chatAreaRef.value.scrollHeight,
+    behavior: 'smooth',
+  });
 };
 
 onMounted(() => {
-  scrollToBottom();
+  void scrollToBottom();
 });
+
+watch(
+  () => [
+    props.messages.length,
+    props.assistantResponse,
+    props.assistantReasoning,
+    props.currentTurnToolEntries.length,
+    props.isGenerating,
+  ],
+  async () => {
+    await nextTick();
+    updateScrollToBottomVisibility();
+  },
+);
 
 const handleSend = (msg: string) => {
   emit('send', msg);
@@ -219,7 +258,11 @@ defineExpose({
 
 <template>
   <div class="flex flex-col h-full w-full max-w-4xl mx-auto pt-14">
-    <div class="flex-1 overflow-y-auto px-4 pb-4 custom-scrollbar" ref="chatAreaRef">
+    <div
+      class="chat-scroll-area flex-1 overflow-y-auto px-4 pb-4 custom-scrollbar"
+      ref="chatAreaRef"
+      @scroll.passive="handleChatScroll"
+    >
       <div class="w-full flex flex-col gap-6">
         <div
           v-for="(msg, index) in messages"
@@ -309,6 +352,20 @@ defineExpose({
       </div>
     </div>
 
+    <button
+      v-if="showScrollToBottom"
+      type="button"
+      class="scroll-to-bottom-btn"
+      aria-label="滚动到底部"
+      title="回到底部"
+      @click="scrollToBottomSmooth"
+    >
+      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.3" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+        <path d="M12 5v14" />
+        <path d="m5 12 7 7 7-7" />
+      </svg>
+    </button>
+
     <div class="w-full bg-transparent px-4 pt-4 pb-6">
       <div class="w-full max-w-[760px] mx-auto">
         <AskUserInputDialog
@@ -339,6 +396,10 @@ defineExpose({
 </template>
 
 <style scoped>
+.chat-scroll-area {
+  position: relative;
+}
+
 .custom-scrollbar::-webkit-scrollbar {
   width: 6px;
   height: 6px;
@@ -355,6 +416,58 @@ defineExpose({
 
 .dark .custom-scrollbar::-webkit-scrollbar-thumb {
   background-color: #444;
+}
+
+.scroll-to-bottom-btn {
+  position: absolute;
+  left: 50%;
+  bottom: 174px;
+  width: 34px;
+  height: 34px;
+  border: 1px solid rgba(222, 217, 206, 0.92);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.96);
+  color: #2f2a22;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  box-shadow: 0 14px 30px rgba(73, 62, 45, 0.14), 0 2px 6px rgba(73, 62, 45, 0.08);
+  backdrop-filter: blur(10px);
+  cursor: pointer;
+  z-index: 8;
+  transform: translateX(-50%);
+  transition: transform 0.18s ease, box-shadow 0.18s ease, border-color 0.18s ease;
+}
+
+.scroll-to-bottom-btn:hover {
+  transform: translateX(-50%) translateY(-2px);
+  box-shadow: 0 18px 34px rgba(73, 62, 45, 0.18), 0 4px 10px rgba(73, 62, 45, 0.12);
+  border-color: rgba(197, 163, 112, 0.7);
+}
+
+.scroll-to-bottom-btn:focus-visible {
+  outline: 2px solid rgba(185, 134, 66, 0.35);
+  outline-offset: 3px;
+}
+
+.dark .scroll-to-bottom-btn {
+  background: rgba(43, 40, 35, 0.96);
+  color: #f0ece5;
+  border-color: rgba(83, 76, 66, 0.95);
+  box-shadow: 0 14px 30px rgba(0, 0, 0, 0.34), 0 2px 6px rgba(0, 0, 0, 0.18);
+}
+
+.dark .scroll-to-bottom-btn:hover {
+  border-color: rgba(211, 160, 96, 0.68);
+  box-shadow: 0 18px 34px rgba(0, 0, 0, 0.42), 0 4px 10px rgba(0, 0, 0, 0.24);
+}
+
+@media (max-width: 900px) {
+  .scroll-to-bottom-btn {
+    bottom: 156px;
+    width: 32px;
+    height: 32px;
+  }
 }
 
 .token-badge {

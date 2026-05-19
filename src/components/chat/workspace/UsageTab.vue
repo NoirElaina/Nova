@@ -392,10 +392,23 @@ onBeforeUnmount(() => {
           <div class="usage-trends-title">Token 趋势</div>
           <div class="usage-trends-subtitle">按 assistant 回合统计，展示单轮消耗与会话累计消耗。</div>
         </div>
-        <div class="usage-trends-pill">{{ tokenTurnPoints.length }} 轮</div>
+        <div class="usage-trends-actions">
+          <div class="usage-range-toggle" aria-label="Token 趋势区间">
+            <button
+              v-for="option in tokenRangeOptions"
+              :key="String(option.value)"
+              type="button"
+              :class="{ active: selectedTokenRange === option.value }"
+              @click="selectedTokenRange = option.value"
+            >
+              {{ option.label }}
+            </button>
+          </div>
+          <div class="usage-trends-pill">{{ visibleTokenTurnPoints.length }}/{{ tokenTurnPoints.length }} 轮</div>
+        </div>
       </div>
 
-      <div v-if="tokenTurnPoints.length > 0" class="usage-trend-grid">
+      <div v-if="visibleTokenTurnPoints.length > 0" class="usage-trend-grid">
         <div class="usage-chart-card usage-chart-card--turn">
           <div class="usage-chart-header">
             <div>
@@ -416,7 +429,7 @@ onBeforeUnmount(() => {
           <div class="usage-chart-frame">
             <div ref="perTurnChartRef" class="usage-echart" />
             <div class="usage-chart-caption">
-              <span>第 1 轮</span>
+              <span>第 {{ visibleTokenTurnPoints[0]?.index ?? 0 }} 轮</span>
               <span>平均 {{ formatCompactNumber(averageTurnTokens) }}</span>
               <span>第 {{ latestTokenTurn?.index ?? 0 }} 轮</span>
             </div>
@@ -431,19 +444,19 @@ onBeforeUnmount(() => {
             </div>
             <div class="usage-chart-metrics">
               <div>
-                <span>Prompt</span>
-                <strong>{{ formatCompactNumber(totalInputTokens) }}</strong>
+                <span>区间 Prompt</span>
+                <strong>{{ formatCompactNumber(visibleInputTokens) }}</strong>
               </div>
               <div>
-                <span>输出</span>
-                <strong>{{ formatCompactNumber(totalOutputTokens) }}</strong>
+                <span>区间输出</span>
+                <strong>{{ formatCompactNumber(visibleOutputTokens) }}</strong>
               </div>
             </div>
           </div>
           <div class="usage-chart-frame">
             <div ref="cumulativeChartRef" class="usage-echart" />
             <div class="usage-chart-caption">
-              <span>起始</span>
+              <span>第 {{ visibleTokenTurnPoints[0]?.index ?? 0 }} 轮</span>
               <span>总计 {{ formatCompactNumber(totalTokens) }}</span>
               <span>当前</span>
             </div>
@@ -521,6 +534,14 @@ onBeforeUnmount(() => {
   margin-bottom: 14px;
 }
 
+.usage-trends-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
 .usage-trends-title {
   color: #1a1a1a;
   font-size: 16px;
@@ -544,6 +565,42 @@ onBeforeUnmount(() => {
   padding: 5px 10px;
 }
 
+.usage-range-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  border: 1px solid #e1d8c8;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.62);
+  padding: 3px;
+}
+
+.usage-range-toggle button {
+  border: 0;
+  border-radius: 999px;
+  background: transparent;
+  color: #847764;
+  cursor: pointer;
+  font-size: 12px;
+  line-height: 1;
+  padding: 6px 9px;
+  transition:
+    background 160ms ease,
+    color 160ms ease,
+    box-shadow 160ms ease;
+}
+
+.usage-range-toggle button:hover {
+  background: rgba(235, 228, 216, 0.72);
+  color: #4f473c;
+}
+
+.usage-range-toggle button.active {
+  background: #1f1f1d;
+  box-shadow: 0 5px 14px rgba(55, 45, 31, 0.16);
+  color: #fffaf0;
+}
+
 .dark .usage-trends-title {
   color: #ececec;
 }
@@ -556,6 +613,25 @@ onBeforeUnmount(() => {
   border-color: #46413a;
   background: rgba(255, 255, 255, 0.05);
   color: #b9b0a2;
+}
+
+.dark .usage-range-toggle {
+  border-color: #46413a;
+  background: rgba(255, 255, 255, 0.04);
+}
+
+.dark .usage-range-toggle button {
+  color: #b9b0a2;
+}
+
+.dark .usage-range-toggle button:hover {
+  background: rgba(255, 255, 255, 0.07);
+  color: #eee4d6;
+}
+
+.dark .usage-range-toggle button.active {
+  background: #eee4d6;
+  color: #1f1f1d;
 }
 
 .usage-trend-grid {

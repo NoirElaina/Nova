@@ -67,6 +67,7 @@ async fn ensure_schema(pool: &SqlitePool) -> Result<(), String> {
         CREATE TABLE IF NOT EXISTS conversation_tool_logs (
             conversation_id TEXT NOT NULL,
             log_id TEXT NOT NULL,
+            turn_id TEXT,
             tool_name TEXT NOT NULL,
             input_text TEXT NOT NULL,
             result_text TEXT NOT NULL,
@@ -110,6 +111,11 @@ async fn ensure_schema(pool: &SqlitePool) -> Result<(), String> {
     .execute(pool)
     .await
     .map_err(|e| e.to_string())?;
+
+    sqlx::query("ALTER TABLE conversation_tool_logs ADD COLUMN turn_id TEXT")
+        .execute(pool)
+        .await
+        .ok();
 
     Ok(())
 }
@@ -565,7 +571,7 @@ pub async fn load_conversation_tool_logs(
     let pool = get_pool_with_schema(app).await?;
 
     let rows = sqlx::query(
-        "SELECT log_id, tool_name, input_text, result_text, status, started_at, finished_at FROM conversation_tool_logs WHERE conversation_id = ? ORDER BY started_at ASC, log_id ASC",
+        "SELECT log_id, turn_id, tool_name, input_text, result_text, status, started_at, finished_at FROM conversation_tool_logs WHERE conversation_id = ? ORDER BY started_at ASC, log_id ASC",
     )
     .bind(conversation_id)
     .fetch_all(&pool)
@@ -576,6 +582,7 @@ pub async fn load_conversation_tool_logs(
         .into_iter()
         .map(|row| HistoryToolExecution {
             id: row.get::<String, _>("log_id"),
+            turn_id: row.get::<Option<String>, _>("turn_id"),
             tool_name: row.get::<String, _>("tool_name"),
             input: row.get::<String, _>("input_text"),
             result: row.get::<String, _>("result_text"),
@@ -634,6 +641,7 @@ pub async fn upsert_conversation_tool_log(
         INSERT INTO conversation_tool_logs (
             conversation_id,
             log_id,
+            turn_id,
             tool_name,
             input_text,
             result_text,
@@ -641,8 +649,9 @@ pub async fn upsert_conversation_tool_log(
             started_at,
             finished_at,
             updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(conversation_id, log_id) DO UPDATE SET
+            turn_id = excluded.turn_id,
             tool_name = excluded.tool_name,
             input_text = excluded.input_text,
             result_text = excluded.result_text,
@@ -654,6 +663,7 @@ pub async fn upsert_conversation_tool_log(
     )
     .bind(normalized_conversation_id)
     .bind(log_id)
+    .bind(log.turn_id.as_deref().map(str::trim).filter(|v| !v.is_empty()))
     .bind(tool_name)
     .bind(log.input)
     .bind(log.result)

@@ -59,6 +59,7 @@ export function useChatController() {
   const currentContextTokens = ref(0);
   const currentInputTokens = ref(0);
   const currentOutputTokens = ref(0);
+  const currentTurnId = ref<string | null>(null);
   const agentMode = ref<AgentMode>("agent");
   const planMode = ref(false);
   const isCreatingNewChat = ref(false);
@@ -86,6 +87,7 @@ export function useChatController() {
     currentContextTokens,
     currentInputTokens,
     currentOutputTokens,
+    currentTurnId,
     toolExecutionLogs,
     currentTurnToolIds,
     toolInputById,
@@ -207,6 +209,7 @@ export function useChatController() {
     currentContextTokens,
     currentInputTokens,
     currentOutputTokens,
+    currentTurnId,
     chatScreenRef,
     runtimeStateByConversation,
     activeRuntimeRefs,

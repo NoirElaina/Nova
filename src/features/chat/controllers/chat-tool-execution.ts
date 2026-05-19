@@ -35,6 +35,7 @@ export function startToolExecutionTraceInState(
   if (idx >= 0) {
     state.toolExecutionLogs[idx] = {
       ...state.toolExecutionLogs[idx],
+      turnId: state.currentTurnId ?? state.toolExecutionLogs[idx].turnId,
       toolName,
       status: "running",
       startedAt: Date.now(),
@@ -45,6 +46,7 @@ export function startToolExecutionTraceInState(
 
   state.toolExecutionLogs.push({
     id: toolId,
+    turnId: state.currentTurnId ?? undefined,
     toolName,
     input: "",
     result: "",

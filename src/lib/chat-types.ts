@@ -126,6 +126,7 @@ export interface ChatMessageEvent {
 
 export interface ToolExecutionEntry {
   id: string;
+  turnId?: string;
   toolName: string;
   input: string;
   result: string;

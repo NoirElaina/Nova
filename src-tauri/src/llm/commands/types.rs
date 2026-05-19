@@ -70,6 +70,8 @@ pub struct HistoryMessage {
 pub struct HistoryToolExecution {
     // 工具调用唯一 ID（会话内唯一）。
     pub id: String,
+    // 所属对话回合 ID（旧记录可能为空）。
+    pub turn_id: Option<String>,
     // 工具名称。
     pub tool_name: String,
     // 工具输入参数（JSON 文本或纯文本）。

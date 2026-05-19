@@ -65,6 +65,7 @@ type SendOpsDeps = {
   currentContextTokens: Ref<number>;
   currentInputTokens: Ref<number>;
   currentOutputTokens: Ref<number>;
+  currentTurnId: Ref<string | null>;
   chatScreenRef: Ref<ChatScreenHandle | null>;
   runtimeStateByConversation: Map<string, ConversationTurnRuntimeState>;
   activeRuntimeRefs: ActiveRuntimeRefs;
@@ -102,6 +103,7 @@ export function createSendOperations(deps: SendOpsDeps) {
     currentContextTokens,
     currentInputTokens,
     currentOutputTokens,
+    currentTurnId,
     chatScreenRef,
     runtimeStateByConversation,
     activeRuntimeRefs,
@@ -140,6 +142,7 @@ export function createSendOperations(deps: SendOpsDeps) {
     currentOutputTokens.value = 0;
     currentInputTokens.value = 0;
     resetToolTrackingState(activeRuntimeRefs);
+    currentTurnId.value = `turn-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 
     const rustMessages = nextMessages.map((message) => buildModelMessage(message));
 

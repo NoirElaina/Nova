@@ -45,10 +45,7 @@ pub(crate) fn is_auto_compact_circuit_open(conversation_id: Option<&str>) -> boo
     };
 
     if let Ok(map) = failure_map().lock() {
-        map.get(&key)
-            .copied()
-            .unwrap_or(0)
-            >= MAX_CONSECUTIVE_AUTO_COMPACT_FAILURES
+        map.get(&key).copied().unwrap_or(0) >= MAX_CONSECUTIVE_AUTO_COMPACT_FAILURES
     } else {
         false
     }

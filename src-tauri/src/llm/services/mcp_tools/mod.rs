@@ -35,13 +35,8 @@ pub async fn execute_dynamic_with_app(
 ) -> Option<String> {
     let (server_name, tool_name) = parse_mcp_tool_name(name)?;
     Some(
-        match crate::command::mcp::call_mcp_tool(
-            app.clone(),
-            server_name,
-            tool_name,
-            arguments,
-        )
-        .await
+        match crate::command::mcp::call_mcp_tool(app.clone(), server_name, tool_name, arguments)
+            .await
         {
             Ok(v) => v.to_string(),
             Err(e) => serde_json::json!({ "ok": false, "error": e }).to_string(),
@@ -49,7 +44,9 @@ pub async fn execute_dynamic_with_app(
     )
 }
 
-pub async fn connected_server_catalog(app: &AppHandle) -> Vec<crate::llm::services::mcp::McpServerStatus> {
+pub async fn connected_server_catalog(
+    app: &AppHandle,
+) -> Vec<crate::llm::services::mcp::McpServerStatus> {
     let mut statuses = match crate::llm::services::mcp::get_mcp_server_statuses(app.clone()).await {
         Ok(v) => v,
         Err(_) => return Vec::new(),
@@ -78,11 +75,12 @@ pub async fn connected_server_catalog(app: &AppHandle) -> Vec<crate::llm::servic
 pub async fn collect_mcp_tools(app: &AppHandle) -> Vec<Tool> {
     let mut tools_vec = Vec::new();
     for status in connected_server_catalog(app).await {
-        let listed = match crate::llm::services::mcp::list_mcp_tools(app.clone(), status.name.clone()).await
-        {
-            Ok(v) => v,
-            Err(_) => continue,
-        };
+        let listed =
+            match crate::llm::services::mcp::list_mcp_tools(app.clone(), status.name.clone()).await
+            {
+                Ok(v) => v,
+                Err(_) => continue,
+            };
 
         for t in listed {
             tools_vec.push(Tool {

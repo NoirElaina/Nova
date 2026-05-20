@@ -6,6 +6,7 @@ import WelcomeScreen from "./components/chat/WelcomeScreen.vue";
 import ChatScreen from "./components/chat/ChatScreen.vue";
 import SessionFilesPopover from "./components/chat/files/SessionFilesPopover.vue";
 import ExecutionTracePopover from "./components/chat/files/ExecutionTracePopover.vue";
+import ShellSessionPopover from "./components/chat/files/ShellSessionPopover.vue";
 import WorkspaceDrawer from "./components/chat/WorkspaceDrawer.vue";
 import HooksConfigScreen from "./components/hooks/HooksConfigScreen.vue";
 import AgentConfigScreen from "./components/agent/AgentConfigScreen.vue";
@@ -110,6 +111,11 @@ const openWorkspaceFile = (fileId: string) => {
             @open="refreshActiveConversationFiles"
             @open-workspace-file="openWorkspaceFile"
             @remove-pending-upload="handleRemovePendingUpload"
+          />
+          <ShellSessionPopover
+            :conversationId="activeConversationId || null"
+            :refreshKey="toolExecutionLogs.length"
+            :currentTurnToolEntries="currentTurnToolExecutionLogs"
           />
           <ExecutionTracePopover :entries="toolExecutionLogs" />
           <Button

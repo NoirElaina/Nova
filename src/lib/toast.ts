@@ -60,10 +60,16 @@ export async function installBackendErrorToastListener(): Promise<void> {
     message?: string;
     stage?: string | null;
   }>('backend-error', (event) => {
+    const payload = event.payload ?? {};
+    const source = `${payload.source ?? ''}`.toLowerCase();
+    const message = `${payload.message ?? ''}`.toLowerCase();
+    if (source === 'tool.execute' && message.includes('cancelled')) {
+      return;
+    }
     emitToast({
       variant: 'error',
       source: 'backend-error',
-      message: formatBackendErrorEvent(event.payload ?? {}),
+      message: formatBackendErrorEvent(payload),
     });
   });
 }

@@ -53,6 +53,15 @@ export type RagDocumentContent = RagDocumentMeta & {
   content: string;
 };
 
+export type ShellSessionStatus = {
+  exists: boolean;
+  alive: boolean;
+  busy: boolean;
+  cwd?: string | null;
+  backgroundPids: number[];
+  backgroundCount: number;
+};
+
 export async function listConversations(): Promise<ConversationMeta[]> {
   const items = await invoke<ConversationMeta[]>("list_conversations");
   return items || [];
@@ -122,6 +131,22 @@ export async function upsertConversationMemory(
 
 export async function deleteConversation(conversationId: string): Promise<void> {
   await invoke("delete_conversation", { conversationId });
+}
+
+export async function getShellSessionStatus(
+  conversationId: string | null,
+): Promise<ShellSessionStatus> {
+  return invoke<ShellSessionStatus>("get_shell_session_status", {
+    conversationId,
+  });
+}
+
+export async function resetShellSessionForConversation(
+  conversationId: string | null,
+): Promise<void> {
+  await invoke("reset_shell_session_for_conversation", {
+    conversationId,
+  });
 }
 
 export async function sendChatMessage(

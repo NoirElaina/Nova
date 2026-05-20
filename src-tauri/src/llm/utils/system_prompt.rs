@@ -97,10 +97,7 @@ pub fn load_system_prompt(app: &AppHandle, agent_mode: AgentMode) -> Result<Stri
                 .map(|s| format!("- **{}**: {}", s.name, s.description))
                 .collect::<Vec<String>>()
                 .join("\n");
-            format!(
-                "{}\n\n## Available Skills\n{}\n",
-                prompt_with_memory, lines
-            )
+            format!("{}\n\n## Available Skills\n{}\n", prompt_with_memory, lines)
         }
         _ => prompt_with_memory,
     };

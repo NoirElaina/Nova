@@ -122,10 +122,7 @@ pub enum PermissionAction {
 pub enum PermissionEnforcement {
     Allow,
     Deny(String),
-    AskUser {
-        request_id: String,
-        payload: String,
-    },
+    AskUser { request_id: String, payload: String },
 }
 
 fn permission_waiters() -> &'static Mutex<HashMap<String, oneshot::Sender<PermissionAction>>> {
@@ -214,7 +211,9 @@ fn prune_expired_pending(state: &mut ConversationPermissionState) {
         // request_id: 即将过期的待审批请求 id。
         // 两张索引表都要清理，避免 signature 指向已删除请求。
         if let Some(pending) = state.pending.remove(&request_id) {
-            state.pending_by_signature.remove(&pending.operation.signature);
+            state
+                .pending_by_signature
+                .remove(&pending.operation.signature);
             notify_permission_waiter(&request_id, PermissionAction::DenySession);
         }
     }
@@ -232,7 +231,11 @@ fn upsert_pending_request_id(
     operation: &ProtectedOperation,
 ) -> String {
     // Reuse an existing pending request for the same operation signature when possible.
-    if let Some(existing_id) = state.pending_by_signature.get(&operation.signature).cloned() {
+    if let Some(existing_id) = state
+        .pending_by_signature
+        .get(&operation.signature)
+        .cloned()
+    {
         // existing_id: 已记录的 request id。
         // signature -> request_id 命中且 request 仍在 pending，直接复用。
         if state.pending.contains_key(&existing_id) {
@@ -276,9 +279,8 @@ fn contains_shell_word(command: &str, target: &str) -> bool {
     command.split_whitespace().any(|token| {
         // token: 当前命令片段。
         // 去掉包裹在 token 两侧的标点，保留单词内部的 -/_。
-        let cleaned = token.trim_matches(|c: char| {
-            !c.is_ascii_alphanumeric() && c != '-' && c != '_'
-        });
+        let cleaned =
+            token.trim_matches(|c: char| !c.is_ascii_alphanumeric() && c != '-' && c != '_');
         // cleaned: 去除边界标点后的纯命令单词。
         // 这里做“完整单词”比较，避免误伤如 "rmdir" 对 "rm" 的包含。
         cleaned == target
@@ -290,7 +292,11 @@ fn truncate_chars(input: &str, max_chars: usize) -> String {
 }
 
 fn looks_like_shell_mcp(server: &str, tool: &str) -> bool {
-    let s = format!("{} {}", server.to_ascii_lowercase(), tool.to_ascii_lowercase());
+    let s = format!(
+        "{} {}",
+        server.to_ascii_lowercase(),
+        tool.to_ascii_lowercase()
+    );
     // s: server+tool 的小写拼接字符串。
     ["bash", "shell", "powershell", "pwsh", "terminal"]
         .iter()
@@ -299,7 +305,11 @@ fn looks_like_shell_mcp(server: &str, tool: &str) -> bool {
 }
 
 fn looks_like_file_mcp(server: &str, tool: &str) -> bool {
-    let s = format!("{} {}", server.to_ascii_lowercase(), tool.to_ascii_lowercase());
+    let s = format!(
+        "{} {}",
+        server.to_ascii_lowercase(),
+        tool.to_ascii_lowercase()
+    );
     // s: server+tool 的小写拼接字符串。
     ["file", "filesystem", "fs", "write", "edit", "replace"]
         .iter()
@@ -326,7 +336,8 @@ fn pick_string_field<'a>(value: &'a Value, keys: &[&str]) -> Option<&'a str> {
 fn check_mcp_operation(server: &str, tool: &str, arguments: &Value) -> Result<(), String> {
     if looks_like_shell_mcp(server, tool) {
         // 兼容不同 server 的参数命名。
-        let command = pick_string_field(arguments, &["command", "cmd", "script"]).unwrap_or_default();
+        let command =
+            pick_string_field(arguments, &["command", "cmd", "script"]).unwrap_or_default();
         // command: shell 操作中提取到的命令字符串。
         return check_command(command);
     }
@@ -372,7 +383,12 @@ pub(crate) fn describe_shell_command_permission(
 
     Some(ToolPermissionDescriptor {
         signature: format!("{}:{}", tool_name, normalized),
-        preview: format!("{}（{}）：{}", preview_label, tool_name, truncate_chars(command, 180)),
+        preview: format!(
+            "{}（{}）：{}",
+            preview_label,
+            tool_name,
+            truncate_chars(command, 180)
+        ),
         warning: warning.clone(),
         needs_approval: warning.is_some(),
     })
@@ -406,7 +422,12 @@ pub(crate) fn describe_file_write_permission(
 
     Some(ToolPermissionDescriptor {
         signature: format!("{}:{}", tool_name, normalized),
-        preview: format!("{}（{}）：{}", preview_label, tool_name, truncate_chars(path, 200)),
+        preview: format!(
+            "{}（{}）：{}",
+            preview_label,
+            tool_name,
+            truncate_chars(path, 200)
+        ),
         warning: warning.clone(),
         needs_approval: warning.is_some(),
     })
@@ -669,7 +690,11 @@ pub async fn await_permission_decision(
             let state = conversation_state_mut(&mut guard, conversation_scope.as_deref());
             prune_expired_pending(state);
             prune_resolved_decisions(state);
-            state.resolved_by_request.get(request_id).copied().map(|r| r.action)
+            state
+                .resolved_by_request
+                .get(request_id)
+                .copied()
+                .map(|r| r.action)
         };
 
         if let Some(action) = resolved {

@@ -75,9 +75,10 @@ fn latest_user_query_text(messages: &[Message]) -> Option<String> {
 
 async fn global_memory_message(app: &AppHandle, incoming: &[Message]) -> Option<Message> {
     let query = latest_user_query_text(incoming);
-    let entries = crate::llm::services::memory_dir::relevant_global_memory(app, query.as_deref(), 8)
-        .await
-        .ok()?;
+    let entries =
+        crate::llm::services::memory_dir::relevant_global_memory(app, query.as_deref(), 8)
+            .await
+            .ok()?;
     if entries.is_empty() {
         return None;
     }
@@ -180,12 +181,11 @@ pub async fn assemble_messages_for_turn(
         && !has_session_restore_marker(&assembled)
         && conversation_id.is_some()
     {
-        if let Some(restore_msg) =
-            crate::llm::utils::session_restore::build_resume_context_message(
-                app,
-                conversation_id.unwrap_or_default(),
-            )
-            .await
+        if let Some(restore_msg) = crate::llm::utils::session_restore::build_resume_context_message(
+            app,
+            conversation_id.unwrap_or_default(),
+        )
+        .await
         {
             assembled.insert(0, restore_msg);
         }

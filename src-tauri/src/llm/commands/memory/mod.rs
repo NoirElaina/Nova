@@ -1,15 +1,17 @@
 use serde_json::Value;
 use sqlx::{Row, SqlitePool};
 
-use crate::llm::commands::types::{
-    ConversationHandover, ConversationMemory, HistoryMessage,
-};
+use crate::llm::commands::types::{ConversationHandover, ConversationMemory, HistoryMessage};
 
 pub fn derive_title_from_message(content: &str) -> String {
     // 取首行文本作为标题候选。
     let first_line = content.lines().next().unwrap_or("").trim();
     // 首行为空时回退到全文裁剪。
-    let source = if first_line.is_empty() { content.trim() } else { first_line };
+    let source = if first_line.is_empty() {
+        content.trim()
+    } else {
+        first_line
+    };
     // 标题最大字符数。
     let max_chars = 24usize;
     // 构建截断后的标题。
@@ -64,12 +66,20 @@ pub fn build_memory_from_history(
             // 归一化消息内容。
             let content = normalize_inline(&m.content);
             // 单条摘要截断到 120 字符。
-            format!("{}: {}", speaker, content.chars().take(120).collect::<String>())
+            format!(
+                "{}: {}",
+                speaker,
+                content.chars().take(120).collect::<String>()
+            )
         })
         .collect::<Vec<_>>();
 
     // 用分隔符拼装摘要并整体截断到 800 字符。
-    let summary = summary_parts.join(" | ").chars().take(800).collect::<String>();
+    let summary = summary_parts
+        .join(" | ")
+        .chars()
+        .take(800)
+        .collect::<String>();
     // 纯空白摘要视为无效。
     if summary.trim().is_empty() {
         return None;

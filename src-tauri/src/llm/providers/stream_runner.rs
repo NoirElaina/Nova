@@ -12,12 +12,12 @@ use std::time::Duration;
 use tauri::{AppHandle, Emitter};
 use tokio::time::timeout;
 
-use crate::llm::query_engine::ChatMessageEvent;
+use super::sse_utils::{extract_sse_data, find_sse_event_delimiter, truncate_for_log};
 use crate::llm::providers::{ProviderTurnError, ProviderTurnResult};
+use crate::llm::query_engine::ChatMessageEvent;
 use crate::llm::tools;
 use crate::llm::types::{ContentBlock, Message, Role};
 use crate::llm::utils::error_event::emit_backend_error;
-use super::sse_utils::{extract_sse_data, find_sse_event_delimiter, truncate_for_log};
 
 // ─────────────────────────────────────────────
 // Delta — 协议无关的流语义事件
@@ -40,15 +40,9 @@ pub enum Delta {
     /// 推理/思考增量（reasoning_content / thinking delta）。
     Reasoning(String),
     /// 工具调用开始（首次出现工具名）。
-    ToolStart {
-        id: Option<String>,
-        name: String,
-    },
+    ToolStart { id: Option<String>, name: String },
     /// 工具参数 JSON 增量。
-    ToolArgsDelta {
-        id: Option<String>,
-        args: String,
-    },
+    ToolArgsDelta { id: Option<String>, args: String },
     /// 一批已完整累积的工具调用，parser 决定何时 emit（触发执行）。
     ToolsReady(Vec<ReadyToolCall>),
     /// Token 用量更新。
@@ -57,14 +51,9 @@ pub enum Delta {
         output: Option<u32>,
     },
     /// 流结束信号，附带可选 stop_reason。
-    Stop {
-        reason: Option<String>,
-    },
+    Stop { reason: Option<String> },
     /// 完整的 Anthropic thinking/reasoning 块（写入 output_blocks 供多轮上下文传递）。
-    ThinkingBlock {
-        thinking: String,
-        signature: String,
-    },
+    ThinkingBlock { thinking: String, signature: String },
     /// 流内发生错误，附带错误消息（runner 会上报并返回 Err）。
     Error(String),
 }
@@ -171,8 +160,21 @@ pub async fn run_streaming<P: StreamParser>(
             Ok(v) => v,
             Err(e) => {
                 let msg = format!("{} stream chunk error: {}", provider, e);
-                emit_backend_error(app, &format!("llm.providers.{}", provider), msg.clone(), Some("stream.chunk"));
-                return Err(ProviderTurnError::with_partial(msg, build_partial_cancelled_messages(&generated_text, &mut output_blocks, &mut tool_result_blocks, &mut additional_context_messages)));
+                emit_backend_error(
+                    app,
+                    &format!("llm.providers.{}", provider),
+                    msg.clone(),
+                    Some("stream.chunk"),
+                );
+                return Err(ProviderTurnError::with_partial(
+                    msg,
+                    build_partial_cancelled_messages(
+                        &generated_text,
+                        &mut output_blocks,
+                        &mut tool_result_blocks,
+                        &mut additional_context_messages,
+                    ),
+                ));
             }
         };
         sse_buffer.extend_from_slice(&bytes);
@@ -192,8 +194,21 @@ pub async fn run_streaming<P: StreamParser>(
                         provider,
                         truncate_for_log(&preview, 800)
                     );
-                    emit_backend_error(app, &format!("llm.providers.{}", provider), msg.clone(), Some("stream.utf8"));
-                    return Err(ProviderTurnError::with_partial(msg, build_partial_cancelled_messages(&generated_text, &mut output_blocks, &mut tool_result_blocks, &mut additional_context_messages)));
+                    emit_backend_error(
+                        app,
+                        &format!("llm.providers.{}", provider),
+                        msg.clone(),
+                        Some("stream.utf8"),
+                    );
+                    return Err(ProviderTurnError::with_partial(
+                        msg,
+                        build_partial_cancelled_messages(
+                            &generated_text,
+                            &mut output_blocks,
+                            &mut tool_result_blocks,
+                            &mut additional_context_messages,
+                        ),
+                    ));
                 }
             };
 
@@ -217,14 +232,28 @@ pub async fn run_streaming<P: StreamParser>(
                     turn_state: Some("raw_stream".into()),
                     conversation_id: conversation_id.map(str::to_string),
                 },
-            ).ok();
+            )
+            .ok();
 
             // 调用 provider parser 解析 data 行 → Delta 列表。
             let deltas = match parser.parse_event(&data) {
                 Ok(d) => d,
                 Err(e) => {
-                    emit_backend_error(app, &format!("llm.providers.{}", provider), e.clone(), Some("stream.parse"));
-                    return Err(ProviderTurnError::with_partial(e, build_partial_cancelled_messages(&generated_text, &mut output_blocks, &mut tool_result_blocks, &mut additional_context_messages)));
+                    emit_backend_error(
+                        app,
+                        &format!("llm.providers.{}", provider),
+                        e.clone(),
+                        Some("stream.parse"),
+                    );
+                    return Err(ProviderTurnError::with_partial(
+                        e,
+                        build_partial_cancelled_messages(
+                            &generated_text,
+                            &mut output_blocks,
+                            &mut tool_result_blocks,
+                            &mut additional_context_messages,
+                        ),
+                    ));
                 }
             };
 
@@ -245,8 +274,18 @@ pub async fn run_streaming<P: StreamParser>(
                     &mut last_stop_reason,
                     &mut current_input_tokens,
                     &mut current_output_tokens,
-                ).await {
-                    return Err(ProviderTurnError::with_partial(e, build_partial_cancelled_messages(&generated_text, &mut output_blocks, &mut tool_result_blocks, &mut additional_context_messages)));
+                )
+                .await
+                {
+                    return Err(ProviderTurnError::with_partial(
+                        e,
+                        build_partial_cancelled_messages(
+                            &generated_text,
+                            &mut output_blocks,
+                            &mut tool_result_blocks,
+                            &mut additional_context_messages,
+                        ),
+                    ));
                 }
             }
         }
@@ -270,8 +309,18 @@ pub async fn run_streaming<P: StreamParser>(
             &mut last_stop_reason,
             &mut current_input_tokens,
             &mut current_output_tokens,
-        ).await {
-            return Err(ProviderTurnError::with_partial(e, build_partial_cancelled_messages(&generated_text, &mut output_blocks, &mut tool_result_blocks, &mut additional_context_messages)));
+        )
+        .await
+        {
+            return Err(ProviderTurnError::with_partial(
+                e,
+                build_partial_cancelled_messages(
+                    &generated_text,
+                    &mut output_blocks,
+                    &mut tool_result_blocks,
+                    &mut additional_context_messages,
+                ),
+            ));
         }
     }
 
@@ -284,13 +333,28 @@ pub async fn run_streaming<P: StreamParser>(
             sse_buffer.len(),
             truncate_for_log(&preview, 800)
         );
-        emit_backend_error(app, &format!("llm.providers.{}", provider), msg.clone(), Some("stream.incomplete_event"));
-        return Err(ProviderTurnError::with_partial(msg, build_partial_cancelled_messages(&generated_text, &mut output_blocks, &mut tool_result_blocks, &mut additional_context_messages)));
+        emit_backend_error(
+            app,
+            &format!("llm.providers.{}", provider),
+            msg.clone(),
+            Some("stream.incomplete_event"),
+        );
+        return Err(ProviderTurnError::with_partial(
+            msg,
+            build_partial_cancelled_messages(
+                &generated_text,
+                &mut output_blocks,
+                &mut tool_result_blocks,
+                &mut additional_context_messages,
+            ),
+        ));
     }
 
     // 将剩余累积文本写入输出块。
     if !generated_text.is_empty() {
-        output_blocks.push(ContentBlock::Text { text: generated_text.clone() });
+        output_blocks.push(ContentBlock::Text {
+            text: generated_text.clone(),
+        });
     }
 
     // 若流内未发 stop，这里补发一次。
@@ -309,7 +373,8 @@ pub async fn run_streaming<P: StreamParser>(
                 turn_state: Some("intermediate".into()),
                 conversation_id: conversation_id.map(str::to_string),
             },
-        ).ok();
+        )
+        .ok();
     }
 
     let output_blocks_empty = output_blocks.is_empty();
@@ -345,7 +410,13 @@ pub async fn run_streaming<P: StreamParser>(
 
     // @@日志记录 wire_response — 记录 AI 完整回复文本及 token 用量（流结束后写一次）。
     if !generated_text.is_empty() {
-        crate::llm::utils::turn_log::log_wire_response(app, conversation_id, &generated_text, current_input_tokens, current_output_tokens);
+        crate::llm::utils::turn_log::log_wire_response(
+            app,
+            conversation_id,
+            &generated_text,
+            current_input_tokens,
+            current_output_tokens,
+        );
     }
 
     if output_blocks_empty && tool_result_blocks_empty {
@@ -353,7 +424,12 @@ pub async fn run_streaming<P: StreamParser>(
             "{} provider returned empty assistant message. stop_reason={:?}, input_tokens={:?}, output_tokens={:?}",
             provider, final_stop_reason, current_input_tokens, current_output_tokens
         );
-        emit_backend_error(app, &format!("llm.providers.{}", provider), msg.clone(), Some("stream.empty_assistant"));
+        emit_backend_error(
+            app,
+            &format!("llm.providers.{}", provider),
+            msg.clone(),
+            Some("stream.empty_assistant"),
+        );
         return Err(ProviderTurnError::new(msg));
     }
 
@@ -384,7 +460,9 @@ fn build_partial_cancelled_messages(
     additional_context_messages: &mut Vec<Message>,
 ) -> Vec<Message> {
     if !generated_text.is_empty() {
-        output_blocks.push(ContentBlock::Text { text: generated_text.to_string() });
+        output_blocks.push(ContentBlock::Text {
+            text: generated_text.to_string(),
+        });
     }
     if output_blocks.is_empty() {
         return Vec::new();
@@ -446,7 +524,8 @@ async fn process_delta(
                     turn_state: Some("streaming_text".into()),
                     conversation_id: conversation_id.map(str::to_string),
                 },
-            ).ok();
+            )
+            .ok();
         }
 
         Delta::Reasoning(text) => {
@@ -464,7 +543,8 @@ async fn process_delta(
                     turn_state: Some("streaming_reasoning".into()),
                     conversation_id: conversation_id.map(str::to_string),
                 },
-            ).ok();
+            )
+            .ok();
         }
 
         Delta::ToolStart { id, name } => {
@@ -482,7 +562,8 @@ async fn process_delta(
                     turn_state: Some("tool_running".into()),
                     conversation_id: conversation_id.map(str::to_string),
                 },
-            ).ok();
+            )
+            .ok();
         }
 
         Delta::ToolArgsDelta { id, args } => {
@@ -500,7 +581,8 @@ async fn process_delta(
                     turn_state: Some("tool_input_streaming".into()),
                     conversation_id: conversation_id.map(str::to_string),
                 },
-            ).ok();
+            )
+            .ok();
         }
 
         Delta::ToolsReady(ready_calls) => {
@@ -526,7 +608,8 @@ async fn process_delta(
                         turn_state: Some("tool_executing".into()),
                         conversation_id: conversation_id.map(str::to_string),
                     },
-                ).ok();
+                )
+                .ok();
                 call_requests.push(tools::ToolCallRequest {
                     id: call.id,
                     name: call.name,
@@ -534,11 +617,8 @@ async fn process_delta(
                 });
             }
 
-            let executed_calls = tools::execute_tool_calls_with_app(
-                app,
-                conversation_id,
-                call_requests,
-            ).await;
+            let executed_calls =
+                tools::execute_tool_calls_with_app(app, conversation_id, call_requests).await;
 
             for executed in executed_calls {
                 let serialized_input = serde_json::to_string_pretty(&executed.input)
@@ -558,7 +638,8 @@ async fn process_delta(
                         turn_state: Some("tool_completed".into()),
                         conversation_id: conversation_id.map(str::to_string),
                     },
-                ).ok();
+                )
+                .ok();
 
                 // Anthropic 特有：工具结果为 needs_user_input 时补发 stop。
                 if is_needs_user_input_payload(&executed.output) {
@@ -576,13 +657,16 @@ async fn process_delta(
                             turn_state: Some("awaiting_user_input".into()),
                             conversation_id: conversation_id.map(str::to_string),
                         },
-                    ).ok();
+                    )
+                    .ok();
                 }
 
                 tool_result_blocks.push(ContentBlock::ToolResult {
                     tool_use_id: executed.id,
                     is_error: executed.is_error,
-                    content: vec![ContentBlock::Text { text: executed.output }],
+                    content: vec![ContentBlock::Text {
+                        text: executed.output,
+                    }],
                 });
 
                 if !executed.additional_messages.is_empty() {
@@ -625,11 +709,18 @@ async fn process_delta(
                     turn_state: Some("intermediate".into()),
                     conversation_id: conversation_id.map(str::to_string),
                 },
-            ).ok();
+            )
+            .ok();
         }
 
-        Delta::ThinkingBlock { thinking, signature } => {
-            output_blocks.push(ContentBlock::Thinking { thinking, signature });
+        Delta::ThinkingBlock {
+            thinking,
+            signature,
+        } => {
+            output_blocks.push(ContentBlock::Thinking {
+                thinking,
+                signature,
+            });
         }
 
         Delta::Error(msg) => {
@@ -649,6 +740,10 @@ async fn process_delta(
 fn is_needs_user_input_payload(raw: &str) -> bool {
     serde_json::from_str::<serde_json::Value>(raw)
         .ok()
-        .and_then(|v| v.get("type").and_then(|t| t.as_str()).map(|s| s == "needs_user_input"))
+        .and_then(|v| {
+            v.get("type")
+                .and_then(|t| t.as_str())
+                .map(|s| s == "needs_user_input")
+        })
         .unwrap_or(false)
 }

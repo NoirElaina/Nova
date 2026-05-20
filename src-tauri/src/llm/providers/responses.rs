@@ -1,11 +1,11 @@
-﻿use reqwest::Client;
+use reqwest::Client;
 use serde::Serialize;
 use serde_json::Value;
 use std::collections::BTreeMap;
 use tauri::AppHandle;
 
+use crate::llm::providers::stream_runner::{run_streaming, Delta, ReadyToolCall, StreamParser};
 use crate::llm::providers::{ProviderTurnError, ProviderTurnResult};
-use crate::llm::providers::stream_runner::{Delta, ReadyToolCall, StreamParser, run_streaming};
 use crate::llm::tools;
 use crate::llm::types::{AgentMode, ContentBlock, Message, Role};
 use crate::llm::utils::error_event::emit_backend_error;
@@ -64,7 +64,6 @@ struct PendingFunctionCall {
     arguments: String,
 }
 
-
 //   Assistant(Blocks) → text 转换为 message item，ToolUse 转换为 function_call item
 fn messages_to_input(messages: &[Message]) -> Vec<Value> {
     let mut input: Vec<Value> = Vec::new();
@@ -101,7 +100,11 @@ fn messages_to_input(messages: &[Message]) -> Vec<Value> {
                                     }));
                                 }
                             }
-                            ContentBlock::ToolResult { tool_use_id, content, .. } => {
+                            ContentBlock::ToolResult {
+                                tool_use_id,
+                                content,
+                                ..
+                            } => {
                                 // 工具结果作为顶层 function_call_output 项，call_id 对应工具调用 ID。
                                 let text = content
                                     .iter()
@@ -152,7 +155,11 @@ fn messages_to_input(messages: &[Message]) -> Vec<Value> {
                             ContentBlock::Text { text } => {
                                 text_content.push(text.as_str());
                             }
-                            ContentBlock::ToolUse { id, name, input: tool_input } => {
+                            ContentBlock::ToolUse {
+                                id,
+                                name,
+                                input: tool_input,
+                            } => {
                                 tool_uses.push((id, name, tool_input));
                             }
                             // Thinking 块跳过（Responses API 不支持）。
@@ -186,7 +193,6 @@ fn messages_to_input(messages: &[Message]) -> Vec<Value> {
     input
 }
 
-
 // ─────────────────────────────────────────────
 // ResponsesStreamParser — 实现 StreamParser trait
 // ─────────────────────────────────────────────
@@ -197,18 +203,28 @@ struct ResponsesStreamParser {
 
 impl ResponsesStreamParser {
     fn new() -> Self {
-        Self { pending_fn_calls: BTreeMap::new() }
+        Self {
+            pending_fn_calls: BTreeMap::new(),
+        }
     }
 }
 
 impl StreamParser for ResponsesStreamParser {
-    fn provider_name(&self) -> &'static str { "responses" }
+    fn provider_name(&self) -> &'static str {
+        "responses"
+    }
 
     fn parse_event(&mut self, data: &str) -> Result<Vec<Delta>, String> {
-        if data == "[DONE]" { return Ok(Vec::new()); }
+        if data == "[DONE]" {
+            return Ok(Vec::new());
+        }
 
         let event: Value = serde_json::from_str(data).map_err(|e| {
-            format!("Failed to parse Responses API SSE event: {}. Data: {}", e, truncate_for_log(data, 1200))
+            format!(
+                "Failed to parse Responses API SSE event: {}. Data: {}",
+                e,
+                truncate_for_log(data, 1200)
+            )
         })?;
 
         let event_type = event["type"].as_str().unwrap_or("").to_owned();
@@ -225,7 +241,10 @@ impl StreamParser for ResponsesStreamParser {
                     entry.call_id = call_id.clone();
                     entry.name = name.clone();
                     if let Some(n) = name {
-                        deltas.push(Delta::ToolStart { id: call_id, name: n });
+                        deltas.push(Delta::ToolStart {
+                            id: call_id,
+                            name: n,
+                        });
                     }
                 }
             }
@@ -263,12 +282,25 @@ impl StreamParser for ResponsesStreamParser {
                     return Ok(Vec::new());
                 }
 
-                let call_id = item["call_id"].as_str().map(str::to_string)
-                    .or_else(|| self.pending_fn_calls.get(&output_index).and_then(|p| p.call_id.clone()));
-                let name = item["name"].as_str().map(str::to_string)
-                    .or_else(|| self.pending_fn_calls.get(&output_index).and_then(|p| p.name.clone()));
-                let arguments = item["arguments"].as_str().map(str::to_string)
-                    .unwrap_or_else(|| self.pending_fn_calls.get(&output_index).map(|p| p.arguments.clone()).unwrap_or_default());
+                let call_id = item["call_id"].as_str().map(str::to_string).or_else(|| {
+                    self.pending_fn_calls
+                        .get(&output_index)
+                        .and_then(|p| p.call_id.clone())
+                });
+                let name = item["name"].as_str().map(str::to_string).or_else(|| {
+                    self.pending_fn_calls
+                        .get(&output_index)
+                        .and_then(|p| p.name.clone())
+                });
+                let arguments = item["arguments"]
+                    .as_str()
+                    .map(str::to_string)
+                    .unwrap_or_else(|| {
+                        self.pending_fn_calls
+                            .get(&output_index)
+                            .map(|p| p.arguments.clone())
+                            .unwrap_or_default()
+                    });
                 self.pending_fn_calls.remove(&output_index);
 
                 let (call_id, name) = match (call_id, name) {
@@ -286,7 +318,11 @@ impl StreamParser for ResponsesStreamParser {
                         name, e, truncate_for_log(&arguments, 800))
                 })?;
 
-                deltas.push(Delta::ToolsReady(vec![ReadyToolCall { id: call_id, name, input: input_value }]));
+                deltas.push(Delta::ToolsReady(vec![ReadyToolCall {
+                    id: call_id,
+                    name,
+                    input: input_value,
+                }]));
             }
 
             "response.completed" => {
@@ -294,13 +330,18 @@ impl StreamParser for ResponsesStreamParser {
                 let input = usage["input_tokens"].as_u64().map(|v| v as u32);
                 let output = usage["output_tokens"].as_u64().map(|v| v as u32);
                 deltas.push(Delta::Usage { input, output });
-                deltas.push(Delta::Stop { reason: Some("end_turn".to_string()) });
+                deltas.push(Delta::Stop {
+                    reason: Some("end_turn".to_string()),
+                });
             }
 
             "error" => {
                 let code = event["code"].as_str().unwrap_or("unknown");
                 let message = event["message"].as_str().unwrap_or("unknown error");
-                return Err(format!("Responses API stream error: code={}, message={}", code, message));
+                return Err(format!(
+                    "Responses API stream error: code={}, message={}",
+                    code, message
+                ));
             }
 
             _ => {}

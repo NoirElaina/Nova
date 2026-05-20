@@ -247,6 +247,47 @@ const liveStatusText = computed(() => {
   if (props.currentStage === 'compacting') {
     return '正在压缩上下文';
   }
+  const waitKind = liveWaitKind();
+  if (waitKind === 'permission') {
+    return '等待你确认工具权限';
+  }
+  if (waitKind === 'question') {
+    return '等待你补充信息';
+  }
+  const runningTool = props.currentTurnToolEntries.find((entry) => entry.status === 'running');
+  if (runningTool) {
+    const name = runningTool.toolName.toLowerCase();
+    if (
+      name.includes('read') ||
+      name.includes('file') ||
+      name.includes('rag') ||
+      name.includes('document')
+    ) {
+      return '正在读文件';
+    }
+    if (
+      name.includes('bash') ||
+      name.includes('powershell') ||
+      name.includes('shell') ||
+      name.includes('command')
+    ) {
+      return '正在执行命令';
+    }
+    if (name.includes('compact')) {
+      return '正在压缩上下文';
+    }
+    return `正在调用工具：${runningTool.toolName}`;
+  }
+  const hasFinishedTool = props.currentTurnToolEntries.some((entry) => entry.status !== 'running');
+  if (hasFinishedTool && !streamingBodyText()) {
+    return '等待模型总结';
+  }
+  if (hasStreamingReasoning() && !streamingBodyText()) {
+    return '正在思考';
+  }
+  if (props.isGenerating) {
+    return '正在生成回复';
+  }
   return '正在处理你的请求';
 });
 

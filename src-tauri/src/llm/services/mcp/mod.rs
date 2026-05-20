@@ -18,11 +18,7 @@ use stdio::{connect_stdio, StdioMcpConnection};
 use streamable_http::{connect_streamable_http, StreamableHttpMcpConnection};
 
 pub use types::{
-    McpResourceInfo,
-    McpRuntimeStatus,
-    McpServerConfig,
-    McpServerEntry,
-    McpServerStatus,
+    McpResourceInfo, McpRuntimeStatus, McpServerConfig, McpServerEntry, McpServerStatus,
     McpToolInfo,
 };
 
@@ -187,43 +183,45 @@ async fn connect_server(
     Option<ServerConnection>,
 ) {
     match config {
-        McpServerConfig::Stdio { command, args, env } => match connect_stdio(command, args, env).await {
-            Ok(mut conn) => {
-                let tool_count = match timeout(MCP_CONNECT_TIMEOUT, conn.list_tools()).await {
-                    Err(_) => {
-                        let _ = conn.shutdown().await;
-                        return (
+        McpServerConfig::Stdio { command, args, env } => {
+            match connect_stdio(command, args, env).await {
+                Ok(mut conn) => {
+                    let tool_count = match timeout(MCP_CONNECT_TIMEOUT, conn.list_tools()).await {
+                        Err(_) => {
+                            let _ = conn.shutdown().await;
+                            return (
                             McpRuntimeStatus::Error,
                             0,
                             Some("MCP tools/list timeout (30s). Server may still be downloading dependencies or stuck during startup.".to_string()),
                             None,
-                        )
-                    }
-                    Ok(result) => match result {
-                        Ok(tools) => tools.len(),
-                        Err(e) => {
-                            return (
-                                McpRuntimeStatus::Connected,
-                                0,
-                                Some(e),
-                                Some(ServerConnection::Stdio(conn)),
-                            )
+                        );
                         }
-                    },
-                };
-                (
-                    McpRuntimeStatus::Connected,
-                    tool_count,
-                    None,
-                    Some(ServerConnection::Stdio(conn)),
-                )
+                        Ok(result) => match result {
+                            Ok(tools) => tools.len(),
+                            Err(e) => {
+                                return (
+                                    McpRuntimeStatus::Connected,
+                                    0,
+                                    Some(e),
+                                    Some(ServerConnection::Stdio(conn)),
+                                )
+                            }
+                        },
+                    };
+                    (
+                        McpRuntimeStatus::Connected,
+                        tool_count,
+                        None,
+                        Some(ServerConnection::Stdio(conn)),
+                    )
+                }
+                Err(e) => (McpRuntimeStatus::Error, 0, Some(e), None),
             }
-            Err(e) => (McpRuntimeStatus::Error, 0, Some(e), None),
-        },
+        }
         McpServerConfig::Sse { url } => {
-            let error = connect_sse(url)
-                .err()
-                .unwrap_or_else(|| "SSE MCP runtime not implemented yet. Use stdio for now.".to_string());
+            let error = connect_sse(url).err().unwrap_or_else(|| {
+                "SSE MCP runtime not implemented yet. Use stdio for now.".to_string()
+            });
             (McpRuntimeStatus::Error, 0, Some(error), None)
         }
         McpServerConfig::StreamableHttp { url } => match connect_streamable_http(url).await {
@@ -360,7 +358,11 @@ async fn ensure_runtime_loaded(app: &AppHandle) {
     *loaded = true;
 }
 
-pub async fn add_mcp_server(app: AppHandle, name: String, config: McpServerConfig) -> Result<(), String> {
+pub async fn add_mcp_server(
+    app: AppHandle,
+    name: String,
+    config: McpServerConfig,
+) -> Result<(), String> {
     ensure_runtime_loaded(&app).await;
 
     if name.trim().is_empty() {
@@ -545,7 +547,11 @@ pub async fn reload_all_mcp_servers(app: AppHandle) -> Result<(), String> {
     Ok(())
 }
 
-pub async fn set_mcp_server_enabled(app: AppHandle, name: String, enabled: bool) -> Result<(), String> {
+pub async fn set_mcp_server_enabled(
+    app: AppHandle,
+    name: String,
+    enabled: bool,
+) -> Result<(), String> {
     ensure_runtime_loaded(&app).await;
 
     let cfg = {
@@ -587,7 +593,10 @@ pub async fn set_mcp_server_enabled(app: AppHandle, name: String, enabled: bool)
     Ok(())
 }
 
-pub async fn list_mcp_tools(app: AppHandle, server_name: String) -> Result<Vec<McpToolInfo>, String> {
+pub async fn list_mcp_tools(
+    app: AppHandle,
+    server_name: String,
+) -> Result<Vec<McpToolInfo>, String> {
     ensure_runtime_loaded(&app).await;
 
     let needs_reconnect = {
@@ -642,7 +651,10 @@ pub async fn list_mcp_tools(app: AppHandle, server_name: String) -> Result<Vec<M
     Ok(tools)
 }
 
-pub async fn list_mcp_resources(app: AppHandle, server_name: String) -> Result<Vec<McpResourceInfo>, String> {
+pub async fn list_mcp_resources(
+    app: AppHandle,
+    server_name: String,
+) -> Result<Vec<McpResourceInfo>, String> {
     ensure_runtime_loaded(&app).await;
 
     let needs_reconnect = {

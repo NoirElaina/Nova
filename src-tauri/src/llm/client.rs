@@ -37,13 +37,9 @@ pub async fn send_chat_message(
     );
 
     // 通过兼容层入口发送请求。
-    let result = crate::llm::query_engine::send_chat_message(
-        app,
-        conversation_id,
-        messages,
-        resolved_mode,
-    )
-    .await;
+    let result =
+        crate::llm::query_engine::send_chat_message(app, conversation_id, messages, resolved_mode)
+            .await;
 
     // 无论请求成功失败都结束本轮，清理取消状态。
     crate::llm::cancellation::finish_turn(conversation_scope.as_deref());
@@ -65,9 +61,7 @@ pub async fn send_chat_message(
 #[tauri::command]
 pub async fn cancel_chat_message(conversation_id: Option<String>) -> Result<bool, String> {
     // 提交取消请求并返回是否成功命中运行中的会话。
-    let hit = crate::llm::cancellation::request_cancel(
-        conversation_id.as_deref(),
-    );
+    let hit = crate::llm::cancellation::request_cancel(conversation_id.as_deref());
     if hit {
         info!(
             conversation_id = %conversation_id.as_deref().unwrap_or("__default__"),

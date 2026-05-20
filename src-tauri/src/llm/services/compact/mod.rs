@@ -3,8 +3,8 @@ mod summary;
 
 use std::collections::{HashMap, HashSet};
 
-use tauri::AppHandle;
 use serde_json::{json, Value};
+use tauri::AppHandle;
 
 use crate::llm::commands::types::CompactContext;
 use crate::llm::types::{Content, ContentBlock, Message, Role};
@@ -38,8 +38,7 @@ const CONTEXT_EDIT_CLEAR_AT_LEAST_PAIRS: usize = 1;
 const CONTEXT_EDIT_CLEAR_TOOL_INPUTS: bool = false;
 const CONTEXT_EDIT_TOOL_RESULT_PLACEHOLDER: &str =
     "[tool_result removed by context editing to save prompt space]";
-const CONTEXT_EDIT_TOOL_INPUT_PLACEHOLDER: &str =
-    "[tool_use input removed by context editing]";
+const CONTEXT_EDIT_TOOL_INPUT_PLACEHOLDER: &str = "[tool_use input removed by context editing]";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum CompactLevel {
@@ -207,9 +206,7 @@ fn message_has_session_restore_marker(message: &Message) -> bool {
 }
 
 fn split_session_restore_message(messages: &[Message]) -> (Option<Message>, Vec<Message>) {
-    let marker_index = messages
-        .iter()
-        .position(message_has_session_restore_marker);
+    let marker_index = messages.iter().position(message_has_session_restore_marker);
     let Some(marker_index) = marker_index else {
         return (None, messages.to_vec());
     };
@@ -254,7 +251,12 @@ fn collect_clearable_tool_result_ids(messages: &[Message]) -> Vec<String> {
         };
 
         for block in blocks {
-            let ContentBlock::ToolResult { tool_use_id, content, .. } = block else {
+            let ContentBlock::ToolResult {
+                tool_use_id,
+                content,
+                ..
+            } = block
+            else {
                 continue;
             };
 
@@ -287,7 +289,10 @@ fn collect_clearable_tool_result_ids(messages: &[Message]) -> Vec<String> {
     ids
 }
 
-pub fn apply_tool_result_context_editing(messages: &[Message], window_tokens: i64) -> ToolResultContextEditingOutcome {
+pub fn apply_tool_result_context_editing(
+    messages: &[Message],
+    window_tokens: i64,
+) -> ToolResultContextEditingOutcome {
     let original_estimated_tokens = estimate_message_tokens(messages);
     // 触发阈值 = 50% 窗口大小，比例与 decide_compact_strategy 的 Micro 阈值对齐。
     let context_edit_trigger = (window_tokens * 50) / 100;
@@ -423,8 +428,6 @@ pub fn estimate_tokens_for_messages(messages: &[Message]) -> i64 {
     estimate_message_tokens(messages)
 }
 
-
-
 // 根据消息数量、估算 token 数和是否存在超大工具结果文本来决定压缩策略。
 fn decide_compact_strategy(messages: &[Message], window_tokens: i64) -> CompactDecision {
     // 估算消息总体 token，纯粹基于 token 用量决定压缩等级。
@@ -542,7 +545,9 @@ fn compact_json_value(value: &Value, depth: usize) -> Value {
             Value::Object(out)
         }
         // 字符串：对长文本进行截断
-        Value::String(s) => Value::String(truncate_text_by_chars(s, TOOL_RESULT_TEXT_TRUNCATE_LIMIT)),
+        Value::String(s) => {
+            Value::String(truncate_text_by_chars(s, TOOL_RESULT_TEXT_TRUNCATE_LIMIT))
+        }
         // 其他原样返回
         _ => value.clone(),
     }
@@ -833,8 +838,7 @@ pub async fn compact_messages_for_turn_with_report(
     let model = crate::command::settings::get_settings(app.clone())
         .active_provider_profile()
         .model;
-    let window_tokens =
-        crate::llm::utils::model_context::get_context_window_tokens(&model) as i64;
+    let window_tokens = crate::llm::utils::model_context::get_context_window_tokens(&model) as i64;
 
     // 决策并记录调试信息
     let decision = decide_compact_strategy(messages, window_tokens);

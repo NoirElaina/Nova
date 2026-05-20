@@ -5,6 +5,7 @@ use std::time::Duration;
 
 use base64::engine::general_purpose::STANDARD as BASE64;
 use base64::Engine as _;
+use serde::Serialize;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::{Child, ChildStdin, Command};
 use tokio::sync::{mpsc, Mutex as AsyncMutex};
@@ -29,6 +30,17 @@ pub struct ShellExecutionResult {
     pub cancelled: bool,
     pub background: bool,
     pub pid: Option<u32>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ShellSessionStatus {
+    pub exists: bool,
+    pub alive: bool,
+    pub busy: bool,
+    pub cwd: Option<String>,
+    pub background_pids: Vec<u32>,
+    pub background_count: usize,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -223,7 +235,14 @@ fn spawn_stream_reader<R>(
 fn make_shell_command() -> Command {
     let mut command = Command::new(PWSH_PATH);
     command
-        .args(["-NoLogo", "-NoProfile", "-NonInteractive", "-NoExit", "-Command", "-"])
+        .args([
+            "-NoLogo",
+            "-NoProfile",
+            "-NonInteractive",
+            "-NoExit",
+            "-Command",
+            "-",
+        ])
         .creation_flags(CREATE_NO_WINDOW)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -283,7 +302,10 @@ async fn spawn_session(initial_cwd: Option<&str>) -> Result<ShellSession, String
         }
         #[cfg(not(target_os = "windows"))]
         {
-            bootstrap.push_str(&format!("cd '{}' 2>/dev/null || true\n", cwd.replace('\'', "'\"'\"'")));
+            bootstrap.push_str(&format!(
+                "cd '{}' 2>/dev/null || true\n",
+                cwd.replace('\'', "'\"'\"'")
+            ));
         }
     }
 
@@ -413,7 +435,9 @@ async fn execute_wrapped_command(
             });
         }
 
-        let remaining = timeout_at.saturating_duration_since(now).min(Duration::from_millis(100));
+        let remaining = timeout_at
+            .saturating_duration_since(now)
+            .min(Duration::from_millis(100));
         let maybe_event = tokio::time::timeout(remaining, session.events.recv()).await;
         let event = match maybe_event {
             Ok(Some(event)) => event,
@@ -444,7 +468,8 @@ async fn execute_wrapped_command(
         }
     }
 
-    let marker = resolved_marker.ok_or_else(|| "Shell command finished without marker".to_string())?;
+    let marker =
+        resolved_marker.ok_or_else(|| "Shell command finished without marker".to_string())?;
     Ok(ShellExecutionResult {
         stdout: trim_trailing_newline(stdout),
         stderr: trim_trailing_newline(stderr),
@@ -476,7 +501,10 @@ async fn get_or_create_handle(conversation_id: Option<&str>) -> Result<Arc<Sessi
     let mut registry = session_registry()
         .lock()
         .unwrap_or_else(|error| error.into_inner());
-    Ok(registry.entry(key).or_insert_with(|| handle.clone()).clone())
+    Ok(registry
+        .entry(key)
+        .or_insert_with(|| handle.clone())
+        .clone())
 }
 
 fn kill_pid(pid: u32) {
@@ -571,6 +599,50 @@ pub async fn reset_session(conversation_id: Option<&str>) -> Result<(), String> 
     restart_session(&mut session).await
 }
 
+pub async fn session_status(conversation_id: Option<&str>) -> ShellSessionStatus {
+    let key = scope_key(conversation_id);
+    let handle = session_registry()
+        .lock()
+        .unwrap_or_else(|error| error.into_inner())
+        .get(&key)
+        .cloned();
+
+    let Some(handle) = handle else {
+        return ShellSessionStatus {
+            exists: false,
+            alive: false,
+            busy: false,
+            cwd: None,
+            background_pids: Vec::new(),
+            background_count: 0,
+        };
+    };
+
+    let Ok(mut session) = handle.inner.try_lock() else {
+        return ShellSessionStatus {
+            exists: true,
+            alive: true,
+            busy: true,
+            cwd: None,
+            background_pids: Vec::new(),
+            background_count: 0,
+        };
+    };
+
+    let alive = matches!(session.child.try_wait(), Ok(None));
+    let mut background_pids: Vec<u32> = session.background_pids.iter().copied().collect();
+    background_pids.sort_unstable();
+
+    ShellSessionStatus {
+        exists: true,
+        alive,
+        busy: false,
+        cwd: session.last_known_cwd.clone(),
+        background_count: background_pids.len(),
+        background_pids,
+    }
+}
+
 pub async fn close_session(conversation_id: Option<&str>) {
     let key = scope_key(conversation_id);
     let handle = session_registry()
@@ -609,7 +681,7 @@ pub async fn close_all_sessions() {
 
 #[cfg(test)]
 mod tests {
-    use super::{parse_marker_line, BASE64};
+    use super::{parse_marker_line, session_status, BASE64};
     use base64::Engine as _;
 
     #[test]
@@ -622,5 +694,16 @@ mod tests {
         assert_eq!(marker.exit_code, 7);
         assert_eq!(marker.cwd, cwd);
         assert!(!marker.timed_out);
+    }
+
+    #[tokio::test]
+    async fn status_for_missing_session_does_not_create_one() {
+        let status = session_status(Some("__nova_missing_shell_status_test__")).await;
+        assert!(!status.exists);
+        assert!(!status.alive);
+        assert!(!status.busy);
+        assert!(status.cwd.is_none());
+        assert_eq!(status.background_count, 0);
+        assert!(status.background_pids.is_empty());
     }
 }

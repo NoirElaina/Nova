@@ -259,7 +259,6 @@ fn build_direct_attachment_context(
     let mut lines = Vec::new();
 
     for source_name in source_names {
-
         let Some(doc) = documents.iter().find(|doc| doc.source_name == *source_name) else {
             continue;
         };
@@ -593,7 +592,12 @@ pub async fn send_chat_message(
     // 检索失败只发 backend-error，不中断主对话；保存 snapshot 前会剥掉该类临时注入。
     if let Some(query_text) = rag_query.as_deref() {
         let raw_text = rag_raw_text.as_deref().unwrap_or(query_text);
-        match build_session_rag_context_message(&app, conversation_id.as_deref(), query_text, raw_text) {
+        match build_session_rag_context_message(
+            &app,
+            conversation_id.as_deref(),
+            query_text,
+            raw_text,
+        ) {
             Ok(Some(rag_context)) => current_messages.push(rag_context),
             Ok(None) => {}
             Err(e) => {
@@ -735,7 +739,8 @@ pub async fn send_chat_message(
                         snapshot.extend(provider_err.partial_messages);
                         strip_injected_context(&mut snapshot);
                         // 错误路径的 snapshot 保存是 best-effort，失败不阻断错误返回。
-                        let _ = crate::llm::history::save_turn_snapshot(&app, conv_id, &snapshot).await;
+                        let _ =
+                            crate::llm::history::save_turn_snapshot(&app, conv_id, &snapshot).await;
                     }
                 }
 

@@ -6,7 +6,11 @@ use super::config::HookConfig;
 use super::shared::{has_exact_user_message, latest_assistant_text};
 use super::types::HookOutcome;
 
-pub fn run_stop_hooks(app: &AppHandle, messages: &[Message], _conversation_id: Option<&str>) -> HookOutcome {
+pub fn run_stop_hooks(
+    app: &AppHandle,
+    messages: &[Message],
+    _conversation_id: Option<&str>,
+) -> HookOutcome {
     let config = HookConfig::from_app(app);
     let mut out = HookOutcome::default();
 

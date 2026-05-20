@@ -4,8 +4,8 @@ use serde_json::Value;
 use std::collections::{BTreeMap, HashMap, VecDeque};
 use tauri::AppHandle;
 
+use crate::llm::providers::stream_runner::{run_streaming, Delta, ReadyToolCall, StreamParser};
 use crate::llm::providers::{ProviderTurnError, ProviderTurnResult};
-use crate::llm::providers::stream_runner::{Delta, ReadyToolCall, StreamParser, run_streaming};
 use crate::llm::tools;
 use crate::llm::types::{AgentMode, ContentBlock, Message, Role};
 use crate::llm::utils::error_event::emit_backend_error;
@@ -152,7 +152,11 @@ struct OpenAiFunctionCall {
 fn extract_reasoning_text(value: &Value) -> String {
     match value {
         Value::String(text) => text.clone(),
-        Value::Array(items) => items.iter().map(extract_reasoning_text).collect::<Vec<_>>().join(""),
+        Value::Array(items) => items
+            .iter()
+            .map(extract_reasoning_text)
+            .collect::<Vec<_>>()
+            .join(""),
         Value::Object(map) => {
             for key in ["text", "content", "reasoning", "summary", "delta"] {
                 if let Some(found) = map.get(key) {
@@ -411,14 +415,23 @@ impl StreamParser for OpenAiStreamParser {
         // Token usage（末尾 chunk 中）。
         if let Some(usage) = chunk.usage {
             let output = usage.completion_tokens.or_else(|| {
-                usage.total_tokens.zip(usage.prompt_tokens)
+                usage
+                    .total_tokens
+                    .zip(usage.prompt_tokens)
                     .and_then(|(total, prompt)| total.checked_sub(prompt))
             });
-            deltas.push(Delta::Usage { input: usage.prompt_tokens, output });
+            deltas.push(Delta::Usage {
+                input: usage.prompt_tokens,
+                output,
+            });
         }
 
         for choice in chunk.choices {
-            let OpenAiDelta { content, tool_calls, extra } = choice.delta;
+            let OpenAiDelta {
+                content,
+                tool_calls,
+                extra,
+            } = choice.delta;
 
             // 文本增量。
             if let Some(text) = content {
@@ -471,9 +484,8 @@ impl StreamParser for OpenAiStreamParser {
             // finish_reason 驱动工具执行。
             if let Some(finish_reason) = choice.finish_reason {
                 if finish_reason == "tool_calls" {
-                    let drained: Vec<(usize, PendingToolCall)> = std::mem::take(&mut self.pending)
-                        .into_iter()
-                        .collect();
+                    let drained: Vec<(usize, PendingToolCall)> =
+                        std::mem::take(&mut self.pending).into_iter().collect();
 
                     if drained.is_empty() {
                         return Err(format!(
@@ -510,7 +522,9 @@ impl StreamParser for OpenAiStreamParser {
                     }
                     deltas.push(Delta::ToolsReady(ready));
                 } else if finish_reason == "stop" {
-                    deltas.push(Delta::Stop { reason: Some(finish_reason) });
+                    deltas.push(Delta::Stop {
+                        reason: Some(finish_reason),
+                    });
                 }
             }
         }
@@ -522,7 +536,8 @@ impl StreamParser for OpenAiStreamParser {
         if self.pending.is_empty() {
             return Vec::new();
         }
-        let drained: Vec<(usize, PendingToolCall)> = std::mem::take(&mut self.pending).into_iter().collect();
+        let drained: Vec<(usize, PendingToolCall)> =
+            std::mem::take(&mut self.pending).into_iter().collect();
         let mut ready: Vec<ReadyToolCall> = Vec::new();
         for (_index, tc) in drained {
             if let (Some(id), Some(name)) = (tc.id, tc.name) {
@@ -531,7 +546,11 @@ impl StreamParser for OpenAiStreamParser {
                 }
             }
         }
-        if ready.is_empty() { Vec::new() } else { vec![Delta::ToolsReady(ready)] }
+        if ready.is_empty() {
+            Vec::new()
+        } else {
+            vec![Delta::ToolsReady(ready)]
+        }
     }
 }
 
@@ -548,13 +567,13 @@ impl OpenAiProvider {
         // 读取设置并拿到当前 provider profile。
         let settings = crate::command::settings::get_settings(app.clone());
         let profile = settings.active_provider_profile();
-        
+
         // 仅注入内置工具；MCP 采用 server 级发现，避免每轮发送全部动态工具 schema。
         let available_tools = tools::get_available_tools();
 
         // 加载系统提示词（含 Agent/Plan/Auto 模式逻辑）。
         let system_prompt = load_system_prompt(app, agent_mode)?;
-        
+
         // 先注入 system 消息。
         let mut oai_messages = vec![OpenAiMessage {
             role: "system".into(),
@@ -569,7 +588,7 @@ impl OpenAiProvider {
                 Role::User => "user",
                 Role::Assistant => "assistant",
             };
-            
+
             match &m.content {
                 crate::llm::types::Content::Text(t) => {
                     // 纯文本消息直接转换为单条 OpenAI 消息。
@@ -586,7 +605,7 @@ impl OpenAiProvider {
                     let mut image_parts = Vec::new();
                     let mut tool_calls = Vec::new();
                     let mut tool_results = Vec::new();
-                    
+
                     for b in blocks {
                         match b {
                             ContentBlock::Text { text } => {
@@ -624,10 +643,14 @@ impl OpenAiProvider {
                                     function: OpenAiReqFunction {
                                         name: name.clone(),
                                         arguments: serialized_args,
-                                    }
+                                    },
                                 });
                             }
-                            ContentBlock::ToolResult { tool_use_id, is_error: _, content } => {
+                            ContentBlock::ToolResult {
+                                tool_use_id,
+                                is_error: _,
+                                content,
+                            } => {
                                 // 将 tool_result 内所有文本块拼接为单文本。
                                 let mut tr_text = Vec::new();
                                 for tb in content {
@@ -640,7 +663,7 @@ impl OpenAiProvider {
                             }
                         }
                     }
-                    
+
                     if base_role == "assistant" {
                         // assistant 有 tool_calls 时，content 可为空。
                         let content_val = if text_parts.is_empty() && !tool_calls.is_empty() {
@@ -648,9 +671,13 @@ impl OpenAiProvider {
                         } else {
                             Some(Value::String(text_parts.join("\n")))
                         };
-                        
+
                         // 仅有 tool_calls 时写入 Some(tool_calls)，否则为 None。
-                        let tc = if tool_calls.is_empty() { None } else { Some(tool_calls) };
+                        let tc = if tool_calls.is_empty() {
+                            None
+                        } else {
+                            Some(tool_calls)
+                        };
                         oai_messages.push(OpenAiMessage {
                             role: "assistant".into(),
                             content: content_val,
@@ -747,7 +774,8 @@ impl OpenAiProvider {
 
         // 存在 API key 时注入 Bearer 头。
         if !profile.api_key.is_empty() {
-            req_builder = req_builder.header("Authorization", format!("Bearer {}", profile.api_key));
+            req_builder =
+                req_builder.header("Authorization", format!("Bearer {}", profile.api_key));
         }
 
         // @@日志记录 wire_request — 记录实际发出的 HTTP 请求 JSON。
@@ -783,7 +811,12 @@ impl OpenAiProvider {
                     let error_text = res.text().await.unwrap_or_default();
                     eprintln!("API Error: {}", error_text);
                     let msg = format!("API Error [{}] {} => {}", status, url, error_text);
-                    emit_backend_error(app, "llm.providers.openai", msg.clone(), Some("http.non_success"));
+                    emit_backend_error(
+                        app,
+                        "llm.providers.openai",
+                        msg.clone(),
+                        Some("http.non_success"),
+                    );
                     return Err(ProviderTurnError::new(msg));
                 }
 
@@ -794,7 +827,12 @@ impl OpenAiProvider {
             }
             Err(e) => {
                 let msg = e.to_string();
-                emit_backend_error(app, "llm.providers.openai", msg.clone(), Some("http.request"));
+                emit_backend_error(
+                    app,
+                    "llm.providers.openai",
+                    msg.clone(),
+                    Some("http.request"),
+                );
                 Err(ProviderTurnError::new(msg))
             }
         }

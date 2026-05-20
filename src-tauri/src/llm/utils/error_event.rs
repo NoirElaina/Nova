@@ -17,7 +17,11 @@ pub struct BackendErrorEvent {
     pub stage: Option<String>,
 }
 
-fn classify_backend_error(source: &str, stage: Option<&str>, raw_message: &str) -> (String, String, String) {
+fn classify_backend_error(
+    source: &str,
+    stage: Option<&str>,
+    raw_message: &str,
+) -> (String, String, String) {
     let source_key = source.trim().to_ascii_lowercase();
     let stage_key = stage.unwrap_or_default().trim().to_ascii_lowercase();
     let raw_key = raw_message.trim().to_ascii_lowercase();
@@ -46,7 +50,10 @@ fn classify_backend_error(source: &str, stage: Option<&str>, raw_message: &str) 
         );
     }
 
-    if raw_key.contains("429") || raw_key.contains("rate limit") || raw_key.contains("too many requests") {
+    if raw_key.contains("429")
+        || raw_key.contains("rate limit")
+        || raw_key.contains("too many requests")
+    {
         return (
             "provider_rate_limited".to_string(),
             "模型服务当前较忙".to_string(),
@@ -54,7 +61,10 @@ fn classify_backend_error(source: &str, stage: Option<&str>, raw_message: &str) 
         );
     }
 
-    if raw_key.contains("timed out") || raw_key.contains("timeout") || raw_key.contains("deadline exceeded") {
+    if raw_key.contains("timed out")
+        || raw_key.contains("timeout")
+        || raw_key.contains("deadline exceeded")
+    {
         return (
             "provider_timeout".to_string(),
             "请求模型服务超时".to_string(),
@@ -127,7 +137,10 @@ fn classify_backend_error(source: &str, stage: Option<&str>, raw_message: &str) 
         );
     }
 
-    if source_key.contains("provider") || stage_key.contains("provider") || raw_key.contains("api error") {
+    if source_key.contains("provider")
+        || stage_key.contains("provider")
+        || raw_key.contains("api error")
+    {
         return (
             "provider_failed".to_string(),
             "模型服务请求失败".to_string(),

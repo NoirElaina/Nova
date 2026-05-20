@@ -1,15 +1,15 @@
-﻿use reqwest::Client;
+use reqwest::Client;
 use tauri::AppHandle;
 
+use crate::llm::providers::stream_runner::{run_streaming, Delta, ReadyToolCall, StreamParser};
 use crate::llm::providers::{ProviderTurnError, ProviderTurnResult};
-use crate::llm::providers::stream_runner::{Delta, ReadyToolCall, StreamParser, run_streaming};
 use crate::llm::tools;
+use crate::llm::types::Message;
 use crate::llm::types::{
     AgentMode, AnthropicRequest, StreamContentBlock, StreamDelta, StreamEvent,
 };
 use crate::llm::utils::error_event::emit_backend_error;
 use crate::llm::utils::system_prompt::load_system_prompt;
-use crate::llm::types::Message;
 
 use super::sse_utils::truncate_for_log;
 
@@ -78,21 +78,19 @@ impl StreamParser for AnthropicStreamParser {
                 });
             }
 
-            StreamEvent::ContentBlockStart { content_block, .. } => {
-                match content_block {
-                    StreamContentBlock::ToolUse { id, name, .. } => {
-                        self.current_tool_id = Some(id.clone());
-                        self.current_tool_name = Some(name.clone());
-                        self.current_tool_input.clear();
-                        deltas.push(Delta::ToolStart { id: Some(id), name });
-                    }
-                    StreamContentBlock::Thinking { .. } => {
-                        self.current_thinking.clear();
-                        self.current_sig.clear();
-                    }
-                    StreamContentBlock::Text { .. } => {}
+            StreamEvent::ContentBlockStart { content_block, .. } => match content_block {
+                StreamContentBlock::ToolUse { id, name, .. } => {
+                    self.current_tool_id = Some(id.clone());
+                    self.current_tool_name = Some(name.clone());
+                    self.current_tool_input.clear();
+                    deltas.push(Delta::ToolStart { id: Some(id), name });
                 }
-            }
+                StreamContentBlock::Thinking { .. } => {
+                    self.current_thinking.clear();
+                    self.current_sig.clear();
+                }
+                StreamContentBlock::Text { .. } => {}
+            },
 
             StreamEvent::ContentBlockDelta { delta, .. } => match delta {
                 StreamDelta::TextDelta { text } => {
@@ -118,17 +116,18 @@ impl StreamParser for AnthropicStreamParser {
                 if let (Some(id), Some(name)) =
                     (self.current_tool_id.take(), self.current_tool_name.take())
                 {
-                    let input_value: serde_json::Value =
-                        match serde_json::from_str(&self.current_tool_input) {
-                            Ok(v) => v,
-                            Err(e) => {
-                                return Err(format!(
+                    let input_value: serde_json::Value = match serde_json::from_str(
+                        &self.current_tool_input,
+                    ) {
+                        Ok(v) => v,
+                        Err(e) => {
+                            return Err(format!(
                                     "Failed to parse Anthropic tool input for '{}': {}. Raw input preview: {}",
                                     name, e,
                                     truncate_for_log(&self.current_tool_input, 1200)
                                 ));
-                            }
-                        };
+                        }
+                    };
                     self.current_tool_input.clear();
 
                     self.pending_tool_calls.push(tools::ToolCallRequest {
@@ -138,10 +137,15 @@ impl StreamParser for AnthropicStreamParser {
                     });
 
                     if self.pending_tool_calls.len() >= self.streaming_batch_size {
-                        let batch: Vec<ReadyToolCall> = std::mem::take(&mut self.pending_tool_calls)
-                            .into_iter()
-                            .map(|r| ReadyToolCall { id: r.id, name: r.name, input: r.input })
-                            .collect();
+                        let batch: Vec<ReadyToolCall> =
+                            std::mem::take(&mut self.pending_tool_calls)
+                                .into_iter()
+                                .map(|r| ReadyToolCall {
+                                    id: r.id,
+                                    name: r.name,
+                                    input: r.input,
+                                })
+                                .collect();
                         deltas.push(Delta::ToolsReady(batch));
                     }
                 } else if !self.current_thinking.is_empty() {
@@ -158,7 +162,11 @@ impl StreamParser for AnthropicStreamParser {
                 }
                 if usage.output_tokens > 0 {
                     deltas.push(Delta::Usage {
-                        input: if usage.input_tokens > 0 { Some(usage.input_tokens) } else { None },
+                        input: if usage.input_tokens > 0 {
+                            Some(usage.input_tokens)
+                        } else {
+                            None
+                        },
                         output: Some(usage.output_tokens),
                     });
                 }
@@ -168,11 +176,17 @@ impl StreamParser for AnthropicStreamParser {
                 if !self.pending_tool_calls.is_empty() {
                     let batch: Vec<ReadyToolCall> = std::mem::take(&mut self.pending_tool_calls)
                         .into_iter()
-                        .map(|r| ReadyToolCall { id: r.id, name: r.name, input: r.input })
+                        .map(|r| ReadyToolCall {
+                            id: r.id,
+                            name: r.name,
+                            input: r.input,
+                        })
                         .collect();
                     deltas.push(Delta::ToolsReady(batch));
                 }
-                deltas.push(Delta::Stop { reason: self.pending_stop_reason.take() });
+                deltas.push(Delta::Stop {
+                    reason: self.pending_stop_reason.take(),
+                });
             }
 
             _ => {}
@@ -197,14 +211,17 @@ impl AnthropicProvider {
 
         // API key 缺失时直接失败。
         if api_key.is_empty() {
-            return Err(ProviderTurnError::new("API error: No API key configured. Please set it in Settings.".to_string()));
+            return Err(ProviderTurnError::new(
+                "API error: No API key configured. Please set it in Settings.".to_string(),
+            ));
         }
 
         // 仅注入内置工具；MCP 采用 server 级发现，避免每轮发送全部动态工具 schema。
         let available_tools = tools::get_available_tools();
 
         // 从模型数据库查询最大输出 token 数，找不到时 fallback 到 8192。
-        let max_output_tokens = crate::llm::utils::model_context::get_max_output_tokens(&profile.model);
+        let max_output_tokens =
+            crate::llm::utils::model_context::get_max_output_tokens(&profile.model);
 
         // 构造 Anthropic 请求体。
         let request = AnthropicRequest {
@@ -267,7 +284,12 @@ impl AnthropicProvider {
                     let error_text = res.text().await.unwrap_or_default();
                     eprintln!("API Error: {}", error_text);
                     let msg = format!("API Error [{}] {} => {}", status, url, error_text);
-                    emit_backend_error(app, "llm.providers.anthropic", msg.clone(), Some("http.non_success"));
+                    emit_backend_error(
+                        app,
+                        "llm.providers.anthropic",
+                        msg.clone(),
+                        Some("http.non_success"),
+                    );
                     return Err(ProviderTurnError::new(msg));
                 }
 
@@ -276,10 +298,14 @@ impl AnthropicProvider {
             }
             Err(e) => {
                 let msg = e.to_string();
-                emit_backend_error(app, "llm.providers.anthropic", msg.clone(), Some("http.request"));
+                emit_backend_error(
+                    app,
+                    "llm.providers.anthropic",
+                    msg.clone(),
+                    Some("http.request"),
+                );
                 Err(ProviderTurnError::new(msg))
             }
         }
     }
-
 }

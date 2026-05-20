@@ -8,6 +8,8 @@ pub mod mcp;
 pub mod skill;
 // RAG 知识库相关命令入口。
 pub mod rag;
+// 持久终端会话状态命令入口。
+pub mod shell;
 // AGENTS.md 配置读写命令入口。
 pub mod agent_config;
 // 定时任务（Cron）相关命令入口。

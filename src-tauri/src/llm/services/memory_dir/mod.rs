@@ -155,7 +155,16 @@ fn conflict_dimensions(kind: &str, content: &str) -> HashSet<String> {
     register(
         &mut dimensions,
         "verbosity",
-        &["简洁", "简短", "concise", "brief", "short", "详细", "detailed", "step by step"],
+        &[
+            "简洁",
+            "简短",
+            "concise",
+            "brief",
+            "short",
+            "详细",
+            "detailed",
+            "step by step",
+        ],
     );
     register(
         &mut dimensions,
@@ -172,7 +181,13 @@ fn conflict_dimensions(kind: &str, content: &str) -> HashSet<String> {
     register(
         &mut dimensions,
         "tool_behavior",
-        &["直接改", "直接修改", "不要只分析", "do not just analyze", "edit directly"],
+        &[
+            "直接改",
+            "直接修改",
+            "不要只分析",
+            "do not just analyze",
+            "edit directly",
+        ],
     );
 
     if let Some(head) = strip_memory_prefixes(content)
@@ -200,7 +215,9 @@ fn purge_conflicting_records(
 
     let mut removed = Vec::new();
     records.retain(|record| {
-        if record.entry.id == preserved_id || !matches!(record.entry.kind.as_str(), "preference" | "rule") {
+        if record.entry.id == preserved_id
+            || !matches!(record.entry.kind.as_str(), "preference" | "rule")
+        {
             return true;
         }
 
@@ -488,7 +505,10 @@ fn select_relevant_records(
     });
     always.truncate(limit.min(4));
 
-    let taken_ids = always.iter().map(|record| record.entry.id).collect::<HashSet<_>>();
+    let taken_ids = always
+        .iter()
+        .map(|record| record.entry.id)
+        .collect::<HashSet<_>>();
     let mut facts = records
         .iter()
         .filter(|record| !taken_ids.contains(&record.entry.id))
@@ -571,10 +591,9 @@ pub async fn upsert_global_memory(
     let mut records = read_all_records(&root)?;
     let semantic_key = semantic_memory_key(&kind, &normalized_content);
 
-    if let Some(index) = records
-        .iter()
-        .position(|record| semantic_memory_key(&record.entry.kind, &record.entry.content) == semantic_key)
-    {
+    if let Some(index) = records.iter().position(|record| {
+        semantic_memory_key(&record.entry.kind, &record.entry.content) == semantic_key
+    }) {
         let entry = {
             let existing = &mut records[index];
             existing.entry.content = normalized_content;
@@ -649,7 +668,10 @@ pub async fn relevant_global_memory(
     let selected = select_relevant_records(&records, query, limit);
     bump_hits(&root, &selected)?;
     let updated_records = read_all_records(&root)?;
-    let selected_ids = selected.iter().map(|record| record.entry.id).collect::<HashSet<_>>();
+    let selected_ids = selected
+        .iter()
+        .map(|record| record.entry.id)
+        .collect::<HashSet<_>>();
 
     Ok(updated_records
         .into_iter()

@@ -102,6 +102,8 @@ pub fn run() {
             command::rag::rag_upsert_conversation_documents,
             command::rag::rag_remove_document,
             command::rag::rag_clear_documents,
+            command::shell::get_shell_session_status,
+            command::shell::reset_shell_session_for_conversation,
             command::skill::list_skills,
             command::skill::delete_skill,
             command::cron::list_scheduled_tasks,

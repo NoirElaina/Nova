@@ -289,6 +289,57 @@ export function createChatStreamOperations(deps: StreamOpsDeps) {
     }
   }
 
+  function finalizeCancelledTurn(tokenUsage?: number) {
+    const finalText = activeRuntimeRefs.assistantResponse.value.trim();
+    const finalReasoning = activeRuntimeRefs.assistantReasoning.value.trim();
+    const cancelledText = finalText ? `${finalText}\n\n（已取消当前轮）` : "已取消当前轮。";
+    const fallbackTokenUsage = estimateTokens(cancelledText);
+    const resolvedTokenUsage =
+      typeof tokenUsage === "number" && tokenUsage > 0
+        ? tokenUsage
+        : typeof activeRuntimeRefs.assistantTokenUsage.value === "number" &&
+            activeRuntimeRefs.assistantTokenUsage.value > 0
+          ? activeRuntimeRefs.assistantTokenUsage.value
+          : fallbackTokenUsage;
+
+    if (activeRuntimeRefs.currentOutputTokens.value <= 0 && resolvedTokenUsage > 0) {
+      activeRuntimeRefs.currentOutputTokens.value = resolvedTokenUsage;
+    }
+
+    const toolSummary = buildToolTurnSummary(
+      activeRuntimeRefs.toolExecutionLogs.value.filter((entry) =>
+        activeRuntimeRefs.currentTurnToolIds.value.includes(entry.id),
+      ),
+    );
+    const cost = buildAssistantCost(
+      activeRuntimeRefs.currentInputTokens.value,
+      activeRuntimeRefs.currentOutputTokens.value,
+      activeRuntimeRefs.currentToolCalls.value,
+      activeRuntimeRefs.currentToolDurationMs.value,
+      activeRuntimeRefs.currentContextCompacts.value,
+      toolSummary,
+    );
+
+    const assistantMessage: ChatMessage = {
+      role: "assistant",
+      content: cancelledText,
+      reasoning: finalReasoning || undefined,
+      tokenUsage: resolvedTokenUsage > 0 ? resolvedTokenUsage : undefined,
+      cost,
+    };
+    messages.value.push(assistantMessage);
+    void persistMessage(assistantMessage);
+    activeRuntimeRefs.assistantResponse.value = "";
+    activeRuntimeRefs.assistantReasoning.value = "";
+    activeRuntimeRefs.assistantTokenUsage.value = undefined;
+    activeRuntimeRefs.assistantTurnCost.value = undefined;
+    activeRuntimeRefs.isGenerating.value = false;
+    activeRuntimeRefs.currentStage.value = "processing";
+    if (activeConversationId.value) {
+      runtimeStateByConversation.delete(normalizeConversationId(activeConversationId.value));
+    }
+  }
+
   function resetBackgroundRuntimeState(
     conversationId: string,
     state: ConversationTurnRuntimeState,
@@ -579,7 +630,7 @@ export function createChatStreamOperations(deps: StreamOpsDeps) {
       );
 
       if (isActive) {
-        finalizeOrStopTurn(payload.token_usage);
+        finalizeCancelledTurn(payload.token_usage);
         resetTurnRuntimeState(activeRuntimeRefs);
         if (activeConversationId.value) {
           runtimeStateByConversation.delete(normalizeConversationId(activeConversationId.value));

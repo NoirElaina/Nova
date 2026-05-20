@@ -108,9 +108,7 @@ fn render_message_for_summary(message: &Message) -> String {
                         lines.push(format!("Tool call: {} {}", name, input));
                     }
                     ContentBlock::ToolResult {
-                        is_error,
-                        content,
-                        ..
+                        is_error, content, ..
                     } => {
                         let mut result_lines = Vec::new();
                         for inner in content {
@@ -122,9 +120,8 @@ fn render_message_for_summary(message: &Message) -> String {
                                     }
                                 }
                                 ContentBlock::Image { .. } => {
-                                    result_lines.push(
-                                        "[image omitted for compact summary]".to_string(),
-                                    );
+                                    result_lines
+                                        .push("[image omitted for compact summary]".to_string());
                                 }
                                 _ => {}
                             }
@@ -283,9 +280,7 @@ async fn summarize_with_openai(app: &AppHandle, user_prompt: &str) -> Result<Str
 
     let client = Client::new();
     let url = normalize_openai_url(&profile.base_url);
-    let mut request_builder = client
-        .post(&url)
-        .header("content-type", "application/json");
+    let mut request_builder = client.post(&url).header("content-type", "application/json");
     if !profile.api_key.is_empty() {
         request_builder =
             request_builder.header("Authorization", format!("Bearer {}", profile.api_key));

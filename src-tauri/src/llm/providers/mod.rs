@@ -9,8 +9,8 @@ pub mod sse_utils;
 // 共享流式运行器（StreamParser trait + run_streaming + Delta）。
 pub mod stream_runner;
 
-use tauri::AppHandle;
 use crate::llm::types::{AgentMode, Message};
+use tauri::AppHandle;
 
 #[derive(Debug, Clone)]
 pub struct ProviderTurnResult {
@@ -38,10 +38,16 @@ pub struct ProviderTurnError {
 
 impl ProviderTurnError {
     pub fn new(message: String) -> Self {
-        Self { message, partial_messages: Vec::new() }
+        Self {
+            message,
+            partial_messages: Vec::new(),
+        }
     }
     pub fn with_partial(message: String, partial_messages: Vec<Message>) -> Self {
-        Self { message, partial_messages }
+        Self {
+            message,
+            partial_messages,
+        }
     }
 }
 
@@ -67,7 +73,7 @@ impl LlmProvider {
         let settings = crate::command::settings::get_settings(app.clone());
         // profile key 只负责选中配置；真正路由按 profile.protocol 判断。
         let protocol = settings.active_provider_protocol();
-        
+
         // Anthropic 协议走 AnthropicProvider，openai_responses 走 ResponsesProvider，其余默认走 OpenAI 兼容协议实现。
         if protocol == "anthropic" {
             LlmProvider::Anthropic(anthropic::AnthropicProvider)
@@ -87,9 +93,18 @@ impl LlmProvider {
     ) -> Result<ProviderTurnResult, ProviderTurnError> {
         // 根据当前枚举分支转发到具体 provider 实现。
         match self {
-            LlmProvider::Anthropic(p) => p.send_request(app, messages, agent_mode, conversation_id).await,
-            LlmProvider::OpenAi(p) => p.send_request(app, messages, agent_mode, conversation_id).await,
-            LlmProvider::Responses(p) => p.send_request(app, messages, agent_mode, conversation_id).await,
+            LlmProvider::Anthropic(p) => {
+                p.send_request(app, messages, agent_mode, conversation_id)
+                    .await
+            }
+            LlmProvider::OpenAi(p) => {
+                p.send_request(app, messages, agent_mode, conversation_id)
+                    .await
+            }
+            LlmProvider::Responses(p) => {
+                p.send_request(app, messages, agent_mode, conversation_id)
+                    .await
+            }
         }
     }
 }

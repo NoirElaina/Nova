@@ -13,9 +13,13 @@ const SUBAGENT_STOP_HOOK_CONTEXT_KEY: &str = "NOVA_SUBAGENT_STOP_HOOK_CONTEXT";
 const SESSION_END_HOOK_CONTEXT_KEY: &str = "NOVA_SESSION_END_HOOK_CONTEXT";
 const ERROR_HOOK_CONTEXT_KEY: &str = "NOVA_ERROR_HOOK_CONTEXT";
 
-
 // 如果配置里存在某个 key，就把对应内容包装成一条上下文消息，追加到结果里
-fn append_context_hook_message(out: &mut HookOutcome, config: &HookConfig, key: &str, prefix: &str) {
+fn append_context_hook_message(
+    out: &mut HookOutcome,
+    config: &HookConfig,
+    key: &str,
+    prefix: &str,
+) {
     if let Some(extra) = config.value(key) {
         out.additional_messages.push(context_message(prefix, extra));
     }
@@ -33,7 +37,10 @@ pub fn run_session_start_hooks(app: &AppHandle, _conversation_id: Option<&str>) 
     out
 }
 
-pub fn run_user_prompt_submit_hooks(app: &AppHandle, _conversation_id: Option<&str>) -> HookOutcome {
+pub fn run_user_prompt_submit_hooks(
+    app: &AppHandle,
+    _conversation_id: Option<&str>,
+) -> HookOutcome {
     let config = HookConfig::from_app(app);
     let mut out = HookOutcome::default();
     append_context_hook_message(
@@ -114,7 +121,11 @@ pub fn run_session_end_hooks(
     out
 }
 
-pub fn run_error_hooks(app: &AppHandle, error: &str, _conversation_id: Option<&str>) -> HookOutcome {
+pub fn run_error_hooks(
+    app: &AppHandle,
+    error: &str,
+    _conversation_id: Option<&str>,
+) -> HookOutcome {
     let config = HookConfig::from_app(app);
     let mut out = HookOutcome::default();
     if let Some(extra) = config.value(ERROR_HOOK_CONTEXT_KEY) {

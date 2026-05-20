@@ -503,7 +503,10 @@ pub async fn replace_history(
             .attachments
             .as_ref()
             .and_then(|v| serde_json::to_string(v).ok());
-        let cost_json = message.cost.as_ref().and_then(|v| serde_json::to_string(v).ok());
+        let cost_json = message
+            .cost
+            .as_ref()
+            .and_then(|v| serde_json::to_string(v).ok());
 
         sqlx::query(
             "INSERT INTO conversation_messages (conversation_id, role, content, reasoning, attachments_json, token_usage, cost_json, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
@@ -663,7 +666,12 @@ pub async fn upsert_conversation_tool_log(
     )
     .bind(normalized_conversation_id)
     .bind(log_id)
-    .bind(log.turn_id.as_deref().map(str::trim).filter(|v| !v.is_empty()))
+    .bind(
+        log.turn_id
+            .as_deref()
+            .map(str::trim)
+            .filter(|v| !v.is_empty()),
+    )
     .bind(tool_name)
     .bind(log.input)
     .bind(log.result)

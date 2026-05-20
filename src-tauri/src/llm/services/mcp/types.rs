@@ -36,7 +36,11 @@ pub enum McpServerConfig {
     Sse {
         url: String,
     },
-    #[serde(rename = "streamable_http", alias = "streamablehttp", alias = "streamable-http")]
+    #[serde(
+        rename = "streamable_http",
+        alias = "streamablehttp",
+        alias = "streamable-http"
+    )]
     // 基于 streamable HTTP 的远程服务配置。
     StreamableHttp {
         url: String,

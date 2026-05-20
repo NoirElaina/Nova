@@ -21,9 +21,10 @@ fn extract_session_id_from_headers(headers: &reqwest::header::HeaderMap) -> Opti
 }
 
 fn parse_jsonrpc_id(value: &Value) -> Option<u64> {
-    value
-        .get("id")
-        .and_then(|v| v.as_u64().or_else(|| v.as_str().and_then(|s| s.parse::<u64>().ok())))
+    value.get("id").and_then(|v| {
+        v.as_u64()
+            .or_else(|| v.as_str().and_then(|s| s.parse::<u64>().ok()))
+    })
 }
 
 fn collect_sse_json_messages(body: &str) -> Vec<Value> {
@@ -105,7 +106,9 @@ fn parse_mcp_response_for_id(body: &str, request_id: u64) -> Result<Value, Strin
     }
 
     for msg in &messages {
-        if parse_jsonrpc_id(msg).is_none() && (msg.get("result").is_some() || msg.get("error").is_some()) {
+        if parse_jsonrpc_id(msg).is_none()
+            && (msg.get("result").is_some() || msg.get("error").is_some())
+        {
             return Ok(msg.clone());
         }
     }
@@ -236,7 +239,11 @@ impl StreamableHttpMcpConnection {
             .collect())
     }
 
-    pub(super) async fn call_tool(&mut self, tool_name: &str, arguments: Value) -> Result<Value, String> {
+    pub(super) async fn call_tool(
+        &mut self,
+        tool_name: &str,
+        arguments: Value,
+    ) -> Result<Value, String> {
         self.send_request(
             "tools/call",
             json!({
@@ -283,7 +290,8 @@ impl StreamableHttpMcpConnection {
     }
 
     pub(super) async fn read_resource(&mut self, uri: &str) -> Result<Value, String> {
-        self.send_request("resources/read", json!({ "uri": uri })).await
+        self.send_request("resources/read", json!({ "uri": uri }))
+            .await
     }
 
     pub(super) async fn shutdown(&mut self) {
@@ -291,7 +299,9 @@ impl StreamableHttpMcpConnection {
     }
 }
 
-pub(super) async fn connect_streamable_http(url: &str) -> Result<StreamableHttpMcpConnection, String> {
+pub(super) async fn connect_streamable_http(
+    url: &str,
+) -> Result<StreamableHttpMcpConnection, String> {
     let client = reqwest::Client::builder()
         .timeout(MCP_CONNECT_TIMEOUT)
         .build()

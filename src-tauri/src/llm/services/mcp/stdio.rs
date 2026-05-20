@@ -20,7 +20,10 @@ impl StdioMcpConnection {
     async fn send_message(&mut self, value: &Value) -> Result<(), String> {
         let mut bytes = serde_json::to_vec(value).map_err(|e| e.to_string())?;
         bytes.push(b'\n');
-        self.writer.write_all(&bytes).await.map_err(|e| e.to_string())?;
+        self.writer
+            .write_all(&bytes)
+            .await
+            .map_err(|e| e.to_string())?;
         self.writer.flush().await.map_err(|e| e.to_string())
     }
 
@@ -62,9 +65,10 @@ impl StdioMcpConnection {
 
         loop {
             let msg = self.read_message().await?;
-            let msg_id = msg
-                .get("id")
-                .and_then(|v| v.as_u64().or_else(|| v.as_str().and_then(|s| s.parse::<u64>().ok())));
+            let msg_id = msg.get("id").and_then(|v| {
+                v.as_u64()
+                    .or_else(|| v.as_str().and_then(|s| s.parse::<u64>().ok()))
+            });
             if msg_id != Some(id) {
                 continue;
             }
@@ -110,7 +114,11 @@ impl StdioMcpConnection {
             .collect())
     }
 
-    pub(super) async fn call_tool(&mut self, tool_name: &str, arguments: Value) -> Result<Value, String> {
+    pub(super) async fn call_tool(
+        &mut self,
+        tool_name: &str,
+        arguments: Value,
+    ) -> Result<Value, String> {
         self.send_request(
             "tools/call",
             json!({
@@ -157,7 +165,8 @@ impl StdioMcpConnection {
     }
 
     pub(super) async fn read_resource(&mut self, uri: &str) -> Result<Value, String> {
-        self.send_request("resources/read", json!({ "uri": uri })).await
+        self.send_request("resources/read", json!({ "uri": uri }))
+            .await
     }
 
     pub(super) async fn shutdown(&mut self) {

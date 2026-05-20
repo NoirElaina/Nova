@@ -126,7 +126,6 @@ export function createSendOperations(deps: SendOpsDeps) {
       return;
     }
 
-    chatScreenRef.value?.scrollLastUserMessageToBottom();
     isGenerating.value = true;
     currentStage.value = "processing";
     assistantResponse.value = "";
@@ -143,6 +142,7 @@ export function createSendOperations(deps: SendOpsDeps) {
     currentInputTokens.value = 0;
     resetToolTrackingState(activeRuntimeRefs);
     currentTurnId.value = `turn-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    void chatScreenRef.value?.scrollLiveAssistantIntoView();
 
     const rustMessages = nextMessages.map((message) => buildModelMessage(message));
 

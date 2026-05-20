@@ -49,6 +49,7 @@ const emit = defineEmits<{
 }>();
 
 const chatAreaRef = ref<HTMLElement | null>(null);
+const liveAssistantRef = ref<HTMLElement | null>(null);
 const reactionMap = ref<Record<number, 'up' | 'down' | undefined>>({});
 const copiedMap = ref<Record<string, boolean>>({});
 const showScrollToBottom = ref(false);
@@ -85,14 +86,12 @@ const retryFromUser = (index: number) => {
   const text = props.messages[index]?.content?.trim();
   if (!text) return;
   emit('send', text);
-  scrollLastUserMessageToBottom();
 };
 
 const retryFromAssistant = (assistantIndex: number) => {
   const prev = [...props.messages.slice(0, assistantIndex)].reverse().find((m) => m.role === 'user');
   if (!prev?.content?.trim()) return;
   emit('send', prev.content);
-  scrollLastUserMessageToBottom();
 };
 
 const buildAssistantCopyText = (message: ChatMessage) => {
@@ -134,6 +133,17 @@ const scrollLastUserMessageToBottom = async () => {
   if (last) {
     last.scrollIntoView({ block: 'end', behavior: 'smooth' });
   } else {
+    chatAreaRef.value.scrollTop = chatAreaRef.value.scrollHeight;
+  }
+  updateScrollToBottomVisibility();
+};
+
+const scrollLiveAssistantIntoView = async () => {
+  await nextTick();
+  const target = liveAssistantRef.value;
+  if (target) {
+    target.scrollIntoView({ block: 'start', behavior: 'smooth' });
+  } else if (chatAreaRef.value) {
     chatAreaRef.value.scrollTop = chatAreaRef.value.scrollHeight;
   }
   updateScrollToBottomVisibility();
@@ -181,7 +191,6 @@ watch(
 
 const handleSend = (msg: string) => {
   emit('send', msg);
-  scrollLastUserMessageToBottom();
 };
 
 const handleUploadFiles = (files: PendingUploadFile[]) => {
@@ -295,6 +304,7 @@ defineExpose({
   scrollToBottom,
   scrollLastUserMessageToTop,
   scrollLastUserMessageToBottom,
+  scrollLiveAssistantIntoView,
 });
 </script>
 
@@ -336,7 +346,11 @@ defineExpose({
           />
         </div>
 
-        <div v-if="hasLiveAssistantTurn()" class="flex w-full justify-start group">
+        <div
+          v-if="hasLiveAssistantTurn()"
+          ref="liveAssistantRef"
+          class="flex w-full justify-start group"
+        >
           <div class="flex gap-3.5 w-full max-w-[85%]">
             <div class="w-7 h-7 rounded-full flex items-center justify-center shrink-0 bg-[#f6f3ec] dark:bg-[#333] text-[#6f685a] mt-0.5 border border-[#e7e2d7] dark:border-[#444] text-[11px] font-medium">
               N

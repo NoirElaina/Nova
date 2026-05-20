@@ -32,6 +32,7 @@ export type ChatScreenHandle = {
   scrollToBottom: () => void;
   scrollLastUserMessageToTop: () => void;
   scrollLastUserMessageToBottom: () => void;
+  scrollLiveAssistantIntoView: () => void;
 };
 
 export type ModelTextBlock = {

@@ -1,5 +1,6 @@
 use serde_json::Value;
 use sqlx::{Row, SqlitePool};
+use std::path::{Path, PathBuf};
 use tauri::{AppHandle, Manager};
 use uuid::Uuid;
 
@@ -48,7 +49,8 @@ async fn ensure_schema(pool: &SqlitePool) -> Result<(), String> {
             id TEXT PRIMARY KEY,
             title TEXT NOT NULL,
             created_at INTEGER NOT NULL,
-            updated_at INTEGER NOT NULL
+            updated_at INTEGER NOT NULL,
+            pinned_at INTEGER
         );
 
         CREATE TABLE IF NOT EXISTS conversation_messages (
@@ -113,6 +115,11 @@ async fn ensure_schema(pool: &SqlitePool) -> Result<(), String> {
     .map_err(|e| e.to_string())?;
 
     sqlx::query("ALTER TABLE conversation_tool_logs ADD COLUMN turn_id TEXT")
+        .execute(pool)
+        .await
+        .ok();
+
+    sqlx::query("ALTER TABLE conversations ADD COLUMN pinned_at INTEGER")
         .execute(pool)
         .await
         .ok();
@@ -212,6 +219,195 @@ fn resolved_conversation_title(current_title: &str, first_user_message: Option<&
         .unwrap_or_else(|| trimmed.to_string())
 }
 
+fn sanitize_export_file_name(value: &str) -> String {
+    let sanitized = value
+        .chars()
+        .map(|ch| match ch {
+            '<' | '>' | ':' | '"' | '/' | '\\' | '|' | '?' | '*' => '-',
+            ch if ch.is_control() => '-',
+            ch => ch,
+        })
+        .collect::<String>()
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .trim_matches(|ch| ch == ' ' || ch == '.')
+        .chars()
+        .take(80)
+        .collect::<String>();
+
+    if sanitized.is_empty() {
+        "conversation".to_string()
+    } else {
+        sanitized
+    }
+}
+
+fn ensure_json_export_format(format: &str) -> Result<(), String> {
+    match format.trim().to_ascii_lowercase().as_str() {
+        "json" => Ok(()),
+        other => Err(format!("unsupported export format: {}", other)),
+    }
+}
+
+fn export_dir(app: &AppHandle) -> Result<PathBuf, String> {
+    let dir = app
+        .path()
+        .download_dir()
+        .or_else(|_| app.path().app_data_dir())
+        .map_err(|e| e.to_string())?;
+    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    Ok(dir)
+}
+
+fn build_export_path(
+    app: &AppHandle,
+    title: &str,
+    exported_at: chrono::DateTime<chrono::Utc>,
+    extension: &str,
+) -> Result<PathBuf, String> {
+    let mut path = export_dir(app)?;
+    path.push(format!(
+        "nova-{}-{}.{}",
+        sanitize_export_file_name(title),
+        exported_at.format("%Y%m%d-%H%M%S"),
+        extension
+    ));
+    Ok(path)
+}
+
+struct ConversationExportData {
+    title: String,
+    messages: Vec<HistoryMessage>,
+}
+
+async fn load_conversation_export_data(
+    app: &AppHandle,
+    conversation_id: &str,
+) -> Result<ConversationExportData, String> {
+    let pool = get_pool_with_schema(app).await?;
+
+    let row = sqlx::query(
+        r#"
+        SELECT
+            c.title,
+            (
+                SELECT m.content
+                FROM conversation_messages m
+                WHERE m.conversation_id = c.id AND m.role = 'user'
+                ORDER BY m.created_at ASC, m.id ASC
+                LIMIT 1
+            ) AS first_user_content
+        FROM conversations c
+        WHERE c.id = ?
+        "#,
+    )
+    .bind(conversation_id)
+    .fetch_optional(&pool)
+    .await
+    .map_err(|e| e.to_string())?
+    .ok_or_else(|| "conversation not found".to_string())?;
+
+    let title = resolved_conversation_title(
+        &row.get::<String, _>("title"),
+        row.get::<Option<String>, _>("first_user_content")
+            .as_deref(),
+    );
+    let messages = load_history(app, conversation_id).await?;
+
+    Ok(ConversationExportData { title, messages })
+}
+
+async fn ensure_conversation_exists(app: &AppHandle, conversation_id: &str) -> Result<(), String> {
+    let pool = get_pool_with_schema(app).await?;
+    let exists = sqlx::query_scalar::<_, i64>("SELECT 1 FROM conversations WHERE id = ? LIMIT 1")
+        .bind(conversation_id)
+        .fetch_optional(&pool)
+        .await
+        .map_err(|e| e.to_string())?
+        .is_some();
+
+    if exists {
+        Ok(())
+    } else {
+        Err("conversation not found".to_string())
+    }
+}
+
+fn chromium_candidates() -> Vec<PathBuf> {
+    #[cfg(target_os = "windows")]
+    {
+        vec![
+            PathBuf::from(r"C:\Program Files\Microsoft\Edge\Application\msedge.exe"),
+            PathBuf::from(r"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe"),
+            PathBuf::from(r"C:\Program Files\Google\Chrome\Application\chrome.exe"),
+            PathBuf::from(r"C:\Program Files (x86)\Google\Chrome\Application\chrome.exe"),
+        ]
+        .into_iter()
+        .filter(|path| path.exists())
+        .collect()
+    }
+
+    #[cfg(target_os = "macos")]
+    {
+        vec![
+            PathBuf::from("/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"),
+            PathBuf::from("/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge"),
+            PathBuf::from("/Applications/Chromium.app/Contents/MacOS/Chromium"),
+        ]
+        .into_iter()
+        .filter(|path| path.exists())
+        .collect()
+    }
+
+    #[cfg(all(not(target_os = "windows"), not(target_os = "macos")))]
+    {
+        vec![
+            PathBuf::from("google-chrome"),
+            PathBuf::from("microsoft-edge"),
+            PathBuf::from("chromium-browser"),
+            PathBuf::from("chromium"),
+        ]
+    }
+}
+
+async fn print_html_to_pdf(html_path: &Path, output_path: &Path) -> Result<(), String> {
+    let candidates = chromium_candidates();
+    if candidates.is_empty() {
+        return Err("未找到 Edge/Chrome/Chromium，无法将已渲染 HTML 打印为 PDF。".to_string());
+    }
+
+    let mut errors = Vec::new();
+    for browser in candidates {
+        let output = tokio::process::Command::new(&browser)
+            .arg("--headless=new")
+            .arg("--disable-gpu")
+            .arg("--no-pdf-header-footer")
+            .arg(format!("--print-to-pdf={}", output_path.display()))
+            .arg(html_path.as_os_str())
+            .output()
+            .await;
+
+        match output {
+            Ok(output) if output.status.success() && output_path.exists() => return Ok(()),
+            Ok(output) => {
+                let stderr = String::from_utf8_lossy(&output.stderr);
+                let stdout = String::from_utf8_lossy(&output.stdout);
+                errors.push(format!(
+                    "{} exited with {}. stderr: {} stdout: {}",
+                    browser.display(),
+                    output.status,
+                    stderr.trim(),
+                    stdout.trim()
+                ));
+            }
+            Err(err) => errors.push(format!("{}: {}", browser.display(), err)),
+        }
+    }
+
+    Err(format!("PDF 导出失败：{}", errors.join("; ")))
+}
+
 // Create a new conversation row with generated UUID and optional title.
 pub async fn create_conversation(
     app: &AppHandle,
@@ -241,6 +437,7 @@ pub async fn create_conversation(
         id,
         title: conv_title,
         updated_at: now,
+        pinned_at: None,
     })
 }
 
@@ -254,6 +451,7 @@ pub async fn list_conversations(app: &AppHandle) -> Result<Vec<ConversationMeta>
             c.id,
             c.title,
             c.updated_at,
+            c.pinned_at,
             (
                 SELECT m.content
                 FROM conversation_messages m
@@ -262,7 +460,10 @@ pub async fn list_conversations(app: &AppHandle) -> Result<Vec<ConversationMeta>
                 LIMIT 1
             ) AS first_user_content
         FROM conversations c
-        ORDER BY c.updated_at DESC
+        ORDER BY
+            CASE WHEN c.pinned_at IS NULL THEN 1 ELSE 0 END ASC,
+            c.pinned_at DESC,
+            c.updated_at DESC
         "#,
     )
     .fetch_all(&pool)
@@ -279,10 +480,94 @@ pub async fn list_conversations(app: &AppHandle) -> Result<Vec<ConversationMeta>
                     .as_deref(),
             ),
             updated_at: row.get::<i64, _>("updated_at"),
+            pinned_at: row.get::<Option<i64>, _>("pinned_at"),
         })
         .collect();
 
     Ok(items)
+}
+
+pub async fn set_conversation_pinned(
+    app: &AppHandle,
+    conversation_id: &str,
+    pinned: bool,
+) -> Result<(), String> {
+    let pool = get_pool_with_schema(app).await?;
+    let pinned_at = pinned.then(|| chrono::Utc::now().timestamp());
+
+    let result = sqlx::query("UPDATE conversations SET pinned_at = ? WHERE id = ?")
+        .bind(pinned_at)
+        .bind(conversation_id)
+        .execute(&pool)
+        .await
+        .map_err(|e| e.to_string())?;
+
+    if result.rows_affected() == 0 {
+        return Err("conversation not found".to_string());
+    }
+
+    Ok(())
+}
+
+pub async fn export_conversation(
+    app: &AppHandle,
+    conversation_id: &str,
+    format: &str,
+) -> Result<String, String> {
+    ensure_json_export_format(format)?;
+    let data = load_conversation_export_data(app, conversation_id).await?;
+    let exported_at = chrono::Utc::now();
+
+    let output_path = build_export_path(app, &data.title, exported_at, "json")?;
+    let payload = serde_json::json!({
+        "id": conversation_id,
+        "title": data.title,
+        "exportedAt": exported_at.to_rfc3339(),
+        "messages": data.messages,
+    });
+    let body = serde_json::to_string_pretty(&payload).map_err(|e| e.to_string())?;
+    tokio::fs::write(&output_path, body)
+        .await
+        .map_err(|e| e.to_string())?;
+
+    Ok(output_path.display().to_string())
+}
+
+pub async fn export_rendered_conversation_pdf(
+    app: &AppHandle,
+    conversation_id: &str,
+    title: &str,
+    html: &str,
+) -> Result<String, String> {
+    if html.trim().is_empty() {
+        return Err("rendered html is empty".to_string());
+    }
+
+    ensure_conversation_exists(app, conversation_id).await?;
+    let exported_at = chrono::Utc::now();
+    let output_path = build_export_path(app, title, exported_at, "pdf")?;
+
+    let mut temp_dir = app
+        .path()
+        .app_cache_dir()
+        .or_else(|_| app.path().app_data_dir())
+        .map_err(|e| e.to_string())?;
+    temp_dir.push("exports");
+    std::fs::create_dir_all(&temp_dir).map_err(|e| e.to_string())?;
+    temp_dir.push(format!(
+        "{}-{}.html",
+        conversation_id,
+        exported_at.format("%Y%m%d-%H%M%S")
+    ));
+
+    tokio::fs::write(&temp_dir, html)
+        .await
+        .map_err(|e| e.to_string())?;
+    let print_result = print_html_to_pdf(&temp_dir, &output_path).await;
+    let _ = tokio::fs::remove_file(&temp_dir).await;
+    print_result?;
+
+    Ok(output_path.display().to_string())
 }
 
 // Load all persisted messages for a conversation in stable chronological order.

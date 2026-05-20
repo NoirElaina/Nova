@@ -99,6 +99,7 @@ export interface ConversationMeta {
   id: string;
   title: string;
   updatedAt: number;
+  pinnedAt?: number | null;
 }
 
 export interface ScheduledTask {

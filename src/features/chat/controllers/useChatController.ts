@@ -331,6 +331,7 @@ export function useChatController() {
     handleNewChat,
     handleSelectConversation,
     handleDeleteConversation: conversationOps.handleDeleteConversation,
+    handlePinConversation: conversationOps.handlePinConversation,
     handleChangeMainView,
   };
 }

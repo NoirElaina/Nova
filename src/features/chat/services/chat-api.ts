@@ -67,6 +67,41 @@ export async function listConversations(): Promise<ConversationMeta[]> {
   return items || [];
 }
 
+export async function setConversationPinned(
+  conversationId: string,
+  pinned: boolean,
+): Promise<void> {
+  await invoke("set_conversation_pinned", {
+    conversationId,
+    pinned,
+  });
+}
+
+export type ConversationExportFormat = "json" | "pdf";
+type JsonConversationExportFormat = Extract<ConversationExportFormat, "json">;
+
+export async function exportConversation(
+  conversationId: string,
+  format: JsonConversationExportFormat,
+): Promise<string> {
+  return invoke<string>("export_conversation", {
+    conversationId,
+    format,
+  });
+}
+
+export async function exportRenderedConversationPdf(
+  conversationId: string,
+  title: string,
+  html: string,
+): Promise<string> {
+  return invoke<string>("export_rendered_conversation_pdf", {
+    conversationId,
+    title,
+    html,
+  });
+}
+
 export async function createConversation(seedTitle?: string): Promise<ConversationMeta> {
   return invoke<ConversationMeta>("create_conversation", {
     title: seedTitle?.trim() ? buildConversationTitle(seedTitle) : undefined,

@@ -29,6 +29,8 @@ pub struct ConversationMeta {
     pub title: String,
     // 最近更新时间（unix 秒）。
     pub updated_at: i64,
+    // 置顶时间（unix 秒），为空表示未置顶。
+    pub pinned_at: Option<i64>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]

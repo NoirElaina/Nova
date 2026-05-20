@@ -1,62 +1,11 @@
 <script setup lang="ts">
 import { computed } from 'vue'
 import { Card, CardContent } from '@/components/ui/card'
-import MarkdownIt from 'markdown-it'
-import hljs from 'highlight.js'
-import markdownItKatex from '@traptitech/markdown-it-katex'
+import { renderMarkdown } from '@/lib/markdown-render'
 
 const props = defineProps<{ content: string }>()
 
-const md = new MarkdownIt({
-  html: true,
-  linkify: true,
-  typographer: true,
-  highlight(code: string, lang: string): string {
-    if (lang && hljs.getLanguage(lang)) {
-      try {
-        return `<pre class="hljs-block"><div class="hljs-header"><span class="hljs-lang">${lang}</span><button class="hljs-copy" onclick="navigator.clipboard.writeText(this.closest('pre').querySelector('code').innerText)">复制</button></div><code class="hljs language-${lang}">${hljs.highlight(code, { language: lang }).value}</code></pre>`
-      } catch { }
-    }
-    return `<pre class="hljs-block"><code class="hljs">${md.utils.escapeHtml(code)}</code></pre>`
-  },
-})
-
-md.use(markdownItKatex)
-
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-const defaultRender: any = md.renderer.rules.link_open
-  || function (tokens: any[], idx: number, options: any, _env: any, self: any) {
-    return self.renderToken(tokens, idx, options)
-  }
-
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-md.renderer.rules.link_open = function (tokens: any[], idx: number, options: any, env: any, self: any): string {
-  tokens[idx].attrSet('target', '_blank')
-  tokens[idx].attrSet('rel', 'noopener noreferrer')
-  return defaultRender(tokens, idx, options, env, self)
-}
-
-const rendered = computed(() => {
-  let html = md.render(props.content || '')
-
-  // 对 <details> 内部（<summary> 之后的部分）再跑一次 Markdown 渲染
-  html = html.replace(
-    /(<details[^>]*>)([\s\S]*?)(<\/details>)/g,
-    (_: string, open: string, inner: string, close: string) => {
-      const processed = inner.replace(
-        /(<\/summary>)([\s\S]*?)$/,
-        (__: string, summaryClose: string, rest: string) => {
-          const trimmed = rest.trim()
-          if (!trimmed) return summaryClose
-          return summaryClose + '<div class="details-body">' + md.render(trimmed) + '</div>'
-        }
-      )
-      return open + processed + close
-    }
-  )
-
-  return html
-})
+const rendered = computed(() => renderMarkdown(props.content || ''))
 </script>
 
 <template>

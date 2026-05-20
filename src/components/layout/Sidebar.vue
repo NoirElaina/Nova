@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, nextTick, onBeforeUnmount, onMounted, ref } from "vue";
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import SettingsModal from "./settings/SettingsModal.vue";
@@ -7,14 +7,18 @@ import SettingsModal from "./settings/SettingsModal.vue";
 interface ConversationItem {
   id: string;
   title: string;
+  pinnedAt?: number | null;
 }
 
 type MainView = "chat" | "hooks" | "agent" | "schedule";
+type ConversationExportFormat = "json" | "pdf";
 
 const props = defineProps<{
   recents: ConversationItem[];
   activeConversationId: string;
   activeMainView?: MainView;
+  exportingConversationId: string | null;
+  exportingFormat: ConversationExportFormat | null;
 }>();
 
 const emit = defineEmits<{
@@ -22,10 +26,15 @@ const emit = defineEmits<{
   (e: "new-chat"): void;
   (e: "select-conversation", id: string): void;
   (e: "delete-conversation", id: string): void;
+  (e: "pin-conversation", id: string, pinned: boolean): void;
+  (e: "export-conversation", id: string, format: ConversationExportFormat): void;
   (e: "change-main-view", view: MainView): void;
 }>();
 
 const isSettingsOpen = ref(false);
+const sidebarRef = ref<HTMLElement | null>(null);
+const openActionMenuId = ref<string | null>(null);
+const exportDialogConversationId = ref<string | null>(null);
 const openSettings = () => {
   isSettingsOpen.value = true;
 };
@@ -107,6 +116,60 @@ const selectFirstSearchResult = () => {
   emit("select-conversation", filteredRecents.value[0].id);
 };
 
+const closeRecentActionMenu = () => {
+  openActionMenuId.value = null;
+};
+
+const toggleRecentActionMenu = (id: string) => {
+  openActionMenuId.value = openActionMenuId.value === id ? null : id;
+};
+
+const isPinnedConversation = (item: ConversationItem) => Boolean(item.pinnedAt);
+
+const exportDialogConversation = computed(() =>
+  props.recents.find((item) => item.id === exportDialogConversationId.value) ?? null,
+);
+
+const isExportingDialogConversation = computed(() =>
+  Boolean(
+    exportDialogConversationId.value &&
+      props.exportingConversationId === exportDialogConversationId.value,
+  ),
+);
+
+const activeExportFormat = computed(() =>
+  isExportingDialogConversation.value ? props.exportingFormat : null,
+);
+
+const handlePinConversation = (item: ConversationItem) => {
+  emit("pin-conversation", item.id, !isPinnedConversation(item));
+  closeRecentActionMenu();
+};
+
+const openExportDialog = (id: string) => {
+  exportDialogConversationId.value = id;
+  closeRecentActionMenu();
+};
+
+const closeExportDialog = () => {
+  if (isExportingDialogConversation.value) {
+    return;
+  }
+  exportDialogConversationId.value = null;
+};
+
+const handleExportConversation = (id: string, format: ConversationExportFormat) => {
+  if (isExportingDialogConversation.value) {
+    return;
+  }
+  emit("export-conversation", id, format);
+};
+
+const handleDeleteConversation = (id: string) => {
+  emit("delete-conversation", id);
+  closeRecentActionMenu();
+};
+
 const onSearchKeyDown = (event: KeyboardEvent) => {
   if (event.key === "Escape") {
     event.preventDefault();
@@ -134,6 +197,18 @@ const onGlobalKeyDown = (event: KeyboardEvent) => {
     tagName === "textarea" ||
     tagName === "select";
 
+  if (event.key === "Escape" && exportDialogConversationId.value) {
+    event.preventDefault();
+    closeExportDialog();
+    return;
+  }
+
+  if (event.key === "Escape" && openActionMenuId.value) {
+    event.preventDefault();
+    closeRecentActionMenu();
+    return;
+  }
+
   if ((event.ctrlKey || event.metaKey) && key === "k") {
     event.preventDefault();
     void openSearch();
@@ -146,17 +221,41 @@ const onGlobalKeyDown = (event: KeyboardEvent) => {
   }
 };
 
+const onDocumentMouseDown = (event: MouseEvent) => {
+  if (!openActionMenuId.value) {
+    return;
+  }
+
+  const target = event.target as Node | null;
+  if (target && sidebarRef.value?.contains(target)) {
+    return;
+  }
+
+  closeRecentActionMenu();
+};
+
 onMounted(() => {
   window.addEventListener("keydown", onGlobalKeyDown);
+  document.addEventListener("mousedown", onDocumentMouseDown);
 });
 
 onBeforeUnmount(() => {
   window.removeEventListener("keydown", onGlobalKeyDown);
+  document.removeEventListener("mousedown", onDocumentMouseDown);
 });
+
+watch(
+  () => props.exportingConversationId,
+  (current, previous) => {
+    if (!current && previous && exportDialogConversationId.value === previous) {
+      exportDialogConversationId.value = null;
+    }
+  },
+);
 </script>
 
 <template>
-  <aside class="w-[260px] flex-shrink-0 flex flex-col bg-[#faecd/30] bg-[#f9f9f8] dark:bg-[#1f1f1f] border-r border-[#e5e5e5] dark:border-[#333] transition-all duration-300">
+  <aside ref="sidebarRef" class="w-[260px] flex-shrink-0 flex flex-col bg-[#faecd/30] bg-[#f9f9f8] dark:bg-[#1f1f1f] border-r border-[#e5e5e5] dark:border-[#333] transition-all duration-300">
     <div class="p-3 flex flex-col gap-1 overflow-y-auto flex-1 custom-scrollbar">
       <!-- Top Actions -->
       <Button variant="ghost" class="w-full justify-start gap-3 px-3 py-2 text-left font-medium hover:bg-[#ebebeb] dark:hover:bg-[#2d2d2d]" @click="emit('new-chat')">
@@ -260,7 +359,7 @@ onBeforeUnmount(() => {
         :key="recent.id"
         role="button"
         tabindex="0"
-        class="group flex w-full cursor-pointer select-none items-center gap-2 rounded-lg px-3 py-1.5 text-left text-[0.85rem]"
+        class="group relative flex w-full cursor-pointer select-none items-center gap-2 rounded-lg px-3 py-1.5 text-left text-[0.85rem]"
         :class="recent.id === props.activeConversationId
           ? 'bg-[#ebebeb] dark:bg-[#2d2d2d] text-[#222] dark:text-[#f2f2f2]'
           : 'hover:bg-[#ebebeb] dark:hover:bg-[#2d2d2d] text-[#333] dark:text-[#ccc]'"
@@ -269,20 +368,72 @@ onBeforeUnmount(() => {
         @keydown.space.prevent="emit('select-conversation', recent.id)"
       >
         <span class="truncate block flex-1">{{ recent.title || "New chat" }}</span>
+        <span
+          v-if="isPinnedConversation(recent)"
+          class="h-1.5 w-1.5 flex-shrink-0 rounded-full bg-[#c87b57]"
+          aria-label="已置顶"
+          title="已置顶"
+        />
         <Button
           variant="ghost"
           size="icon-sm"
-          class="opacity-0 group-hover:opacity-100 transition-opacity text-[#9b9b9b] hover:text-[#da7756] p-1 rounded"
-          title="Delete conversation"
-          @click.stop="emit('delete-conversation', recent.id)"
+          class="h-6 w-6 rounded-full p-1 text-[#8f8a80] transition-all hover:bg-[#dedbd4]/80 hover:text-[#292721] dark:hover:bg-[#3a3a3a]"
+          :class="openActionMenuId === recent.id ? 'opacity-100 bg-[#e5e0d7] shadow-sm dark:bg-[#3a3a3a]' : 'opacity-0 group-hover:opacity-100 focus:opacity-100'"
+          title="会话操作"
+          @click.stop="toggleRecentActionMenu(recent.id)"
         >
-          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-            <path d="M3 6h18"/>
-            <path d="M8 6V4h8v2"/>
-            <path d="M19 6l-1 14H6L5 6"/>
-            <path d="M10 11v6M14 11v6"/>
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+            <circle cx="5" cy="12" r="1.8"/>
+            <circle cx="12" cy="12" r="1.8"/>
+            <circle cx="19" cy="12" r="1.8"/>
           </svg>
         </Button>
+        <div
+          v-if="openActionMenuId === recent.id"
+          class="absolute right-1 top-8 z-40 w-40 rounded-2xl border border-[#ded7ca] bg-[#fffdf8] p-1.5 text-[0.88rem] shadow-[0_18px_45px_rgba(44,36,24,0.16)] dark:border-[#3b3b3b] dark:bg-[#252525]"
+          @click.stop
+        >
+          <button
+            type="button"
+            class="flex w-full items-center gap-2 rounded-xl px-3 py-2 text-left text-[#2d2a25] hover:bg-[#f2eee6] dark:text-[#ececec] dark:hover:bg-[#333]"
+            @click.stop="handlePinConversation(recent)"
+          >
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M12 17v5"/>
+              <path d="M5 17h14"/>
+              <path d="m7 9 5-5 5 5"/>
+              <path d="M12 4v13"/>
+            </svg>
+            <span>{{ isPinnedConversation(recent) ? "取消置顶" : "置顶" }}</span>
+          </button>
+          <button
+            type="button"
+            class="flex w-full items-center gap-2 rounded-xl px-3 py-2 text-left text-[#2d2a25] hover:bg-[#f2eee6] dark:text-[#ececec] dark:hover:bg-[#333]"
+            @click.stop="openExportDialog(recent.id)"
+          >
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+              <path d="M7 10l5 5 5-5"/>
+              <path d="M12 15V3"/>
+            </svg>
+            <span class="flex-1">导出</span>
+            <span class="text-[11px] text-[#9b9183]">选择</span>
+          </button>
+          <div class="my-1 h-px bg-[#ebe5da] dark:bg-[#3a3a3a]" />
+          <button
+            type="button"
+            class="flex w-full items-center gap-2 rounded-xl px-3 py-2 text-left text-[#d44d3a] hover:bg-[#fff0eb] dark:hover:bg-[#3a2924]"
+            @click.stop="handleDeleteConversation(recent.id)"
+          >
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M3 6h18"/>
+              <path d="M8 6V4h8v2"/>
+              <path d="M19 6l-1 14H6L5 6"/>
+              <path d="M10 11v6M14 11v6"/>
+            </svg>
+            <span>删除</span>
+          </button>
+        </div>
       </div>
       <div v-if="filteredRecents.length === 0" class="px-3 py-1.5 text-[0.85rem] text-[#8b8b8b]">
         {{ hasActiveSearch ? '未找到匹配会话' : '暂无历史会话' }}
@@ -308,6 +459,93 @@ onBeforeUnmount(() => {
       </div>
     </div>
     <SettingsModal v-model="isSettingsOpen" />
+    <Teleport to="body">
+      <Transition name="export-backdrop">
+        <div
+          v-if="exportDialogConversation"
+          class="fixed inset-0 z-[95] flex items-center justify-center bg-[rgba(28,22,14,0.34)] px-5 backdrop-blur-[3px]"
+          @click.self="closeExportDialog"
+        >
+          <Transition name="export-card">
+            <div
+              v-if="exportDialogConversation"
+              class="w-full max-w-[430px] rounded-[24px] border border-[#e3d9ca] bg-[#fffdf8] p-5 shadow-[0_24px_80px_rgba(42,32,19,0.18)] dark:border-[#3c3933] dark:bg-[#272522]"
+            >
+              <div class="flex items-start justify-between gap-4">
+                <div class="min-w-0">
+                  <div class="text-[18px] font-semibold text-[#26221b] dark:text-[#f4efe7]">导出会话</div>
+                  <div class="mt-1 truncate text-[13px] text-[#8a8072] dark:text-[#aaa197]">
+                    {{ exportDialogConversation.title || "New chat" }}
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  class="flex h-8 w-8 shrink-0 items-center justify-center rounded-full text-[#8c8172] transition-colors hover:bg-[#f0e9df] hover:text-[#2f2921] dark:hover:bg-[#393631] dark:hover:text-white"
+                  aria-label="关闭导出选择"
+                  @click="closeExportDialog"
+                >
+                  <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <path d="M6 6l12 12M18 6 6 18" stroke-linecap="round"/>
+                  </svg>
+                </button>
+              </div>
+
+              <div class="mt-5 grid gap-3">
+                <button
+                  type="button"
+                  class="group flex w-full items-center gap-3 rounded-2xl border border-[#e6ddcf] bg-[#faf6ee] px-4 py-3 text-left transition-all hover:-translate-y-0.5 hover:border-[#cdbca5] hover:bg-[#fffaf2] hover:shadow-[0_12px_30px_rgba(92,70,42,0.12)] disabled:cursor-wait disabled:opacity-75 disabled:hover:translate-y-0 disabled:hover:shadow-none dark:border-[#454037] dark:bg-[#302d28] dark:hover:border-[#6a5e50] dark:hover:bg-[#36322c]"
+                  :disabled="isExportingDialogConversation"
+                  @click="handleExportConversation(exportDialogConversation.id, 'json')"
+                >
+                  <span class="flex h-10 w-10 items-center justify-center rounded-xl bg-white text-[#8a6243] shadow-sm dark:bg-[#24221f] dark:text-[#e0c0a0]">
+                    <span
+                      v-if="activeExportFormat === 'json'"
+                      class="h-4 w-4 animate-spin rounded-full border-2 border-[#c8b99f] border-t-[#8a6243]"
+                    />
+                    <svg v-else width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                      <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>
+                      <path d="M14 2v6h6"/>
+                      <path d="M8 13h8M8 17h5"/>
+                    </svg>
+                  </span>
+                  <span class="min-w-0 flex-1">
+                    <span class="block text-[15px] font-semibold text-[#2d271f] dark:text-[#f3eee7]">JSON 原始数据</span>
+                    <span class="mt-0.5 block text-[12px] text-[#8c8172] dark:text-[#aaa197]">
+                      {{ activeExportFormat === 'json' ? '正在写出会话数据...' : '适合备份、排查和后续导入处理' }}
+                    </span>
+                  </span>
+                </button>
+
+                <button
+                  type="button"
+                  class="group flex w-full items-center gap-3 rounded-2xl border border-[#e6ddcf] bg-[#faf6ee] px-4 py-3 text-left transition-all hover:-translate-y-0.5 hover:border-[#cdbca5] hover:bg-[#fffaf2] hover:shadow-[0_12px_30px_rgba(92,70,42,0.12)] disabled:cursor-wait disabled:opacity-75 disabled:hover:translate-y-0 disabled:hover:shadow-none dark:border-[#454037] dark:bg-[#302d28] dark:hover:border-[#6a5e50] dark:hover:bg-[#36322c]"
+                  :disabled="isExportingDialogConversation"
+                  @click="handleExportConversation(exportDialogConversation.id, 'pdf')"
+                >
+                  <span class="flex h-10 w-10 items-center justify-center rounded-xl bg-white text-[#b55941] shadow-sm dark:bg-[#24221f] dark:text-[#f0a38e]">
+                    <span
+                      v-if="activeExportFormat === 'pdf'"
+                      class="h-4 w-4 animate-spin rounded-full border-2 border-[#e3b8aa] border-t-[#b55941]"
+                    />
+                    <svg v-else width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                      <path d="M14 2H7a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V7z"/>
+                      <path d="M14 2v5h5"/>
+                      <path d="M8 16h8M8 12h8"/>
+                    </svg>
+                  </span>
+                  <span class="min-w-0 flex-1">
+                    <span class="block text-[15px] font-semibold text-[#2d271f] dark:text-[#f3eee7]">PDF 阅读版</span>
+                    <span class="mt-0.5 block text-[12px] text-[#8c8172] dark:text-[#aaa197]">
+                      {{ activeExportFormat === 'pdf' ? '正在渲染并生成 PDF...' : '使用当前 Markdown 渲染效果生成' }}
+                    </span>
+                  </span>
+                </button>
+              </div>
+            </div>
+          </Transition>
+        </div>
+      </Transition>
+    </Teleport>
   </aside>
 </template>
 
@@ -325,5 +563,29 @@ onBeforeUnmount(() => {
 }
 .dark .custom-scrollbar::-webkit-scrollbar-thumb {
   background-color: #444;
+}
+
+.export-backdrop-enter-active,
+.export-backdrop-leave-active {
+  transition: opacity 0.18s ease;
+}
+
+.export-backdrop-enter-from,
+.export-backdrop-leave-to {
+  opacity: 0;
+}
+
+.export-card-enter-active {
+  transition: opacity 0.2s ease, transform 0.2s ease;
+}
+
+.export-card-leave-active {
+  transition: opacity 0.14s ease, transform 0.14s ease;
+}
+
+.export-card-enter-from,
+.export-card-leave-to {
+  opacity: 0;
+  transform: translateY(8px) scale(0.98);
 }
 </style>

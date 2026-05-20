@@ -18,6 +18,7 @@ import {
   listConversations,
   loadConversationHistory,
   loadConversationToolLogs,
+  setConversationPinned,
   type RagDocumentMeta,
   upsertConversationMemory,
 } from "../services/chat-api";
@@ -274,6 +275,22 @@ export function createConversationOperations(deps: ConversationOpsDeps) {
     }
   }
 
+  async function handlePinConversation(id: string, pinned: boolean) {
+    if (!id) return;
+
+    try {
+      await setConversationPinned(id, pinned);
+      await refreshConversations();
+    } catch (err) {
+      console.error("Failed to pin conversation:", err);
+      emitToast({
+        variant: "error",
+        source: "pin-conversation",
+        message: pinned ? "置顶会话失败。" : "取消置顶失败。",
+      });
+    }
+  }
+
   const handleHistoryCleared = async () => {
     if (hasAnyGeneratingConversations(isGenerating, runtimeStateByConversation)) {
       emitToast({
@@ -322,6 +339,7 @@ export function createConversationOperations(deps: ConversationOpsDeps) {
     handleNewChat,
     handleSelectConversation,
     handleDeleteConversation,
+    handlePinConversation,
     handleHistoryCleared,
   };
 }

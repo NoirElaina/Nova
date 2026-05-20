@@ -35,6 +35,49 @@ pub async fn list_conversations(app: AppHandle) -> Result<Vec<ConversationMeta>,
 }
 
 #[tauri::command]
+pub async fn set_conversation_pinned(
+    app: AppHandle,
+    conversation_id: String,
+    pinned: bool,
+) -> Result<(), String> {
+    report_backend_result(
+        &app,
+        "command.history.set_conversation_pinned",
+        history::set_conversation_pinned(&app, &conversation_id, pinned).await,
+        None,
+    )
+}
+
+#[tauri::command]
+pub async fn export_conversation(
+    app: AppHandle,
+    conversation_id: String,
+    format: String,
+) -> Result<String, String> {
+    report_backend_result(
+        &app,
+        "command.history.export_conversation",
+        history::export_conversation(&app, &conversation_id, &format).await,
+        None,
+    )
+}
+
+#[tauri::command]
+pub async fn export_rendered_conversation_pdf(
+    app: AppHandle,
+    conversation_id: String,
+    title: String,
+    html: String,
+) -> Result<String, String> {
+    report_backend_result(
+        &app,
+        "command.history.export_rendered_conversation_pdf",
+        history::export_rendered_conversation_pdf(&app, &conversation_id, &title, &html).await,
+        None,
+    )
+}
+
+#[tauri::command]
 pub async fn load_history(
     app: AppHandle,
     conversation_id: String,

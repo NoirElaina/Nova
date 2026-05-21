@@ -45,19 +45,10 @@ watch(
 </script>
 
 <template>
-  <Transition name="fade">
-    <div
-      v-if="open"
-      class="absolute inset-0 z-20 bg-black/20 dark:bg-black/40"
-      @click="emit('close')"
-    />
-  </Transition>
-
   <Transition name="slide-right">
-    <div
+    <aside
       v-if="open"
-      class="absolute top-0 right-0 z-30 flex h-full flex-col"
-      style="width: 90%"
+      class="workspace-drawer-docked flex h-full flex-col"
     >
       <div class="flex h-full flex-col border-l border-[#e7e2d7] bg-[#faf9f6] shadow-2xl dark:border-[#333] dark:bg-[#1e1e1e]">
         <div class="flex h-14 shrink-0 items-center justify-between border-b border-[#e7e2d7] px-4 dark:border-[#333]">
@@ -112,33 +103,45 @@ watch(
           />
         </div>
       </div>
-    </div>
+    </aside>
   </Transition>
 </template>
 
 <style scoped>
-.fade-enter-active,
-.fade-leave-active {
-  transition: opacity 0.25s ease;
-}
-
-.fade-enter-from,
-.fade-leave-to {
-  opacity: 0;
+.workspace-drawer-docked {
+  width: min(760px, 48vw);
+  min-width: min(420px, 48vw);
+  flex-shrink: 0;
+  overflow: hidden;
 }
 
 .slide-right-enter-active,
 .slide-right-leave-active {
-  transition: transform 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+  transition:
+    width 0.28s cubic-bezier(0.22, 1, 0.36, 1),
+    min-width 0.28s cubic-bezier(0.22, 1, 0.36, 1),
+    transform 0.28s cubic-bezier(0.22, 1, 0.36, 1),
+    opacity 0.2s ease;
 }
 
 .slide-right-enter-from,
 .slide-right-leave-to {
-  transform: translateX(100%);
+  width: 0;
+  min-width: 0;
+  transform: translateX(16px);
+  opacity: 0;
 }
 
 .slide-right-enter-to,
 .slide-right-leave-from {
   transform: translateX(0%);
+  opacity: 1;
+}
+
+@media (max-width: 1100px) {
+  .workspace-drawer-docked {
+    width: 46vw;
+    min-width: 360px;
+  }
 }
 </style>

@@ -4,7 +4,6 @@ import { Button } from "@/components/ui/button";
 import Sidebar from "./components/layout/Sidebar.vue";
 import WelcomeScreen from "./components/chat/WelcomeScreen.vue";
 import ChatScreen from "./components/chat/ChatScreen.vue";
-import SessionFilesPopover from "./components/chat/files/SessionFilesPopover.vue";
 import ExecutionTracePopover from "./components/chat/files/ExecutionTracePopover.vue";
 import ShellSessionPopover from "./components/chat/files/ShellSessionPopover.vue";
 import WorkspaceDrawer from "./components/chat/WorkspaceDrawer.vue";
@@ -48,7 +47,6 @@ const {
   mainView,
   isSidebarOpen,
   chatScreenRef,
-  refreshActiveConversationFiles,
   handleSendMessage,
   handleEditMessage,
   handleUploadFiles,
@@ -68,16 +66,8 @@ void chatScreenRef;
 
 const isDrawerOpen = ref(false);
 const activeWorkspaceTab = ref<WorkspaceTabId>("diff");
-const activeWorkspaceFileId = ref<string | null>(null);
 const exportingConversationId = ref<string | null>(null);
 const exportingFormat = ref<ConversationExportFormat | null>(null);
-
-const openWorkspaceFile = (fileId: string) => {
-  activeWorkspaceTab.value = "files";
-  activeWorkspaceFileId.value = fileId;
-  isDrawerOpen.value = true;
-  void refreshActiveConversationFiles();
-};
 
 const formatExportLabel = (format: ConversationExportFormat) => format.toUpperCase();
 
@@ -148,115 +138,109 @@ const handleExportConversation = async (
     />
 
     <!-- Main Content Area -->
-    <main class="flex-1 flex flex-col relative h-full">
-      <!-- Top Title Bar -->
-      <header class="h-14 flex items-center justify-between px-4 absolute top-0 w-full z-10 pointer-events-none">
-        <div class="flex items-center gap-2 pointer-events-auto">
-          <Button
-            variant="ghost"
-            size="icon-sm"
-            class="h-8 w-8 text-muted-foreground hover:bg-black/5 dark:hover:bg-white/5"
-            @click="isSidebarOpen = !isSidebarOpen"
-          >
-            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2" ry="2"/><line x1="9" y1="3" x2="9" y2="21"/></svg>
-          </Button>
-        </div>
+    <main class="flex h-full min-w-0 flex-1 overflow-hidden">
+      <section class="app-chat-pane relative flex h-full min-w-0 flex-1 flex-col">
+        <!-- Top Title Bar -->
+        <header class="h-14 flex items-center justify-between px-4 absolute top-0 w-full z-10 pointer-events-none">
+          <div class="flex items-center gap-2 pointer-events-auto">
+            <Button
+              variant="ghost"
+              size="icon-sm"
+              class="h-8 w-8 text-muted-foreground hover:bg-black/5 dark:hover:bg-white/5"
+              @click="isSidebarOpen = !isSidebarOpen"
+            >
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2" ry="2"/><line x1="9" y1="3" x2="9" y2="21"/></svg>
+            </Button>
+          </div>
 
-        <div v-if="mainView === 'chat'" class="flex items-center gap-2 pointer-events-auto">
-          <SessionFilesPopover
-            :files="conversationFiles"
+          <div v-if="mainView === 'chat'" class="flex items-center gap-2 pointer-events-auto">
+            <ShellSessionPopover
+              :conversationId="activeConversationId || null"
+              :refreshKey="toolExecutionLogs.length"
+              :currentTurnToolEntries="currentTurnToolExecutionLogs"
+            />
+            <ExecutionTracePopover :entries="toolExecutionLogs" />
+            <Button
+              variant="ghost"
+              size="icon-sm"
+              class="h-8 w-8 text-muted-foreground hover:bg-black/5 dark:hover:bg-white/5"
+              :class="{ 'bg-black/5 dark:bg-white/10': isDrawerOpen }"
+              title="工作区面板"
+              @click="isDrawerOpen = !isDrawerOpen"
+            >
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <rect x="3" y="3" width="18" height="18" rx="2"/>
+                <line x1="15" y1="3" x2="15" y2="21"/>
+              </svg>
+            </Button>
+          </div>
+        </header>
+
+        <HooksConfigScreen
+          v-if="mainView === 'hooks'"
+          @change-main-view="handleChangeMainView"
+        />
+
+        <AgentConfigScreen
+          v-else-if="mainView === 'agent'"
+          @change-main-view="handleChangeMainView"
+        />
+
+        <ScheduleTaskScreen
+          v-else-if="mainView === 'schedule'"
+          @change-main-view="handleChangeMainView"
+          @open-task-conversation="handleSelectConversation"
+        />
+
+        <template v-else>
+          <WelcomeScreen 
+            v-if="messages.length === 0" 
+            :isGenerating="isGenerating"
+            :agentMode="agentMode"
             :pendingUploads="pendingUploads"
-            @open="refreshActiveConversationFiles"
-            @open-workspace-file="openWorkspaceFile"
-            @remove-pending-upload="handleRemovePendingUpload"
+            :contextUsage="currentContextUsage"
+            :contextCompacts="currentContextCompacts"
+            :contextTokens="currentContextTokens"
+            @send="handleSendMessage" 
+            @mode-change="handleAgentModeChange"
+            @upload-files="handleUploadFiles"
+            @remove-upload="handleRemovePendingUpload"
           />
-          <ShellSessionPopover
-            :conversationId="activeConversationId || null"
-            :refreshKey="toolExecutionLogs.length"
+
+          <ChatScreen 
+            v-else 
+            ref="chatScreenRef"
+            :messages="messages"
+            :isGenerating="isGenerating"
+            :currentStage="currentStage"
+            :assistantResponse="assistantResponse"
+            :assistantReasoning="assistantReasoning"
+            :assistantTokenUsage="assistantTokenUsage"
             :currentTurnToolEntries="currentTurnToolExecutionLogs"
+            :pendingQuestion="pendingQuestion"
+            :pendingPermissionRequestId="pendingPermissionRequestId"
+            :agentMode="agentMode"
+            :planMode="planMode"
+            :pendingUploads="pendingUploads"
+            :contextUsage="currentContextUsage"
+            :contextCompacts="currentContextCompacts"
+            :contextTokens="currentContextTokens"
+            @send="handleSendMessage"
+            @save-user-edit="handleEditMessage($event.index, $event.content)"
+            @cancel="handleCancelGeneration"
+            @mode-change="handleAgentModeChange"
+            @upload-files="handleUploadFiles"
+            @remove-upload="handleRemovePendingUpload"
+            @ask-submit="handlePendingQuestionSubmit"
+            @ask-skip="handlePendingQuestionSkip"
           />
-          <ExecutionTracePopover :entries="toolExecutionLogs" />
-          <Button
-            variant="ghost"
-            size="icon-sm"
-            class="h-8 w-8 text-muted-foreground hover:bg-black/5 dark:hover:bg-white/5"
-            :class="{ 'bg-black/5 dark:bg-white/10': isDrawerOpen }"
-            title="工作区面板"
-            @click="isDrawerOpen = !isDrawerOpen"
-          >
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-              <rect x="3" y="3" width="18" height="18" rx="2"/>
-              <line x1="15" y1="3" x2="15" y2="21"/>
-            </svg>
-          </Button>
-        </div>
-      </header>
-
-      <HooksConfigScreen
-        v-if="mainView === 'hooks'"
-        @change-main-view="handleChangeMainView"
-      />
-
-      <AgentConfigScreen
-        v-else-if="mainView === 'agent'"
-        @change-main-view="handleChangeMainView"
-      />
-
-      <ScheduleTaskScreen
-        v-else-if="mainView === 'schedule'"
-        @change-main-view="handleChangeMainView"
-        @open-task-conversation="handleSelectConversation"
-      />
-
-      <template v-else>
-        <WelcomeScreen 
-          v-if="messages.length === 0" 
-          :isGenerating="isGenerating"
-          :agentMode="agentMode"
-          :pendingUploads="pendingUploads"
-          :contextUsage="currentContextUsage"
-          :contextCompacts="currentContextCompacts"
-          :contextTokens="currentContextTokens"
-          @send="handleSendMessage" 
-          @mode-change="handleAgentModeChange"
-          @upload-files="handleUploadFiles"
-          @remove-upload="handleRemovePendingUpload"
-        />
-
-        <ChatScreen 
-          v-else 
-          ref="chatScreenRef"
-          :messages="messages"
-          :isGenerating="isGenerating"
-          :currentStage="currentStage"
-          :assistantResponse="assistantResponse"
-          :assistantReasoning="assistantReasoning"
-          :assistantTokenUsage="assistantTokenUsage"
-          :currentTurnToolEntries="currentTurnToolExecutionLogs"
-          :pendingQuestion="pendingQuestion"
-          :pendingPermissionRequestId="pendingPermissionRequestId"
-          :agentMode="agentMode"
-          :planMode="planMode"
-          :pendingUploads="pendingUploads"
-          :contextUsage="currentContextUsage"
-          :contextCompacts="currentContextCompacts"
-          :contextTokens="currentContextTokens"
-          @send="handleSendMessage"
-          @save-user-edit="handleEditMessage($event.index, $event.content)"
-          @cancel="handleCancelGeneration"
-          @mode-change="handleAgentModeChange"
-          @upload-files="handleUploadFiles"
-          @remove-upload="handleRemovePendingUpload"
-          @ask-submit="handlePendingQuestionSubmit"
-          @ask-skip="handlePendingQuestionSkip"
-        />
-      </template>
+        </template>
+      </section>
 
       <WorkspaceDrawer
         v-if="mainView === 'chat'"
         :open="isDrawerOpen"
         :activeTab="activeWorkspaceTab"
-        :selectedFileId="activeWorkspaceFileId"
         :entries="toolExecutionLogs"
         :messages="messages"
         :files="conversationFiles"
@@ -264,7 +248,6 @@ const handleExportConversation = async (
         :conversationId="activeConversationId || null"
         @close="isDrawerOpen = false"
       />
-
     </main>
   </div>
 </template>
@@ -276,5 +259,9 @@ html, body, #app {
   padding: 0;
   width: 100%;
   height: 100%;
+}
+
+.app-chat-pane {
+  transition: flex-basis 0.28s cubic-bezier(0.22, 1, 0.36, 1), width 0.28s cubic-bezier(0.22, 1, 0.36, 1);
 }
 </style>

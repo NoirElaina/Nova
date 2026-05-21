@@ -255,7 +255,7 @@ watch(
 </script>
 
 <template>
-  <aside ref="sidebarRef" class="w-[260px] flex-shrink-0 flex flex-col bg-[#faecd/30] bg-[#f9f9f8] dark:bg-[#1f1f1f] border-r border-[#e5e5e5] dark:border-[#333] transition-all duration-300">
+  <aside ref="sidebarRef" class="w-[225px] flex-shrink-0 flex flex-col bg-[#faecd/30] bg-[#f9f9f8] dark:bg-[#1f1f1f] border-r border-[#e5e5e5] dark:border-[#333] transition-all duration-300">
     <div class="p-3 flex flex-col gap-1 overflow-y-auto flex-1 custom-scrollbar">
       <!-- Top Actions -->
       <Button variant="ghost" class="w-full justify-start gap-3 px-3 py-2 text-left font-medium hover:bg-[#ebebeb] dark:hover:bg-[#2d2d2d]" @click="emit('new-chat')">

@@ -25,12 +25,13 @@ const props = defineProps<{
 }>();
 
 const activeTab = ref<TabId>('diff');
+const browserTabRef = ref<{ hideBrowserSurface?: () => void | Promise<void> } | null>(null);
 
 const tabs: { id: TabId; label: string }[] = [
-  { id: 'diff', label: 'Code Diff' },
-  { id: 'usage', label: 'Usage' },
-  { id: 'files', label: 'Files' },
-  { id: 'browser', label: 'Browser' },
+  { id: 'diff', label: '审查' },
+  { id: 'usage', label: '用量' },
+  { id: 'files', label: '文件' },
+  { id: 'browser', label: '浏览器' },
 ];
 
 watch(
@@ -42,12 +43,16 @@ watch(
   },
   { immediate: true },
 );
+
+const closeBrowserSurfaceBeforeLeave = () => {
+  void browserTabRef.value?.hideBrowserSurface?.();
+};
 </script>
 
 <template>
-  <Transition name="slide-right">
+  <Transition name="slide-right" @before-leave="closeBrowserSurfaceBeforeLeave">
     <aside
-      v-if="open"
+      v-show="open"
       class="workspace-drawer-docked flex h-full flex-col"
     >
       <div class="flex h-full flex-col border-l border-[#e7e2d7] bg-[#faf9f6] shadow-2xl dark:border-[#333] dark:bg-[#1e1e1e]">
@@ -98,8 +103,10 @@ watch(
           />
 
           <BrowserTab
-            v-else
+            v-show="activeTab === 'browser'"
+            ref="browserTabRef"
             :conversationId="conversationId"
+            :visible="open && activeTab === 'browser'"
           />
         </div>
       </div>

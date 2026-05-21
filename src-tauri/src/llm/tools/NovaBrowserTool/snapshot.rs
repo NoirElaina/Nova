@@ -16,11 +16,11 @@ pub(crate) fn registration() -> ToolRegistration {
 pub fn tool() -> Tool {
     Tool {
         name: "nova_browser_snapshot".into(),
-        description: "Return the current visible Nova Browser tab state for this conversation. Use this before clicking or typing. v1 returns reliable browser state and a best-effort page summary; do not confuse this with external MCP browser tools.".into(),
+        description: "Return the current visible Nova Browser tab state for this conversation. Use this before clicking or typing. It captures bounded DOM text plus visible interactive elements across the top page and reachable iframes; use returned refs for click/type. Do not confuse this with external MCP browser tools.".into(),
         input_schema: json!({
             "type": "object",
             "properties": {
-                "timeout_ms": { "type": "integer", "description": "Optional timeout in milliseconds. Defaults to 15000 and is capped at 60000." }
+                "timeout_ms": { "type": "integer", "description": "Optional timeout in milliseconds. Defaults to 30000 and is capped at 60000." }
             }
         }),
     }

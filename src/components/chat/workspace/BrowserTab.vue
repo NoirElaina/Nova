@@ -6,19 +6,26 @@ import { listen, type UnlistenFn } from '@tauri-apps/api/event';
 import { Webview } from '@tauri-apps/api/webview';
 import { getCurrentWindow } from '@tauri-apps/api/window';
 import { openUrl } from '@tauri-apps/plugin-opener';
+import {
+  clearBrowserTabState,
+  getBrowserTabState,
+  saveBrowserTabState,
+} from '../../../features/browser/browser-tab-state';
 
 const props = defineProps<{
   conversationId?: string | null;
+  visible?: boolean;
 }>();
 
-const addressInput = ref('');
-const currentUrl = ref('');
-const history = ref<string[]>([]);
-const historyIndex = ref(-1);
+const initialState = getBrowserTabState(props.conversationId);
+const addressInput = ref(initialState?.addressInput ?? '');
+const currentUrl = ref(initialState?.currentUrl ?? '');
+const history = ref<string[]>(initialState?.history ?? []);
+const historyIndex = ref(initialState?.historyIndex ?? -1);
 const isLoading = ref(false);
 const isMenuOpen = ref(false);
-const zoomPercent = ref(100);
-const showDeviceToolbar = ref(false);
+const zoomPercent = ref(initialState?.zoomPercent ?? 100);
+const showDeviceToolbar = ref(initialState?.showDeviceToolbar ?? false);
 const isElementPickerActive = ref(false);
 const browserHost = ref<HTMLElement | null>(null);
 const browserLabel = `nova-browser-${crypto.randomUUID()}`;
@@ -26,7 +33,31 @@ let browserWebview: Webview | null = null;
 let isBrowserWebviewReady = false;
 let resizeObserver: ResizeObserver | null = null;
 let pickerRetryTimers: number[] = [];
+let restoreRetryTimer: number | null = null;
 let unlistenBrowserCommand: UnlistenFn | null = null;
+type BrowserSnapshotTarget = {
+  selector?: string;
+  frameId?: string;
+  contextId?: number;
+};
+
+let browserSnapshotRefMap = new Map<string, BrowserSnapshotTarget>();
+
+type BrowserFrameInfo = {
+  frameId: string;
+  parentFrameId?: string;
+  name?: string;
+  url?: string;
+  depth: number;
+  index: number;
+};
+
+type BrowserFrameSnapshot = {
+  frame: BrowserFrameInfo;
+  page?: Record<string, any>;
+  contextId?: number;
+  error?: string;
+};
 
 type BrowserAutomationCommand = {
   conversationId: string;
@@ -40,6 +71,27 @@ type BrowserAutomationCommand = {
 const canGoBack = computed(() => historyIndex.value > 0);
 const canGoForward = computed(() => historyIndex.value >= 0 && historyIndex.value < history.value.length - 1);
 const browserConversationId = computed(() => props.conversationId?.trim() || '__default__');
+
+const persistBrowserTabState = (conversationId: string | null | undefined = props.conversationId) => {
+  saveBrowserTabState(conversationId, {
+    addressInput: addressInput.value,
+    currentUrl: currentUrl.value,
+    history: history.value,
+    historyIndex: historyIndex.value,
+    zoomPercent: zoomPercent.value,
+    showDeviceToolbar: showDeviceToolbar.value,
+  });
+};
+
+const restoreBrowserTabState = (conversationId: string | null | undefined) => {
+  const state = getBrowserTabState(conversationId);
+  addressInput.value = state?.addressInput ?? '';
+  currentUrl.value = state?.currentUrl ?? '';
+  history.value = state?.history ?? [];
+  historyIndex.value = state?.historyIndex ?? -1;
+  zoomPercent.value = state?.zoomPercent ?? 100;
+  showDeviceToolbar.value = state?.showDeviceToolbar ?? false;
+};
 
 const registerCurrentBrowserSession = async () => {
   await invoke('register_browser_session', {
@@ -178,6 +230,7 @@ const toggleElementPicker = () => {
   isElementPickerActive.value = !isElementPickerActive.value;
   isMenuOpen.value = false;
   void applyElementPickerState();
+  schedulePickerInjection();
 };
 
 const getHostBounds = () => {
@@ -186,6 +239,17 @@ const getHostBounds = () => {
   const rect = host.getBoundingClientRect();
   if (rect.width <= 0 || rect.height <= 0) return null;
   return rect;
+};
+
+const waitForHostBounds = async (timeoutMs = 1400) => {
+  const startedAt = performance.now();
+  while (performance.now() - startedAt < timeoutMs) {
+    await nextTick();
+    const rect = getHostBounds();
+    if (rect) return rect;
+    await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+  }
+  return getHostBounds();
 };
 
 const syncWebviewBounds = async () => {
@@ -221,11 +285,57 @@ const closeNativeWebview = async () => {
   }
 };
 
-const createNativeWebview = async (url: string) => {
+const hideBrowserSurface = async () => {
+  persistBrowserTabState();
+  pickerRetryTimers.forEach((timer) => window.clearTimeout(timer));
+  pickerRetryTimers = [];
+  if (restoreRetryTimer !== null) {
+    window.clearTimeout(restoreRetryTimer);
+    restoreRetryTimer = null;
+  }
+  isElementPickerActive.value = false;
+  await applyElementPickerState().catch((error) => {
+    console.warn('Browser element picker cleanup failed:', error);
+  });
+  if (browserWebview && isBrowserWebviewReady) {
+    await browserWebview.hide().catch((error) => {
+      console.warn('Browser webview hide failed:', error);
+    });
+  }
+};
+
+const closeBrowserSurface = async () => {
+  await hideBrowserSurface();
+  await closeNativeWebview();
+};
+
+defineExpose({ hideBrowserSurface, closeBrowserSurface });
+
+const reopenSavedBrowserSurface = async () => {
+  if (props.visible === false) return;
+  if (!currentUrl.value) return;
+  isLoading.value = true;
+  const opened = await navigateNativeWebview(currentUrl.value);
+  if (!opened) {
+    isLoading.value = false;
+    queueReopenSavedBrowserSurface();
+  }
+};
+
+const queueReopenSavedBrowserSurface = () => {
+  if (props.visible === false) return;
+  if (!currentUrl.value || browserWebview || restoreRetryTimer !== null) return;
+  restoreRetryTimer = window.setTimeout(() => {
+    restoreRetryTimer = null;
+    void reopenSavedBrowserSurface();
+  }, 120);
+};
+
+const createNativeWebview = async (url: string): Promise<boolean> => {
   await nextTick();
-  const rect = getHostBounds();
-  if (!rect) return;
-  if (browserWebview && !isBrowserWebviewReady) return;
+  const rect = await waitForHostBounds();
+  if (!rect) return false;
+  if (browserWebview && !isBrowserWebviewReady) return false;
 
   const child = new Webview(getCurrentWindow(), browserLabel, {
     url,
@@ -254,15 +364,15 @@ const createNativeWebview = async (url: string) => {
     void syncWebviewBounds();
     schedulePickerInjection();
   });
+  return true;
 };
 
-const navigateNativeWebview = async (url: string) => {
+const navigateNativeWebview = async (url: string): Promise<boolean> => {
   await nextTick();
   if (!browserWebview) {
-    await createNativeWebview(url);
-    return;
+    return createNativeWebview(url);
   }
-  if (!isBrowserWebviewReady) return;
+  if (!isBrowserWebviewReady) return false;
 
   await syncWebviewBounds();
   await invoke('browser_navigate_webview', { label: browserLabel, url }).catch((error) => {
@@ -272,6 +382,7 @@ const navigateNativeWebview = async (url: string) => {
     isLoading.value = false;
     schedulePickerInjection();
   }, 900);
+  return true;
 };
 
 const evalBrowserScript = async (script: string) => {
@@ -291,7 +402,7 @@ const browserStatePayload = (extra: Record<string, unknown> = {}) => ({
   isLoading: isLoading.value,
   zoomPercent: zoomPercent.value,
   note:
-    'Nova Browser v1 can navigate/click/type/reset the visible built-in browser. DOM text extraction and native screenshot capture are not exposed by the child WebView bridge yet.',
+    'Nova Browser v1 can navigate/click/type/reset the visible built-in browser and return a bounded DOM summary for the current page.',
   ...extra,
 });
 
@@ -329,7 +440,7 @@ const clickScript = (input: Record<string, unknown>) => {
   const target = selector
     ? document.querySelector(selector)
     : (Number.isFinite(x) && Number.isFinite(y) ? document.elementFromPoint(x, y) : null);
-  if (!target) return;
+  if (!target) return { ok: false, error: 'No browser element matched the click target.' };
   target.scrollIntoView({ block: 'center', inline: 'center', behavior: 'instant' });
   const rect = target.getBoundingClientRect();
   const clientX = Number.isFinite(x) ? x : rect.left + rect.width / 2;
@@ -343,6 +454,7 @@ const clickScript = (input: Record<string, unknown>) => {
       clientY,
     }));
   }
+  return { ok: true };
 })();
 `;
 };
@@ -370,7 +482,9 @@ const typeScript = (input: Record<string, unknown>) => {
   if (!target) {
     target = document.activeElement;
   }
-  if (!target || target === document.body || target === document.documentElement) return;
+  if (!target || target === document.body || target === document.documentElement) {
+    return { ok: false, error: 'No editable browser element matched the typing target.' };
+  }
   target.scrollIntoView({ block: 'center', inline: 'center', behavior: 'instant' });
   if (typeof target.focus === 'function') target.focus();
 
@@ -401,15 +515,427 @@ const typeScript = (input: Record<string, unknown>) => {
       target.form.requestSubmit();
     }
   }
+  return { ok: true };
 })();
 `;
+};
+
+const parseWebviewScriptResult = (raw: string) => {
+  const first = JSON.parse(raw);
+  if (typeof first === 'string') {
+    return JSON.parse(first);
+  }
+  return first;
+};
+
+const browserSnapshotExpression = (refPrefix: string, maxTextLength = 9000, maxElements = 90) => `
+(() => {
+  const refPrefix = ${JSON.stringify(refPrefix)};
+  const maxTextLength = ${maxTextLength};
+  const maxElements = ${maxElements};
+  const importantSelector = [
+    'a[href]',
+    'button',
+    'input',
+    'textarea',
+    'select',
+    'summary',
+    '[role]',
+    '[aria-label]',
+    '[title]',
+    'img[alt]',
+    'img[title]',
+    'iframe[title]',
+    'iframe[name]',
+    '[contenteditable="true"]',
+    'h1',
+    'h2',
+    'h3',
+    'h4',
+    'h5',
+    'h6'
+  ].join(',');
+
+  const visible = (element) => {
+    if (!(element instanceof Element)) return false;
+    const rect = element.getBoundingClientRect();
+    if (rect.width < 2 || rect.height < 2) return false;
+    const style = window.getComputedStyle(element);
+    return style.visibility !== 'hidden' && style.display !== 'none' && Number(style.opacity || '1') > 0.01;
+  };
+
+  const cleanText = (value) => String(value || '').replace(/\\s+/g, ' ').trim();
+  const roleFor = (element) => {
+    const explicitRole = element.getAttribute('role');
+    if (explicitRole) return explicitRole;
+    const tag = element.tagName.toLowerCase();
+    if (tag === 'a') return 'link';
+    if (tag === 'button') return 'button';
+    if (tag === 'input') return element.getAttribute('type') || 'input';
+    if (tag === 'img') return 'image';
+    if (tag === 'iframe') return 'frame';
+    if (/^h[1-6]$/.test(tag)) return 'heading';
+    return tag;
+  };
+  const labelFor = (element) => {
+    const aria = cleanText(element.getAttribute('aria-label'));
+    if (aria) return aria;
+    const title = cleanText(element.getAttribute('title'));
+    if (title) return title;
+    const placeholder = cleanText(element.getAttribute('placeholder'));
+    if (placeholder) return placeholder;
+    const alt = cleanText(element.getAttribute('alt'));
+    if (alt) return alt;
+    const name = cleanText(element.getAttribute('name'));
+    if (name) return name;
+    const value = element instanceof HTMLInputElement || element instanceof HTMLTextAreaElement
+      ? cleanText(element.value)
+      : '';
+    if (value) return value;
+    return cleanText(element.innerText || element.textContent).slice(0, 220);
+  };
+
+  const elements = [];
+  const seen = new Set();
+  for (const element of Array.from(document.querySelectorAll(importantSelector))) {
+    if (elements.length >= maxElements) break;
+    if (seen.has(element) || !visible(element)) continue;
+    const name = labelFor(element);
+    if (!name) continue;
+    seen.add(element);
+    const ref = refPrefix + (elements.length + 1);
+    element.setAttribute('data-nova-browser-ref', ref);
+    const rect = element.getBoundingClientRect();
+    elements.push({
+      ref,
+      role: roleFor(element),
+      name,
+      selector: '[data-nova-browser-ref="' + ref + '"]',
+      tag: element.tagName.toLowerCase(),
+      x: Math.round(rect.left + rect.width / 2),
+      y: Math.round(rect.top + rect.height / 2),
+      href: element instanceof HTMLAnchorElement ? element.href : null,
+      source: element instanceof HTMLImageElement ? (element.currentSrc || element.src || null) : null,
+    });
+  }
+
+  const headings = Array.from(document.querySelectorAll('h1,h2,h3,h4,h5,h6'))
+    .filter(visible)
+    .slice(0, 60)
+    .map((element) => ({
+      level: Number(element.tagName.slice(1)),
+      text: cleanText(element.innerText || element.textContent).slice(0, 220),
+    }))
+    .filter((heading) => heading.text);
+
+  const textChunks = [];
+  let textLength = 0;
+  let visitedTextNodes = 0;
+  const blockedTags = new Set(['SCRIPT', 'STYLE', 'NOSCRIPT', 'TEMPLATE', 'SVG']);
+  const walkerRoot = document.body || document.documentElement;
+  if (walkerRoot) {
+    const walker = document.createTreeWalker(walkerRoot, NodeFilter.SHOW_TEXT, {
+      acceptNode(node) {
+        if (visitedTextNodes >= 900 || textLength >= maxTextLength) {
+          return NodeFilter.FILTER_REJECT;
+        }
+        const text = cleanText(node.nodeValue);
+        if (!text) return NodeFilter.FILTER_REJECT;
+        const parent = node.parentElement;
+        if (!parent || !visible(parent)) return NodeFilter.FILTER_REJECT;
+        if (blockedTags.has(parent.tagName)) return NodeFilter.FILTER_REJECT;
+        return NodeFilter.FILTER_ACCEPT;
+      },
+    });
+    while (walker.nextNode() && visitedTextNodes < 900 && textLength < maxTextLength) {
+      visitedTextNodes += 1;
+      const text = cleanText(walker.currentNode.nodeValue);
+      textChunks.push(text);
+      textLength += text.length + 1;
+    }
+  }
+  const bodyText = textChunks.join('\\n').slice(0, maxTextLength);
+
+  return {
+    mode: 'runtime-dom-summary',
+    title: document.title || '',
+    url: location.href,
+    text: bodyText,
+    elements,
+    headings,
+    language: document.documentElement ? document.documentElement.lang || '' : '',
+    capturedAt: new Date().toISOString(),
+  };
+})()
+`;
+
+const callDevtools = async (method: string, params: Record<string, unknown>) => {
+  const raw = await invoke<string>('browser_call_devtools_protocol_method', {
+    label: browserLabel,
+    method,
+    paramsJson: JSON.stringify(params),
+  });
+  return parseWebviewScriptResult(raw) as Record<string, any>;
+};
+
+const flattenBrowserFrameTree = (frameTree: any, depth = 0, frames: BrowserFrameInfo[] = []) => {
+  const frame = frameTree?.frame;
+  if (frame?.id) {
+    frames.push({
+      frameId: String(frame.id),
+      parentFrameId: typeof frame.parentId === 'string' ? frame.parentId : undefined,
+      name: typeof frame.name === 'string' ? frame.name : undefined,
+      url: typeof frame.url === 'string' ? frame.url : undefined,
+      depth,
+      index: frames.length + 1,
+    });
+  }
+  const children = Array.isArray(frameTree?.childFrames) ? frameTree.childFrames : [];
+  for (const child of children) {
+    flattenBrowserFrameTree(child, depth + 1, frames);
+  }
+  return frames;
+};
+
+const createFrameExecutionContext = async (frameId: string) => {
+  const result = await callDevtools('Page.createIsolatedWorld', {
+    frameId,
+    worldName: 'nova-browser-snapshot',
+    grantUniveralAccess: true,
+  });
+  const contextId = result.executionContextId;
+  return typeof contextId === 'number' ? contextId : undefined;
+};
+
+const runtimeErrorMessage = (evaluated: Record<string, any>, fallback: string) => {
+  if (evaluated.exceptionDetails) {
+    return evaluated.exceptionDetails.exception?.description || evaluated.exceptionDetails.text || fallback;
+  }
+  const value = evaluated.result?.value;
+  if (value && typeof value === 'object' && value.ok === false) {
+    return typeof value.error === 'string' ? value.error : fallback;
+  }
+  return null;
+};
+
+const assertRuntimeEvaluationOk = (evaluated: Record<string, any>, fallback: string) => {
+  const error = runtimeErrorMessage(evaluated, fallback);
+  if (error) throw new Error(error);
+};
+
+const evaluateScriptInSnapshotContext = async (
+  target: BrowserSnapshotTarget,
+  expression: string,
+  fallbackError: string,
+) => {
+  const params: Record<string, unknown> = {
+    expression,
+    returnByValue: true,
+    awaitPromise: true,
+  };
+  if (typeof target.contextId === 'number') {
+    params.contextId = target.contextId;
+  }
+  const evaluated = await callDevtools('Runtime.evaluate', params);
+  assertRuntimeEvaluationOk(evaluated, fallbackError);
+  return evaluated.result?.value;
+};
+
+const captureFrameSnapshot = async (
+  frame: BrowserFrameInfo,
+  topFrameId: string | undefined,
+): Promise<BrowserFrameSnapshot> => {
+  const refPrefix = `f${frame.index}_el`;
+  let contextId: number | undefined;
+  try {
+    contextId = await createFrameExecutionContext(frame.frameId);
+  } catch (error) {
+    if (frame.frameId !== topFrameId) {
+      throw error;
+    }
+  }
+
+  const params: Record<string, unknown> = {
+    expression: browserSnapshotExpression(refPrefix),
+    returnByValue: true,
+    awaitPromise: false,
+  };
+  if (typeof contextId === 'number') {
+    params.contextId = contextId;
+  }
+  const evaluated = await callDevtools('Runtime.evaluate', params);
+  assertRuntimeEvaluationOk(evaluated, 'Browser DOM snapshot script failed');
+
+  const page = (evaluated.result?.value ?? {}) as Record<string, any>;
+  const frameUrl = page.url || frame.url || '';
+  const elements = Array.isArray(page.elements) ? page.elements : [];
+  page.elements = elements.map((element: Record<string, any>) => ({
+    ...element,
+    frameId: frame.frameId,
+    frameIndex: frame.index,
+    frameName: frame.name || null,
+    frameUrl,
+  }));
+  page.headings = Array.isArray(page.headings)
+    ? page.headings.map((heading: Record<string, any>) => ({
+        ...heading,
+        frameId: frame.frameId,
+        frameIndex: frame.index,
+        frameUrl,
+      }))
+    : [];
+
+  return {
+    frame: {
+      ...frame,
+      url: frameUrl,
+    },
+    page,
+    contextId,
+  };
+};
+
+const captureBrowserSnapshot = async () => {
+  const frameTreeResult = await callDevtools('Page.getFrameTree', {});
+  const allFrames = flattenBrowserFrameTree(frameTreeResult.frameTree);
+  const maxFrames = 35;
+  const frames = allFrames.slice(0, maxFrames);
+  const topFrameId = frames[0]?.frameId;
+
+  browserSnapshotRefMap = new Map();
+  const frameSnapshots: BrowserFrameSnapshot[] = [];
+  for (const frame of frames) {
+    try {
+      const snapshot = await captureFrameSnapshot(frame, topFrameId);
+      frameSnapshots.push(snapshot);
+      const elements = Array.isArray(snapshot.page?.elements) ? snapshot.page.elements : [];
+      for (const element of elements) {
+        if (typeof element.ref !== 'string' || typeof element.selector !== 'string') continue;
+        browserSnapshotRefMap.set(element.ref, {
+          selector: element.selector,
+          frameId: snapshot.frame.frameId,
+          contextId: snapshot.contextId,
+        });
+      }
+    } catch (error) {
+      frameSnapshots.push({
+        frame,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+  }
+
+  const capturedFrames = frameSnapshots.filter((snapshot) => snapshot.page);
+  const allElements = capturedFrames.flatMap((snapshot) =>
+    Array.isArray(snapshot.page?.elements) ? snapshot.page.elements : [],
+  );
+  const allHeadings = capturedFrames.flatMap((snapshot) =>
+    Array.isArray(snapshot.page?.headings) ? snapshot.page.headings : [],
+  );
+  const textByFrame = capturedFrames
+    .map((snapshot) => {
+      const page = snapshot.page ?? {};
+      const text = typeof page.text === 'string' ? page.text.trim() : '';
+      if (!text) return '';
+      const title = typeof page.title === 'string' && page.title ? ` ${page.title}` : '';
+      const url = snapshot.frame.url ? ` ${snapshot.frame.url}` : '';
+      return `[Frame ${snapshot.frame.index}${title}${url}]\n${text}`;
+    })
+    .filter(Boolean)
+    .join('\n\n')
+    .slice(0, 52000);
+  const topPage = capturedFrames[0]?.page ?? {};
+
+  return {
+    mode: 'cdp-frame-dom-summary',
+    title: topPage.title ?? '',
+    url: currentUrl.value || topPage.url || '',
+    text: textByFrame,
+    elements: allElements,
+    headings: allHeadings,
+    frames: frameSnapshots.map((snapshot) => ({
+      frameId: snapshot.frame.frameId,
+      parentFrameId: snapshot.frame.parentFrameId ?? null,
+      index: snapshot.frame.index,
+      depth: snapshot.frame.depth,
+      name: snapshot.frame.name ?? null,
+      url: snapshot.frame.url ?? null,
+      title: snapshot.page?.title ?? null,
+      elementCount: Array.isArray(snapshot.page?.elements) ? snapshot.page.elements.length : 0,
+      textPreview:
+        typeof snapshot.page?.text === 'string' ? snapshot.page.text.slice(0, 600) : '',
+      error: snapshot.error ?? null,
+    })),
+    frameCount: allFrames.length,
+    capturedFrameCount: capturedFrames.length,
+    skippedFrameCount: Math.max(0, allFrames.length - frames.length),
+    elementCount: allElements.length,
+    capturedAt: new Date().toISOString(),
+  } as Record<string, unknown>;
+};
+
+const clickSnapshotRef = async (ref: string) => {
+  const target = browserSnapshotRefMap.get(ref);
+  if (!target) {
+    throw new Error(`Unknown browser snapshot ref: ${ref}. Run nova_browser_snapshot again.`);
+  }
+  if (target.selector) {
+    await evaluateScriptInSnapshotContext(
+      target,
+      clickScript({ selector: target.selector }),
+      `Unable to click browser snapshot ref: ${ref}`,
+    );
+    return;
+  }
+  throw new Error(`Browser snapshot ref has no click target: ${ref}`);
+};
+
+const typeSnapshotRef = async (ref: string, input: Record<string, unknown>) => {
+  const target = browserSnapshotRefMap.get(ref);
+  if (!target) {
+    throw new Error(`Unknown browser snapshot ref: ${ref}. Run nova_browser_snapshot again.`);
+  }
+  if (!target.selector) {
+    throw new Error(`Browser snapshot ref has no typing target: ${ref}`);
+  }
+  await evaluateScriptInSnapshotContext(
+    target,
+    typeScript({ ...input, selector: target.selector }),
+    `Unable to type into browser snapshot ref: ${ref}`,
+  );
 };
 
 const runBrowserAutomationCommand = async (command: BrowserAutomationCommand) => {
   const input = automationInput(command);
 
   if (command.action === 'snapshot') {
-    return browserStatePayload();
+    if (!currentUrl.value || !browserWebview || !isBrowserWebviewReady) {
+      return browserStatePayload({
+        contentAvailable: false,
+        note: 'Browser has no ready page to snapshot yet.',
+      });
+    }
+
+    try {
+      const page = await captureBrowserSnapshot();
+      return browserStatePayload({
+        contentAvailable: true,
+        title: page.title ?? null,
+        text: page.text ?? '',
+        elements: page.elements ?? [],
+        headings: page.headings ?? [],
+        frames: page.frames ?? [],
+        page,
+        note:
+          'Snapshot includes DOM text and visible interactive elements from the current Nova built-in browser page, including reachable iframes.',
+      });
+    } catch (error) {
+      return browserStatePayload({
+        contentAvailable: false,
+        extractionError: error instanceof Error ? error.message : String(error),
+        note: 'Browser state is available, but DOM snapshot extraction failed.',
+      });
+    }
   }
 
   if (command.action === 'navigate') {
@@ -426,12 +952,18 @@ const runBrowserAutomationCommand = async (command: BrowserAutomationCommand) =>
     if (!currentUrl.value) {
       throw new Error('Browser has no page loaded');
     }
+    const ref = typeof input.ref === 'string' ? input.ref.trim() : '';
+    const hasRef = Boolean(ref);
     const hasSelector = typeof input.selector === 'string' && input.selector.trim().length > 0;
     const hasCoordinates = typeof input.x === 'number' && typeof input.y === 'number';
-    if (!hasSelector && !hasCoordinates) {
-      throw new Error("Provide either 'selector' or both 'x' and 'y'");
+    if (!hasRef && !hasSelector && !hasCoordinates) {
+      throw new Error("Provide 'ref' from nova_browser_snapshot, 'selector', or both 'x' and 'y'");
     }
-    await evalBrowserScript(clickScript(input));
+    if (hasRef) {
+      await clickSnapshotRef(ref);
+    } else {
+      await evalBrowserScript(clickScript(input));
+    }
     await wait(250);
     return browserStatePayload({ action: 'click' });
   }
@@ -443,7 +975,12 @@ const runBrowserAutomationCommand = async (command: BrowserAutomationCommand) =>
     if (typeof input.text !== 'string') {
       throw new Error("Missing 'text' argument");
     }
-    await evalBrowserScript(typeScript(input));
+    const ref = typeof input.ref === 'string' ? input.ref.trim() : '';
+    if (ref) {
+      await typeSnapshotRef(ref, input);
+    } else {
+      await evalBrowserScript(typeScript(input));
+    }
     await wait(250);
     return browserStatePayload({ action: 'type' });
   }
@@ -460,6 +997,7 @@ const runBrowserAutomationCommand = async (command: BrowserAutomationCommand) =>
     addressInput.value = '';
     history.value = [];
     historyIndex.value = -1;
+    clearBrowserTabState(props.conversationId);
     await closeNativeWebview();
     await updateBrowserSessionUrl();
     return browserStatePayload({ action: 'reset', clearedData: clearData });
@@ -487,99 +1025,88 @@ const handleBrowserAutomationCommand = async (event: { payload: BrowserAutomatio
   }
 };
 
-const elementPickerScript = (enabled: boolean) => `
+const elementPickerCleanupScript = () => `
 (() => {
   const overlayId = 'nova-real-element-picker-overlay';
+  const styleId = 'nova-real-element-picker-style';
   const cleanupKey = '__novaElementPickerCleanup';
   if (typeof window[cleanupKey] === 'function') {
     window[cleanupKey]();
   }
-  if (!${enabled ? 'true' : 'false'}) {
-    return;
-  }
-
-  const overlay = document.createElement('div');
-  overlay.id = overlayId;
-  Object.assign(overlay.style, {
-    position: 'fixed',
-    left: '0px',
-    top: '0px',
-    width: '0px',
-    height: '0px',
-    zIndex: '2147483647',
-    pointerEvents: 'none',
-    border: '2px solid #0a84ff',
-    borderRadius: '8px',
-    background: 'rgba(10, 132, 255, 0.18)',
-    boxShadow: '0 0 0 1px rgba(255,255,255,0.78), 0 10px 30px rgba(10,132,255,0.18)',
-    transition: 'left 80ms ease, top 80ms ease, width 80ms ease, height 80ms ease',
-  });
-  document.documentElement.appendChild(overlay);
-
-  let currentElement = null;
-  const hiddenTags = new Set(['HTML', 'BODY']);
-  const selectableElementFromPoint = (x, y) => {
-    let element = document.elementFromPoint(x, y);
-    if (!element || element === overlay) return null;
-    if (element.nodeType !== Node.ELEMENT_NODE) return null;
-    if (hiddenTags.has(element.tagName) && element.children.length) {
-      const children = Array.from(element.children);
-      element = children.find((child) => {
-        const rect = child.getBoundingClientRect();
-        return x >= rect.left && x <= rect.right && y >= rect.top && y <= rect.bottom;
-      }) || element;
-    }
-    return element;
-  };
-
-  const paint = (element) => {
-    if (!element) return;
-    const rect = element.getBoundingClientRect();
-    if (rect.width <= 0 || rect.height <= 0) return;
-    currentElement = element;
-    overlay.style.left = Math.max(0, rect.left) + 'px';
-    overlay.style.top = Math.max(0, rect.top) + 'px';
-    overlay.style.width = rect.width + 'px';
-    overlay.style.height = rect.height + 'px';
-  };
-
-  const onMove = (event) => {
-    paint(selectableElementFromPoint(event.clientX, event.clientY));
-  };
-  const onClick = (event) => {
-    event.preventDefault();
-    event.stopPropagation();
-    paint(selectableElementFromPoint(event.clientX, event.clientY));
-  };
-  const onScroll = () => {
-    if (currentElement) paint(currentElement);
-  };
-  const cleanup = () => {
-    document.removeEventListener('mousemove', onMove, true);
-    document.removeEventListener('click', onClick, true);
-    document.removeEventListener('scroll', onScroll, true);
-    window.removeEventListener('resize', onScroll, true);
-    overlay.remove();
-    window[cleanupKey] = undefined;
-  };
-
-  document.addEventListener('mousemove', onMove, true);
-  document.addEventListener('click', onClick, true);
-  document.addEventListener('scroll', onScroll, true);
-  window.addEventListener('resize', onScroll, true);
-  window[cleanupKey] = cleanup;
+  document.getElementById(overlayId)?.remove();
+  document.getElementById(styleId)?.remove();
+  window[cleanupKey] = undefined;
 })();
 `;
 
+const cleanupLegacyElementPickerOverlays = async () => {
+  const script = elementPickerCleanupScript();
+  await evalBrowserScript(script);
+  try {
+    const frameTreeResult = await callDevtools('Page.getFrameTree', {});
+    const frames = flattenBrowserFrameTree(frameTreeResult.frameTree).slice(1, 35);
+    await Promise.allSettled(
+      frames.map(async (frame) => {
+        const contextId = await createFrameExecutionContext(frame.frameId);
+        if (typeof contextId !== 'number') return;
+        await callDevtools('Runtime.evaluate', {
+          contextId,
+          expression: script,
+          returnByValue: true,
+          awaitPromise: false,
+        });
+      }),
+    );
+  } catch (error) {
+    console.warn('Browser legacy element picker cleanup failed:', error);
+  }
+};
+
+const setNativeInspectMode = async (enabled: boolean) => {
+  if (enabled) {
+    await callDevtools('DOM.enable', {});
+    await callDevtools('Overlay.enable', {});
+    await callDevtools('Overlay.setInspectMode', {
+      mode: 'searchForNode',
+      highlightConfig: {
+        showInfo: false,
+        showStyles: false,
+        showAccessibilityInfo: false,
+        contentColor: { r: 10, g: 132, b: 255, a: 0.18 },
+        paddingColor: { r: 10, g: 132, b: 255, a: 0.14 },
+        borderColor: { r: 10, g: 132, b: 255, a: 0.98 },
+        marginColor: { r: 10, g: 132, b: 255, a: 0.08 },
+        eventTargetColor: { r: 10, g: 132, b: 255, a: 0.18 },
+        shapeColor: { r: 10, g: 132, b: 255, a: 0.18 },
+        shapeMarginColor: { r: 255, g: 255, b: 255, a: 0.78 },
+      },
+    });
+    return;
+  }
+
+  await callDevtools('Overlay.setInspectMode', {
+    mode: 'none',
+    highlightConfig: {},
+  }).catch(() => undefined);
+  await callDevtools('Overlay.disable', {}).catch(() => undefined);
+};
+
 const applyElementPickerState = async () => {
-  await evalBrowserScript(elementPickerScript(isElementPickerActive.value));
+  if (!browserWebview || !isBrowserWebviewReady) return;
+  await cleanupLegacyElementPickerOverlays();
+  try {
+    await setNativeInspectMode(isElementPickerActive.value);
+  } catch (error) {
+    console.warn('Browser native inspect mode failed:', error);
+    isElementPickerActive.value = false;
+  }
 };
 
 const schedulePickerInjection = () => {
   pickerRetryTimers.forEach((timer) => window.clearTimeout(timer));
   pickerRetryTimers = [];
   if (!isElementPickerActive.value) return;
-  [250, 900, 1800].forEach((delay) => {
+  [0, 120, 350, 900, 1800].forEach((delay) => {
     pickerRetryTimers.push(window.setTimeout(() => void applyElementPickerState(), delay));
   });
 };
@@ -604,15 +1131,38 @@ watch(showDeviceToolbar, () => {
   void nextTick().then(syncWebviewBounds);
 });
 
+watch(
+  () => props.visible,
+  (visible) => {
+    if (visible === false) {
+      void hideBrowserSurface();
+      return;
+    }
+    if (browserWebview) {
+      void nextTick().then(syncWebviewBounds);
+    } else {
+      queueReopenSavedBrowserSurface();
+    }
+  },
+);
+
 watch(currentUrl, () => {
+  persistBrowserTabState();
   void updateBrowserSessionUrl();
+});
+
+watch([addressInput, history, historyIndex, zoomPercent, showDeviceToolbar], () => {
+  persistBrowserTabState();
 });
 
 watch(
   () => props.conversationId,
   (next, previous) => {
     if (previous !== undefined && previous !== next) {
+      persistBrowserTabState(previous);
       void unregisterBrowserSession(previous);
+      restoreBrowserTabState(next);
+      void closeNativeWebview().then(reopenSavedBrowserSurface);
     }
     void registerCurrentBrowserSession();
   },
@@ -625,7 +1175,11 @@ watch(browserHost, (host, oldHost) => {
   if (host) {
     resizeObserver?.observe(host);
   }
-  void syncWebviewBounds();
+  if (browserWebview) {
+    void syncWebviewBounds();
+  } else {
+    queueReopenSavedBrowserSurface();
+  }
 });
 
 onMounted(() => {
@@ -637,24 +1191,25 @@ onMounted(() => {
   });
 
   resizeObserver = new ResizeObserver(() => {
-    void syncWebviewBounds();
+    if (browserWebview) {
+      void syncWebviewBounds();
+    } else {
+      queueReopenSavedBrowserSurface();
+    }
   });
   if (browserHost.value) {
     resizeObserver.observe(browserHost.value);
   }
   window.addEventListener('resize', handleWindowResize);
+  void reopenSavedBrowserSurface();
 });
 
 onBeforeUnmount(() => {
-  pickerRetryTimers.forEach((timer) => window.clearTimeout(timer));
   unlistenBrowserCommand?.();
   void unregisterBrowserSession();
   resizeObserver?.disconnect();
   window.removeEventListener('resize', handleWindowResize);
-  isElementPickerActive.value = false;
-  void applyElementPickerState().finally(() => {
-    void closeNativeWebview();
-  });
+  void closeBrowserSurface();
 });
 </script>
 

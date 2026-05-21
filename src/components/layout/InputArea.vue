@@ -493,11 +493,11 @@ defineExpose({
         placeholder="Message Nova..." rows="1"
         class="w-full bg-transparent border-none text-[0.95rem] text-[#1a1a1a] dark:text-[#ececec] resize-none outline-none block max-h-[40vh] px-4 pt-3 pb-2 placeholder:text-[#a3a3a3]"></textarea>
 
-      <div class="flex items-center justify-between px-3 pb-3 pt-2">
-        <div class="flex gap-2 items-center">
+      <div class="flex min-w-0 items-center gap-2 px-3 pb-3 pt-2">
+        <div class="flex min-w-0 flex-1 items-center gap-2">
           <button
             type="button"
-            class="w-8 h-8 rounded-lg flex items-center justify-center text-muted-foreground hover:bg-secondary/80 transition-colors"
+            class="w-8 h-8 shrink-0 rounded-lg flex items-center justify-center text-muted-foreground hover:bg-secondary/80 transition-colors"
             @click="triggerFilePicker">
             <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
               stroke-linecap="round" stroke-linejoin="round">
@@ -505,7 +505,7 @@ defineExpose({
             </svg>
           </button>
 
-          <div class="w-[150px]">
+          <div class="w-[150px] shrink-0">
             <Select v-model="localAgentMode">
               <SelectTrigger size="sm" class="w-full text-xs">
                 <SelectValue />
@@ -518,9 +518,9 @@ defineExpose({
             </Select>
           </div>
 
-          <div v-if="availableModels.length > 0 && settings" class="flex items-center gap-1.5">
+          <div v-if="availableModels.length > 0 && settings" class="flex min-w-0 flex-1 items-center gap-1.5">
             <Select :model-value="currentModel" @update:model-value="onModelValueChange">
-              <SelectTrigger size="sm" class="w-[200px] text-xs">
+              <SelectTrigger size="sm" class="w-full min-w-[130px] text-xs">
                 <SelectValue placeholder="选择模型" />
               </SelectTrigger>
               <SelectContent class="text-xs">
@@ -532,7 +532,7 @@ defineExpose({
             <ContextUsageIndicator :usage="contextUsage" :usedTokens="contextTokens" :model="currentModel" />
           </div>
         </div>
-        <button class="w-8 h-8 rounded-full flex items-center justify-center transition-colors shadow-sm"
+        <button class="w-8 h-8 shrink-0 rounded-full flex items-center justify-center transition-colors shadow-sm"
           :class="isGenerating
             ? 'bg-[#f4d9d2] text-[#9b4b39] hover:bg-[#eacdc5]'
             : (canSend ? 'bg-[#da7756] text-white hover:bg-[#c96c4d]' : 'bg-[#f4f4f4] dark:bg-[#333] text-muted-foreground')"

@@ -117,6 +117,8 @@ pub fn run() {
             command::browser::browser_navigate_webview,
             command::browser::browser_reload_webview,
             command::browser::browser_eval_webview_script,
+            command::browser::browser_eval_webview_script_result,
+            command::browser::browser_call_devtools_protocol_method,
             command::browser::register_browser_session,
             command::browser::unregister_browser_session,
             command::browser::update_browser_session_url,

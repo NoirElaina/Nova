@@ -16,10 +16,11 @@ pub(crate) fn registration() -> ToolRegistration {
 pub fn tool() -> Tool {
     Tool {
         name: "nova_browser_click".into(),
-        description: "Click an element inside the conversation's visible Nova Browser tab. Prefer selector when available; otherwise use x/y viewport coordinates from the browser page.".into(),
+        description: "Click an element inside the conversation's visible Nova Browser tab. Prefer the ref returned by nova_browser_snapshot (for example f1_el12 or iframe refs like f2_el3). Otherwise use selector or x/y viewport coordinates.".into(),
         input_schema: json!({
             "type": "object",
             "properties": {
+                "ref": { "type": "string", "description": "Element ref returned by nova_browser_snapshot, for example f1_el12 or iframe refs like f2_el3." },
                 "selector": { "type": "string", "description": "CSS selector to click." },
                 "x": { "type": "number", "description": "Viewport x coordinate to click when selector is not available." },
                 "y": { "type": "number", "description": "Viewport y coordinate to click when selector is not available." },

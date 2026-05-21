@@ -16,11 +16,12 @@ pub(crate) fn registration() -> ToolRegistration {
 pub fn tool() -> Tool {
     Tool {
         name: "nova_browser_type".into(),
-        description: "Type text into an element inside the conversation's visible Nova Browser tab. Prefer selector; otherwise use the active element or x/y to focus first.".into(),
+        description: "Type text into an element inside the conversation's visible Nova Browser tab. Prefer the ref returned by nova_browser_snapshot because it also works for iframe elements. Otherwise use selector, active element, or x/y to focus first.".into(),
         input_schema: json!({
             "type": "object",
             "properties": {
                 "text": { "type": "string", "description": "Text to type." },
+                "ref": { "type": "string", "description": "Element ref returned by nova_browser_snapshot, including iframe refs like f2_el3." },
                 "selector": { "type": "string", "description": "CSS selector for the editable element." },
                 "x": { "type": "number", "description": "Viewport x coordinate to focus before typing." },
                 "y": { "type": "number", "description": "Viewport y coordinate to focus before typing." },

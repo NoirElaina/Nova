@@ -10,6 +10,7 @@ use tokio::sync::oneshot;
 const DEFAULT_SCOPE: &str = "__default__";
 const BROWSER_COMMAND_EVENT: &str = "nova-browser-command";
 const DEFAULT_TIMEOUT_MS: u64 = 15_000;
+const SNAPSHOT_TIMEOUT_MS: u64 = 30_000;
 const MAX_TIMEOUT_MS: u64 = 60_000;
 
 static REQUEST_COUNTER: AtomicU64 = AtomicU64::new(1);
@@ -222,8 +223,13 @@ pub async fn run_command(
         });
     }
 
+    let default_timeout_ms = if action == "snapshot" {
+        SNAPSHOT_TIMEOUT_MS
+    } else {
+        DEFAULT_TIMEOUT_MS
+    };
     let timeout_ms = timeout_ms
-        .unwrap_or(DEFAULT_TIMEOUT_MS)
+        .unwrap_or(default_timeout_ms)
         .clamp(1_000, MAX_TIMEOUT_MS);
     match tokio::time::timeout(Duration::from_millis(timeout_ms), receiver).await {
         Ok(Ok(value)) => value,

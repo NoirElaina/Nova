@@ -5,12 +5,13 @@ import type { RagDocumentMeta } from '../../features/chat/services/chat-api';
 import CodeDiffTab from './workspace/CodeDiffTab.vue';
 import FilesTab from './workspace/FilesTab.vue';
 import UsageTab from './workspace/UsageTab.vue';
+import BrowserTab from './workspace/BrowserTab.vue';
 
 const emit = defineEmits<{
   (e: 'close'): void;
 }>();
 
-type TabId = 'diff' | 'usage' | 'files';
+type TabId = 'diff' | 'usage' | 'files' | 'browser';
 
 const props = defineProps<{
   open: boolean;
@@ -28,6 +29,7 @@ const tabs: { id: TabId; label: string }[] = [
   { id: 'diff', label: 'Code Diff' },
   { id: 'usage', label: 'Usage' },
   { id: 'files', label: 'Files' },
+  { id: 'browser', label: 'Browser' },
 ];
 
 watch(
@@ -98,10 +100,12 @@ watch(
           />
 
           <FilesTab
-            v-else
+            v-else-if="activeTab === 'files'"
             :files="files"
             :selectedFileId="selectedFileId"
           />
+
+          <BrowserTab v-else />
         </div>
       </div>
     </div>

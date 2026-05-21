@@ -22,7 +22,7 @@ import {
 import { buildConversationExportHtml } from "./features/chat/utils/conversation-export-html";
 import { emitToast } from "./lib/toast";
 
-type WorkspaceTabId = "diff" | "usage" | "files";
+type WorkspaceTabId = "diff" | "usage" | "files" | "browser";
 
 const {
   messages,

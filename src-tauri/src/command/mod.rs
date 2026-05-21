@@ -14,3 +14,5 @@ pub mod shell;
 pub mod agent_config;
 // 定时任务（Cron）相关命令入口。
 pub mod cron;
+// 内置浏览器 WebView 控制命令入口。
+pub mod browser;

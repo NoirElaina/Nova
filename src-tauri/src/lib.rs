@@ -113,7 +113,10 @@ pub fn run() {
             command::cron::create_scheduled_task,
             command::cron::delete_scheduled_task,
             command::settings::get_model_window_tokens,
-            command::settings::estimate_text_tokens
+            command::settings::estimate_text_tokens,
+            command::browser::browser_navigate_webview,
+            command::browser::browser_reload_webview,
+            command::browser::browser_eval_webview_script
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application");

@@ -13,8 +13,8 @@
     "windows": [
       {
         "title": "nova",
-        "width": 1200,
-        "height": 780
+        "width": 1350,
+        "height": 800
       }
     ],
     "security": {

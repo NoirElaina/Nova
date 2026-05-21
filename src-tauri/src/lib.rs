@@ -116,7 +116,11 @@ pub fn run() {
             command::settings::estimate_text_tokens,
             command::browser::browser_navigate_webview,
             command::browser::browser_reload_webview,
-            command::browser::browser_eval_webview_script
+            command::browser::browser_eval_webview_script,
+            command::browser::register_browser_session,
+            command::browser::unregister_browser_session,
+            command::browser::update_browser_session_url,
+            command::browser::browser_automation_result
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application");

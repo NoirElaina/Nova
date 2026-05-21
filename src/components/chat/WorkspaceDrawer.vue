@@ -21,6 +21,7 @@ const props = defineProps<{
   messages: ChatMessage[];
   files: RagDocumentMeta[];
   assistantTurnCost?: TurnCost;
+  conversationId?: string | null;
 }>();
 
 const activeTab = ref<TabId>('diff');
@@ -105,7 +106,10 @@ watch(
             :selectedFileId="selectedFileId"
           />
 
-          <BrowserTab v-else />
+          <BrowserTab
+            v-else
+            :conversationId="conversationId"
+          />
         </div>
       </div>
     </div>

@@ -1,3 +1,4 @@
+pub mod browser_sessions;
 pub mod compact;
 pub mod hooks;
 pub mod mcp;

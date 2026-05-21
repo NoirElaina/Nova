@@ -2,9 +2,14 @@
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue';
 import { invoke } from '@tauri-apps/api/core';
 import { LogicalPosition, LogicalSize } from '@tauri-apps/api/dpi';
+import { listen, type UnlistenFn } from '@tauri-apps/api/event';
 import { Webview } from '@tauri-apps/api/webview';
 import { getCurrentWindow } from '@tauri-apps/api/window';
 import { openUrl } from '@tauri-apps/plugin-opener';
+
+const props = defineProps<{
+  conversationId?: string | null;
+}>();
 
 const addressInput = ref('');
 const currentUrl = ref('');
@@ -21,9 +26,49 @@ let browserWebview: Webview | null = null;
 let isBrowserWebviewReady = false;
 let resizeObserver: ResizeObserver | null = null;
 let pickerRetryTimers: number[] = [];
+let unlistenBrowserCommand: UnlistenFn | null = null;
+
+type BrowserAutomationCommand = {
+  conversationId: string;
+  requestId: string;
+  action: string;
+  payload?: {
+    input?: Record<string, unknown>;
+  };
+};
 
 const canGoBack = computed(() => historyIndex.value > 0);
 const canGoForward = computed(() => historyIndex.value >= 0 && historyIndex.value < history.value.length - 1);
+const browserConversationId = computed(() => props.conversationId?.trim() || '__default__');
+
+const registerCurrentBrowserSession = async () => {
+  await invoke('register_browser_session', {
+    conversationId: props.conversationId || null,
+    label: browserLabel,
+    currentUrl: currentUrl.value || null,
+  }).catch((error) => {
+    console.warn('Browser session registration failed:', error);
+  });
+};
+
+const unregisterBrowserSession = async (conversationId: string | null | undefined = props.conversationId) => {
+  await invoke('unregister_browser_session', {
+    conversationId: conversationId || null,
+    label: browserLabel,
+  }).catch((error) => {
+    console.warn('Browser session unregister failed:', error);
+  });
+};
+
+const updateBrowserSessionUrl = async () => {
+  await invoke('update_browser_session_url', {
+    conversationId: props.conversationId || null,
+    label: browserLabel,
+    currentUrl: currentUrl.value || null,
+  }).catch((error) => {
+    console.warn('Browser session URL update failed:', error);
+  });
+};
 
 const looksLikeUrl = (value: string) =>
   /^https?:\/\//i.test(value) ||
@@ -236,6 +281,212 @@ const evalBrowserScript = async (script: string) => {
   });
 };
 
+const wait = (ms: number) => new Promise((resolve) => window.setTimeout(resolve, ms));
+
+const browserStatePayload = (extra: Record<string, unknown> = {}) => ({
+  url: currentUrl.value || null,
+  address: addressInput.value || null,
+  canGoBack: canGoBack.value,
+  canGoForward: canGoForward.value,
+  isLoading: isLoading.value,
+  zoomPercent: zoomPercent.value,
+  note:
+    'Nova Browser v1 can navigate/click/type/reset the visible built-in browser. DOM text extraction and native screenshot capture are not exposed by the child WebView bridge yet.',
+  ...extra,
+});
+
+const reportBrowserCommandResult = async (
+  requestId: string,
+  ok: boolean,
+  result?: Record<string, unknown>,
+  error?: string,
+) => {
+  await invoke('browser_automation_result', {
+    payload: {
+      requestId,
+      ok,
+      result: result ?? null,
+      error: error ?? null,
+    },
+  }).catch((invokeError) => {
+    console.warn('Browser automation result report failed:', invokeError);
+  });
+};
+
+const automationInput = (command: BrowserAutomationCommand) =>
+  command.payload?.input ?? {};
+
+const clickScript = (input: Record<string, unknown>) => {
+  const selector = typeof input.selector === 'string' ? input.selector.trim() : '';
+  const x = typeof input.x === 'number' ? input.x : null;
+  const y = typeof input.y === 'number' ? input.y : null;
+
+  return `
+(() => {
+  const selector = ${JSON.stringify(selector || null)};
+  const x = ${JSON.stringify(x)};
+  const y = ${JSON.stringify(y)};
+  const target = selector
+    ? document.querySelector(selector)
+    : (Number.isFinite(x) && Number.isFinite(y) ? document.elementFromPoint(x, y) : null);
+  if (!target) return;
+  target.scrollIntoView({ block: 'center', inline: 'center', behavior: 'instant' });
+  const rect = target.getBoundingClientRect();
+  const clientX = Number.isFinite(x) ? x : rect.left + rect.width / 2;
+  const clientY = Number.isFinite(y) ? y : rect.top + rect.height / 2;
+  for (const type of ['pointerdown', 'mousedown', 'pointerup', 'mouseup', 'click']) {
+    target.dispatchEvent(new MouseEvent(type, {
+      bubbles: true,
+      cancelable: true,
+      view: window,
+      clientX,
+      clientY,
+    }));
+  }
+})();
+`;
+};
+
+const typeScript = (input: Record<string, unknown>) => {
+  const selector = typeof input.selector === 'string' ? input.selector.trim() : '';
+  const text = typeof input.text === 'string' ? input.text : '';
+  const x = typeof input.x === 'number' ? input.x : null;
+  const y = typeof input.y === 'number' ? input.y : null;
+  const clear = input.clear === true;
+  const submit = input.submit === true;
+
+  return `
+(() => {
+  const selector = ${JSON.stringify(selector || null)};
+  const text = ${JSON.stringify(text)};
+  const x = ${JSON.stringify(x)};
+  const y = ${JSON.stringify(y)};
+  const clear = ${clear ? 'true' : 'false'};
+  const submit = ${submit ? 'true' : 'false'};
+  let target = selector ? document.querySelector(selector) : null;
+  if (!target && Number.isFinite(x) && Number.isFinite(y)) {
+    target = document.elementFromPoint(x, y);
+  }
+  if (!target) {
+    target = document.activeElement;
+  }
+  if (!target || target === document.body || target === document.documentElement) return;
+  target.scrollIntoView({ block: 'center', inline: 'center', behavior: 'instant' });
+  if (typeof target.focus === 'function') target.focus();
+
+  const isEditable = target.isContentEditable;
+  if (isEditable) {
+    if (clear) target.textContent = '';
+    document.execCommand('insertText', false, text);
+  } else {
+    const currentValue = clear ? '' : (target.value || '');
+    const nextValue = currentValue + text;
+    const prototype = target instanceof HTMLTextAreaElement
+      ? HTMLTextAreaElement.prototype
+      : HTMLInputElement.prototype;
+    const descriptor = Object.getOwnPropertyDescriptor(prototype, 'value');
+    if (descriptor && descriptor.set) {
+      descriptor.set.call(target, nextValue);
+    } else {
+      target.value = nextValue;
+    }
+    target.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'insertText', data: text }));
+    target.dispatchEvent(new Event('change', { bubbles: true }));
+  }
+
+  if (submit) {
+    target.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', code: 'Enter', bubbles: true, cancelable: true }));
+    target.dispatchEvent(new KeyboardEvent('keyup', { key: 'Enter', code: 'Enter', bubbles: true, cancelable: true }));
+    if (target.form && typeof target.form.requestSubmit === 'function') {
+      target.form.requestSubmit();
+    }
+  }
+})();
+`;
+};
+
+const runBrowserAutomationCommand = async (command: BrowserAutomationCommand) => {
+  const input = automationInput(command);
+
+  if (command.action === 'snapshot') {
+    return browserStatePayload();
+  }
+
+  if (command.action === 'navigate') {
+    const url = typeof input.url === 'string' ? input.url.trim() : '';
+    if (!url) {
+      throw new Error("Missing 'url' argument");
+    }
+    visit(url);
+    await wait(1000);
+    return browserStatePayload({ action: 'navigate' });
+  }
+
+  if (command.action === 'click') {
+    if (!currentUrl.value) {
+      throw new Error('Browser has no page loaded');
+    }
+    const hasSelector = typeof input.selector === 'string' && input.selector.trim().length > 0;
+    const hasCoordinates = typeof input.x === 'number' && typeof input.y === 'number';
+    if (!hasSelector && !hasCoordinates) {
+      throw new Error("Provide either 'selector' or both 'x' and 'y'");
+    }
+    await evalBrowserScript(clickScript(input));
+    await wait(250);
+    return browserStatePayload({ action: 'click' });
+  }
+
+  if (command.action === 'type') {
+    if (!currentUrl.value) {
+      throw new Error('Browser has no page loaded');
+    }
+    if (typeof input.text !== 'string') {
+      throw new Error("Missing 'text' argument");
+    }
+    await evalBrowserScript(typeScript(input));
+    await wait(250);
+    return browserStatePayload({ action: 'type' });
+  }
+
+  if (command.action === 'reset') {
+    const clearData = input.clear_data === true || input.clearData === true;
+    if (clearData && isBrowserWebviewReady) {
+      await browserWebview?.clearAllBrowsingData().catch((error) => {
+        console.warn('Browser clear data during reset failed:', error);
+      });
+    }
+    isElementPickerActive.value = false;
+    currentUrl.value = '';
+    addressInput.value = '';
+    history.value = [];
+    historyIndex.value = -1;
+    await closeNativeWebview();
+    await updateBrowserSessionUrl();
+    return browserStatePayload({ action: 'reset', clearedData: clearData });
+  }
+
+  throw new Error(`Unsupported browser action: ${command.action}`);
+};
+
+const handleBrowserAutomationCommand = async (event: { payload: BrowserAutomationCommand }) => {
+  const command = event.payload;
+  if (!command || command.conversationId !== browserConversationId.value) {
+    return;
+  }
+
+  try {
+    const result = await runBrowserAutomationCommand(command);
+    await reportBrowserCommandResult(command.requestId, true, result);
+  } catch (error) {
+    await reportBrowserCommandResult(
+      command.requestId,
+      false,
+      browserStatePayload(),
+      error instanceof Error ? error.message : String(error),
+    );
+  }
+};
+
 const elementPickerScript = (enabled: boolean) => `
 (() => {
   const overlayId = 'nova-real-element-picker-overlay';
@@ -353,6 +604,20 @@ watch(showDeviceToolbar, () => {
   void nextTick().then(syncWebviewBounds);
 });
 
+watch(currentUrl, () => {
+  void updateBrowserSessionUrl();
+});
+
+watch(
+  () => props.conversationId,
+  (next, previous) => {
+    if (previous !== undefined && previous !== next) {
+      void unregisterBrowserSession(previous);
+    }
+    void registerCurrentBrowserSession();
+  },
+);
+
 watch(browserHost, (host, oldHost) => {
   if (oldHost) {
     resizeObserver?.unobserve(oldHost);
@@ -364,6 +629,13 @@ watch(browserHost, (host, oldHost) => {
 });
 
 onMounted(() => {
+  void registerCurrentBrowserSession();
+  void listen<BrowserAutomationCommand>('nova-browser-command', handleBrowserAutomationCommand).then((unlisten) => {
+    unlistenBrowserCommand = unlisten;
+  }).catch((error) => {
+    console.warn('Browser automation listener failed:', error);
+  });
+
   resizeObserver = new ResizeObserver(() => {
     void syncWebviewBounds();
   });
@@ -375,6 +647,8 @@ onMounted(() => {
 
 onBeforeUnmount(() => {
   pickerRetryTimers.forEach((timer) => window.clearTimeout(timer));
+  unlistenBrowserCommand?.();
+  void unregisterBrowserSession();
   resizeObserver?.disconnect();
   window.removeEventListener('resize', handleWindowResize);
   isElementPickerActive.value = false;

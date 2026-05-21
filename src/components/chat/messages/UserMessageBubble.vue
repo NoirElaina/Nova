@@ -86,11 +86,11 @@ const formatFileSize = (bytes?: number) => {
 
 <template>
   <div
-    class="ml-auto flex flex-row-reverse gap-2.5 items-start"
-    :class="isEditing ? 'w-full max-w-[calc(100%-2.5rem)]' : 'max-w-[85%]'"
+    class="ml-auto flex max-w-full flex-row-reverse gap-2.5 items-start"
+    :class="isEditing ? 'w-full max-w-[calc(100%-2.5rem)]' : 'max-w-[86%] sm:max-w-[78%] lg:max-w-[66%]'"
   >
     <div class="w-7 h-7 rounded-full flex items-center justify-center shrink-0 bg-[#23211b] text-[#f8f6ef] text-[11px] font-medium mt-0.5">你</div>
-    <div class="flex flex-col items-end min-w-0" :class="{ 'flex-1': isEditing }">
+    <div class="flex max-w-full flex-col items-end min-w-0" :class="{ 'flex-1': isEditing }">
       <div class="flex items-center gap-2 mb-1">
         <p class="text-[11px] text-[#9b958a]">你</p>
         <span v-if="typeof message.tokenUsage === 'number'" class="token-badge">
@@ -106,7 +106,7 @@ const formatFileSize = (bytes?: number) => {
         :class="
           isEditing
             ? 'edit-shell'
-            : 'bg-[#f1eee7] dark:bg-[#2d2d2d] px-4 py-2.5 rounded-xl border border-[#e6e1d6] dark:border-[#3c3c3c]'
+            : 'max-w-full overflow-hidden bg-[#f1eee7] dark:bg-[#2d2d2d] px-4 py-2.5 rounded-xl border border-[#e6e1d6] dark:border-[#3c3c3c]'
         "
       >
         <div v-if="message.attachments?.length" class="mb-2 flex flex-wrap gap-1.5">
@@ -182,7 +182,7 @@ const formatFileSize = (bytes?: number) => {
         <template v-else>
           <div
             v-if="normalizedContent"
-            class="user-message-text text-[0.92rem] leading-relaxed whitespace-pre-wrap break-words text-[#23211b] dark:text-[#ececec]"
+            class="user-message-text text-[0.92rem] leading-relaxed whitespace-pre-wrap text-[#23211b] dark:text-[#ececec]"
             :class="{ 'is-collapsed': shouldCollapse && !isExpanded }"
           >
             {{ message.content }}
@@ -276,6 +276,9 @@ const formatFileSize = (bytes?: number) => {
 
 .user-message-text {
   position: relative;
+  max-width: 100%;
+  overflow-wrap: anywhere;
+  word-break: break-word;
 }
 
 .user-message-text.is-collapsed {

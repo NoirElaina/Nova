@@ -254,13 +254,14 @@ const handleExportConversation = async (
 
       <WorkspaceDrawer
         v-if="mainView === 'chat'"
-          :open="isDrawerOpen"
-          :activeTab="activeWorkspaceTab"
-          :selectedFileId="activeWorkspaceFileId"
-          :entries="toolExecutionLogs"
+        :open="isDrawerOpen"
+        :activeTab="activeWorkspaceTab"
+        :selectedFileId="activeWorkspaceFileId"
+        :entries="toolExecutionLogs"
         :messages="messages"
         :files="conversationFiles"
         :assistantTurnCost="assistantTurnCost"
+        :conversationId="activeConversationId || null"
         @close="isDrawerOpen = false"
       />
 

@@ -17,6 +17,7 @@
     "core:window:allow-hide",
     "core:window:allow-set-focus",
     "core:window:allow-show",
-    "opener:default"
+    "opener:default",
+    "dialog:default"
   ]
 }

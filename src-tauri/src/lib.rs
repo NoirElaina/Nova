@@ -17,6 +17,7 @@ pub fn run() {
     static SHELL_CLEANUP_ON_EXIT: OnceLock<AtomicBool> = OnceLock::new();
 
     let app = tauri::Builder::default()
+        .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
         .setup(|app| {
             if let Err(error) = crate::logging::init(app.handle()) {
@@ -127,7 +128,8 @@ pub fn run() {
             command::browser::save_browser_tab_state,
             command::browser::clear_browser_tab_state,
             command::workspace::workspace_list_directory,
-            command::workspace::workspace_read_text_file
+            command::workspace::workspace_read_text_file,
+            command::workspace::workspace_set_root
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application");

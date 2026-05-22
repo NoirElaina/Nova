@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref } from "vue";
+import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import hljs from "highlight.js";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -7,6 +8,7 @@ import { emitToast } from "../../../lib/toast";
 import {
   listWorkspaceDirectory,
   readWorkspaceTextFile,
+  setWorkspaceRoot,
   type WorkspaceDirectoryListing,
   type WorkspaceEntry,
   type WorkspaceFileContent,
@@ -30,6 +32,7 @@ const isFileTreeVisible = ref(true);
 const isResizingFileTree = ref(false);
 const isMoreMenuOpen = ref(false);
 const isPreviewWrapEnabled = ref(false);
+const isChangingWorkspace = ref(false);
 
 const FILE_TREE_MIN_WIDTH = 220;
 const FILE_TREE_MAX_WIDTH = 420;
@@ -184,6 +187,19 @@ const loadDirectory = async (path = "") => {
   }
 };
 
+const applyRootListing = (listing: WorkspaceDirectoryListing) => {
+  rootListing.value = listing;
+  childrenByPath.value = {
+    [listing.relativePath]: listing.entries,
+  };
+  expandedPaths.value = [];
+  selectedFile.value = null;
+  selectedContent.value = null;
+  previewError.value = "";
+  rootError.value = "";
+  filterQuery.value = "";
+};
+
 const reloadWorkspace = async () => {
   childrenByPath.value = {};
   expandedPaths.value = [];
@@ -227,6 +243,35 @@ const openSelectedFile = () => {
     return;
   }
   void selectFile(selectedFile.value);
+};
+
+const changeWorkspaceRoot = async () => {
+  if (isChangingWorkspace.value) {
+    return;
+  }
+
+  try {
+    const selectedPath = await openDialog({
+      directory: true,
+      multiple: false,
+      title: "选择工作区",
+    });
+    const path = Array.isArray(selectedPath) ? selectedPath[0] : selectedPath;
+    if (!path || typeof path !== "string") {
+      return;
+    }
+
+    isChangingWorkspace.value = true;
+    const listing = await setWorkspaceRoot(path);
+    applyRootListing(listing);
+    isFileTreeVisible.value = true;
+    emitToast({ variant: "success", source: "workspace", message: "工作区已切换。" });
+  } catch (error) {
+    console.error("Failed to change workspace root:", error);
+    emitToast({ variant: "error", source: "workspace", message: "更换工作区失败。" });
+  } finally {
+    isChangingWorkspace.value = false;
+  }
 };
 
 const closeMoreMenu = () => {
@@ -348,13 +393,13 @@ onBeforeUnmount(() => {
           type="button"
           variant="ghost"
           size="sm"
-          class="h-9 max-w-[220px] justify-start gap-2 rounded-xl bg-[#f1f3f4] px-3 text-sm font-medium text-[#202124] hover:bg-[#e8eaed] dark:bg-[#2d2d2d] dark:text-[#ececec] dark:hover:bg-[#363636]"
+          class="h-8 max-w-[200px] justify-start gap-1.5 rounded-lg bg-[#f7f7f8] px-2.5 text-[13px] font-normal text-[#202124] hover:bg-[#f1f3f4] dark:bg-[#2b2b2b] dark:text-[#ececec] dark:hover:bg-[#343434]"
           @click="openSelectedFile"
         >
-          <span class="shrink-0 text-[12px] font-bold text-[#e66a1a]">{{ selectedFile ? fileIconLabel : "□" }}</span>
+          <span class="shrink-0 text-[11px] font-semibold text-[#e66a1a]">{{ selectedFile ? fileIconLabel : "□" }}</span>
           <span class="truncate">{{ selectedFile?.name || "打开文件" }}</span>
         </Button>
-        <Button type="button" variant="ghost" size="icon-sm" class="h-8 w-8 rounded-lg text-[#6b7280] hover:bg-[#f1f3f4] dark:hover:bg-[#2d2d2d]" @click="reloadWorkspace">
+        <Button type="button" variant="ghost" size="icon-sm" class="h-7 w-7 rounded-md text-[#6b7280] hover:bg-[#f7f7f8] dark:hover:bg-[#2d2d2d]" @click="reloadWorkspace">
           <svg width="17" height="17" viewBox="0 0 24 24" fill="none">
             <path d="M12 5v14M5 12h14" stroke="currentColor" stroke-width="2" stroke-linecap="round" />
           </svg>
@@ -367,8 +412,8 @@ onBeforeUnmount(() => {
             type="button"
             variant="ghost"
             size="icon-sm"
-            class="h-8 w-8 rounded-lg text-[#6b7280] hover:bg-[#f1f3f4] dark:hover:bg-[#2d2d2d]"
-            :class="isMoreMenuOpen ? 'bg-[#f1f3f4] dark:bg-[#2d2d2d]' : ''"
+            class="h-7 w-7 rounded-md text-[#6b7280] hover:bg-[#f7f7f8] dark:hover:bg-[#2d2d2d]"
+            :class="isMoreMenuOpen ? 'bg-[#f7f7f8] dark:bg-[#2d2d2d]' : ''"
             title="更多"
             @click.stop="toggleMoreMenu"
           >
@@ -381,7 +426,7 @@ onBeforeUnmount(() => {
 
           <div
             v-if="isMoreMenuOpen"
-            class="absolute right-0 top-10 z-30 w-52 rounded-xl border border-[#e5e7eb] bg-white p-1 shadow-[0_14px_40px_rgba(15,23,42,0.14)] dark:border-[#333] dark:bg-[#252525]"
+            class="absolute right-0 top-9 z-30 w-52 rounded-xl border border-[#e5e7eb] bg-white p-1 shadow-[0_14px_40px_rgba(15,23,42,0.14)] dark:border-[#333] dark:bg-[#252525]"
             @click.stop
           >
             <button
@@ -409,17 +454,26 @@ onBeforeUnmount(() => {
             </button>
           </div>
         </div>
-        <Button type="button" variant="ghost" size="icon-sm" class="h-8 w-8 rounded-lg text-[#6b7280] hover:bg-[#f1f3f4] dark:hover:bg-[#2d2d2d]" title="外部打开">
-          <svg width="15" height="15" viewBox="0 0 24 24" fill="none">
-            <path d="M14 3h7v7M10 14 21 3M21 14v5a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" />
+        <Button
+          type="button"
+          variant="ghost"
+          size="icon-sm"
+          class="h-7 w-7 rounded-md text-[#6b7280] hover:bg-[#f7f7f8] disabled:cursor-wait disabled:opacity-60 dark:hover:bg-[#2d2d2d]"
+          :disabled="isChangingWorkspace"
+          title="更换工作区"
+          @click="changeWorkspaceRoot"
+        >
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none">
+            <path d="M3 8a3 3 0 0 1 3-3h4l2 2h6a3 3 0 0 1 3 3v6.5a2.5 2.5 0 0 1-2.5 2.5h-13A2.5 2.5 0 0 1 3 16.5V8Z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round" />
+            <path d="M15.5 11H19l-1.4-1.4M8.5 15H5l1.4 1.4M18.8 11A4.5 4.5 0 0 0 11 13M5.2 15A4.5 4.5 0 0 0 13 13" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" />
           </svg>
         </Button>
         <Button
           type="button"
           variant="ghost"
           size="icon-sm"
-          class="h-9 w-9 rounded-xl text-[#202124] hover:bg-[#e8eaed] dark:text-[#ececec] dark:hover:bg-[#363636]"
-          :class="isFileTreeVisible ? 'bg-[#f1f3f4] dark:bg-[#2d2d2d]' : 'bg-transparent'"
+          class="h-8 w-8 rounded-lg text-[#202124] hover:bg-[#f1f3f4] dark:text-[#ececec] dark:hover:bg-[#363636]"
+          :class="isFileTreeVisible ? 'bg-[#f7f7f8] dark:bg-[#2d2d2d]' : 'bg-transparent'"
           :aria-pressed="isFileTreeVisible"
           :title="isFileTreeVisible ? '隐藏文件列表' : '显示文件列表'"
           @click="toggleFileTree"

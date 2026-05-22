@@ -68,10 +68,10 @@ watch(
               variant="ghost"
               size="sm"
               :class="[
-                'h-8 rounded-xl px-3 py-1 text-sm font-medium transition-colors',
+                'h-7 rounded-lg px-2.5 py-0 text-[13px] font-normal transition-colors',
                 activeTab === tab.id
-                  ? 'bg-[#f3f4f6] text-[#111827] dark:bg-[#333] dark:text-[#ececec]'
-                  : 'text-[#6b7280] hover:bg-[#f6f7f9] dark:text-muted-foreground dark:hover:bg-white/5',
+                  ? 'bg-[#f7f7f8] text-[#111827] dark:bg-[#2b2b2b] dark:text-[#ececec]'
+                  : 'text-[#64748b] hover:bg-[#f8f9fa] dark:text-muted-foreground dark:hover:bg-white/5',
               ]"
               @click="activeTab = tab.id"
             >
@@ -83,7 +83,7 @@ watch(
             type="button"
             variant="ghost"
             size="icon-sm"
-            class="flex h-8 w-8 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-black/5 dark:hover:bg-white/5"
+            class="flex h-7 w-7 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-black/5 dark:hover:bg-white/5"
             @click="emit('close')"
           >
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">

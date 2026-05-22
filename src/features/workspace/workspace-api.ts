@@ -37,3 +37,9 @@ export async function readWorkspaceTextFile(path: string): Promise<WorkspaceFile
     path,
   });
 }
+
+export async function setWorkspaceRoot(path: string): Promise<WorkspaceDirectoryListing> {
+  return invoke<WorkspaceDirectoryListing>('workspace_set_root', {
+    path,
+  });
+}

@@ -1,5 +1,6 @@
 use serde::Serialize;
 use std::path::{Component, Path, PathBuf};
+use std::sync::{OnceLock, RwLock};
 use std::time::UNIX_EPOCH;
 
 #[derive(Debug, Serialize)]
@@ -34,11 +35,46 @@ pub struct WorkspaceFileContent {
 
 const MAX_TEXT_FILE_BYTES: u64 = 1024 * 1024;
 
-fn workspace_root() -> Result<PathBuf, String> {
+static WORKSPACE_ROOT_OVERRIDE: OnceLock<RwLock<Option<PathBuf>>> = OnceLock::new();
+
+fn workspace_root_override() -> &'static RwLock<Option<PathBuf>> {
+    WORKSPACE_ROOT_OVERRIDE.get_or_init(|| RwLock::new(None))
+}
+
+fn default_workspace_root() -> Result<PathBuf, String> {
     std::env::current_dir()
         .map_err(|error| format!("无法读取当前工作区目录: {}", error))?
         .canonicalize()
         .map_err(|error| format!("无法解析当前工作区目录: {}", error))
+}
+
+fn workspace_root() -> Result<PathBuf, String> {
+    let override_root = workspace_root_override()
+        .read()
+        .map_err(|_| "工作区状态锁已损坏".to_string())?
+        .clone();
+
+    if let Some(root) = override_root {
+        return Ok(root);
+    }
+
+    default_workspace_root()
+}
+
+fn validate_workspace_root(path: String) -> Result<PathBuf, String> {
+    let trimmed = path.trim();
+    if trimmed.is_empty() {
+        return Err("请选择有效的工作区目录".to_string());
+    }
+
+    let canonical = PathBuf::from(trimmed)
+        .canonicalize()
+        .map_err(|error| format!("无法解析工作区目录: {}", error))?;
+    if !canonical.is_dir() {
+        return Err("工作区必须是目录".to_string());
+    }
+
+    Ok(canonical)
 }
 
 fn normalize_relative_path(path: Option<String>) -> Result<PathBuf, String> {
@@ -134,6 +170,13 @@ fn entry_from_path(root: &Path, path: PathBuf) -> Option<WorkspaceEntry> {
 #[tauri::command]
 pub fn workspace_list_directory(path: Option<String>) -> Result<WorkspaceDirectoryListing, String> {
     let root = workspace_root()?;
+    list_directory_for_root(root, path)
+}
+
+fn list_directory_for_root(
+    root: PathBuf,
+    path: Option<String>,
+) -> Result<WorkspaceDirectoryListing, String> {
     let (target, relative_path) = resolve_workspace_path(&root, path)?;
     if !target.is_dir() {
         return Err("目标路径不是目录".to_string());
@@ -159,6 +202,19 @@ pub fn workspace_list_directory(path: Option<String>) -> Result<WorkspaceDirecto
         relative_path,
         entries,
     })
+}
+
+#[tauri::command]
+pub fn workspace_set_root(path: String) -> Result<WorkspaceDirectoryListing, String> {
+    let root = validate_workspace_root(path)?;
+    {
+        let mut override_root = workspace_root_override()
+            .write()
+            .map_err(|_| "工作区状态锁已损坏".to_string())?;
+        *override_root = Some(root.clone());
+    }
+
+    list_directory_for_root(root, None)
 }
 
 #[tauri::command]

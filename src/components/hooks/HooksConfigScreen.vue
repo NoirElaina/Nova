@@ -41,9 +41,19 @@ const form = reactive({
 });
 
 const fieldClass =
-  "border-[#ddd3c4] bg-white/95 text-[#2f2b24] focus-visible:border-[#d28a71] focus-visible:ring-[#da7756]/25 dark:border-[#4f473b] dark:bg-[#24221f] dark:text-[#e4dccd] dark:focus-visible:border-[#b77a63]";
-const labelClass = "text-[0.86rem] text-[#5f574a] dark:text-[#d8cfbf]";
-const hintClass = "text-xs text-[#8a8172] dark:text-[#b8b0a2]";
+  "border-[#d8dee8] bg-white text-[#111827] shadow-none focus-visible:border-[#2563eb] focus-visible:ring-[#2563eb]/15 dark:border-[#3a3a3a] dark:bg-[#242424] dark:text-[#ededed] dark:focus-visible:border-[#60a5fa]";
+const labelClass = "text-[13px] text-[#374151] dark:text-[#d7d7d7]";
+const hintClass = "text-[11px] text-[#7b8494] dark:text-[#9ca3af]";
+const pageClass =
+  "box-border flex h-full flex-col gap-3 overflow-auto bg-white px-4 pb-4 pt-16 dark:bg-[#1e1e1e]";
+const panelClass =
+  "gap-3 border-[#e5e7eb] bg-white py-3 shadow-none dark:border-[#333] dark:bg-[#242424]";
+const headerButtonClass =
+  "h-8 border-[#d8dee8] bg-white px-3 text-[13px] text-[#475569] shadow-none hover:bg-[#f4f7fb] dark:border-[#3a3a3a] dark:bg-[#242424] dark:text-[#d7d7d7] dark:hover:bg-[#2d2d2d]";
+const primaryButtonClass =
+  "h-8 bg-[#111827] px-3 text-[13px] text-white shadow-none hover:bg-[#1f2937] focus-visible:ring-[#111827]/20 dark:bg-[#ededed] dark:text-[#111] dark:hover:bg-white";
+const checkboxClass =
+  "border-[#cbd5e1] shadow-none data-[state=checked]:border-[#2563eb] data-[state=checked]:bg-[#2563eb]";
 
 function validateStopHookMaxAssistantMessages(value: string): string | null {
   const trimmed = value.trim();
@@ -204,17 +214,17 @@ onMounted(() => {
 </script>
 
 <template>
-  <div class="box-border flex h-full flex-col gap-4 overflow-auto bg-[#fcfcfb] px-5 pb-5 pt-[72px] dark:bg-transparent">
+  <div :class="pageClass">
     <header class="flex flex-wrap items-start justify-between gap-3">
       <div class="space-y-1">
-        <h2 class="text-base font-semibold text-[#2f2a24] dark:text-[#ece8de]">挂钩配置</h2>
-        <p class="text-sm text-[#8a8174] dark:text-[#b5ada0]">管理会话、提示提交、压缩前后、工具前后、子智能体、停止与错误等全流程 Hook。</p>
+        <h2 class="text-base font-semibold text-[#111827] dark:text-[#f3f4f6]">挂钩配置</h2>
+        <p class="text-sm text-[#64748b] dark:text-[#a3a3a3]">管理会话、提示提交、压缩前后、工具前后、子智能体、停止与错误等全流程 Hook。</p>
       </div>
       <div class="flex flex-wrap items-center gap-2">
         <Button
           variant="ghost"
           size="sm"
-          class="border border-[#e3d8c7] bg-white text-[#5d5448] hover:bg-[#f6f1e8] dark:border-[#474136] dark:bg-[#2a2824] dark:text-[#d9d1c3] dark:hover:bg-[#34312b]"
+          :class="headerButtonClass"
           @click="emit('change-main-view', 'chat')"
         >
           返回聊天
@@ -222,7 +232,7 @@ onMounted(() => {
         <Button
           variant="ghost"
           size="sm"
-          class="border border-[#e3d8c7] bg-white text-[#5d5448] hover:bg-[#f6f1e8] dark:border-[#474136] dark:bg-[#2a2824] dark:text-[#d9d1c3] dark:hover:bg-[#34312b]"
+          :class="headerButtonClass"
           :disabled="loading || saving"
           @click="loadHookConfig"
         >
@@ -230,7 +240,7 @@ onMounted(() => {
         </Button>
         <Button
           size="sm"
-          class="bg-[#da7756] text-white hover:bg-[#c96c4d] focus-visible:ring-[#da7756]/35 disabled:bg-[#e4b2a1] dark:bg-[#c56c4d] dark:hover:bg-[#b35f43]"
+          :class="primaryButtonClass"
           :disabled="loading || saving || !!stopHookMaxAssistantMessagesError"
           @click="saveHookConfig"
         >
@@ -239,60 +249,60 @@ onMounted(() => {
       </div>
     </header>
 
-    <Card v-if="loading" class="gap-2 border-[#eadfcd] bg-[#fffdf8] py-4 dark:border-[#4a4237] dark:bg-[#292621]">
-      <CardContent class="px-4 text-sm text-[#8a8172] dark:text-[#b8b0a2]">正在读取配置...</CardContent>
+    <Card v-if="loading" :class="panelClass">
+      <CardContent class="px-3 text-sm text-[#64748b] dark:text-[#a3a3a3]">正在读取配置...</CardContent>
     </Card>
 
     <div v-else class="grid grid-cols-1 gap-3 xl:grid-cols-2">
-      <Card class="gap-4 border-[#eadfcd] bg-[#fffdf8] py-4 shadow-sm dark:border-[#4a4237] dark:bg-[#292621]">
-        <CardHeader class="px-4 pb-0">
-          <CardTitle class="text-sm text-[#5b5347] dark:text-[#ddd5c7]">会话开始</CardTitle>
+      <Card :class="panelClass">
+        <CardHeader class="px-3 pb-0">
+          <CardTitle class="text-sm text-[#111827] dark:text-[#f3f4f6]">会话开始</CardTitle>
         </CardHeader>
-        <CardContent class="space-y-2 px-4">
+        <CardContent class="space-y-2 px-3">
           <Label :class="labelClass">上下文注入</Label>
           <Textarea v-model="form.sessionStartContext" :class="fieldClass" rows="3" placeholder="新的会话开始时追加的上下文" />
           <p :class="hintClass">对应 NOVA_SESSION_START_HOOK_CONTEXT。</p>
         </CardContent>
       </Card>
 
-      <Card class="gap-4 border-[#eadfcd] bg-[#fffdf8] py-4 shadow-sm dark:border-[#4a4237] dark:bg-[#292621]">
-        <CardHeader class="px-4 pb-0">
-          <CardTitle class="text-sm text-[#5b5347] dark:text-[#ddd5c7]">用户提示提交</CardTitle>
+      <Card :class="panelClass">
+        <CardHeader class="px-3 pb-0">
+          <CardTitle class="text-sm text-[#111827] dark:text-[#f3f4f6]">用户提示提交</CardTitle>
         </CardHeader>
-        <CardContent class="space-y-2 px-4">
+        <CardContent class="space-y-2 px-3">
           <Label :class="labelClass">上下文注入</Label>
           <Textarea v-model="form.userPromptSubmitContext" :class="fieldClass" rows="3" placeholder="每次用户提交提示时追加的上下文" />
           <p :class="hintClass">对应 NOVA_USER_PROMPT_SUBMIT_HOOK_CONTEXT。</p>
         </CardContent>
       </Card>
 
-      <Card class="gap-4 border-[#eadfcd] bg-[#fffdf8] py-4 shadow-sm dark:border-[#4a4237] dark:bg-[#292621]">
-        <CardHeader class="px-4 pb-0">
-          <CardTitle class="text-sm text-[#5b5347] dark:text-[#ddd5c7]">预压缩</CardTitle>
+      <Card :class="panelClass">
+        <CardHeader class="px-3 pb-0">
+          <CardTitle class="text-sm text-[#111827] dark:text-[#f3f4f6]">预压缩</CardTitle>
         </CardHeader>
-        <CardContent class="space-y-2 px-4">
+        <CardContent class="space-y-2 px-3">
           <Label :class="labelClass">上下文注入</Label>
           <Textarea v-model="form.preCompactContext" :class="fieldClass" rows="3" placeholder="压缩上下文前追加的提示" />
           <p :class="hintClass">对应 NOVA_PRE_COMPACT_HOOK_CONTEXT。</p>
         </CardContent>
       </Card>
 
-      <Card class="gap-4 border-[#eadfcd] bg-[#fffdf8] py-4 shadow-sm dark:border-[#4a4237] dark:bg-[#292621]">
-        <CardHeader class="px-4 pb-0">
-          <CardTitle class="text-sm text-[#5b5347] dark:text-[#ddd5c7]">后压缩</CardTitle>
+      <Card :class="panelClass">
+        <CardHeader class="px-3 pb-0">
+          <CardTitle class="text-sm text-[#111827] dark:text-[#f3f4f6]">后压缩</CardTitle>
         </CardHeader>
-        <CardContent class="space-y-2 px-4">
+        <CardContent class="space-y-2 px-3">
           <Label :class="labelClass">上下文注入</Label>
           <Textarea v-model="form.postCompactContext" :class="fieldClass" rows="3" placeholder="压缩完成后追加的提示" />
           <p :class="hintClass">对应 NOVA_POST_COMPACT_HOOK_CONTEXT。</p>
         </CardContent>
       </Card>
 
-      <Card class="gap-4 border-[#eadfcd] bg-[#fffdf8] py-4 shadow-sm dark:border-[#4a4237] dark:bg-[#292621]">
-        <CardHeader class="px-4 pb-0">
-          <CardTitle class="text-sm text-[#5b5347] dark:text-[#ddd5c7]">PreToolUse</CardTitle>
+      <Card :class="panelClass">
+        <CardHeader class="px-3 pb-0">
+          <CardTitle class="text-sm text-[#111827] dark:text-[#f3f4f6]">PreToolUse</CardTitle>
         </CardHeader>
-        <CardContent class="space-y-4 px-4">
+        <CardContent class="space-y-4 px-3">
           <div class="space-y-2">
             <Label :class="labelClass">禁用工具列表</Label>
             <Input v-model="form.preToolDenyTools" :class="fieldClass" placeholder="例如: execute_bash,write_file" />
@@ -306,11 +316,11 @@ onMounted(() => {
         </CardContent>
       </Card>
 
-      <Card class="gap-4 border-[#eadfcd] bg-[#fffdf8] py-4 shadow-sm dark:border-[#4a4237] dark:bg-[#292621]">
-        <CardHeader class="px-4 pb-0">
-          <CardTitle class="text-sm text-[#5b5347] dark:text-[#ddd5c7]">PostToolUse</CardTitle>
+      <Card :class="panelClass">
+        <CardHeader class="px-3 pb-0">
+          <CardTitle class="text-sm text-[#111827] dark:text-[#f3f4f6]">PostToolUse</CardTitle>
         </CardHeader>
-        <CardContent class="space-y-4 px-4">
+        <CardContent class="space-y-4 px-3">
           <div class="space-y-2">
             <Label :class="labelClass">注入上下文</Label>
             <Textarea v-model="form.postToolContext" :class="fieldClass" rows="3" placeholder="工具执行后追加的提示内容" />
@@ -321,11 +331,11 @@ onMounted(() => {
             <div class="flex items-center gap-2">
               <Checkbox
                 id="post-tool-stop-on-error"
-                class="border-[#c8baa3] data-[state=checked]:border-[#da7756] data-[state=checked]:bg-[#da7756]"
+                :class="checkboxClass"
                 :model-value="form.postToolStopOnError"
                 @update:model-value="onPostToolStopOnErrorChange"
               />
-              <Label for="post-tool-stop-on-error" class="text-[0.86rem] font-normal text-[#5f574a] dark:text-[#d8cfbf]">工具报错时终止续跑</Label>
+              <Label for="post-tool-stop-on-error" class="text-[13px] font-normal text-[#374151] dark:text-[#d7d7d7]">工具报错时终止续跑</Label>
             </div>
             <p :class="hintClass">对应 NOVA_POST_TOOL_STOP_ON_ERROR。</p>
           </div>
@@ -338,11 +348,11 @@ onMounted(() => {
         </CardContent>
       </Card>
 
-      <Card class="gap-4 border-[#eadfcd] bg-[#fffdf8] py-4 shadow-sm dark:border-[#4a4237] dark:bg-[#292621]">
-        <CardHeader class="px-4 pb-0">
-          <CardTitle class="text-sm text-[#5b5347] dark:text-[#ddd5c7]">PostToolUseFailure</CardTitle>
+      <Card :class="panelClass">
+        <CardHeader class="px-3 pb-0">
+          <CardTitle class="text-sm text-[#111827] dark:text-[#f3f4f6]">PostToolUseFailure</CardTitle>
         </CardHeader>
-        <CardContent class="space-y-4 px-4">
+        <CardContent class="space-y-4 px-3">
           <div class="space-y-2">
             <Label :class="labelClass">失败上下文</Label>
             <Textarea v-model="form.postToolFailureContext" :class="fieldClass" rows="3" placeholder="工具失败后追加的提示内容" />
@@ -353,22 +363,22 @@ onMounted(() => {
             <div class="flex items-center gap-2">
               <Checkbox
                 id="post-tool-failure-stop"
-                class="border-[#c8baa3] data-[state=checked]:border-[#da7756] data-[state=checked]:bg-[#da7756]"
+                :class="checkboxClass"
                 :model-value="form.postToolFailureStop"
                 @update:model-value="onPostToolFailureStopChange"
               />
-              <Label for="post-tool-failure-stop" class="text-[0.86rem] font-normal text-[#5f574a] dark:text-[#d8cfbf]">失败后直接终止续跑</Label>
+              <Label for="post-tool-failure-stop" class="text-[13px] font-normal text-[#374151] dark:text-[#d7d7d7]">失败后直接终止续跑</Label>
             </div>
             <p :class="hintClass">对应 NOVA_POST_TOOL_FAILURE_STOP。</p>
           </div>
         </CardContent>
       </Card>
 
-      <Card class="gap-4 border-[#eadfcd] bg-[#fffdf8] py-4 shadow-sm dark:border-[#4a4237] dark:bg-[#292621]">
-        <CardHeader class="px-4 pb-0">
-          <CardTitle class="text-sm text-[#5b5347] dark:text-[#ddd5c7]">StopHook</CardTitle>
+      <Card :class="panelClass">
+        <CardHeader class="px-3 pb-0">
+          <CardTitle class="text-sm text-[#111827] dark:text-[#f3f4f6]">StopHook</CardTitle>
         </CardHeader>
-        <CardContent class="space-y-4 px-4">
+        <CardContent class="space-y-4 px-3">
           <div class="space-y-2">
             <Label :class="labelClass">最大 Assistant 消息数</Label>
             <Input
@@ -400,44 +410,44 @@ onMounted(() => {
         </CardContent>
       </Card>
 
-      <Card class="gap-4 border-[#eadfcd] bg-[#fffdf8] py-4 shadow-sm dark:border-[#4a4237] dark:bg-[#292621]">
-        <CardHeader class="px-4 pb-0">
-          <CardTitle class="text-sm text-[#5b5347] dark:text-[#ddd5c7]">子智能体启动</CardTitle>
+      <Card :class="panelClass">
+        <CardHeader class="px-3 pb-0">
+          <CardTitle class="text-sm text-[#111827] dark:text-[#f3f4f6]">子智能体启动</CardTitle>
         </CardHeader>
-        <CardContent class="space-y-2 px-4">
+        <CardContent class="space-y-2 px-3">
           <Label :class="labelClass">上下文注入</Label>
           <Textarea v-model="form.subagentStartContext" :class="fieldClass" rows="3" placeholder="子智能体启动时追加上下文" />
           <p :class="hintClass">对应 NOVA_SUBAGENT_START_HOOK_CONTEXT。</p>
         </CardContent>
       </Card>
 
-      <Card class="gap-4 border-[#eadfcd] bg-[#fffdf8] py-4 shadow-sm dark:border-[#4a4237] dark:bg-[#292621]">
-        <CardHeader class="px-4 pb-0">
-          <CardTitle class="text-sm text-[#5b5347] dark:text-[#ddd5c7]">子智能体停止</CardTitle>
+      <Card :class="panelClass">
+        <CardHeader class="px-3 pb-0">
+          <CardTitle class="text-sm text-[#111827] dark:text-[#f3f4f6]">子智能体停止</CardTitle>
         </CardHeader>
-        <CardContent class="space-y-2 px-4">
+        <CardContent class="space-y-2 px-3">
           <Label :class="labelClass">上下文注入</Label>
           <Textarea v-model="form.subagentStopContext" :class="fieldClass" rows="3" placeholder="子智能体停止时追加上下文" />
           <p :class="hintClass">对应 NOVA_SUBAGENT_STOP_HOOK_CONTEXT。</p>
         </CardContent>
       </Card>
 
-      <Card class="gap-4 border-[#eadfcd] bg-[#fffdf8] py-4 shadow-sm dark:border-[#4a4237] dark:bg-[#292621]">
-        <CardHeader class="px-4 pb-0">
-          <CardTitle class="text-sm text-[#5b5347] dark:text-[#ddd5c7]">会话结束</CardTitle>
+      <Card :class="panelClass">
+        <CardHeader class="px-3 pb-0">
+          <CardTitle class="text-sm text-[#111827] dark:text-[#f3f4f6]">会话结束</CardTitle>
         </CardHeader>
-        <CardContent class="space-y-2 px-4">
+        <CardContent class="space-y-2 px-3">
           <Label :class="labelClass">结束原因附加文本</Label>
           <Textarea v-model="form.sessionEndContext" :class="fieldClass" rows="3" placeholder="会话结束时附加到 stop reason" />
           <p :class="hintClass">对应 NOVA_SESSION_END_HOOK_CONTEXT。</p>
         </CardContent>
       </Card>
 
-      <Card class="gap-4 border-[#eadfcd] bg-[#fffdf8] py-4 shadow-sm dark:border-[#4a4237] dark:bg-[#292621]">
-        <CardHeader class="px-4 pb-0">
-          <CardTitle class="text-sm text-[#5b5347] dark:text-[#ddd5c7]">出错</CardTitle>
+      <Card :class="panelClass">
+        <CardHeader class="px-3 pb-0">
+          <CardTitle class="text-sm text-[#111827] dark:text-[#f3f4f6]">出错</CardTitle>
         </CardHeader>
-        <CardContent class="space-y-2 px-4">
+        <CardContent class="space-y-2 px-3">
           <Label :class="labelClass">错误附加文本</Label>
           <Textarea v-model="form.errorContext" :class="fieldClass" rows="3" placeholder="发生错误时附加到错误信息" />
           <p :class="hintClass">对应 NOVA_ERROR_HOOK_CONTEXT。</p>
@@ -449,13 +459,13 @@ onMounted(() => {
       <Button
         variant="outline"
         size="sm"
-        class="border-[#dfd4c3] bg-white text-[#5d5448] hover:bg-[#f6f1e8] dark:border-[#474136] dark:bg-[#2a2824] dark:text-[#d9d1c3] dark:hover:bg-[#34312b]"
+        :class="headerButtonClass"
         :disabled="loading || saving"
         @click="resetHookConfig"
       >
         清空表单
       </Button>
-      <span class="text-xs text-[#8a8172] dark:text-[#b8b0a2]">{{ savedAtText }}</span>
+      <span class="text-xs text-[#7b8494] dark:text-[#9ca3af]">{{ savedAtText }}</span>
     </footer>
   </div>
 </template>

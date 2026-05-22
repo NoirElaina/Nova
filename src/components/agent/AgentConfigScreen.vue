@@ -35,6 +35,17 @@ const selectedProfilePath = ref("");
 const content = ref("");
 const originalContent = ref("");
 
+const pageClass =
+  "box-border flex h-full flex-col gap-3 overflow-auto bg-white px-4 pb-4 pt-16 dark:bg-[#1e1e1e]";
+const panelClass =
+  "gap-3 border-[#e5e7eb] bg-white py-3 shadow-none dark:border-[#333] dark:bg-[#242424]";
+const fieldClass =
+  "border-[#d8dee8] bg-white text-[#111827] shadow-none focus-visible:border-[#2563eb] focus-visible:ring-[#2563eb]/15 dark:border-[#3a3a3a] dark:bg-[#242424] dark:text-[#ededed] dark:focus-visible:border-[#60a5fa]";
+const headerButtonClass =
+  "h-8 border-[#d8dee8] bg-white px-3 text-[13px] text-[#475569] shadow-none hover:bg-[#f4f7fb] dark:border-[#3a3a3a] dark:bg-[#242424] dark:text-[#d7d7d7] dark:hover:bg-[#2d2d2d]";
+const primaryButtonClass =
+  "h-8 bg-[#111827] px-3 text-[13px] text-white shadow-none hover:bg-[#1f2937] focus-visible:ring-[#111827]/20 dark:bg-[#ededed] dark:text-[#111] dark:hover:bg-white";
+
 const hasChanges = computed(() => content.value !== originalContent.value);
 const hasSelectedProfile = computed(() => selectedProfileId.value.trim().length > 0);
 const hasProfiles = computed(() => profiles.value.length > 0);
@@ -276,11 +287,11 @@ onMounted(() => {
 </script>
 
 <template>
-  <div class="box-border flex h-full flex-col gap-4 overflow-auto bg-[#fcfcfb] px-5 pb-5 pt-[72px] dark:bg-transparent">
+  <div :class="pageClass">
     <header class="flex flex-wrap items-start justify-between gap-3">
       <div class="space-y-1">
-        <h2 class="text-base font-semibold text-[#2f2a24] dark:text-[#ece8de]">智能体配置</h2>
-        <p class="text-sm text-[#8a8174] dark:text-[#b5ada0]">
+        <h2 class="text-base font-semibold text-[#111827] dark:text-[#f3f4f6]">智能体配置</h2>
+        <p class="text-sm text-[#64748b] dark:text-[#a3a3a3]">
           智能体列表保存在应用数据目录，支持按条目编辑 agent markdown。
         </p>
       </div>
@@ -288,7 +299,7 @@ onMounted(() => {
       <div class="flex flex-wrap items-center gap-2">
         <Button
           size="sm"
-          class="bg-[#da7756] text-white hover:bg-[#c96c4d] focus-visible:ring-[#da7756]/35"
+          :class="primaryButtonClass"
           :disabled="isBusy"
           @click="openCreatePanel"
         >
@@ -297,7 +308,7 @@ onMounted(() => {
         <Button
           variant="outline"
           size="sm"
-          class="border-[#dcb3a4] bg-white text-[#9a3f28] hover:bg-[#fff4f1] dark:border-[#6f4338] dark:bg-[#2a2824] dark:text-[#e3a592] dark:hover:bg-[#3a2a25]"
+          class="h-8 border-[#fecaca] bg-white px-3 text-[13px] text-[#dc2626] shadow-none hover:bg-[#fef2f2] dark:border-[#513030] dark:bg-[#242424] dark:text-[#fca5a5] dark:hover:bg-[#3a1f1f]"
           :disabled="isBusy || !hasSelectedProfile"
           @click="openDeletePanel"
         >
@@ -306,7 +317,7 @@ onMounted(() => {
         <Button
           variant="outline"
           size="sm"
-          class="border-[#e3d8c7] bg-white text-[#5d5448] hover:bg-[#f6f1e8] dark:border-[#474136] dark:bg-[#2a2824] dark:text-[#d9d1c3] dark:hover:bg-[#34312b]"
+          :class="headerButtonClass"
           @click="emit('change-main-view', 'chat')"
         >
           返回聊天
@@ -314,7 +325,7 @@ onMounted(() => {
         <Button
           variant="outline"
           size="sm"
-          class="border-[#e3d8c7] bg-white text-[#5d5448] hover:bg-[#f6f1e8] dark:border-[#474136] dark:bg-[#2a2824] dark:text-[#d9d1c3] dark:hover:bg-[#34312b]"
+          :class="headerButtonClass"
           :disabled="isBusy"
           @click="loadAgentProfiles"
         >
@@ -323,7 +334,7 @@ onMounted(() => {
         <Button
           variant="outline"
           size="sm"
-          class="border-[#e3d8c7] bg-white text-[#5d5448] hover:bg-[#f6f1e8] dark:border-[#474136] dark:bg-[#2a2824] dark:text-[#d9d1c3] dark:hover:bg-[#34312b]"
+          :class="headerButtonClass"
           :disabled="loadingContent || saving || !hasChanges"
           @click="resetContent"
         >
@@ -331,7 +342,7 @@ onMounted(() => {
         </Button>
         <Button
           size="sm"
-          class="bg-[#da7756] text-white hover:bg-[#c96c4d] focus-visible:ring-[#da7756]/35"
+          :class="primaryButtonClass"
           :disabled="loadingContent || saving || !hasChanges || !hasSelectedProfile"
           @click="saveAgentMarkdown"
         >
@@ -342,27 +353,27 @@ onMounted(() => {
 
     <Card
       v-if="showCreatePanel"
-      class="gap-3 border-[#eadfcd] bg-[#fffdf8] py-4 shadow-sm dark:border-[#4a4237] dark:bg-[#292621]"
+      :class="panelClass"
     >
-      <CardHeader class="space-y-1 px-4 pb-0">
-        <CardTitle class="text-sm text-[#5b5347] dark:text-[#ddd5c7]">创建智能体</CardTitle>
+      <CardHeader class="space-y-1 px-3 pb-0">
+        <CardTitle class="text-sm text-[#111827] dark:text-[#f3f4f6]">创建智能体</CardTitle>
         <CardDescription>输入智能体名称，文件将保存到应用数据目录。</CardDescription>
       </CardHeader>
-      <CardContent class="space-y-3 px-4">
+      <CardContent class="space-y-3 px-3">
         <Input
           v-model="newProfileName"
-          class="border-[#ddd3c4] bg-white/95 text-[#2f2b24] focus-visible:border-[#d28a71] focus-visible:ring-[#da7756]/25 dark:border-[#4f473b] dark:bg-[#24221f] dark:text-[#e4dccd]"
+          :class="fieldClass"
           placeholder="例如: code-review-agent"
           :disabled="creating"
           @keydown.enter.prevent="createAgentProfile"
         />
         <div class="flex items-center justify-end gap-2">
-          <Button variant="outline" size="sm" :disabled="creating" @click="cancelCreatePanel">
+          <Button variant="outline" size="sm" :class="headerButtonClass" :disabled="creating" @click="cancelCreatePanel">
             取消
           </Button>
           <Button
             size="sm"
-            class="bg-[#da7756] text-white hover:bg-[#c96c4d] focus-visible:ring-[#da7756]/35"
+            :class="primaryButtonClass"
             :disabled="creating"
             @click="createAgentProfile"
           >
@@ -374,20 +385,20 @@ onMounted(() => {
 
     <Card
       v-if="showDeletePanel"
-      class="gap-3 border-[#f1cfc5] bg-[#fff8f6] py-4 shadow-sm dark:border-[#5a3a33] dark:bg-[#332722]"
+      class="gap-3 border-[#fecaca] bg-[#fffafa] py-3 shadow-none dark:border-[#513030] dark:bg-[#2a2020]"
     >
-      <CardHeader class="space-y-1 px-4 pb-0">
-        <CardTitle class="text-sm text-[#8c3520] dark:text-[#e5ab9d]">确认删除智能体</CardTitle>
+      <CardHeader class="space-y-1 px-3 pb-0">
+        <CardTitle class="text-sm text-[#b91c1c] dark:text-[#fca5a5]">确认删除智能体</CardTitle>
         <CardDescription>
           将删除 {{ selectedProfileLabel }} 对应的 markdown 文件，此操作不可恢复。
         </CardDescription>
       </CardHeader>
-      <CardContent class="space-y-3 px-4">
-        <div class="rounded-md border border-[#f0d4cc] bg-white px-3 py-2 text-xs text-[#9a4d3a] dark:border-[#5d4038] dark:bg-[#2d231f] dark:text-[#d9a898]">
+      <CardContent class="space-y-3 px-3">
+        <div class="rounded-md border border-[#fecaca] bg-white px-3 py-2 text-xs text-[#b91c1c] dark:border-[#513030] dark:bg-[#241c1c] dark:text-[#fca5a5]">
           {{ selectedProfilePath || "未找到路径" }}
         </div>
         <div class="flex items-center justify-end gap-2">
-          <Button variant="outline" size="sm" :disabled="deleting" @click="cancelDeletePanel">
+          <Button variant="outline" size="sm" :class="headerButtonClass" :disabled="deleting" @click="cancelDeletePanel">
             取消
           </Button>
           <Button
@@ -404,30 +415,30 @@ onMounted(() => {
 
     <Card
       v-if="loadingList"
-      class="gap-2 border-[#eadfcd] bg-[#fffdf8] py-4 dark:border-[#4a4237] dark:bg-[#292621]"
+      :class="panelClass"
     >
-      <CardContent class="px-4 text-sm text-[#8a8172] dark:text-[#b8b0a2]">正在读取智能体列表...</CardContent>
+      <CardContent class="px-3 text-sm text-[#64748b] dark:text-[#a3a3a3]">正在读取智能体列表...</CardContent>
     </Card>
 
-    <div v-else class="flex-1 min-h-[420px] grid grid-cols-[280px_minmax(0,1fr)] gap-3">
-      <Card class="gap-3 border-[#eadfcd] bg-[#fffdf8] py-4 shadow-sm dark:border-[#4a4237] dark:bg-[#292621]">
-        <CardHeader class="space-y-1 px-4 pb-0">
-          <CardTitle class="text-sm text-[#5b5347] dark:text-[#ddd5c7]">智能体列表</CardTitle>
+    <div v-else class="grid min-h-[420px] flex-1 grid-cols-[260px_minmax(0,1fr)] gap-3">
+      <Card :class="panelClass">
+        <CardHeader class="space-y-1 px-3 pb-0">
+          <CardTitle class="text-sm text-[#111827] dark:text-[#f3f4f6]">智能体列表</CardTitle>
           <CardDescription>
             共 {{ profiles.length }} 个智能体
           </CardDescription>
         </CardHeader>
 
-        <CardContent class="px-3">
+        <CardContent class="px-2.5">
           <div class="max-h-[calc(100vh-280px)] space-y-1 overflow-y-auto pr-1 custom-scrollbar">
             <Button
               v-for="item in profiles"
               :key="item.id"
               variant="ghost"
-              class="h-auto w-full justify-start border px-2.5 py-2 text-left"
+              class="h-auto w-full justify-start rounded-lg border px-2.5 py-2 text-left shadow-none"
               :class="item.id === selectedProfileId
-                ? 'border-[#d8a08a] bg-[#fff2ed] text-[#3b3229] hover:bg-[#fff2ed] dark:border-[#a36f5d] dark:bg-[#3b2a24] dark:text-[#ece1d4] dark:hover:bg-[#3b2a24]'
-                : 'border-transparent text-[#5d5448] hover:border-[#e6dccb] hover:bg-[#f7f2e9] dark:text-[#cfc6b8] dark:hover:border-[#4a4237] dark:hover:bg-[#2f2a24]'"
+                ? 'border-[#93c5fd] bg-[#eff6ff] text-[#111827] hover:bg-[#eff6ff] dark:border-[#1d4ed8] dark:bg-[#1e293b] dark:text-[#f3f4f6] dark:hover:bg-[#1e293b]'
+                : 'border-transparent text-[#475569] hover:border-[#e5e7eb] hover:bg-[#f8fafc] dark:text-[#cfcfcf] dark:hover:border-[#333] dark:hover:bg-[#2a2a2a]'"
               @click="handleSelectProfile(item.id)"
             >
               <div class="w-full">
@@ -438,7 +449,7 @@ onMounted(() => {
 
             <div
               v-if="!hasProfiles"
-              class="rounded-md border border-dashed border-[#e4d8c8] px-3 py-4 text-xs text-[#9a9184] dark:border-[#4a4237] dark:text-[#9f978b]"
+              class="rounded-lg border border-dashed border-[#d8dee8] px-3 py-4 text-xs text-[#64748b] dark:border-[#3a3a3a] dark:text-[#a3a3a3]"
             >
               暂无智能体，点击上方“添加智能体”。
             </div>
@@ -446,28 +457,28 @@ onMounted(() => {
         </CardContent>
       </Card>
 
-      <Card class="gap-3 border-[#eadfcd] bg-[#fffdf8] py-4 shadow-sm dark:border-[#4a4237] dark:bg-[#292621]">
-        <CardHeader class="space-y-1 px-4 pb-0">
-          <CardTitle class="text-sm text-[#5b5347] dark:text-[#ddd5c7]">{{ selectedProfileLabel }}</CardTitle>
+      <Card :class="panelClass">
+        <CardHeader class="space-y-1 px-3 pb-0">
+          <CardTitle class="text-sm text-[#111827] dark:text-[#f3f4f6]">{{ selectedProfileLabel }}</CardTitle>
           <CardDescription v-if="selectedProfilePath" class="break-all">
             {{ selectedProfilePath }}
           </CardDescription>
-          <CardDescription v-if="hasChanges" class="text-[#bf5f44] dark:text-[#e2a08c]">
+          <CardDescription v-if="hasChanges" class="text-[#2563eb] dark:text-[#93c5fd]">
             当前有未保存改动
           </CardDescription>
         </CardHeader>
 
-        <CardContent class="h-full px-4">
+        <CardContent class="h-full px-3">
           <div
             v-if="loadingContent"
-            class="flex h-full min-h-[440px] items-center justify-center text-sm text-[#8a8174] dark:text-[#b5ada0]"
+            class="flex h-full min-h-[440px] items-center justify-center text-sm text-[#64748b] dark:text-[#a3a3a3]"
           >
             正在读取智能体配置...
           </div>
 
           <div
             v-else-if="!hasSelectedProfile"
-            class="flex h-full min-h-[440px] items-center justify-center text-sm text-[#8a8174] dark:text-[#b5ada0]"
+            class="flex h-full min-h-[440px] items-center justify-center text-sm text-[#64748b] dark:text-[#a3a3a3]"
           >
             请选择或创建一个智能体。
           </div>
@@ -475,7 +486,7 @@ onMounted(() => {
           <Textarea
             v-else
             v-model="content"
-            class="min-h-[440px] w-full resize-y border-[#ddd3c4] bg-white/95 font-mono text-[13px] leading-6 text-[#2f2b24] focus-visible:border-[#d28a71] focus-visible:ring-[#da7756]/25 dark:border-[#4f473b] dark:bg-[#24221f] dark:text-[#e4dccd]"
+            class="min-h-[440px] w-full resize-y border-[#d8dee8] bg-white font-mono text-[13px] leading-6 text-[#111827] shadow-none focus-visible:border-[#2563eb] focus-visible:ring-[#2563eb]/15 dark:border-[#3a3a3a] dark:bg-[#202020] dark:text-[#ededed] dark:focus-visible:border-[#60a5fa]"
             spellcheck="false"
             placeholder="# Agent\n\n在这里编写智能体配置..."
           />

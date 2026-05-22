@@ -1,4 +1,4 @@
-import { nextTick, ref, shallowRef, type Ref } from 'vue';
+import { nextTick, onMounted, onUnmounted, ref, shallowRef, type Ref } from 'vue';
 import { invoke } from '@tauri-apps/api/core';
 import { LogicalPosition, LogicalSize } from '@tauri-apps/api/dpi';
 import { Webview } from '@tauri-apps/api/webview';
@@ -19,6 +19,8 @@ export function useNativeBrowserWebview(options: UseNativeBrowserWebviewOptions)
   const browserWebview = shallowRef<Webview | null>(null);
   const isBrowserWebviewReady = ref(false);
   let restoreRetryTimer: number | null = null;
+  let surfaceSyncRaf: number | null = null;
+  let surfaceVisibilityObserver: MutationObserver | null = null;
 
   const getHostBounds = () => {
     const host = options.browserHost.value;
@@ -26,6 +28,32 @@ export function useNativeBrowserWebview(options: UseNativeBrowserWebviewOptions)
     const rect = host.getBoundingClientRect();
     if (rect.width <= 0 || rect.height <= 0) return null;
     return rect;
+  };
+
+  const isHostTopmostAtCenter = (rect: DOMRect) => {
+    const host = options.browserHost.value;
+    if (!host || !host.isConnected) return false;
+
+    const x = Math.round(rect.left + rect.width / 2);
+    const y = Math.round(rect.top + rect.height / 2);
+    if (x < 0 || y < 0 || x > window.innerWidth || y > window.innerHeight) {
+      return false;
+    }
+
+    const stack = document.elementsFromPoint(x, y);
+    const topInteractiveElement = stack.find((element) => {
+      const style = window.getComputedStyle(element);
+      return style.pointerEvents !== 'none' && style.visibility !== 'hidden';
+    });
+
+    return topInteractiveElement === host || Boolean(topInteractiveElement && host.contains(topInteractiveElement));
+  };
+
+  const canShowNativeWebview = (rect = getHostBounds()) => {
+    if (!options.isVisible() || !options.currentUrl.value || !rect) {
+      return false;
+    }
+    return isHostTopmostAtCenter(rect);
   };
 
   const waitForHostBounds = async (timeoutMs = 1400) => {
@@ -44,7 +72,7 @@ export function useNativeBrowserWebview(options: UseNativeBrowserWebviewOptions)
     if (!webview || !isBrowserWebviewReady.value) return;
     try {
       const rect = getHostBounds();
-      if (!rect || !options.currentUrl.value) {
+      if (!rect || !canShowNativeWebview(rect)) {
         await webview.hide();
         return;
       }
@@ -94,7 +122,7 @@ export function useNativeBrowserWebview(options: UseNativeBrowserWebviewOptions)
   const createNativeWebview = async (url: string): Promise<boolean> => {
     await nextTick();
     const rect = await waitForHostBounds();
-    if (!rect) return false;
+    if (!rect || !canShowNativeWebview(rect)) return false;
     if (browserWebview.value && !isBrowserWebviewReady.value) return false;
 
     const child = new Webview(getCurrentWindow(), options.browserLabel, {
@@ -148,6 +176,7 @@ export function useNativeBrowserWebview(options: UseNativeBrowserWebviewOptions)
   const reopenSavedBrowserSurface = async () => {
     if (!options.isVisible()) return;
     if (!options.currentUrl.value) return;
+    if (!canShowNativeWebview()) return;
     options.isLoading.value = true;
     const opened = await navigateNativeWebview(options.currentUrl.value);
     if (!opened) {
@@ -159,10 +188,23 @@ export function useNativeBrowserWebview(options: UseNativeBrowserWebviewOptions)
   const queueReopenSavedBrowserSurface = () => {
     if (!options.isVisible()) return;
     if (!options.currentUrl.value || browserWebview.value || restoreRetryTimer !== null) return;
+    if (!canShowNativeWebview()) return;
     restoreRetryTimer = window.setTimeout(() => {
       restoreRetryTimer = null;
       void reopenSavedBrowserSurface();
     }, 120);
+  };
+
+  const requestSurfaceSync = () => {
+    if (surfaceSyncRaf !== null) return;
+    surfaceSyncRaf = window.requestAnimationFrame(() => {
+      surfaceSyncRaf = null;
+      if (browserWebview.value) {
+        void syncWebviewBounds();
+        return;
+      }
+      queueReopenSavedBrowserSurface();
+    });
   };
 
   const evalBrowserScript = async (script: string) => {
@@ -185,6 +227,27 @@ export function useNativeBrowserWebview(options: UseNativeBrowserWebviewOptions)
     if (!isBrowserWebviewReady.value) return;
     await browserWebview.value?.setZoom(value / 100);
   };
+
+  onMounted(() => {
+    surfaceVisibilityObserver = new MutationObserver(requestSurfaceSync);
+    if (document.body) {
+      surfaceVisibilityObserver.observe(document.body, {
+        attributes: true,
+        childList: true,
+        subtree: true,
+        attributeFilter: ['class', 'style', 'open', 'aria-hidden'],
+      });
+    }
+  });
+
+  onUnmounted(() => {
+    surfaceVisibilityObserver?.disconnect();
+    surfaceVisibilityObserver = null;
+    if (surfaceSyncRaf !== null) {
+      window.cancelAnimationFrame(surfaceSyncRaf);
+      surfaceSyncRaf = null;
+    }
+  });
 
   return {
     browserWebview,

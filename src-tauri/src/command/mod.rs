@@ -16,3 +16,5 @@ pub mod agent_config;
 pub mod cron;
 // 内置浏览器 WebView 控制命令入口。
 pub mod browser;
+// 主工作区文件树只读命令入口。
+pub mod workspace;

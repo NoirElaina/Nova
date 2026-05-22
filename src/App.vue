@@ -27,7 +27,7 @@ import {
 import { buildConversationExportHtml } from "./features/chat/utils/conversation-export-html";
 import { emitToast } from "./lib/toast";
 
-type WorkspaceTabId = "diff" | "usage" | "files" | "browser";
+type WorkspaceTabId = "workspace" | "diff" | "usage" | "files" | "terminal" | "browser";
 type BrowserOpenRequest = {
   conversationId?: string;
 };
@@ -74,7 +74,7 @@ const {
 void chatScreenRef;
 
 const isDrawerOpen = ref(false);
-const activeWorkspaceTab = ref<WorkspaceTabId>("diff");
+const activeWorkspaceTab = ref<WorkspaceTabId>("workspace");
 const browserOpenRequestKey = ref(0);
 const exportingConversationId = ref<string | null>(null);
 const exportingFormat = ref<ConversationExportFormat | null>(null);
@@ -316,6 +316,7 @@ onBeforeUnmount(() => {
         :open="isDrawerOpen"
         :activeTab="activeWorkspaceTab"
         :entries="toolExecutionLogs"
+        :currentTurnToolEntries="currentTurnToolExecutionLogs"
         :messages="messages"
         :files="conversationFiles"
         :assistantTurnCost="assistantTurnCost"

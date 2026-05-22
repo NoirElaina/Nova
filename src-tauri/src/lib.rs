@@ -125,7 +125,9 @@ pub fn run() {
             command::browser::browser_automation_result,
             command::browser::load_browser_tab_state,
             command::browser::save_browser_tab_state,
-            command::browser::clear_browser_tab_state
+            command::browser::clear_browser_tab_state,
+            command::workspace::workspace_list_directory,
+            command::workspace::workspace_read_text_file
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application");

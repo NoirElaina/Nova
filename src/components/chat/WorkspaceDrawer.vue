@@ -6,18 +6,21 @@ import CodeDiffTab from './workspace/CodeDiffTab.vue';
 import FilesTab from './workspace/FilesTab.vue';
 import UsageTab from './workspace/UsageTab.vue';
 import BrowserTab from './workspace/BrowserTab.vue';
+import TerminalTab from './workspace/TerminalTab.vue';
+import WorkspaceOverviewTab from './workspace/WorkspaceOverviewTab.vue';
 
 const emit = defineEmits<{
   (e: 'close'): void;
 }>();
 
-type TabId = 'diff' | 'usage' | 'files' | 'browser';
+type TabId = 'workspace' | 'diff' | 'usage' | 'files' | 'terminal' | 'browser';
 
 const props = defineProps<{
   open: boolean;
   activeTab?: TabId;
   selectedFileId?: string | null;
   entries: ToolExecutionEntry[];
+  currentTurnToolEntries?: ToolExecutionEntry[];
   messages: ChatMessage[];
   files: RagDocumentMeta[];
   assistantTurnCost?: TurnCost;
@@ -25,12 +28,14 @@ const props = defineProps<{
   browserOpenRequestKey?: number;
 }>();
 
-const activeTab = ref<TabId>('diff');
+const activeTab = ref<TabId>('workspace');
 
 const tabs: { id: TabId; label: string }[] = [
+  { id: 'workspace', label: '工作区' },
   { id: 'diff', label: '审查' },
   { id: 'usage', label: '用量' },
   { id: 'files', label: '文件' },
+  { id: 'terminal', label: '终端' },
   { id: 'browser', label: '浏览器' },
 ];
 
@@ -82,8 +87,12 @@ watch(
         </div>
 
         <div class="min-h-0 flex-1 overflow-hidden">
+          <WorkspaceOverviewTab
+            v-if="activeTab === 'workspace'"
+          />
+
           <CodeDiffTab
-            v-if="activeTab === 'diff'"
+            v-else-if="activeTab === 'diff'"
           />
 
           <UsageTab
@@ -97,6 +106,13 @@ watch(
             v-else-if="activeTab === 'files'"
             :files="files"
             :selectedFileId="selectedFileId"
+          />
+
+          <TerminalTab
+            v-else-if="activeTab === 'terminal'"
+            :conversationId="conversationId ?? null"
+            :entries="entries"
+            :currentTurnToolEntries="currentTurnToolEntries"
           />
 
           <BrowserTab

@@ -4,7 +4,7 @@ use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
-use tauri::{AppHandle, Emitter};
+use tauri::{AppHandle, Emitter, Manager};
 use tokio::sync::oneshot;
 
 const DEFAULT_SCOPE: &str = "__default__";
@@ -172,6 +172,44 @@ fn registered_session(key: &str) -> Result<Option<BrowserSession>, String> {
     Ok(guard.sessions.get(key).cloned())
 }
 
+fn remove_registered_session(key: &str, label: &str) -> Result<(), String> {
+    let mut guard = state()
+        .lock()
+        .map_err(|_| "browser session registry poisoned".to_string())?;
+    let should_remove = guard
+        .sessions
+        .get(key)
+        .map(|session| session.label == label)
+        .unwrap_or(false);
+    if should_remove {
+        guard.sessions.remove(key);
+    }
+    Ok(())
+}
+
+fn registered_live_session(app: &AppHandle, key: &str) -> Result<Option<BrowserSession>, String> {
+    let Some(session) = registered_session(key)? else {
+        return Ok(None);
+    };
+
+    // The automation listener lives in the browser shell webview, while
+    // session.label points at the child page webview. A page can be absent
+    // before the first navigation, so shell liveness is the reliable check.
+    let shell_label = format!("nova-browser-window-{}", session.label);
+    if app.get_webview(&shell_label).is_some() {
+        return Ok(Some(session));
+    }
+
+    remove_registered_session(key, &session.label)?;
+    tracing::debug!(
+        conversation_id = key,
+        label = session.label,
+        shell_label,
+        "removed stale browser session after webview disappeared"
+    );
+    Ok(None)
+}
+
 async fn wait_for_session_after_open(app: &AppHandle, key: &str) -> Option<BrowserSession> {
     let _ = app.emit(
         BROWSER_OPEN_EVENT,
@@ -182,13 +220,13 @@ async fn wait_for_session_after_open(app: &AppHandle, key: &str) -> Option<Brows
 
     let attempts = OPEN_WAIT_TIMEOUT_MS / OPEN_WAIT_STEP_MS;
     for _ in 0..attempts {
-        if let Ok(Some(session)) = registered_session(key) {
+        if let Ok(Some(session)) = registered_live_session(app, key) {
             return Some(session);
         }
         tokio::time::sleep(Duration::from_millis(OPEN_WAIT_STEP_MS)).await;
     }
 
-    registered_session(key).ok().flatten()
+    registered_live_session(app, key).ok().flatten()
 }
 
 pub async fn run_command(
@@ -199,7 +237,7 @@ pub async fn run_command(
     timeout_ms: Option<u64>,
 ) -> Value {
     let key = scope_key(conversation_id);
-    let session = match registered_session(&key) {
+    let session = match registered_live_session(app, &key) {
         Ok(Some(session)) => Some(session),
         Ok(None) => wait_for_session_after_open(app, &key).await,
         Err(error) => {

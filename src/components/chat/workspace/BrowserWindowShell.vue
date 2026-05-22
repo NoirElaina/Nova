@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue';
 import { invoke } from '@tauri-apps/api/core';
-import type { UnlistenFn } from '@tauri-apps/api/event';
+import { emit, type UnlistenFn } from '@tauri-apps/api/event';
 import { openUrl } from '@tauri-apps/plugin-opener';
 import { getCurrentWindow } from '@tauri-apps/api/window';
 import {
@@ -11,6 +11,14 @@ import {
   saveBrowserTabState,
   type BrowserTabState,
 } from '../../../features/browser/browser-tab-state';
+import {
+  BROWSER_ANNOTATION_SELECTED_EVENT,
+  buildBrowserAnnotationPayload,
+  elementPickerCleanupScript,
+  elementPickerInstallScript,
+  elementPickerReadSelectionScript,
+  type BrowserAnnotationSelection,
+} from '../../../features/browser/browser-annotation';
 import { useBrowserAutomationCommands } from '../../../features/browser/useBrowserAutomationCommands';
 import { useBrowserPageWebview } from '../../../features/browser/useBrowserPageWebview';
 import { useBrowserSnapshot } from '../../../features/browser/useBrowserSnapshot';
@@ -30,9 +38,12 @@ const isLoading = ref(false);
 const isMenuOpen = ref(false);
 const zoomPercent = ref(initialState?.zoomPercent ?? 100);
 const isElementPickerActive = ref(false);
+const annotationStatus = ref('');
 const browserHost = ref<HTMLElement | null>(null);
 let resizeObserver: ResizeObserver | null = null;
 let pickerRetryTimers: number[] = [];
+let pickerSelectionPollTimer: number | null = null;
+let annotationStatusTimer: number | null = null;
 let unlistenBrowserCommand: UnlistenFn | null = null;
 let isClosingBrowserWindow = false;
 
@@ -102,7 +113,7 @@ const normalizeAddress = (raw: string) => {
   return `https://www.google.com/search?q=${encodeURIComponent(value)}`;
 };
 
-let schedulePickerInjection = () => {};
+let schedulePickerInjection = (_force = false) => {};
 
 const {
   pageWebview,
@@ -121,8 +132,8 @@ const {
   currentUrl,
   isLoading,
   zoomPercent,
-  onReady: () => schedulePickerInjection(),
-  onAfterNavigate: () => schedulePickerInjection(),
+  onReady: () => schedulePickerInjection(true),
+  onAfterNavigate: () => schedulePickerInjection(true),
 });
 
 const {
@@ -253,25 +264,16 @@ const preparePageClose = async () => {
   await clearBrowserTabState(conversationId);
   pickerRetryTimers.forEach((timer) => window.clearTimeout(timer));
   pickerRetryTimers = [];
+  stopElementPickerSelectionPolling();
+  if (annotationStatusTimer !== null) {
+    window.clearTimeout(annotationStatusTimer);
+    annotationStatusTimer = null;
+  }
   isElementPickerActive.value = false;
   await applyElementPickerState().catch((error) => {
     console.warn('Browser element picker cleanup failed:', error);
   });
 };
-
-const elementPickerCleanupScript = () => `
-(() => {
-  const overlayId = 'nova-real-element-picker-overlay';
-  const styleId = 'nova-real-element-picker-style';
-  const cleanupKey = '__novaElementPickerCleanup';
-  if (typeof window[cleanupKey] === 'function') {
-    window[cleanupKey]();
-  }
-  document.getElementById(overlayId)?.remove();
-  document.getElementById(styleId)?.remove();
-  window[cleanupKey] = undefined;
-})();
-`;
 
 const cleanupLegacyElementPickerOverlays = async () => {
   const script = elementPickerCleanupScript();
@@ -325,23 +327,189 @@ const setNativeInspectMode = async (enabled: boolean) => {
   await callDevtools('Overlay.disable', {}).catch(() => undefined);
 };
 
-const applyElementPickerState = async () => {
-  if (!pageWebview.value || !isPageWebviewReady.value) return;
-  await cleanupLegacyElementPickerOverlays();
+const evaluateElementPickerScriptInFrames = async (script: string) => {
+  await callDevtools('Runtime.evaluate', {
+    expression: script,
+    returnByValue: true,
+    awaitPromise: false,
+  }).catch((error) => {
+    console.warn('Browser element picker top frame evaluation failed:', error);
+  });
+
   try {
-    await setNativeInspectMode(isElementPickerActive.value);
+    const frameTreeResult = await callDevtools('Page.getFrameTree', {});
+    const frames = flattenBrowserFrameTree(frameTreeResult.frameTree).slice(1, 35);
+    await Promise.allSettled(
+      frames.map(async (frame) => {
+        const contextId = await createFrameExecutionContext(frame.frameId);
+        if (typeof contextId !== 'number') return;
+        await callDevtools('Runtime.evaluate', {
+          contextId,
+          expression: script,
+          returnByValue: true,
+          awaitPromise: false,
+        });
+      }),
+    );
   } catch (error) {
-    console.warn('Browser native inspect mode failed:', error);
-    isElementPickerActive.value = false;
+    console.warn('Browser element picker frame evaluation failed:', error);
   }
 };
 
-schedulePickerInjection = () => {
+const installElementPicker = async () => {
+  const script = elementPickerInstallScript({
+    conversationId,
+    pageUrl: currentUrl.value,
+  });
+  await evaluateElementPickerScriptInFrames(script);
+};
+
+const normalizePickerSelection = (
+  value: unknown,
+  frame?: { index: number; url?: string },
+): BrowserAnnotationSelection | null => {
+  if (!value || typeof value !== 'object') return null;
+  const raw = value as Partial<BrowserAnnotationSelection>;
+  if (!raw.id || !raw.selector || !raw.tagName || !raw.rect) return null;
+  return {
+    id: String(raw.id),
+    conversationId,
+    pageUrl: String(raw.pageUrl || currentUrl.value || ''),
+    pageTitle: String(raw.pageTitle || ''),
+    selector: String(raw.selector),
+    tagName: String(raw.tagName),
+    text: String(raw.text || ''),
+    ariaLabel: String(raw.ariaLabel || ''),
+    href: String(raw.href || ''),
+    role: String(raw.role || ''),
+    rect: {
+      x: Number(raw.rect.x) || 0,
+      y: Number(raw.rect.y) || 0,
+      width: Number(raw.rect.width) || 0,
+      height: Number(raw.rect.height) || 0,
+    },
+    frameIndex: frame?.index,
+    frameUrl: frame?.url,
+    capturedAt: String(raw.capturedAt || new Date().toISOString()),
+  };
+};
+
+const readElementPickerSelections = async () => {
+  const script = elementPickerReadSelectionScript();
+  const selections: BrowserAnnotationSelection[] = [];
+
+  const topResult = await callDevtools('Runtime.evaluate', {
+    expression: script,
+    returnByValue: true,
+    awaitPromise: false,
+  }).catch(() => null);
+  const topSelection = normalizePickerSelection(topResult?.result?.value);
+  if (topSelection) {
+    selections.push(topSelection);
+  }
+
+  try {
+    const frameTreeResult = await callDevtools('Page.getFrameTree', {});
+    const frames = flattenBrowserFrameTree(frameTreeResult.frameTree).slice(1, 35);
+    const frameResults = await Promise.allSettled(
+      frames.map(async (frame) => {
+        const contextId = await createFrameExecutionContext(frame.frameId);
+        if (typeof contextId !== 'number') return null;
+        const result = await callDevtools('Runtime.evaluate', {
+          contextId,
+          expression: script,
+          returnByValue: true,
+          awaitPromise: false,
+        });
+        return normalizePickerSelection(result.result?.value, {
+          index: frame.index,
+          url: frame.url,
+        });
+      }),
+    );
+    frameResults.forEach((result) => {
+      if (result.status === 'fulfilled' && result.value) {
+        selections.push(result.value);
+      }
+    });
+  } catch {
+    // Frame polling is best-effort; top-frame selection still works without it.
+  }
+
+  return selections;
+};
+
+const showAnnotationStatus = (label: string) => {
+  annotationStatus.value = label;
+  if (annotationStatusTimer !== null) {
+    window.clearTimeout(annotationStatusTimer);
+  }
+  annotationStatusTimer = window.setTimeout(() => {
+    annotationStatus.value = '';
+    annotationStatusTimer = null;
+  }, 2400);
+};
+
+const handleElementPickerSelection = async (selection: BrowserAnnotationSelection) => {
+  isElementPickerActive.value = false;
+  pickerRetryTimers.forEach((timer) => window.clearTimeout(timer));
+  pickerRetryTimers = [];
+  stopElementPickerSelectionPolling();
+
+  const payload = buildBrowserAnnotationPayload(selection);
+  showAnnotationStatus(`已添加：${payload.sourceName.replace(/\.md$/i, '')}`);
+  await emit(BROWSER_ANNOTATION_SELECTED_EVENT, payload).catch((error) => {
+    console.warn('Browser annotation selection event failed:', error);
+  });
+};
+
+const pollElementPickerSelection = async () => {
+  if (!isElementPickerActive.value || !pageWebview.value || !isPageWebviewReady.value) return;
+  const selections = await readElementPickerSelections();
+  const selection = selections[0];
+  if (!selection) return;
+  await handleElementPickerSelection(selection);
+};
+
+function stopElementPickerSelectionPolling() {
+  if (pickerSelectionPollTimer === null) return;
+  window.clearInterval(pickerSelectionPollTimer);
+  pickerSelectionPollTimer = null;
+}
+
+const startElementPickerSelectionPolling = () => {
+  if (pickerSelectionPollTimer !== null) return;
+  pickerSelectionPollTimer = window.setInterval(() => {
+    void pollElementPickerSelection();
+  }, 120);
+  void pollElementPickerSelection();
+};
+
+const applyElementPickerState = async (force = false) => {
+  if (!pageWebview.value || !isPageWebviewReady.value) return;
+  if (isElementPickerActive.value && pickerSelectionPollTimer !== null && !force) return;
+  await cleanupLegacyElementPickerOverlays();
+  try {
+    await setNativeInspectMode(false);
+    if (isElementPickerActive.value) {
+      await installElementPicker();
+      startElementPickerSelectionPolling();
+    } else {
+      stopElementPickerSelectionPolling();
+    }
+  } catch (error) {
+    console.warn('Browser element picker activation failed:', error);
+    isElementPickerActive.value = false;
+    stopElementPickerSelectionPolling();
+  }
+};
+
+schedulePickerInjection = (force = false) => {
   pickerRetryTimers.forEach((timer) => window.clearTimeout(timer));
   pickerRetryTimers = [];
   if (!isElementPickerActive.value) return;
   [0, 120, 350, 900, 1800].forEach((delay) => {
-    pickerRetryTimers.push(window.setTimeout(() => void applyElementPickerState(), delay));
+    pickerRetryTimers.push(window.setTimeout(() => void applyElementPickerState(force), delay));
   });
 };
 
@@ -536,9 +704,16 @@ onBeforeUnmount(() => {
       </div>
       <div
         v-if="isElementPickerActive"
-        class="absolute left-1/2 top-4 z-10 -translate-x-1/2 rounded-full border border-[#d8dde3] bg-white/95 px-3 py-1 text-xs text-[#6d737a] shadow-sm dark:border-[#353535] dark:bg-[#242424] dark:text-[#aaa29a]"
+        class="absolute left-1/2 top-4 z-10 -translate-x-1/2 rounded-full border border-[#b9d8ff] bg-white/95 px-3 py-1 text-xs font-medium text-[#0a6fdb] shadow-sm dark:border-[#245789] dark:bg-[#1f2a35] dark:text-[#8bc3ff]"
       >
-        元素选择模式
+        点击页面元素添加到上下文
+      </div>
+      <div
+        v-else-if="annotationStatus"
+        class="absolute left-1/2 top-4 z-10 max-w-[70%] -translate-x-1/2 truncate rounded-full border border-[#cce7d4] bg-white/95 px-3 py-1 text-xs font-medium text-[#1f7a49] shadow-sm dark:border-[#2d6540] dark:bg-[#1f2c23] dark:text-[#9de0b1]"
+        :title="annotationStatus"
+      >
+        {{ annotationStatus }}
       </div>
       <div ref="browserHost" class="h-full w-full bg-white dark:bg-[#171717]" />
     </div>

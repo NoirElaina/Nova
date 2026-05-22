@@ -14,6 +14,11 @@ import ScheduleTaskScreen from "./components/schedule/ScheduleTaskScreen.vue";
 import GlobalToastHost from "./components/layout/GlobalToastHost.vue";
 import { useChatController } from "./features/chat/controllers/useChatController";
 import {
+  BROWSER_ANNOTATION_SELECTED_EVENT,
+  type BrowserAnnotationSelectedPayload,
+} from "./features/browser/browser-annotation";
+import type { PendingUploadFile } from "./lib/chat-types";
+import {
   exportConversation,
   exportRenderedConversationPdf,
   loadConversationHistory,
@@ -74,6 +79,7 @@ const browserOpenRequestKey = ref(0);
 const exportingConversationId = ref<string | null>(null);
 const exportingFormat = ref<ConversationExportFormat | null>(null);
 let unlistenBrowserOpenRequest: UnlistenFn | null = null;
+let unlistenBrowserAnnotationSelected: UnlistenFn | null = null;
 
 const formatExportLabel = (format: ConversationExportFormat) => format.toUpperCase();
 
@@ -138,6 +144,30 @@ const handleBrowserOpenRequest = async (payload: BrowserOpenRequest) => {
   browserOpenRequestKey.value += 1;
 };
 
+const handleBrowserAnnotationSelected = async (payload: BrowserAnnotationSelectedPayload) => {
+  const requestedConversationId = payload.conversationId?.trim();
+  if (
+    requestedConversationId &&
+    requestedConversationId !== "__default__" &&
+    requestedConversationId !== activeConversationId.value
+  ) {
+    await handleSelectConversation(requestedConversationId);
+  }
+
+  const content = payload.content?.trim();
+  if (!content) return;
+
+  handleChangeMainView("chat");
+  const file: PendingUploadFile = {
+    kind: "document",
+    sourceName: payload.sourceName || "浏览器注释.md",
+    mimeType: "text/markdown",
+    content,
+    size: new TextEncoder().encode(content).length,
+  };
+  await handleUploadFiles([file]);
+};
+
 onMounted(() => {
   void listen<BrowserOpenRequest>("nova-browser-open-request", (event) => {
     void handleBrowserOpenRequest(event.payload);
@@ -146,10 +176,18 @@ onMounted(() => {
   }).catch((error) => {
     console.warn("Browser open request listener failed:", error);
   });
+  void listen<BrowserAnnotationSelectedPayload>(BROWSER_ANNOTATION_SELECTED_EVENT, (event) => {
+    void handleBrowserAnnotationSelected(event.payload);
+  }).then((unlisten) => {
+    unlistenBrowserAnnotationSelected = unlisten;
+  }).catch((error) => {
+    console.warn("Browser annotation listener failed:", error);
+  });
 });
 
 onBeforeUnmount(() => {
   unlistenBrowserOpenRequest?.();
+  unlistenBrowserAnnotationSelected?.();
 });
 </script>
 

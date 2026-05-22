@@ -6,7 +6,6 @@ export type BrowserTabState = {
   history: string[];
   historyIndex: number;
   zoomPercent: number;
-  showDeviceToolbar: boolean;
   updatedAt: number;
 };
 

@@ -16,7 +16,7 @@ pub(crate) fn registration() -> ToolRegistration {
 pub fn tool() -> Tool {
     Tool {
         name: "nova_browser_navigate".into(),
-        description: "Navigate the conversation's visible Nova Browser tab to a URL or search query. The Browser workspace tab must be open. This operates Nova's built-in browser, not external MCP browser tools.".into(),
+        description: "Navigate the conversation's Nova Browser window to a URL or search query. Nova can open or focus the browser window automatically; this operates Nova's built-in browser, not external MCP browser tools.".into(),
         input_schema: json!({
             "type": "object",
             "properties": {

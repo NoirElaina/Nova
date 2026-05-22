@@ -5,61 +5,63 @@ use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
 use std::time::Duration;
 use tauri::{AppHandle, Manager, Url};
 
-fn browser_webview(app: &AppHandle, label: &str) -> Result<tauri::Webview, String> {
+fn browser_window_webview(app: &AppHandle, label: &str) -> Result<tauri::Webview, String> {
     app.get_webview(label)
-        .ok_or_else(|| format!("browser webview not found: {label}"))
+        .ok_or_else(|| format!("browser window not found: {label}"))
 }
 
 #[tauri::command]
-pub fn browser_navigate_webview(app: AppHandle, label: String, url: String) -> Result<(), String> {
+pub fn browser_navigate_window(app: AppHandle, label: String, url: String) -> Result<(), String> {
     let parsed = Url::parse(&url).map_err(|error| error.to_string())?;
-    browser_webview(&app, &label)?
+    browser_window_webview(&app, &label)?
         .navigate(parsed)
         .map_err(|error| error.to_string())
 }
 
 #[tauri::command]
-pub fn browser_reload_webview(app: AppHandle, label: String) -> Result<(), String> {
-    browser_webview(&app, &label)?
+pub fn browser_reload_window(app: AppHandle, label: String) -> Result<(), String> {
+    browser_window_webview(&app, &label)?
         .reload()
         .map_err(|error| error.to_string())
 }
 
 #[tauri::command]
-pub fn browser_eval_webview_script(
+pub fn browser_eval_window_script(
     app: AppHandle,
     label: String,
     script: String,
 ) -> Result<(), String> {
-    browser_webview(&app, &label)?
+    browser_window_webview(&app, &label)?
         .eval(script)
         .map_err(|error| error.to_string())
 }
 
-const WEBVIEW_CALLBACK_TIMEOUT: Duration = Duration::from_secs(8);
+const BROWSER_WINDOW_CALLBACK_TIMEOUT: Duration = Duration::from_secs(8);
 
-async fn wait_webview_callback(
+async fn wait_browser_window_callback(
     rx: Receiver<Result<String, String>>,
     timeout_message: &'static str,
 ) -> Result<String, String> {
-    tauri::async_runtime::spawn_blocking(move || match rx.recv_timeout(WEBVIEW_CALLBACK_TIMEOUT) {
-        Ok(result) => result,
-        Err(RecvTimeoutError::Timeout) => Err(timeout_message.to_string()),
-        Err(RecvTimeoutError::Disconnected) => {
-            Err("browser webview callback channel closed before returning a result".to_string())
+    tauri::async_runtime::spawn_blocking(move || {
+        match rx.recv_timeout(BROWSER_WINDOW_CALLBACK_TIMEOUT) {
+            Ok(result) => result,
+            Err(RecvTimeoutError::Timeout) => Err(timeout_message.to_string()),
+            Err(RecvTimeoutError::Disconnected) => {
+                Err("browser window callback channel closed before returning a result".to_string())
+            }
         }
     })
     .await
-    .map_err(|error| format!("browser webview callback wait failed: {error}"))?
+    .map_err(|error| format!("browser window callback wait failed: {error}"))?
 }
 
 #[tauri::command]
-pub async fn browser_eval_webview_script_result(
+pub async fn browser_eval_window_script_result(
     app: AppHandle,
     label: String,
     script: String,
 ) -> Result<String, String> {
-    let webview = browser_webview(&app, &label)?;
+    let webview = browser_window_webview(&app, &label)?;
     let (tx, rx) = mpsc::channel();
 
     webview
@@ -72,7 +74,7 @@ pub async fn browser_eval_webview_script_result(
         })
         .map_err(|error| error.to_string())?;
 
-    wait_webview_callback(rx, "browser script result timed out").await
+    wait_browser_window_callback(rx, "browser script result timed out").await
 }
 
 #[tauri::command]
@@ -82,7 +84,7 @@ pub async fn browser_call_devtools_protocol_method(
     method: String,
     params_json: String,
 ) -> Result<String, String> {
-    let webview = browser_webview(&app, &label)?;
+    let webview = browser_window_webview(&app, &label)?;
     let (tx, rx) = mpsc::channel();
 
     webview
@@ -95,7 +97,7 @@ pub async fn browser_call_devtools_protocol_method(
         })
         .map_err(|error| error.to_string())?;
 
-    wait_webview_callback(rx, "browser devtools protocol call timed out").await
+    wait_browser_window_callback(rx, "browser devtools protocol call timed out").await
 }
 
 #[cfg(windows)]
@@ -235,7 +237,6 @@ pub struct BrowserTabState {
     pub history: Vec<String>,
     pub history_index: i64,
     pub zoom_percent: i64,
-    pub show_device_toolbar: bool,
     pub updated_at: i64,
 }
 
@@ -247,7 +248,6 @@ pub struct BrowserTabStateInput {
     pub history: Vec<String>,
     pub history_index: i64,
     pub zoom_percent: i64,
-    pub show_device_toolbar: bool,
 }
 
 fn browser_state_root(app: &AppHandle) -> Result<PathBuf, String> {
@@ -320,7 +320,6 @@ pub fn save_browser_tab_state(
         history: state.history,
         history_index: state.history_index,
         zoom_percent: state.zoom_percent,
-        show_device_toolbar: state.show_device_toolbar,
         updated_at: now_unix_ms(),
     };
     let text = serde_json::to_string_pretty(&state).map_err(|error| error.to_string())?;

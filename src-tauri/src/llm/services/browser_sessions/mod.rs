@@ -214,8 +214,8 @@ pub async fn run_command(
         return json!({
             "ok": true,
             "available": false,
-            "message": "Nova Browser tab could not be opened for this conversation.",
-            "hint": "Open the workspace Browser tab and retry if the UI did not activate automatically.",
+            "message": "Nova Browser window could not be opened for this conversation.",
+            "hint": "Open the Browser workspace control panel and retry if the UI did not activate automatically.",
         });
     };
 

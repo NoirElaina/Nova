@@ -22,12 +22,13 @@ type UseBrowserAutomationCommandsOptions = {
   historyIndex: Ref<number>;
   isLoading: Ref<boolean>;
   zoomPercent: Ref<number>;
-  isBrowserWebviewReady: Ref<boolean>;
+  isBrowserWindowReady: Ref<boolean>;
   canGoBack: Ref<boolean>;
   canGoForward: Ref<boolean>;
   visit: (raw: string, pushHistory?: boolean) => void;
+  ensureBrowserWindowReady: () => Promise<boolean>;
   evalBrowserScript: (script: string) => Promise<void>;
-  closeNativeWebview: () => Promise<void>;
+  closeNativeBrowserWindow: () => Promise<void>;
   clearBrowsingData: () => Promise<void>;
   updateBrowserSessionUrl: () => Promise<void>;
   setElementPickerActive: (value: boolean) => void;
@@ -50,7 +51,7 @@ export function useBrowserAutomationCommands(options: UseBrowserAutomationComman
     isLoading: options.isLoading.value,
     zoomPercent: options.zoomPercent.value,
     note:
-      'Nova Browser v1 can navigate/click/type/reset the visible built-in browser and return a bounded DOM summary for the current page.',
+      'Nova Browser v1 controls the conversation-scoped browser window and can navigate, click, type, reset, and return a bounded DOM summary for the current page.',
     ...extra,
   });
 
@@ -76,10 +77,14 @@ export function useBrowserAutomationCommands(options: UseBrowserAutomationComman
     const input = automationInput(command);
 
     if (command.action === 'snapshot') {
-      if (!options.currentUrl.value || !options.isBrowserWebviewReady.value) {
+      if (options.currentUrl.value && !options.isBrowserWindowReady.value) {
+        await options.ensureBrowserWindowReady();
+        await wait(1000);
+      }
+      if (!options.currentUrl.value || !options.isBrowserWindowReady.value) {
         return browserStatePayload({
           contentAvailable: false,
-          note: 'Browser has no ready page to snapshot yet.',
+          note: 'Browser window has no ready page to snapshot yet.',
         });
       }
 
@@ -94,7 +99,7 @@ export function useBrowserAutomationCommands(options: UseBrowserAutomationComman
           frames: page.frames ?? [],
           page,
           note:
-            'Snapshot includes DOM text and visible interactive elements from the current Nova built-in browser page, including reachable iframes.',
+            'Snapshot includes DOM text and visible interactive elements from the current Nova Browser window, including reachable iframes.',
         });
       } catch (error) {
         return browserStatePayload({
@@ -119,6 +124,13 @@ export function useBrowserAutomationCommands(options: UseBrowserAutomationComman
       if (!options.currentUrl.value) {
         throw new Error('Browser has no page loaded');
       }
+      if (!options.isBrowserWindowReady.value) {
+        await options.ensureBrowserWindowReady();
+        await wait(1000);
+      }
+      if (!options.isBrowserWindowReady.value) {
+        throw new Error('Browser window is not ready for click');
+      }
       const ref = typeof input.ref === 'string' ? input.ref.trim() : '';
       const hasRef = Boolean(ref);
       const hasSelector = typeof input.selector === 'string' && input.selector.trim().length > 0;
@@ -139,6 +151,13 @@ export function useBrowserAutomationCommands(options: UseBrowserAutomationComman
       if (!options.currentUrl.value) {
         throw new Error('Browser has no page loaded');
       }
+      if (!options.isBrowserWindowReady.value) {
+        await options.ensureBrowserWindowReady();
+        await wait(1000);
+      }
+      if (!options.isBrowserWindowReady.value) {
+        throw new Error('Browser window is not ready for typing');
+      }
       if (typeof input.text !== 'string') {
         throw new Error("Missing 'text' argument");
       }
@@ -154,7 +173,7 @@ export function useBrowserAutomationCommands(options: UseBrowserAutomationComman
 
     if (command.action === 'reset') {
       const clearData = input.clear_data === true || input.clearData === true;
-      if (clearData && options.isBrowserWebviewReady.value) {
+      if (clearData && options.isBrowserWindowReady.value) {
         await options.clearBrowsingData().catch((error) => {
           console.warn('Browser clear data during reset failed:', error);
         });
@@ -165,7 +184,7 @@ export function useBrowserAutomationCommands(options: UseBrowserAutomationComman
       options.history.value = [];
       options.historyIndex.value = -1;
       clearBrowserTabState(options.rawConversationId());
-      await options.closeNativeWebview();
+      await options.closeNativeBrowserWindow();
       await options.updateBrowserSessionUrl();
       return browserStatePayload({ action: 'reset', clearedData: clearData });
     }

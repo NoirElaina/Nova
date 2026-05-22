@@ -16,7 +16,7 @@ pub(crate) fn registration() -> ToolRegistration {
 pub fn tool() -> Tool {
     Tool {
         name: "nova_browser_reset".into(),
-        description: "Reset the conversation's visible Nova Browser tab. This clears the current page state in Nova's built-in browser; optionally clears browsing data when clear_data is true.".into(),
+        description: "Reset the conversation's Nova Browser window. This clears the current page state in Nova's built-in browser; optionally clears browsing data when clear_data is true.".into(),
         input_schema: json!({
             "type": "object",
             "properties": {

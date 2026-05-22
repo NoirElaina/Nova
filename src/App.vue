@@ -70,6 +70,7 @@ void chatScreenRef;
 
 const isDrawerOpen = ref(false);
 const activeWorkspaceTab = ref<WorkspaceTabId>("diff");
+const browserOpenRequestKey = ref(0);
 const exportingConversationId = ref<string | null>(null);
 const exportingFormat = ref<ConversationExportFormat | null>(null);
 let unlistenBrowserOpenRequest: UnlistenFn | null = null;
@@ -134,6 +135,7 @@ const handleBrowserOpenRequest = async (payload: BrowserOpenRequest) => {
   handleChangeMainView("chat");
   activeWorkspaceTab.value = "browser";
   isDrawerOpen.value = true;
+  browserOpenRequestKey.value += 1;
 };
 
 onMounted(() => {
@@ -280,6 +282,7 @@ onBeforeUnmount(() => {
         :files="conversationFiles"
         :assistantTurnCost="assistantTurnCost"
         :conversationId="activeConversationId || null"
+        :browserOpenRequestKey="browserOpenRequestKey"
         @close="isDrawerOpen = false"
       />
     </main>

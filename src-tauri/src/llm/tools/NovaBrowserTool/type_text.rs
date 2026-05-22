@@ -16,7 +16,7 @@ pub(crate) fn registration() -> ToolRegistration {
 pub fn tool() -> Tool {
     Tool {
         name: "nova_browser_type".into(),
-        description: "Type text into an element inside the conversation's visible Nova Browser tab. Prefer the ref returned by nova_browser_snapshot because it also works for iframe elements. Otherwise use selector, active element, or x/y to focus first.".into(),
+        description: "Type text into an element inside the conversation's Nova Browser window. Prefer the ref returned by nova_browser_snapshot because it also works for iframe elements. Otherwise use selector, active element, or x/y to focus first.".into(),
         input_schema: json!({
             "type": "object",
             "properties": {

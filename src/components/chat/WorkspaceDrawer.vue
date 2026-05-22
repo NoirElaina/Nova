@@ -22,10 +22,10 @@ const props = defineProps<{
   files: RagDocumentMeta[];
   assistantTurnCost?: TurnCost;
   conversationId?: string | null;
+  browserOpenRequestKey?: number;
 }>();
 
 const activeTab = ref<TabId>('diff');
-const browserTabRef = ref<{ hideBrowserSurface?: () => void | Promise<void> } | null>(null);
 
 const tabs: { id: TabId; label: string }[] = [
   { id: 'diff', label: '审查' },
@@ -44,13 +44,10 @@ watch(
   { immediate: true },
 );
 
-const closeBrowserSurfaceBeforeLeave = () => {
-  void browserTabRef.value?.hideBrowserSurface?.();
-};
 </script>
 
 <template>
-  <Transition name="slide-right" @before-leave="closeBrowserSurfaceBeforeLeave">
+  <Transition name="slide-right">
     <aside
       v-show="open"
       class="workspace-drawer-docked flex h-full flex-col"
@@ -104,9 +101,9 @@ const closeBrowserSurfaceBeforeLeave = () => {
 
           <BrowserTab
             v-show="activeTab === 'browser'"
-            ref="browserTabRef"
             :conversationId="conversationId"
             :visible="open && activeTab === 'browser'"
+            :openRequestKey="browserOpenRequestKey"
           />
         </div>
       </div>

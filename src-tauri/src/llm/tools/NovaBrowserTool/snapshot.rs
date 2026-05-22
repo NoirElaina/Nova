@@ -16,7 +16,7 @@ pub(crate) fn registration() -> ToolRegistration {
 pub fn tool() -> Tool {
     Tool {
         name: "nova_browser_snapshot".into(),
-        description: "Return the current visible Nova Browser tab state for this conversation. Use this before clicking or typing. It captures bounded DOM text plus visible interactive elements across the top page and reachable iframes; use returned refs for click/type. Do not confuse this with external MCP browser tools.".into(),
+        description: "Return the current Nova Browser window state for this conversation. Use this before clicking or typing. It captures bounded DOM text plus visible interactive elements across the top page and reachable iframes; use returned refs for click/type. Do not confuse this with external MCP browser tools.".into(),
         input_schema: json!({
             "type": "object",
             "properties": {

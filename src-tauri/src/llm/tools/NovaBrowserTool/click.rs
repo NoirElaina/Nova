@@ -16,7 +16,7 @@ pub(crate) fn registration() -> ToolRegistration {
 pub fn tool() -> Tool {
     Tool {
         name: "nova_browser_click".into(),
-        description: "Click an element inside the conversation's visible Nova Browser tab. Prefer the ref returned by nova_browser_snapshot (for example f1_el12 or iframe refs like f2_el3). Otherwise use selector or x/y viewport coordinates.".into(),
+        description: "Click an element inside the conversation's Nova Browser window. Prefer the ref returned by nova_browser_snapshot (for example f1_el12 or iframe refs like f2_el3). Otherwise use selector or x/y viewport coordinates.".into(),
         input_schema: json!({
             "type": "object",
             "properties": {

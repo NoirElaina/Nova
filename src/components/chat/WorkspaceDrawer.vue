@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { ref, watch } from 'vue';
+import { Button } from '@/components/ui/button';
 import type { ChatMessage, ToolExecutionEntry, TurnCost } from '../../lib/chat-types';
 import type { RagDocumentMeta } from '../../features/chat/services/chat-api';
 import CodeDiffTab from './workspace/CodeDiffTab.vue';
@@ -57,25 +58,31 @@ watch(
       v-show="open"
       class="workspace-drawer-docked flex h-full flex-col"
     >
-      <div class="flex h-full flex-col border-l border-[#e7e2d7] bg-[#faf9f6] shadow-2xl dark:border-[#333] dark:bg-[#1e1e1e]">
-        <div class="flex h-14 shrink-0 items-center justify-between border-b border-[#e7e2d7] px-4 dark:border-[#333]">
-          <div class="flex items-center gap-1">
-            <button
+      <div class="flex h-full flex-col border-l border-[#e5e7eb] bg-white dark:border-[#333] dark:bg-[#1e1e1e]">
+        <div class="flex h-12 shrink-0 items-center justify-between border-b border-[#e5e7eb] px-3 dark:border-[#333]">
+          <div class="flex items-center gap-0.5">
+            <Button
               v-for="tab in tabs"
               :key="tab.id"
+              type="button"
+              variant="ghost"
+              size="sm"
               :class="[
-                'rounded-md px-3 py-1.5 text-sm font-medium transition-colors',
+                'h-8 rounded-xl px-3 py-1 text-sm font-medium transition-colors',
                 activeTab === tab.id
-                  ? 'bg-[#e8e3d8] text-[#1a1a1a] dark:bg-[#333] dark:text-[#ececec]'
-                  : 'text-muted-foreground hover:bg-black/5 dark:hover:bg-white/5',
+                  ? 'bg-[#f3f4f6] text-[#111827] dark:bg-[#333] dark:text-[#ececec]'
+                  : 'text-[#6b7280] hover:bg-[#f6f7f9] dark:text-muted-foreground dark:hover:bg-white/5',
               ]"
               @click="activeTab = tab.id"
             >
               {{ tab.label }}
-            </button>
+            </Button>
           </div>
 
-          <button
+          <Button
+            type="button"
+            variant="ghost"
+            size="icon-sm"
             class="flex h-8 w-8 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-black/5 dark:hover:bg-white/5"
             @click="emit('close')"
           >
@@ -83,7 +90,7 @@ watch(
               <line x1="18" y1="6" x2="6" y2="18"/>
               <line x1="6" y1="6" x2="18" y2="18"/>
             </svg>
-          </button>
+          </Button>
         </div>
 
         <div class="min-h-0 flex-1 overflow-hidden">

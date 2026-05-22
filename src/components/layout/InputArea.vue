@@ -505,15 +505,15 @@ defineExpose({
             </svg>
           </button>
 
-          <div class="w-[150px] shrink-0">
+          <div class="w-[92px] shrink-0">
             <Select v-model="localAgentMode">
               <SelectTrigger size="sm" class="w-full text-xs">
                 <SelectValue />
               </SelectTrigger>
               <SelectContent class="text-xs">
-                <SelectItem value="agent">Agent 模式</SelectItem>
-                <SelectItem value="plan">Plan 模式</SelectItem>
-                <SelectItem value="auto">自动迭代模式</SelectItem>
+                <SelectItem value="agent">Agent</SelectItem>
+                <SelectItem value="plan">Plan</SelectItem>
+                <SelectItem value="auto">Auto</SelectItem>
               </SelectContent>
             </Select>
           </div>

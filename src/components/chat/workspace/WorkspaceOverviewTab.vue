@@ -1,29 +1,126 @@
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue';
-import { emitToast } from '../../../lib/toast';
+import { computed, onBeforeUnmount, onMounted, ref } from "vue";
+import hljs from "highlight.js";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { emitToast } from "../../../lib/toast";
 import {
   listWorkspaceDirectory,
   readWorkspaceTextFile,
   type WorkspaceDirectoryListing,
   type WorkspaceEntry,
   type WorkspaceFileContent,
-} from '../../../features/workspace/workspace-api';
-import WorkspaceFileTreeNode from './WorkspaceFileTreeNode.vue';
+} from "../../../features/workspace/workspace-api";
+import WorkspaceFileTreeNode from "./WorkspaceFileTreeNode.vue";
 
 const rootListing = ref<WorkspaceDirectoryListing | null>(null);
 const childrenByPath = ref<Record<string, WorkspaceEntry[]>>({});
 const expandedPaths = ref<string[]>([]);
 const loadingPaths = ref<string[]>([]);
-const filterQuery = ref('');
+const filterQuery = ref("");
 const selectedFile = ref<WorkspaceEntry | null>(null);
 const selectedContent = ref<WorkspaceFileContent | null>(null);
-const previewError = ref('');
+const previewError = ref("");
 const isReadingFile = ref(false);
-const rootError = ref('');
+const rootError = ref("");
+const workspaceBodyRef = ref<HTMLElement | null>(null);
+const moreMenuRef = ref<HTMLElement | null>(null);
+const fileTreeWidth = ref(280);
+const isFileTreeVisible = ref(true);
+const isResizingFileTree = ref(false);
+const isMoreMenuOpen = ref(false);
+const isPreviewWrapEnabled = ref(false);
 
-const rootEntries = computed(() => childrenByPath.value[''] ?? []);
-const rootPath = computed(() => rootListing.value?.root ?? '/');
-const displayPath = computed(() => selectedFile.value?.relativePath || '/');
+const FILE_TREE_MIN_WIDTH = 220;
+const FILE_TREE_MAX_WIDTH = 420;
+const PREVIEW_MIN_WIDTH = 260;
+
+let resizeStartX = 0;
+let resizeStartWidth = 0;
+let previousBodyCursor = "";
+let previousBodyUserSelect = "";
+
+const rootEntries = computed(() => childrenByPath.value[""] ?? []);
+const selectedLines = computed(() => (selectedContent.value?.content ?? "").split(/\r?\n/));
+const selectedLanguage = computed(() => {
+  const extension = selectedFile.value?.extension?.toLowerCase();
+  if (!extension) return "";
+  const languageByExtension: Record<string, string> = {
+    css: "css",
+    html: "xml",
+    js: "javascript",
+    jsx: "javascript",
+    json: "json",
+    jsonc: "json",
+    md: "markdown",
+    mdx: "markdown",
+    rs: "rust",
+    toml: "toml",
+    ts: "typescript",
+    tsx: "typescript",
+    vue: "xml",
+  };
+  return languageByExtension[extension] ?? extension;
+});
+
+const highlightClassStyles: Record<string, string> = {
+  "hljs-attr": "color:#d93025",
+  "hljs-built_in": "color:#8250df",
+  "hljs-comment": "color:#6a737d",
+  "hljs-keyword": "color:#cf222e",
+  "hljs-literal": "color:#0550ae",
+  "hljs-meta": "color:#6a737d",
+  "hljs-number": "color:#0550ae",
+  "hljs-property": "color:#d93025",
+  "hljs-punctuation": "color:#57606a",
+  "hljs-string": "color:#0a7f37",
+  "hljs-title": "color:#8250df",
+  "hljs-type": "color:#8250df",
+  "hljs-variable": "color:#953800",
+};
+
+const escapeHtml = (value: string) =>
+  value
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#039;");
+
+const applyInlineHighlightStyles = (html: string) =>
+  html.replace(/class="([^"]*hljs-[^"]*)"/g, (_match, className: string) => {
+    const styles = className
+      .split(/\s+/)
+      .map((name) => highlightClassStyles[name])
+      .filter(Boolean)
+      .join(";");
+    return styles ? `style="${styles}"` : "";
+  });
+
+const highlightLine = (line: string) => {
+  if (!line) return "&nbsp;";
+  const language = selectedLanguage.value;
+  try {
+    if (!language || !hljs.getLanguage(language)) {
+      return escapeHtml(line);
+    }
+    const result = hljs.highlight(line, { language, ignoreIllegals: true });
+    return applyInlineHighlightStyles(result.value);
+  } catch {
+    return escapeHtml(line);
+  }
+};
+
+const selectedPreviewLines = computed(() => selectedLines.value.map(highlightLine));
+const previewCodeGridClass = computed(() =>
+  isPreviewWrapEnabled.value ? "w-full" : "min-w-max",
+);
+const previewCodeLineClass = computed(() =>
+  isPreviewWrapEnabled.value ? "whitespace-pre-wrap break-words" : "whitespace-pre",
+);
+const fileTreePaneStyle = computed(() => ({
+  width: isFileTreeVisible.value ? `${fileTreeWidth.value}px` : "0px",
+}));
 
 const normalizedFilter = computed(() => filterQuery.value.trim().toLowerCase());
 
@@ -35,6 +132,16 @@ const entryMatchesFilter = (entry: WorkspaceEntry): boolean => {
 };
 
 const visibleRootEntries = computed(() => rootEntries.value.filter(entryMatchesFilter));
+
+const fileIconLabel = computed(() => {
+  const extension = selectedFile.value?.extension?.toLowerCase();
+  if (!extension) return "□";
+  if (["ts", "tsx", "js", "jsx", "vue", "json", "jsonc"].includes(extension)) return "{}";
+  if (extension === "rs") return "RS";
+  if (extension === "toml") return "TO";
+  if (extension === "lock") return "LO";
+  return extension.slice(0, 2).toUpperCase();
+});
 
 const setPathLoading = (path: string, loading: boolean) => {
   const next = new Set(loadingPaths.value);
@@ -56,7 +163,7 @@ const setPathExpanded = (path: string, expanded: boolean) => {
   expandedPaths.value = Array.from(next);
 };
 
-const loadDirectory = async (path = '') => {
+const loadDirectory = async (path = "") => {
   setPathLoading(path, true);
   try {
     const listing = await listWorkspaceDirectory(path);
@@ -67,11 +174,11 @@ const loadDirectory = async (path = '') => {
       ...childrenByPath.value,
       [listing.relativePath]: listing.entries,
     };
-    rootError.value = '';
+    rootError.value = "";
   } catch (error) {
-    console.error('Failed to load workspace directory:', error);
+    console.error("Failed to load workspace directory:", error);
     rootError.value = String(error);
-    emitToast({ variant: 'error', source: 'workspace', message: '读取工作区目录失败。' });
+    emitToast({ variant: "error", source: "workspace", message: "读取工作区目录失败。" });
   } finally {
     setPathLoading(path, false);
   }
@@ -82,8 +189,8 @@ const reloadWorkspace = async () => {
   expandedPaths.value = [];
   selectedFile.value = null;
   selectedContent.value = null;
-  previewError.value = '';
-  await loadDirectory('');
+  previewError.value = "";
+  await loadDirectory("");
 };
 
 const toggleDirectory = async (entry: WorkspaceEntry) => {
@@ -102,12 +209,12 @@ const toggleDirectory = async (entry: WorkspaceEntry) => {
 const selectFile = async (entry: WorkspaceEntry) => {
   selectedFile.value = entry;
   selectedContent.value = null;
-  previewError.value = '';
+  previewError.value = "";
   isReadingFile.value = true;
   try {
     selectedContent.value = await readWorkspaceTextFile(entry.relativePath);
   } catch (error) {
-    console.error('Failed to read workspace file:', error);
+    console.error("Failed to read workspace file:", error);
     previewError.value = String(error);
   } finally {
     isReadingFile.value = false;
@@ -116,105 +223,299 @@ const selectFile = async (entry: WorkspaceEntry) => {
 
 const openSelectedFile = () => {
   if (!selectedFile.value) {
-    emitToast({ variant: 'error', source: 'workspace', message: '请先从右侧工作区目录树中选择文件。' });
+    emitToast({ variant: "error", source: "workspace", message: "请先从右侧工作区目录树中选择文件。" });
     return;
   }
   void selectFile(selectedFile.value);
 };
 
+const closeMoreMenu = () => {
+  isMoreMenuOpen.value = false;
+};
+
+const toggleMoreMenu = () => {
+  isMoreMenuOpen.value = !isMoreMenuOpen.value;
+};
+
+const copyCurrentPath = async () => {
+  const pathToCopy = selectedContent.value?.path || selectedFile.value?.path || rootListing.value?.root;
+  closeMoreMenu();
+  if (!pathToCopy) {
+    emitToast({ variant: "error", source: "workspace", message: "当前没有可复制的路径。" });
+    return;
+  }
+
+  try {
+    await navigator.clipboard.writeText(pathToCopy);
+    emitToast({ variant: "success", source: "workspace", message: "路径已复制。" });
+  } catch (error) {
+    console.error("Failed to copy workspace path:", error);
+    emitToast({ variant: "error", source: "workspace", message: "复制路径失败。" });
+  }
+};
+
+const togglePreviewWrap = () => {
+  isPreviewWrapEnabled.value = !isPreviewWrapEnabled.value;
+  closeMoreMenu();
+};
+
+const onDocumentMouseDown = (event: MouseEvent) => {
+  if (!isMoreMenuOpen.value) {
+    return;
+  }
+  const target = event.target as Node | null;
+  if (target && moreMenuRef.value?.contains(target)) {
+    return;
+  }
+  closeMoreMenu();
+};
+
+const onWindowKeyDown = (event: KeyboardEvent) => {
+  if (event.key === "Escape") {
+    closeMoreMenu();
+  }
+};
+
+const clampFileTreeWidth = (width: number) => {
+  const containerWidth = workspaceBodyRef.value?.clientWidth ?? 760;
+  const maxByContainer = Math.max(FILE_TREE_MIN_WIDTH, containerWidth - PREVIEW_MIN_WIDTH);
+  const maxWidth = Math.min(FILE_TREE_MAX_WIDTH, maxByContainer);
+  return Math.min(Math.max(width, FILE_TREE_MIN_WIDTH), maxWidth);
+};
+
+const stopFileTreeResize = () => {
+  if (!isResizingFileTree.value) {
+    return;
+  }
+
+  isResizingFileTree.value = false;
+  window.removeEventListener("pointermove", handleFileTreeResizeMove);
+  window.removeEventListener("pointerup", stopFileTreeResize);
+  window.removeEventListener("pointercancel", stopFileTreeResize);
+  document.body.style.cursor = previousBodyCursor;
+  document.body.style.userSelect = previousBodyUserSelect;
+};
+
+const handleFileTreeResizeMove = (event: PointerEvent) => {
+  if (!isResizingFileTree.value) {
+    return;
+  }
+
+  event.preventDefault();
+  const deltaX = event.clientX - resizeStartX;
+  fileTreeWidth.value = clampFileTreeWidth(resizeStartWidth - deltaX);
+};
+
+const startFileTreeResize = (event: PointerEvent) => {
+  event.preventDefault();
+  resizeStartX = event.clientX;
+  resizeStartWidth = fileTreeWidth.value;
+  isResizingFileTree.value = true;
+  previousBodyCursor = document.body.style.cursor;
+  previousBodyUserSelect = document.body.style.userSelect;
+  document.body.style.cursor = "col-resize";
+  document.body.style.userSelect = "none";
+  window.addEventListener("pointermove", handleFileTreeResizeMove, { passive: false });
+  window.addEventListener("pointerup", stopFileTreeResize);
+  window.addEventListener("pointercancel", stopFileTreeResize);
+};
+
+const toggleFileTree = () => {
+  if (isResizingFileTree.value) {
+    stopFileTreeResize();
+  }
+  isFileTreeVisible.value = !isFileTreeVisible.value;
+};
+
 onMounted(() => {
-  void loadDirectory('');
+  void loadDirectory("");
+  document.addEventListener("mousedown", onDocumentMouseDown);
+  window.addEventListener("keydown", onWindowKeyDown);
+});
+
+onBeforeUnmount(() => {
+  stopFileTreeResize();
+  document.removeEventListener("mousedown", onDocumentMouseDown);
+  window.removeEventListener("keydown", onWindowKeyDown);
 });
 </script>
 
 <template>
-  <div class="workspace-shell flex h-full min-h-0 flex-col bg-[#fbfaf7] text-[#1f1a13] dark:bg-[#1e1e1e] dark:text-[#f1eee8]">
-    <div class="workspace-toolbar">
-      <div class="flex items-center gap-2">
-        <button type="button" class="workspace-primary-button" @click="openSelectedFile">
-          <svg width="15" height="15" viewBox="0 0 24 24" fill="none">
-            <path d="M14 2H7a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V7l-5-5Z" stroke="currentColor" stroke-width="1.9" stroke-linejoin="round" />
-            <path d="M14 2v5h5" stroke="currentColor" stroke-width="1.9" stroke-linejoin="round" />
-          </svg>
-          打开文件
-        </button>
-        <button type="button" class="workspace-icon-button" title="刷新工作区" @click="reloadWorkspace">
+  <div class="flex h-full min-h-0 flex-col bg-white text-[#202124] dark:bg-[#1e1e1e] dark:text-[#ececec]">
+    <div class="flex h-12 shrink-0 items-center justify-between border-b border-[#e5e7eb] px-3 dark:border-[#333]">
+      <div class="flex min-w-0 items-center gap-2">
+        <Button
+          type="button"
+          variant="ghost"
+          size="sm"
+          class="h-9 max-w-[220px] justify-start gap-2 rounded-xl bg-[#f1f3f4] px-3 text-sm font-medium text-[#202124] hover:bg-[#e8eaed] dark:bg-[#2d2d2d] dark:text-[#ececec] dark:hover:bg-[#363636]"
+          @click="openSelectedFile"
+        >
+          <span class="shrink-0 text-[12px] font-bold text-[#e66a1a]">{{ selectedFile ? fileIconLabel : "□" }}</span>
+          <span class="truncate">{{ selectedFile?.name || "打开文件" }}</span>
+        </Button>
+        <Button type="button" variant="ghost" size="icon-sm" class="h-8 w-8 rounded-lg text-[#6b7280] hover:bg-[#f1f3f4] dark:hover:bg-[#2d2d2d]" @click="reloadWorkspace">
           <svg width="17" height="17" viewBox="0 0 24 24" fill="none">
             <path d="M12 5v14M5 12h14" stroke="currentColor" stroke-width="2" stroke-linecap="round" />
           </svg>
-        </button>
+        </Button>
       </div>
+
       <div class="flex items-center gap-2">
-        <button type="button" class="workspace-icon-button" title="适配视图">
-          <svg width="16" height="16" viewBox="0 0 24 24" fill="none">
-            <path d="M8 3H5a2 2 0 0 0-2 2v3M16 3h3a2 2 0 0 1 2 2v3M8 21H5a2 2 0 0 1-2-2v-3M16 21h3a2 2 0 0 0 2-2v-3" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" />
+        <div ref="moreMenuRef" class="relative">
+          <Button
+            type="button"
+            variant="ghost"
+            size="icon-sm"
+            class="h-8 w-8 rounded-lg text-[#6b7280] hover:bg-[#f1f3f4] dark:hover:bg-[#2d2d2d]"
+            :class="isMoreMenuOpen ? 'bg-[#f1f3f4] dark:bg-[#2d2d2d]' : ''"
+            title="更多"
+            @click.stop="toggleMoreMenu"
+          >
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none">
+              <circle cx="5" cy="12" r="1.6" fill="currentColor" />
+              <circle cx="12" cy="12" r="1.6" fill="currentColor" />
+              <circle cx="19" cy="12" r="1.6" fill="currentColor" />
+            </svg>
+          </Button>
+
+          <div
+            v-if="isMoreMenuOpen"
+            class="absolute right-0 top-10 z-30 w-52 rounded-xl border border-[#e5e7eb] bg-white p-1 shadow-[0_14px_40px_rgba(15,23,42,0.14)] dark:border-[#333] dark:bg-[#252525]"
+            @click.stop
+          >
+            <button
+              type="button"
+              class="flex h-9 w-full items-center gap-3 rounded-lg px-3 text-left text-sm text-[#202124] hover:bg-[#f3f4f6] dark:text-[#ececec] dark:hover:bg-[#303030]"
+              @click="copyCurrentPath"
+            >
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none">
+                <rect x="8" y="8" width="11" height="11" rx="2" stroke="currentColor" stroke-width="1.8" />
+                <rect x="4" y="4" width="11" height="11" rx="2" stroke="currentColor" stroke-width="1.8" />
+              </svg>
+              <span>复制路径</span>
+            </button>
+            <button
+              type="button"
+              class="flex h-9 w-full items-center gap-3 rounded-lg px-3 text-left text-sm text-[#202124] hover:bg-[#f3f4f6] dark:text-[#ececec] dark:hover:bg-[#303030]"
+              :class="isPreviewWrapEnabled ? 'bg-[#f3f4f6] dark:bg-[#303030]' : ''"
+              @click="togglePreviewWrap"
+            >
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none">
+                <path d="M4 7h11a4 4 0 0 1 0 8H8" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" />
+                <path d="m10 12-3 3 3 3" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" />
+              </svg>
+              <span>{{ isPreviewWrapEnabled ? "关闭自动换行" : "启用自动换行" }}</span>
+            </button>
+          </div>
+        </div>
+        <Button type="button" variant="ghost" size="icon-sm" class="h-8 w-8 rounded-lg text-[#6b7280] hover:bg-[#f1f3f4] dark:hover:bg-[#2d2d2d]" title="外部打开">
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none">
+            <path d="M14 3h7v7M10 14 21 3M21 14v5a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" />
           </svg>
-        </button>
-        <button type="button" class="workspace-icon-button" title="收起预览">
-          <svg width="17" height="17" viewBox="0 0 24 24" fill="none">
-            <rect x="5" y="7" width="14" height="10" rx="2" stroke="currentColor" stroke-width="1.9" />
-            <path d="M9 12h6" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" />
-          </svg>
-        </button>
-        <button type="button" class="workspace-split-button" title="工作区">
+        </Button>
+        <Button
+          type="button"
+          variant="ghost"
+          size="icon-sm"
+          class="h-9 w-9 rounded-xl text-[#202124] hover:bg-[#e8eaed] dark:text-[#ececec] dark:hover:bg-[#363636]"
+          :class="isFileTreeVisible ? 'bg-[#f1f3f4] dark:bg-[#2d2d2d]' : 'bg-transparent'"
+          :aria-pressed="isFileTreeVisible"
+          :title="isFileTreeVisible ? '隐藏文件列表' : '显示文件列表'"
+          @click="toggleFileTree"
+        >
           <svg width="18" height="18" viewBox="0 0 24 24" fill="none">
-            <rect x="3" y="4" width="18" height="16" rx="4" stroke="currentColor" stroke-width="1.9" />
-            <path d="M14 4v16" stroke="currentColor" stroke-width="1.9" />
+            <path d="M3 7.8A2.8 2.8 0 0 1 5.8 5H10l2 2h6.2A2.8 2.8 0 0 1 21 9.8v6.4a2.8 2.8 0 0 1-2.8 2.8H5.8A2.8 2.8 0 0 1 3 16.2V7.8Z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round" />
           </svg>
-        </button>
+        </Button>
       </div>
     </div>
 
-    <div class="workspace-pathbar">
-      <span class="workspace-current-path">{{ displayPath }}</span>
-      <button type="button" class="workspace-floating-folder" title="当前工作区">
-        <svg width="18" height="18" viewBox="0 0 24 24" fill="none">
-          <path d="M3 7.8A2.8 2.8 0 0 1 5.8 5H10l2 2h6.2A2.8 2.8 0 0 1 21 9.8v6.4a2.8 2.8 0 0 1-2.8 2.8H5.8A2.8 2.8 0 0 1 3 16.2V7.8Z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round" />
-        </svg>
-      </button>
-    </div>
-
-    <div class="flex min-h-0 flex-1">
-      <section class="workspace-preview-pane">
-        <div v-if="!selectedFile" class="workspace-empty-preview">
-          <div class="workspace-empty-icon">
-            <svg width="36" height="36" viewBox="0 0 24 24" fill="none">
-              <path d="M3 7.8A2.8 2.8 0 0 1 5.8 5H10l2 2h6.2A2.8 2.8 0 0 1 21 9.8v6.4a2.8 2.8 0 0 1-2.8 2.8H5.8A2.8 2.8 0 0 1 3 16.2V7.8Z" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round" />
-            </svg>
+    <div ref="workspaceBodyRef" class="flex min-h-0 flex-1">
+      <section class="flex min-w-0 flex-1 flex-col">
+        <div v-if="selectedFile" class="flex h-12 shrink-0 items-center justify-between border-b border-[#e5e7eb] px-5 dark:border-[#333]">
+          <div class="min-w-0 text-sm text-[#6b7280] dark:text-[#aaa]">
+            <span class="text-[#6b7280]">Nova</span>
+            <span class="px-2 text-[#9aa0a6]">›</span>
+            <span class="font-semibold text-[#202124] dark:text-[#ececec]">{{ selectedFile.name }}</span>
           </div>
-          <div class="workspace-empty-title">打开文件</div>
-          <p>从工作区目录树中选择文件</p>
+          <div class="flex items-center gap-1">
+            <Button type="button" variant="ghost" size="icon-sm" class="h-7 w-7 rounded-md text-[#6b7280] hover:bg-[#f1f3f4] dark:hover:bg-[#2d2d2d]">
+              <svg width="15" height="15" viewBox="0 0 24 24" fill="none">
+                <circle cx="12" cy="12" r="1.5" fill="currentColor" />
+                <circle cx="5" cy="12" r="1.5" fill="currentColor" />
+                <circle cx="19" cy="12" r="1.5" fill="currentColor" />
+              </svg>
+            </Button>
+            <Button type="button" variant="ghost" size="icon-sm" class="h-7 w-7 rounded-md text-[#6b7280] hover:bg-[#f1f3f4] dark:hover:bg-[#2d2d2d]">
+              <svg width="15" height="15" viewBox="0 0 24 24" fill="none">
+                <path d="M14 3h7v7M10 14 21 3M21 14v5a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>
+              </svg>
+            </Button>
+          </div>
         </div>
 
-        <div v-else class="flex h-full min-h-0 flex-col">
-          <div class="workspace-preview-header">
-            <div class="min-w-0">
-              <div class="truncate text-sm font-semibold" :title="selectedFile.relativePath">{{ selectedFile.name }}</div>
-              <div class="mt-1 truncate text-xs text-[#8b8172] dark:text-[#aaa197]">{{ selectedFile.relativePath }}</div>
-            </div>
-          </div>
+        <div v-if="!selectedFile" class="flex h-full flex-col items-center justify-center px-6 text-center">
+          <svg width="42" height="42" viewBox="0 0 24 24" fill="none" class="text-[#70757a]">
+            <path d="M3 7.8A2.8 2.8 0 0 1 5.8 5H10l2 2h6.2A2.8 2.8 0 0 1 21 9.8v6.4a2.8 2.8 0 0 1-2.8 2.8H5.8A2.8 2.8 0 0 1 3 16.2V7.8Z" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round" />
+          </svg>
+          <div class="mt-4 text-lg font-semibold text-[#111827] dark:text-[#ececec]">打开文件</div>
+          <p class="mt-2 text-sm text-[#64748b] dark:text-[#aaa]">从工作区目录树中选择文件</p>
+        </div>
 
-          <div class="min-h-0 flex-1 overflow-auto p-4">
-            <div v-if="isReadingFile" class="workspace-preview-message">正在读取文件...</div>
-            <div v-else-if="previewError" class="workspace-preview-message workspace-preview-error">{{ previewError }}</div>
-            <pre v-else-if="selectedContent" class="workspace-preview-code">{{ selectedContent.content }}</pre>
+        <div v-else class="min-h-0 flex-1 overflow-auto">
+          <div v-if="isReadingFile" class="m-4 rounded-lg border border-[#e5e7eb] bg-[#f9fafb] px-3 py-2 text-sm text-[#6b7280] dark:border-[#333] dark:bg-[#252525] dark:text-[#aaa]">
+            正在读取文件...
+          </div>
+          <div v-else-if="previewError" class="m-4 rounded-lg border border-[#fecaca] bg-[#fef2f2] px-3 py-2 text-sm text-[#b91c1c] dark:border-[#4a2424] dark:bg-[#2b1d1d] dark:text-[#fca5a5]">
+            {{ previewError }}
+          </div>
+          <div v-else-if="selectedContent" class="grid grid-cols-[48px_minmax(0,1fr)] py-2 font-mono text-[12px] leading-6" :class="previewCodeGridClass">
+            <template v-for="(line, index) in selectedPreviewLines" :key="index">
+              <div class="select-none pr-3 text-right text-[#6b7280]">{{ index + 1 }}</div>
+              <pre class="min-h-6 pr-6 text-[#202124] dark:text-[#ececec]" :class="previewCodeLineClass" v-html="line" />
+            </template>
           </div>
         </div>
       </section>
 
-      <aside class="workspace-tree-pane">
-        <div class="workspace-search-wrap">
-          <svg width="16" height="16" viewBox="0 0 24 24" fill="none">
+      <button
+        type="button"
+        class="group flex shrink-0 cursor-col-resize items-stretch justify-center overflow-hidden outline-none transition-all duration-200 ease-out"
+        :class="[
+          isFileTreeVisible ? 'w-2 opacity-100' : 'pointer-events-none w-0 opacity-0',
+          isResizingFileTree ? 'bg-[#e8f0fe] dark:bg-[#1f2f46]' : '',
+        ]"
+        aria-label="调整文件列表宽度"
+        title="拖拽调整文件列表宽度"
+        @pointerdown="startFileTreeResize"
+      >
+        <span class="w-px bg-[#e5e7eb] transition-colors group-hover:bg-[#1a73e8] dark:bg-[#333]" />
+      </button>
+
+      <aside
+        class="flex min-w-0 shrink-0 flex-col overflow-hidden py-3 transition-all duration-200 ease-out"
+        :class="isFileTreeVisible ? 'px-2 opacity-100' : 'pointer-events-none px-0 opacity-0'"
+        :aria-hidden="!isFileTreeVisible"
+        :style="fileTreePaneStyle"
+      >
+        <div class="relative">
+          <svg class="absolute left-3 top-1/2 -translate-y-1/2 text-[#9aa0a6]" width="15" height="15" viewBox="0 0 24 24" fill="none">
             <circle cx="11" cy="11" r="7" stroke="currentColor" stroke-width="1.9" />
             <path d="m16.5 16.5 4 4" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" />
           </svg>
-          <input v-model="filterQuery" type="search" placeholder="筛选文件..." />
+          <Input
+            v-model="filterQuery"
+            type="search"
+            placeholder="筛选文件..."
+            class="h-9 rounded-xl border-[#e5e7eb] bg-white pl-9 text-sm text-[#202124] shadow-none focus-visible:ring-0 dark:border-[#333] dark:bg-[#252525] dark:text-[#ececec]"
+          />
         </div>
 
-        <div class="workspace-root-label" :title="rootPath">{{ rootListing ? '/' : '读取工作区...' }}</div>
-
-        <div v-if="rootError" class="workspace-tree-error">{{ rootError }}</div>
-        <div v-else class="workspace-tree-scroll">
+        <div v-if="rootError" class="rounded-lg border border-[#fecaca] bg-[#fef2f2] px-3 py-2 text-sm text-[#b91c1c] dark:border-[#4a2424] dark:bg-[#2b1d1d] dark:text-[#fca5a5]">
+          {{ rootError }}
+        </div>
+        <div v-else class="mt-2 min-h-0 flex-1 overflow-y-auto pr-1">
           <WorkspaceFileTreeNode
             v-for="entry in visibleRootEntries"
             :key="entry.relativePath"
@@ -233,311 +534,3 @@ onMounted(() => {
     </div>
   </div>
 </template>
-
-<style scoped>
-.workspace-toolbar {
-  display: flex;
-  height: 56px;
-  flex-shrink: 0;
-  align-items: center;
-  justify-content: space-between;
-  border-bottom: 1px solid #e6e1d8;
-  padding: 0 12px;
-}
-
-.dark .workspace-toolbar {
-  border-color: #333;
-}
-
-.workspace-primary-button,
-.workspace-icon-button,
-.workspace-split-button,
-.workspace-floating-folder {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  border: 0;
-  color: #242019;
-  transition:
-    background 140ms ease,
-    color 140ms ease;
-}
-
-.workspace-primary-button {
-  gap: 7px;
-  height: 34px;
-  border-radius: 11px;
-  background: #f3f1ed;
-  font-size: 14px;
-  font-weight: 600;
-  padding: 0 13px;
-}
-
-.workspace-icon-button {
-  height: 34px;
-  width: 34px;
-  border-radius: 10px;
-  background: transparent;
-  color: #8b8172;
-}
-
-.workspace-split-button,
-.workspace-floating-folder {
-  height: 38px;
-  width: 38px;
-  border-radius: 13px;
-  background: #f3f1ed;
-}
-
-.workspace-primary-button:hover,
-.workspace-icon-button:hover,
-.workspace-split-button:hover,
-.workspace-floating-folder:hover {
-  background: #ebe7df;
-  color: #15110c;
-}
-
-.dark .workspace-primary-button,
-.dark .workspace-split-button,
-.dark .workspace-floating-folder {
-  background: #2c2c2c;
-  color: #f1eee8;
-}
-
-.dark .workspace-icon-button {
-  color: #aaa197;
-}
-
-.dark .workspace-primary-button:hover,
-.dark .workspace-icon-button:hover,
-.dark .workspace-split-button:hover,
-.dark .workspace-floating-folder:hover {
-  background: #363636;
-  color: #fffaf3;
-}
-
-.workspace-pathbar {
-  position: relative;
-  display: flex;
-  height: 70px;
-  flex-shrink: 0;
-  align-items: center;
-  border-bottom: 1px solid #e6e1d8;
-  padding: 0 16px;
-}
-
-.dark .workspace-pathbar {
-  border-color: #333;
-}
-
-.workspace-current-path {
-  min-width: 0;
-  overflow: hidden;
-  color: #0f172a;
-  font-size: 16px;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.dark .workspace-current-path {
-  color: #f1eee8;
-}
-
-.workspace-floating-folder {
-  position: absolute;
-  right: 10px;
-  top: 14px;
-}
-
-.workspace-preview-pane {
-  display: flex;
-  min-width: 0;
-  width: 42%;
-  flex-shrink: 0;
-  flex-direction: column;
-  border-right: 1px solid #e6e1d8;
-}
-
-.dark .workspace-preview-pane {
-  border-color: #333;
-}
-
-.workspace-empty-preview {
-  display: flex;
-  height: 100%;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  color: #5f574c;
-  padding: 24px;
-  text-align: center;
-}
-
-.workspace-empty-icon {
-  color: #6f6a62;
-}
-
-.workspace-empty-title {
-  margin-top: 14px;
-  color: #14100b;
-  font-size: 18px;
-  font-weight: 760;
-}
-
-.workspace-empty-preview p {
-  margin-top: 9px;
-  color: #64748b;
-  font-size: 14px;
-}
-
-.dark .workspace-empty-preview {
-  color: #bbb3a8;
-}
-
-.dark .workspace-empty-title {
-  color: #fffaf3;
-}
-
-.dark .workspace-empty-preview p {
-  color: #aaa197;
-}
-
-.workspace-preview-header {
-  border-bottom: 1px solid #e6e1d8;
-  padding: 13px 15px;
-}
-
-.dark .workspace-preview-header {
-  border-color: #333;
-}
-
-.workspace-preview-message {
-  border: 1px solid #e7e2d7;
-  border-radius: 14px;
-  background: #fffdfa;
-  color: #746a5c;
-  font-size: 13px;
-  line-height: 1.7;
-  padding: 14px;
-}
-
-.workspace-preview-error {
-  border-color: #efd0c5;
-  background: #fff5f1;
-  color: #a0563c;
-}
-
-.dark .workspace-preview-message {
-  border-color: #383838;
-  background: #262626;
-  color: #d8d0c2;
-}
-
-.dark .workspace-preview-error {
-  border-color: #5b342b;
-  background: #2f211d;
-  color: #e7a08a;
-}
-
-.workspace-preview-code {
-  min-height: 100%;
-  white-space: pre-wrap;
-  overflow-wrap: anywhere;
-  border: 1px solid #e7e2d7;
-  border-radius: 16px;
-  background: #fffefa;
-  color: #27231d;
-  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, 'Liberation Mono', monospace;
-  font-size: 12px;
-  line-height: 1.65;
-  padding: 14px;
-}
-
-.dark .workspace-preview-code {
-  border-color: #383838;
-  background: #242424;
-  color: #eee6dc;
-}
-
-.workspace-tree-pane {
-  display: flex;
-  min-width: 0;
-  flex: 1;
-  flex-direction: column;
-  padding: 12px 12px 16px;
-}
-
-.workspace-search-wrap {
-  display: flex;
-  height: 36px;
-  flex-shrink: 0;
-  align-items: center;
-  gap: 8px;
-  border: 1px solid #e5e0d8;
-  border-radius: 12px;
-  background: #fff;
-  color: #98a1ad;
-  padding: 0 11px;
-}
-
-.workspace-search-wrap input {
-  min-width: 0;
-  flex: 1;
-  border: 0;
-  background: transparent;
-  color: #1f1a13;
-  font-size: 14px;
-  outline: none;
-}
-
-.workspace-search-wrap input::placeholder {
-  color: #9aa3af;
-}
-
-.dark .workspace-search-wrap {
-  border-color: #3a3a3a;
-  background: #252525;
-}
-
-.dark .workspace-search-wrap input {
-  color: #f1eee8;
-}
-
-.workspace-root-label {
-  flex-shrink: 0;
-  overflow: hidden;
-  padding: 12px 6px 6px;
-  color: #0f172a;
-  font-size: 13px;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.dark .workspace-root-label {
-  color: #f1eee8;
-}
-
-.workspace-tree-scroll {
-  min-height: 0;
-  flex: 1;
-  overflow-y: auto;
-  padding-right: 2px;
-}
-
-.workspace-tree-error {
-  margin-top: 12px;
-  border: 1px solid #efd0c5;
-  border-radius: 14px;
-  background: #fff5f1;
-  color: #a0563c;
-  font-size: 13px;
-  line-height: 1.7;
-  padding: 14px;
-}
-
-.dark .workspace-tree-error {
-  border-color: #5b342b;
-  background: #2f211d;
-  color: #e7a08a;
-}
-</style>

@@ -494,7 +494,7 @@ defineExpose({
         class="w-full bg-transparent border-none text-[0.95rem] text-[#1a1a1a] dark:text-[#ececec] resize-none outline-none block max-h-[40vh] px-4 pt-3 pb-2 placeholder:text-[#a3a3a3]"></textarea>
 
       <div class="flex min-w-0 items-center gap-2 px-3 pb-3 pt-2">
-        <div class="flex min-w-0 flex-1 items-center gap-2">
+        <div class="flex min-w-0 flex-1 flex-wrap items-center gap-2">
           <button
             type="button"
             class="w-8 h-8 shrink-0 rounded-lg flex items-center justify-center text-muted-foreground hover:bg-secondary/80 transition-colors"
@@ -518,9 +518,9 @@ defineExpose({
             </Select>
           </div>
 
-          <div v-if="availableModels.length > 0 && settings" class="flex min-w-0 flex-1 items-center gap-1.5">
+          <div v-if="availableModels.length > 0 && settings" class="flex min-w-0 shrink-0 items-center gap-1.5">
             <Select :model-value="currentModel" @update:model-value="onModelValueChange">
-              <SelectTrigger size="sm" class="w-full min-w-[130px] text-xs">
+              <SelectTrigger size="sm" class="w-[150px] max-w-[28vw] text-xs">
                 <SelectValue placeholder="选择模型" />
               </SelectTrigger>
               <SelectContent class="text-xs">

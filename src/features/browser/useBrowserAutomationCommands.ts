@@ -183,7 +183,7 @@ export function useBrowserAutomationCommands(options: UseBrowserAutomationComman
       options.addressInput.value = '';
       options.history.value = [];
       options.historyIndex.value = -1;
-      clearBrowserTabState(options.rawConversationId());
+      await clearBrowserTabState(options.rawConversationId());
       await options.closeNativeBrowserWindow();
       await options.updateBrowserSessionUrl();
       return browserStatePayload({ action: 'reset', clearedData: clearData });

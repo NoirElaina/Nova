@@ -1,7 +1,11 @@
 <script setup lang="ts">
-import { computed, onMounted, ref, watch } from 'vue';
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue';
+import type { UnlistenFn } from '@tauri-apps/api/event';
 import {
+  browserStateKey,
+  clearBrowserTabState,
   getBrowserTabState,
+  listenBrowserTabStateCleared,
   loadBrowserTabState,
   type BrowserTabState,
 } from '../../../features/browser/browser-tab-state';
@@ -19,6 +23,7 @@ const addressInput = ref(initialState?.addressInput ?? '');
 const isLoading = ref(false);
 const zoomPercent = ref(initialState?.zoomPercent ?? 100);
 const browserLabel = `nova-browser-page-${crypto.randomUUID()}`;
+let unlistenBrowserStateCleared: UnlistenFn | null = null;
 
 const displayUrl = computed(() => currentUrl.value || addressInput.value || '');
 const conversationLabel = computed(() => props.conversationId?.trim() || '默认会话');
@@ -52,8 +57,10 @@ const openOrFocusBrowserWindow = async () => {
   await focusBrowserWindow();
 };
 
-const closeBrowserWindowFromUi = () => {
-  void closeBrowserWindow();
+const closeBrowserWindowFromUi = async () => {
+  await closeBrowserWindow();
+  applyBrowserState(null);
+  await clearBrowserTabState(props.conversationId);
 };
 
 watch(
@@ -81,6 +88,19 @@ watch(
 
 onMounted(() => {
   void restoreBrowserState();
+  void listenBrowserTabStateCleared((payload) => {
+    if (payload.key === browserStateKey(props.conversationId)) {
+      applyBrowserState(null);
+    }
+  }).then((unlisten) => {
+    unlistenBrowserStateCleared = unlisten;
+  }).catch((error) => {
+    console.warn('Browser tab state clear listener failed:', error);
+  });
+});
+
+onBeforeUnmount(() => {
+  unlistenBrowserStateCleared?.();
 });
 
 </script>

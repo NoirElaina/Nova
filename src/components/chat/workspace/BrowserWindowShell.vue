@@ -5,6 +5,7 @@ import type { UnlistenFn } from '@tauri-apps/api/event';
 import { openUrl } from '@tauri-apps/plugin-opener';
 import { getCurrentWindow } from '@tauri-apps/api/window';
 import {
+  clearBrowserTabState,
   getBrowserTabState,
   loadBrowserTabState,
   saveBrowserTabState,
@@ -33,12 +34,14 @@ const browserHost = ref<HTMLElement | null>(null);
 let resizeObserver: ResizeObserver | null = null;
 let pickerRetryTimers: number[] = [];
 let unlistenBrowserCommand: UnlistenFn | null = null;
+let isClosingBrowserWindow = false;
 
 const canGoBack = computed(() => historyIndex.value > 0);
 const canGoForward = computed(() => historyIndex.value >= 0 && historyIndex.value < history.value.length - 1);
 const browserConversationId = computed(() => conversationId?.trim() || '__default__');
 
 const persistBrowserState = () => {
+  if (isClosingBrowserWindow) return;
   saveBrowserTabState(conversationId, {
     addressInput: addressInput.value,
     currentUrl: currentUrl.value,
@@ -242,7 +245,12 @@ const toggleElementPicker = async () => {
 };
 
 const preparePageClose = async () => {
-  persistBrowserState();
+  isClosingBrowserWindow = true;
+  addressInput.value = '';
+  currentUrl.value = '';
+  history.value = [];
+  historyIndex.value = -1;
+  await clearBrowserTabState(conversationId);
   pickerRetryTimers.forEach((timer) => window.clearTimeout(timer));
   pickerRetryTimers = [];
   isElementPickerActive.value = false;

@@ -35,12 +35,12 @@ const triggerReaction = (value: 'up' | 'down') => {
 
 <template>
   <div class="flex gap-3.5 w-full max-w-[85%]">
-    <div class="w-7 h-7 rounded-full flex items-center justify-center shrink-0 bg-[#f6f3ec] dark:bg-[#333] text-[#6f685a] mt-0.5 border border-[#e7e2d7] dark:border-[#444] text-[11px] font-medium">
+    <div class="w-7 h-7 rounded-full flex items-center justify-center shrink-0 bg-[#f8fafc] dark:bg-[#333] text-[#475569] mt-0.5 border border-[#e5e7eb] dark:border-[#444] text-[11px] font-medium">
       N
     </div>
     <div class="min-w-0 flex-1 text-[0.95rem] leading-relaxed break-words text-[#1a1a1a] dark:text-[#ececec]">
       <div class="flex items-center gap-2 mb-1">
-        <p class="text-[11px] text-[#9b958a]">Nova</p>
+        <p class="text-[11px] text-[#64748b]">Nova</p>
         <span
           v-if="((message.cost?.inputTokens ?? 0) + (message.cost?.outputTokens ?? 0) > 0) || (message.tokenUsage && message.tokenUsage > 0) || (conversationTokenUsage && conversationTokenUsage > 0)"
           class="token-badge"
@@ -126,14 +126,14 @@ const triggerReaction = (value: 'up' | 'down') => {
   border: none;
   background: transparent;
   border-radius: 5px;
-  color: #bbb6ae;
+  color: #94a3b8;
   cursor: pointer;
   transition: color 0.15s, background 0.15s;
 }
 
 .msg-icon-btn:hover {
-  color: #6b6456;
-  background: #f0ede7;
+  color: #334155;
+  background: #f1f5f9;
 }
 
 .msg-icon-btn.is-copied {
@@ -163,9 +163,9 @@ const triggerReaction = (value: 'up' | 'down') => {
   align-items: center;
   gap: 4px;
   font-size: 9px;
-  color: #A39E93;
-  border: 1px solid rgba(229, 225, 213, 0.6);
-  background: rgba(229, 225, 213, 0.2);
+  color: #64748b;
+  border: 1px solid rgba(203, 213, 225, 0.75);
+  background: rgba(248, 250, 252, 0.85);
   padding: 3px 6px;
   border-radius: 6px;
   font-family: monospace;
@@ -175,22 +175,23 @@ const triggerReaction = (value: 'up' | 'down') => {
 
 .dark .token-badge {
   color: #a09e99;
-  border-color: #5a5549;
-  background: rgba(60, 56, 48, 0.45);
+  border-color: #475569;
+  background: rgba(51, 65, 85, 0.35);
 }
 
 .reasoning-panel {
   margin-bottom: 10px;
-  border: 1px solid rgba(225, 218, 204, 0.9);
-  background: rgba(249, 246, 239, 0.85);
+  border: 1px solid #e5e7eb;
+  background: #f3f3f3;
   border-radius: 10px;
   padding: 8px 10px;
+  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.035);
 }
 
 .reasoning-panel summary {
   cursor: pointer;
   font-size: 11px;
-  color: #8a8478;
+  color: #64748b;
   user-select: none;
   list-style: none;
 }
@@ -215,12 +216,14 @@ const triggerReaction = (value: 'up' | 'down') => {
 }
 
 .dark .reasoning-panel {
-  border-color: #4a443a;
-  background: rgba(41, 38, 33, 0.92);
+  border-color: rgba(59, 130, 246, 0.38);
+  background:
+    linear-gradient(135deg, rgba(30, 58, 138, 0.24), rgba(24, 31, 42, 0.96) 46%),
+    #1f2937;
 }
 
 .dark .reasoning-panel summary {
-  color: #b1ab9f;
+  color: #cbd5e1;
 }
 
 .dark .reaction-btn.is-active-up {

@@ -50,8 +50,8 @@ void props;
   margin: 10px 0 12px;
   padding: 10px 11px;
   border-radius: 10px;
-  border: 1px solid rgba(223, 214, 200, 0.9);
-  background: rgba(247, 243, 236, 0.82);
+  border: 1px solid rgba(203, 213, 225, 0.82);
+  background: rgba(248, 250, 252, 0.9);
 }
 
 .compact-notice.is-compact {
@@ -62,7 +62,7 @@ void props;
 .compact-notice-title {
   font-size: 11px;
   font-weight: 600;
-  color: #786f61;
+  color: #475569;
   margin-bottom: 4px;
 }
 
@@ -76,19 +76,19 @@ void props;
   margin: 0;
   font-size: 11px;
   line-height: 1.45;
-  color: #8a8174;
+  color: #64748b;
 }
 
 .dark .compact-notice {
-  border-color: #4f473d;
-  background: rgba(44, 41, 36, 0.9);
+  border-color: #3f4652;
+  background: rgba(31, 41, 55, 0.86);
 }
 
 .dark .compact-notice-title {
-  color: #c7beaf;
+  color: #e2e8f0;
 }
 
 .dark .compact-notice-line {
-  color: #a89f92;
+  color: #cbd5e1;
 }
 </style>

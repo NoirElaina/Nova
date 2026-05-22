@@ -352,12 +352,12 @@ defineExpose({
           class="flex w-full justify-start group"
         >
           <div class="flex gap-3.5 w-full max-w-[85%]">
-            <div class="w-7 h-7 rounded-full flex items-center justify-center shrink-0 bg-[#f6f3ec] dark:bg-[#333] text-[#6f685a] mt-0.5 border border-[#e7e2d7] dark:border-[#444] text-[11px] font-medium">
+            <div class="w-7 h-7 rounded-full flex items-center justify-center shrink-0 bg-[#f8fafc] dark:bg-[#333] text-[#475569] mt-0.5 border border-[#e5e7eb] dark:border-[#444] text-[11px] font-medium">
               N
             </div>
             <div class="min-w-0 flex-1 text-[0.95rem] leading-relaxed break-words text-[#1a1a1a] dark:text-[#ececec]">
               <div class="flex items-center gap-2 mb-1">
-                <p class="text-[11px] text-[#9b958a]">Nova</p>
+                <p class="text-[11px] text-[#64748b]">Nova</p>
                 <span
                   v-if="streamingTokenUsage() > 0 || streamingConversationTokenUsage() > 0"
                   class="token-badge"
@@ -391,7 +391,7 @@ defineExpose({
               <MarkdownRenderer v-if="streamingBodyText()" :content="assistantResponse" />
               <p
                 v-else-if="props.currentTurnToolEntries.length > 0 || props.isGenerating"
-                class="live-status text-[13px] text-[#8e8678] dark:text-[#b2aa9c]"
+                class="live-status text-[13px] text-[#64748b] dark:text-[#cbd5e1]"
               >
                 <span>{{ liveStatusText }}</span>
                 <span class="live-status-dots" aria-hidden="true">
@@ -482,14 +482,14 @@ defineExpose({
   bottom: 174px;
   width: 34px;
   height: 34px;
-  border: 1px solid rgba(222, 217, 206, 0.92);
+  border: 1px solid rgba(203, 213, 225, 0.92);
   border-radius: 999px;
   background: rgba(255, 255, 255, 0.96);
-  color: #2f2a22;
+  color: #111827;
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  box-shadow: 0 14px 30px rgba(73, 62, 45, 0.14), 0 2px 6px rgba(73, 62, 45, 0.08);
+  box-shadow: 0 14px 30px rgba(15, 23, 42, 0.12), 0 2px 6px rgba(15, 23, 42, 0.06);
   backdrop-filter: blur(10px);
   cursor: pointer;
   z-index: 8;
@@ -499,24 +499,24 @@ defineExpose({
 
 .scroll-to-bottom-btn:hover {
   transform: translateX(-50%) translateY(-2px);
-  box-shadow: 0 18px 34px rgba(73, 62, 45, 0.18), 0 4px 10px rgba(73, 62, 45, 0.12);
-  border-color: rgba(197, 163, 112, 0.7);
+  box-shadow: 0 18px 34px rgba(15, 23, 42, 0.16), 0 4px 10px rgba(15, 23, 42, 0.1);
+  border-color: rgba(148, 163, 184, 0.75);
 }
 
 .scroll-to-bottom-btn:focus-visible {
-  outline: 2px solid rgba(185, 134, 66, 0.35);
+  outline: 2px solid rgba(37, 99, 235, 0.24);
   outline-offset: 3px;
 }
 
 .dark .scroll-to-bottom-btn {
-  background: rgba(43, 40, 35, 0.96);
-  color: #f0ece5;
-  border-color: rgba(83, 76, 66, 0.95);
+  background: rgba(31, 41, 55, 0.96);
+  color: #f8fafc;
+  border-color: rgba(71, 85, 105, 0.95);
   box-shadow: 0 14px 30px rgba(0, 0, 0, 0.34), 0 2px 6px rgba(0, 0, 0, 0.18);
 }
 
 .dark .scroll-to-bottom-btn:hover {
-  border-color: rgba(211, 160, 96, 0.68);
+  border-color: rgba(148, 163, 184, 0.68);
   box-shadow: 0 18px 34px rgba(0, 0, 0, 0.42), 0 4px 10px rgba(0, 0, 0, 0.24);
 }
 
@@ -533,9 +533,9 @@ defineExpose({
   align-items: center;
   gap: 4px;
   font-size: 9px;
-  color: #A39E93;
-  border: 1px solid rgba(229, 225, 213, 0.6);
-  background: rgba(229, 225, 213, 0.2);
+  color: #64748b;
+  border: 1px solid rgba(203, 213, 225, 0.75);
+  background: rgba(248, 250, 252, 0.85);
   padding: 3px 6px;
   border-radius: 6px;
   font-family: monospace;
@@ -544,23 +544,24 @@ defineExpose({
 }
 
 .dark .token-badge {
-  color: #a09e99;
-  border-color: #5a5549;
-  background: rgba(60, 56, 48, 0.45);
+  color: #cbd5e1;
+  border-color: #475569;
+  background: rgba(51, 65, 85, 0.35);
 }
 
 .reasoning-panel {
   margin-bottom: 10px;
-  border: 1px solid rgba(225, 218, 204, 0.9);
-  background: rgba(249, 246, 239, 0.85);
+  border: 1px solid #e5e7eb;
+  background: #f3f3f3;
   border-radius: 10px;
   padding: 8px 10px;
+  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.035);
 }
 
 .reasoning-panel summary {
   cursor: pointer;
   font-size: 11px;
-  color: #8a8478;
+  color: #64748b;
   user-select: none;
   list-style: none;
 }
@@ -626,12 +627,14 @@ defineExpose({
 }
 
 .dark .reasoning-panel {
-  border-color: #4a443a;
-  background: rgba(41, 38, 33, 0.92);
+  border-color: rgba(59, 130, 246, 0.38);
+  background:
+    linear-gradient(135deg, rgba(30, 58, 138, 0.24), rgba(24, 31, 42, 0.96) 46%),
+    #1f2937;
 }
 
 .dark .reasoning-panel summary {
-  color: #b1ab9f;
+  color: #cbd5e1;
 }
 
 </style>

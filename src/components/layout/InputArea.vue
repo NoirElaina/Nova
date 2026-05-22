@@ -442,7 +442,7 @@ defineExpose({
           <div
             v-for="(file, index) in pendingUploads"
             :key="`${file.sourceName}-${index}`"
-            class="inline-flex items-center gap-2 rounded-lg border border-[#e6e1d6] dark:border-[#474747] bg-[#f6f3ec] dark:bg-[#323232] px-2.5 py-1.5 text-[12px] text-[#5b5447] dark:text-[#d7d0c5]"
+            class="inline-flex items-center gap-2 rounded-lg border border-[#e5e7eb] dark:border-[#474747] bg-[#f8fafc] dark:bg-[#323232] px-2.5 py-1.5 text-[12px] text-[#475569] dark:text-[#d7d0c5]"
           >
             <svg
               v-if="file.kind === 'image'"
@@ -534,8 +534,8 @@ defineExpose({
         </div>
         <button class="w-8 h-8 shrink-0 rounded-full flex items-center justify-center transition-colors shadow-sm"
           :class="isGenerating
-            ? 'bg-[#f4d9d2] text-[#9b4b39] hover:bg-[#eacdc5]'
-            : (canSend ? 'bg-[#da7756] text-white hover:bg-[#c96c4d]' : 'bg-[#f4f4f4] dark:bg-[#333] text-muted-foreground')"
+            ? 'bg-[#fee2e2] text-[#b91c1c] hover:bg-[#fecaca]'
+            : (canSend ? 'bg-[#111827] text-white hover:bg-[#1f2937]' : 'bg-[#f1f5f9] dark:bg-[#333] text-muted-foreground')"
           :disabled="!isGenerating && !canSend" @click="isGenerating ? emit('cancel') : sendMessage()">
           <svg v-if="isGenerating" width="14" height="14" viewBox="0 0 24 24" fill="currentColor">
             <rect x="6" y="6" width="12" height="12" rx="2" ry="2" />

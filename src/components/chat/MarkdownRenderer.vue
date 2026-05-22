@@ -44,7 +44,7 @@ const rendered = computed(() => renderMarkdown(props.content || ''))
   font-weight: 700;
   line-height: 1.3;
   margin: 1.2em 0 0.5em;
-  color: #1a1a18;
+  color: #111827;
 }
 
 .md-body h1 {
@@ -53,7 +53,7 @@ const rendered = computed(() => renderMarkdown(props.content || ''))
 
 .md-body h2 {
   font-size: 1.25em;
-  border-bottom: 1px solid #ebe9e3;
+  border-bottom: 1px solid #e5e7eb;
   padding-bottom: 0.3em;
 }
 
@@ -67,7 +67,7 @@ const rendered = computed(() => renderMarkdown(props.content || ''))
 
 .md-body strong {
   font-weight: 700;
-  color: #1a1a18;
+  color: #111827;
 }
 
 .md-body em {
@@ -77,18 +77,18 @@ const rendered = computed(() => renderMarkdown(props.content || ''))
 .md-body code:not(.hljs) {
   font-family: 'SF Mono', 'Fira Code', 'Cascadia Code', monospace;
   font-size: 0.85em;
-  background: #f0ede7;
-  color: #b03a2e;
+  background: #f1f5f9;
+  color: #1d4ed8;
   padding: 1px 5px;
   border-radius: 4px;
-  border: 1px solid #e5e1d8;
+  border: 1px solid #e5e7eb;
 }
 
 .hljs-block {
   margin: 0.8em 0;
   border-radius: 10px;
   overflow: hidden;
-  border: 1px solid #e5e1d8;
+  border: 1px solid #1f2937;
   background: #1e1e1e;
 }
 
@@ -137,10 +137,10 @@ const rendered = computed(() => renderMarkdown(props.content || ''))
 .md-body blockquote {
   margin: 0.8em 0;
   padding: 10px 16px;
-  border-left: 3px solid #c8c4bb;
-  background: #f9f8f5;
+  border-left: 3px solid #cbd5e1;
+  background: #f8fafc;
   border-radius: 0 6px 6px 0;
-  color: #6b6456;
+  color: #475569;
 }
 
 .md-body blockquote p {
@@ -158,7 +158,7 @@ const rendered = computed(() => renderMarkdown(props.content || ''))
 }
 
 .md-body li::marker {
-  color: #aaa49a;
+  color: #94a3b8;
 }
 
 .md-body ul>li {
@@ -179,34 +179,34 @@ const rendered = computed(() => renderMarkdown(props.content || ''))
 }
 
 .md-body th {
-  background: #f5f4f0;
+  background: #f8fafc;
   font-weight: 600;
-  color: #2a2820;
+  color: #111827;
   padding: 8px 12px;
-  border: 1px solid #e5e1d8;
+  border: 1px solid #e5e7eb;
   text-align: left;
   white-space: nowrap;
 }
 
 .md-body td {
   padding: 7px 12px;
-  border: 1px solid #e5e1d8;
-  color: #3d3929;
+  border: 1px solid #e5e7eb;
+  color: #334155;
   white-space: nowrap;
 }
 
 .md-body tr:nth-child(even) td {
-  background: #faf9f7;
+  background: #f8fafc;
 }
 
 .md-body hr {
   border: none;
-  border-top: 1px solid #e5e1d8;
+  border-top: 1px solid #e5e7eb;
   margin: 1.2em 0;
 }
 
 .md-body a {
-  color: #2a6496;
+  color: #2563eb;
   text-decoration: none;
 }
 
@@ -232,7 +232,7 @@ const rendered = computed(() => renderMarkdown(props.content || ''))
 /* details / summary */
 .md-body details {
   margin: 0.8em 0;
-  border: 1px solid #e5e1d8;
+  border: 1px solid #e5e7eb;
   border-radius: 6px;
   overflow: hidden;
 }
@@ -241,13 +241,13 @@ const rendered = computed(() => renderMarkdown(props.content || ''))
   padding: 8px 14px;
   cursor: pointer;
   font-weight: 500;
-  background: #f9f8f5;
+  background: #f8fafc;
   user-select: none;
   list-style: revert;
 }
 
 .md-body summary:hover {
-  background: #f0ede7;
+  background: #f1f5f9;
 }
 
 .md-body .details-body {

@@ -270,11 +270,11 @@ function submitAnswers() {
   max-width: 760px;
   margin: 0 auto;
   box-sizing: border-box;
-  border: 1px solid #ddd7ca;
+  border: 1px solid #e5e7eb;
   border-radius: 20px;
-  background: #fffdfa;
+  background: #ffffff;
   padding: 14px;
-  box-shadow: 0 14px 40px rgba(45, 34, 18, 0.1);
+  box-shadow: 0 14px 40px rgba(15, 23, 42, 0.1);
 }
 
 .ask-header {
@@ -286,7 +286,7 @@ function submitAnswers() {
 }
 
 .ask-title {
-  color: #262117;
+  color: #111827;
   font-size: 16px;
   font-weight: 600;
   line-height: 1.4;
@@ -294,7 +294,7 @@ function submitAnswers() {
 
 .ask-context {
   margin-top: 6px;
-  color: #847b6d;
+  color: #64748b;
   font-size: 12px;
   line-height: 1.5;
 }
@@ -306,11 +306,11 @@ function submitAnswers() {
   border: 0;
   border-radius: 999px;
   background: transparent;
-  color: #746d60;
+  color: #64748b;
 }
 
 .ask-close:hover {
-  background: #f3eee4;
+  background: #f1f5f9;
 }
 
 .ask-question-list {
@@ -320,10 +320,10 @@ function submitAnswers() {
 }
 
 .ask-question-card {
-  border: 1px solid #ece6da;
+  border: 1px solid #e5e7eb;
   border-radius: 16px;
   padding: 12px;
-  background: #fffefb;
+  background: #ffffff;
 }
 
 .ask-question-header {
@@ -347,27 +347,27 @@ function submitAnswers() {
   min-height: 24px;
   padding: 0 10px;
   border-radius: 999px;
-  background: #f2ede4;
-  color: #6d6557;
+  background: #eef2f7;
+  color: #475569;
   font-size: 11px;
   font-weight: 600;
   letter-spacing: 0.03em;
 }
 
 .ask-mode {
-  color: #a19686;
+  color: #94a3b8;
   font-size: 11px;
 }
 
 .ask-progress {
-  color: #8b816f;
+  color: #64748b;
   font-size: 12px;
   font-variant-numeric: tabular-nums;
 }
 
 .ask-question-title {
   margin-bottom: 10px;
-  color: #262117;
+  color: #111827;
   font-size: 14px;
   line-height: 1.5;
 }
@@ -386,7 +386,7 @@ function submitAnswers() {
   align-items: flex-start;
   gap: 12px;
   padding: 12px 14px;
-  border: 1px solid #ece6da;
+  border: 1px solid #e5e7eb;
   border-radius: 14px;
   background: transparent;
   text-align: left;
@@ -394,12 +394,12 @@ function submitAnswers() {
 }
 
 .ask-option:hover {
-  background: #faf6ed;
+  background: #f8fafc;
 }
 
 .ask-option.is-selected {
-  background: #f6f1e7;
-  border-color: #d9cfbc;
+  background: #eff6ff;
+  border-color: #bfdbfe;
 }
 
 .ask-index {
@@ -407,11 +407,11 @@ function submitAnswers() {
   height: 28px;
   flex-shrink: 0;
   border-radius: 10px;
-  background: #ece7dd;
+  background: #eef2f7;
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  color: #6a6357;
+  color: #475569;
   font-size: 13px;
 }
 
@@ -424,14 +424,14 @@ function submitAnswers() {
 }
 
 .ask-label {
-  color: #262117;
+  color: #111827;
   font-size: 14px;
   font-weight: 500;
   line-height: 1.35;
 }
 
 .ask-description {
-  color: #857d6f;
+  color: #64748b;
   font-size: 12px;
   line-height: 1.5;
 }
@@ -440,13 +440,13 @@ function submitAnswers() {
   margin-top: 10px;
   padding: 10px 12px;
   border-radius: 14px;
-  background: #f7f3ea;
-  border: 1px solid #ebe3d4;
+  background: #f8fafc;
+  border: 1px solid #e5e7eb;
 }
 
 .ask-preview-title {
   margin-bottom: 6px;
-  color: #766d5f;
+  color: #64748b;
   font-size: 11px;
   font-weight: 700;
   text-transform: uppercase;
@@ -457,7 +457,7 @@ function submitAnswers() {
   margin: 0;
   white-space: pre-wrap;
   word-break: break-word;
-  color: #4f473b;
+  color: #334155;
   font-size: 12px;
   line-height: 1.6;
   font-family: 'SF Mono', 'Fira Code', monospace;
@@ -466,14 +466,14 @@ function submitAnswers() {
 .ask-freeform-input {
   width: 100%;
   margin-top: 10px;
-  border: 1px solid #e6dece;
+  border: 1px solid #e5e7eb;
   border-radius: 12px;
-  background: #fffdfa;
+  background: #ffffff;
   padding: 10px 12px;
   resize: vertical;
   box-sizing: border-box;
   outline: none;
-  color: #262117;
+  color: #111827;
   font-size: 13px;
   line-height: 1.5;
 }
@@ -483,7 +483,7 @@ function submitAnswers() {
 }
 
 .ask-freeform-title {
-  color: #6a6357;
+  color: #475569;
   font-size: 12px;
   font-weight: 600;
 }
@@ -506,14 +506,14 @@ function submitAnswers() {
 
 .ask-back,
 .ask-skip {
-  border: 1px solid #d4ccbf;
-  background: #fffdfa;
-  color: #262117;
+  border: 1px solid #cbd5e1;
+  background: #ffffff;
+  color: #111827;
 }
 
 .ask-submit {
-  border: 1px solid #d38f6f;
-  background: #da7756;
+  border: 1px solid #111827;
+  background: #111827;
   color: white;
 }
 

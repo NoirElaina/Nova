@@ -32,7 +32,7 @@ const handleSend = (msg: string) => {
   <div class="flex-1 flex flex-col items-center justify-center pt-10 px-4 w-full h-full">
 
     <h1 class="text-4xl text-[#1a1a1a] dark:text-[#ececec] font-serif mb-8 flex items-center justify-center gap-4 tracking-tight">
-      <svg class="text-[#da7756]" width="38" height="38" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+      <svg class="text-[#2563eb]" width="38" height="38" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
         <path d="M12 2v20M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"/>
       </svg>
       Back at it, Nova

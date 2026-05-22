@@ -48,12 +48,12 @@ const statusLabel = computed(() => {
 
 const badgeClass = computed(() => {
   if (hasRunningShellTool.value || status.value?.busy) {
-    return "bg-[#fff3cf] text-[#8a5a05] dark:bg-[#3c3016] dark:text-[#ffd37a]";
+    return "bg-[#eff6ff] text-[#1d4ed8] dark:bg-[#172554] dark:text-[#bfdbfe]";
   }
   if ((status.value?.backgroundCount ?? 0) > 0) {
     return "bg-[#e4f4ed] text-[#2f7553] dark:bg-[#173428] dark:text-[#90d8b4]";
   }
-  return "bg-[#efe9dc] text-[#6f6657] dark:bg-[#3a342d] dark:text-[#d8d0c2]";
+  return "bg-[#eef2f7] text-[#475569] dark:bg-[#334155] dark:text-[#d8dfe8]";
 });
 
 const loadStatus = async () => {
@@ -164,7 +164,7 @@ onBeforeUnmount(() => {
     <Button
       variant="outline"
       size="sm"
-      class="h-8 px-3 rounded-md border border-[#e5e0d6] dark:border-[#444] bg-white/95 dark:bg-[#262626] text-[12px] text-[#5f584a] dark:text-[#d5cdc0] inline-flex items-center gap-2 hover:bg-[#f7f4ed] dark:hover:bg-[#2f2f2f] transition-colors"
+      class="h-8 px-3 rounded-md border border-[#e5e7eb] dark:border-[#444] bg-white/95 dark:bg-[#262626] text-[12px] text-[#475569] dark:text-[#d5dbe3] inline-flex items-center gap-2 hover:bg-[#f8fafc] dark:hover:bg-[#2f2f2f] transition-colors"
       title="终端会话"
       @click="togglePanel"
     >
@@ -180,45 +180,45 @@ onBeforeUnmount(() => {
 
     <div
       v-if="isOpen"
-      class="absolute right-0 top-10 w-[360px] overflow-hidden rounded-2xl border border-[#e6e1d6] dark:border-[#464646] bg-white dark:bg-[#242424] shadow-[0_18px_56px_rgba(0,0,0,0.18)]"
+      class="absolute right-0 top-10 w-[360px] overflow-hidden rounded-2xl border border-[#e5e7eb] dark:border-[#464646] bg-white dark:bg-[#242424] shadow-[0_18px_56px_rgba(15,23,42,0.16)]"
     >
-      <div class="px-3 py-2.5 border-b border-[#eee8dd] dark:border-[#3a3a3a] text-[12px] text-[#726957] dark:text-[#b9b1a6] flex items-center justify-between">
+      <div class="px-3 py-2.5 border-b border-[#e5e7eb] dark:border-[#3a3a3a] text-[12px] text-[#64748b] dark:text-[#cbd5e1] flex items-center justify-between">
         <span class="font-medium">Shell session</span>
-        <button type="button" class="text-[11px] hover:text-[#1f1a13] dark:hover:text-[#f2eee8]" @click="loadStatus">
+        <button type="button" class="text-[11px] hover:text-[#111827] dark:hover:text-[#f8fafc]" @click="loadStatus">
           刷新
         </button>
       </div>
 
-      <div class="p-3 space-y-3 text-[12px] text-[#5f584a] dark:text-[#d5cdc0]">
-        <div v-if="!conversationId" class="text-[#9a9283]">当前还没有选中的会话。</div>
-        <div v-else class="rounded-xl bg-[#faf7f0] dark:bg-[#2c2a27] border border-[#eee5d7] dark:border-[#3b3834] p-3 space-y-2">
+      <div class="p-3 space-y-3 text-[12px] text-[#475569] dark:text-[#d5dbe3]">
+        <div v-if="!conversationId" class="text-[#94a3b8]">当前还没有选中的会话。</div>
+        <div v-else class="rounded-xl bg-[#f8fafc] dark:bg-[#262b33] border border-[#e5e7eb] dark:border-[#3f4652] p-3 space-y-2">
           <div class="flex items-center justify-between">
-            <span class="text-[#8b806f]">状态</span>
+            <span class="text-[#64748b]">状态</span>
             <span class="font-medium">{{ isLoading && !status ? "读取中" : statusLabel }}</span>
           </div>
           <div class="flex items-start justify-between gap-3">
-            <span class="text-[#8b806f] shrink-0">cwd</span>
-            <code class="min-w-0 text-right break-all text-[11px] text-[#2f2a22] dark:text-[#f0ece5]">
+            <span class="text-[#64748b] shrink-0">cwd</span>
+            <code class="min-w-0 text-right break-all text-[11px] text-[#111827] dark:text-[#f0f4f8]">
               {{ status?.cwd || "尚未创建终端会话" }}
             </code>
           </div>
           <div class="flex items-center justify-between">
-            <span class="text-[#8b806f]">后台进程</span>
+            <span class="text-[#64748b]">后台进程</span>
             <span>{{ status?.backgroundCount ?? 0 }}</span>
           </div>
-          <div v-if="status?.backgroundPids?.length" class="text-[11px] text-[#8b806f] break-all">
+          <div v-if="status?.backgroundPids?.length" class="text-[11px] text-[#64748b] break-all">
             PID: {{ status.backgroundPids.join(", ") }}
           </div>
         </div>
 
-        <p class="text-[11px] leading-relaxed text-[#8b806f] dark:text-[#aaa197]">
+        <p class="text-[11px] leading-relaxed text-[#64748b] dark:text-[#cbd5e1]">
           这里展示的是 execute_bash / execute_powershell 复用的持久终端会话；普通 Sleep、MCP 等工具不会占用它。
         </p>
 
         <Button
           variant="outline"
           size="sm"
-          class="w-full h-8 rounded-lg border-[#dfd5c5] text-[#7a3d2e] hover:bg-[#fff3ed] dark:border-[#4a3a33] dark:text-[#f0b3a0] dark:hover:bg-[#362722]"
+          class="w-full h-8 rounded-lg border-[#cbd5e1] text-[#334155] hover:bg-[#f1f5f9] dark:border-[#475569] dark:text-[#e2e8f0] dark:hover:bg-[#334155]"
           :disabled="!conversationId || isResetting"
           @click="resetSession"
         >

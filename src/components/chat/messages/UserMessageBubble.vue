@@ -89,10 +89,10 @@ const formatFileSize = (bytes?: number) => {
     class="ml-auto flex max-w-full flex-row-reverse gap-2.5 items-start"
     :class="isEditing ? 'w-full max-w-[calc(100%-2.5rem)]' : 'max-w-[86%] sm:max-w-[78%] lg:max-w-[66%]'"
   >
-    <div class="w-7 h-7 rounded-full flex items-center justify-center shrink-0 bg-[#23211b] text-[#f8f6ef] text-[11px] font-medium mt-0.5">你</div>
+    <div class="w-7 h-7 rounded-full flex items-center justify-center shrink-0 bg-[#111827] text-white text-[11px] font-medium mt-0.5">你</div>
     <div class="flex max-w-full flex-col items-end min-w-0" :class="{ 'flex-1': isEditing }">
       <div class="flex items-center gap-2 mb-1">
-        <p class="text-[11px] text-[#9b958a]">你</p>
+        <p class="text-[11px] text-[#64748b]">你</p>
         <span v-if="typeof message.tokenUsage === 'number'" class="token-badge">
           <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
             <ellipse cx="12" cy="5" rx="9" ry="3"></ellipse>
@@ -106,14 +106,14 @@ const formatFileSize = (bytes?: number) => {
         :class="
           isEditing
             ? 'edit-shell'
-            : 'max-w-full overflow-hidden bg-[#f1eee7] dark:bg-[#2d2d2d] px-4 py-2.5 rounded-xl border border-[#e6e1d6] dark:border-[#3c3c3c]'
+            : 'max-w-full overflow-hidden bg-[#f3f3f3] dark:bg-[#2d2d2d] px-4 py-2.5 rounded-xl border border-[#e5e7eb] dark:border-[#3c3c3c]'
         "
       >
         <div v-if="message.attachments?.length" class="mb-2 flex flex-wrap gap-1.5">
           <div
             v-for="(file, i) in message.attachments"
             :key="`${file.sourceName}-${i}`"
-            class="inline-flex items-center gap-1.5 rounded-md border border-[#dfd8ca] dark:border-[#4a4a4a] bg-[#fbf8f1] dark:bg-[#353535] px-2 py-1 text-[11px] text-[#5a5245] dark:text-[#d7d0c5]"
+            class="inline-flex items-center gap-1.5 rounded-md border border-[#e5e7eb] dark:border-[#4a4a4a] bg-white dark:bg-[#353535] px-2 py-1 text-[11px] text-[#475569] dark:text-[#d7d0c5]"
           >
             <svg
               v-if="file.kind === 'image'"
@@ -182,7 +182,7 @@ const formatFileSize = (bytes?: number) => {
         <template v-else>
           <div
             v-if="normalizedContent"
-            class="user-message-text text-[0.92rem] leading-relaxed whitespace-pre-wrap text-[#23211b] dark:text-[#ececec]"
+            class="user-message-text text-[0.92rem] leading-relaxed whitespace-pre-wrap text-[#111827] dark:text-[#ececec]"
             :class="{ 'is-collapsed': shouldCollapse && !isExpanded }"
           >
             {{ message.content }}
@@ -225,7 +225,7 @@ const formatFileSize = (bytes?: number) => {
 
 .msg-time {
   font-size: 11px;
-  color: #bbb6ae;
+  color: #94a3b8;
   margin-right: 4px;
   font-variant-numeric: tabular-nums;
 }
@@ -239,14 +239,14 @@ const formatFileSize = (bytes?: number) => {
   border: none;
   background: transparent;
   border-radius: 5px;
-  color: #bbb6ae;
+  color: #94a3b8;
   cursor: pointer;
   transition: color 0.15s, background 0.15s;
 }
 
 .msg-icon-btn:hover {
-  color: #6b6456;
-  background: #f0ede7;
+  color: #334155;
+  background: #f1f5f9;
 }
 
 .msg-icon-btn.is-copied {
@@ -258,9 +258,9 @@ const formatFileSize = (bytes?: number) => {
   align-items: center;
   gap: 4px;
   font-size: 9px;
-  color: #a39e93;
-  border: 1px solid rgba(229, 225, 213, 0.6);
-  background: rgba(229, 225, 213, 0.2);
+  color: #64748b;
+  border: 1px solid rgba(203, 213, 225, 0.75);
+  background: rgba(248, 250, 252, 0.85);
   padding: 3px 6px;
   border-radius: 6px;
   font-family: 'SF Mono', 'Fira Code', 'Cascadia Mono', monospace;
@@ -270,8 +270,8 @@ const formatFileSize = (bytes?: number) => {
 
 .dark .token-badge {
   color: #a09e99;
-  border-color: #5a5549;
-  background: rgba(60, 56, 48, 0.45);
+  border-color: #475569;
+  background: rgba(51, 65, 85, 0.35);
 }
 
 .user-message-text {
@@ -293,7 +293,7 @@ const formatFileSize = (bytes?: number) => {
   padding: 0;
   border: none;
   background: transparent;
-  color: #9a7b47;
+  color: #2563eb;
   font-size: 12px;
   line-height: 1;
   cursor: pointer;
@@ -301,15 +301,15 @@ const formatFileSize = (bytes?: number) => {
 }
 
 .user-message-toggle:hover {
-  color: #7d6236;
+  color: #1d4ed8;
 }
 
 .dark .user-message-toggle {
-  color: #d2aa69;
+  color: #93c5fd;
 }
 
 .dark .user-message-toggle:hover {
-  color: #e5bd7e;
+  color: #bfdbfe;
 }
 
 .edit-card {
@@ -328,7 +328,7 @@ const formatFileSize = (bytes?: number) => {
   padding: 16px 18px;
   font-size: 14px;
   line-height: 1.55;
-  color: #23211b;
+  color: #111827;
   outline: none;
   box-shadow: 0 0 0 4px rgba(47, 116, 211, 0.1);
 }
@@ -344,7 +344,7 @@ const formatFileSize = (bytes?: number) => {
   display: inline-flex;
   align-items: flex-start;
   gap: 8px;
-  color: #666055;
+  color: #64748b;
   font-size: 12px;
   line-height: 1.45;
 }
@@ -368,8 +368,8 @@ const formatFileSize = (bytes?: number) => {
 
 .edit-card__btn--ghost {
   background: rgba(255, 255, 255, 0.6);
-  border-color: #cfc5b7;
-  color: #302c25;
+  border-color: #cbd5e1;
+  color: #111827;
 }
 
 .edit-card__btn--ghost:hover {
@@ -377,12 +377,12 @@ const formatFileSize = (bytes?: number) => {
 }
 
 .edit-card__btn--primary {
-  background: #908d89;
+  background: #111827;
   color: white;
 }
 
 .edit-card__btn--primary:not(:disabled):hover {
-  background: #7e7b76;
+  background: #1f2937;
 }
 
 .edit-card__btn--primary:disabled {
@@ -398,13 +398,13 @@ const formatFileSize = (bytes?: number) => {
 }
 
 .dark .edit-card__notice {
-  color: #b7aea1;
+  color: #94a3b8;
 }
 
 .dark .edit-card__btn--ghost {
   background: rgba(255, 255, 255, 0.02);
-  border-color: #5b5449;
-  color: #ece4d8;
+  border-color: #475569;
+  color: #e2e8f0;
 }
 
 .dark .edit-card__btn--ghost:hover {
@@ -412,26 +412,26 @@ const formatFileSize = (bytes?: number) => {
 }
 
 .dark .edit-card__btn--primary {
-  background: #8e8a84;
-  color: #f8f6f1;
+  background: #e5e7eb;
+  color: #111827;
 }
 
 .dark .edit-card__btn--primary:not(:disabled):hover {
-  background: #9c978f;
+  background: #f3f4f6;
 }
 
 .edit-shell {
   width: 100%;
   padding: 14px 16px 10px;
   border-radius: 18px;
-  border: 1px solid #ebe4d9;
-  background: #f7f3ed;
-  box-shadow: 0 8px 24px rgba(84, 73, 54, 0.08);
+  border: 1px solid #e5e7eb;
+  background: #f8fafc;
+  box-shadow: 0 8px 24px rgba(15, 23, 42, 0.06);
 }
 
 .dark .edit-shell {
-  border-color: #454036;
-  background: #2f2b25;
+  border-color: #3f4652;
+  background: #262b33;
   box-shadow: 0 10px 24px rgba(0, 0, 0, 0.22);
 }
 

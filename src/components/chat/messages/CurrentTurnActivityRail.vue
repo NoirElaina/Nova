@@ -154,11 +154,11 @@ const chips = computed<ActivityChip[]>(() =>
   max-width: 100%;
   border-radius: 14px;
   padding: 9px 11px;
-  border: 1px solid #e6e0d4;
+  border: 1px solid #dbeafe;
   background:
-    radial-gradient(circle at top left, rgba(255, 255, 255, 0.86), rgba(248, 244, 236, 0.82)),
-    #faf7f1;
-  box-shadow: 0 8px 24px rgba(129, 111, 79, 0.08);
+    linear-gradient(135deg, rgba(239, 246, 255, 0.62), rgba(255, 255, 255, 0.98) 48%),
+    #ffffff;
+  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.035);
 }
 
 .activity-chip__icon {
@@ -179,27 +179,27 @@ const chips = computed<ActivityChip[]>(() =>
   font-size: 12px;
   line-height: 1.2;
   font-weight: 600;
-  color: #554d41;
+  color: #111827;
 }
 
 .activity-chip__detail {
   margin-top: 2px;
   font-size: 11px;
   line-height: 1.35;
-  color: #8d8579;
+  color: #64748b;
   word-break: break-word;
 }
 
 .activity-chip--running {
-  border-color: #ead9a8;
+  border-color: #bfdbfe;
   background:
-    linear-gradient(135deg, rgba(255, 249, 229, 0.96), rgba(252, 244, 211, 0.92)),
-    #fff7dc;
+    linear-gradient(135deg, rgba(239, 246, 255, 0.98), rgba(219, 234, 254, 0.86)),
+    #eff6ff;
 }
 
 .activity-chip--running .activity-chip__icon {
-  color: #a26e00;
-  background: rgba(255, 237, 180, 0.82);
+  color: #2563eb;
+  background: rgba(191, 219, 254, 0.86);
 }
 
 .activity-chip--completed {
@@ -227,34 +227,34 @@ const chips = computed<ActivityChip[]>(() =>
 }
 
 .activity-chip--cancelled {
-  border-color: #dfd8cb;
+  border-color: #cbd5e1;
   background:
-    linear-gradient(135deg, rgba(248, 246, 242, 0.96), rgba(239, 235, 227, 0.94)),
-    #f5f1ea;
+    linear-gradient(135deg, rgba(248, 250, 252, 0.98), rgba(241, 245, 249, 0.94)),
+    #f8fafc;
 }
 
 .activity-chip--cancelled .activity-chip__icon {
-  color: #766f63;
-  background: rgba(222, 215, 203, 0.76);
+  color: #64748b;
+  background: rgba(226, 232, 240, 0.82);
 }
 
 .activity-chip--waiting {
-  border-color: #dfd4f3;
+  border-color: #bfdbfe;
   background:
-    linear-gradient(135deg, rgba(248, 244, 255, 0.96), rgba(240, 235, 255, 0.94)),
-    #f5f0ff;
+    linear-gradient(135deg, rgba(239, 246, 255, 0.98), rgba(219, 234, 254, 0.9)),
+    #eff6ff;
 }
 
 .activity-chip--waiting .activity-chip__icon {
-  color: #6f59b7;
-  background: rgba(219, 209, 248, 0.8);
+  color: #2563eb;
+  background: rgba(191, 219, 254, 0.82);
 }
 
 .activity-spinner {
   width: 11px;
   height: 11px;
   border-radius: 999px;
-  border: 2px solid rgba(162, 110, 0, 0.22);
+  border: 2px solid rgba(37, 99, 235, 0.22);
   border-top-color: currentColor;
   animation: activity-spin 0.9s linear infinite;
 }
@@ -279,31 +279,31 @@ const chips = computed<ActivityChip[]>(() =>
 }
 
 .dark .activity-chip {
-  border-color: #454038;
+  border-color: #334155;
   background:
-    radial-gradient(circle at top left, rgba(54, 49, 42, 0.94), rgba(39, 35, 30, 0.96)),
-    #2d2924;
+    radial-gradient(circle at top left, rgba(51, 65, 85, 0.92), rgba(31, 41, 55, 0.96)),
+    #1f2937;
   box-shadow: 0 10px 28px rgba(0, 0, 0, 0.22);
 }
 
 .dark .activity-chip__title {
-  color: #ece4d7;
+  color: #f8fafc;
 }
 
 .dark .activity-chip__detail {
-  color: #b8b0a4;
+  color: #cbd5e1;
 }
 
 .dark .activity-chip--running {
-  border-color: #735f2e;
+  border-color: #1e40af;
   background:
-    linear-gradient(135deg, rgba(76, 61, 23, 0.95), rgba(63, 50, 19, 0.96)),
-    #4a3a1c;
+    linear-gradient(135deg, rgba(30, 64, 175, 0.35), rgba(30, 58, 138, 0.34)),
+    #172554;
 }
 
 .dark .activity-chip--running .activity-chip__icon {
-  color: #f4cf77;
-  background: rgba(133, 103, 39, 0.48);
+  color: #bfdbfe;
+  background: rgba(59, 130, 246, 0.34);
 }
 
 .dark .activity-chip--completed {
@@ -331,27 +331,27 @@ const chips = computed<ActivityChip[]>(() =>
 }
 
 .dark .activity-chip--cancelled {
-  border-color: #504a42;
+  border-color: #475569;
   background:
-    linear-gradient(135deg, rgba(54, 48, 43, 0.95), rgba(44, 39, 35, 0.96)),
-    #36302b;
+    linear-gradient(135deg, rgba(51, 65, 85, 0.92), rgba(30, 41, 59, 0.96)),
+    #1e293b;
 }
 
 .dark .activity-chip--cancelled .activity-chip__icon {
-  color: #c9c2b5;
-  background: rgba(103, 95, 85, 0.46);
+  color: #cbd5e1;
+  background: rgba(100, 116, 139, 0.36);
 }
 
 .dark .activity-chip--waiting {
-  border-color: #5a4b89;
+  border-color: #1e40af;
   background:
-    linear-gradient(135deg, rgba(46, 39, 76, 0.95), rgba(38, 32, 64, 0.96)),
-    #2f2946;
+    linear-gradient(135deg, rgba(30, 64, 175, 0.35), rgba(30, 58, 138, 0.34)),
+    #172554;
 }
 
 .dark .activity-chip--waiting .activity-chip__icon {
-  color: #cabbff;
-  background: rgba(102, 85, 167, 0.45);
+  color: #bfdbfe;
+  background: rgba(59, 130, 246, 0.34);
 }
 
 @keyframes activity-spin {

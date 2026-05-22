@@ -93,7 +93,7 @@ onBeforeUnmount(() => {
     <Button
       variant="outline"
       size="sm"
-      class="h-8 px-3 rounded-md border border-[#e5e0d6] dark:border-[#444] bg-white/95 dark:bg-[#262626] text-[12px] text-[#5f584a] dark:text-[#d5cdc0] inline-flex items-center gap-2 hover:bg-[#f7f4ed] dark:hover:bg-[#2f2f2f] transition-colors"
+      class="h-8 px-3 rounded-md border border-[#e5e7eb] dark:border-[#444] bg-white/95 dark:bg-[#262626] text-[12px] text-[#475569] dark:text-[#d5dbe3] inline-flex items-center gap-2 hover:bg-[#f8fafc] dark:hover:bg-[#2f2f2f] transition-colors"
       @click="togglePanel"
     >
       <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
@@ -102,21 +102,21 @@ onBeforeUnmount(() => {
         <path d="M3 18h18" />
       </svg>
       执行日志
-      <span class="inline-flex items-center justify-center min-w-[18px] h-[18px] px-1 rounded-full bg-[#efe9dc] dark:bg-[#3a342d] text-[11px] leading-none">
+      <span class="inline-flex items-center justify-center min-w-[18px] h-[18px] px-1 rounded-full bg-[#eef2f7] dark:bg-[#334155] text-[11px] leading-none">
         {{ props.entries.length }}
       </span>
     </Button>
 
     <div
       v-if="isOpen"
-      class="absolute right-0 top-10 w-[420px] max-h-[68vh] overflow-hidden rounded-2xl border border-[#e6e1d6] dark:border-[#464646] bg-white dark:bg-[#242424] shadow-[0_18px_56px_rgba(0,0,0,0.18)]"
+      class="absolute right-0 top-10 w-[420px] max-h-[68vh] overflow-hidden rounded-2xl border border-[#e5e7eb] dark:border-[#464646] bg-white dark:bg-[#242424] shadow-[0_18px_56px_rgba(15,23,42,0.16)]"
     >
-      <div class="px-3 py-2.5 border-b border-[#eee8dd] dark:border-[#3a3a3a] text-[12px] text-[#726957] dark:text-[#b9b1a6] flex items-center justify-between">
+      <div class="px-3 py-2.5 border-b border-[#e5e7eb] dark:border-[#3a3a3a] text-[12px] text-[#64748b] dark:text-[#cbd5e1] flex items-center justify-between">
         <span class="font-medium">AI 执行日志</span>
         <span>{{ props.entries.length }} 条</span>
       </div>
 
-      <div v-if="props.entries.length === 0" class="px-3 py-5 text-[12px] text-[#9a9283] dark:text-[#9b9489]">
+      <div v-if="props.entries.length === 0" class="px-3 py-5 text-[12px] text-[#94a3b8] dark:text-[#9b9489]">
         当前会话还没有工具执行记录。
       </div>
 
@@ -124,7 +124,7 @@ onBeforeUnmount(() => {
         <div
           v-for="entry in displayedEntries"
           :key="entry.id"
-          class="rounded-xl border border-[#ece6da] dark:border-[#3a3a3a] bg-[#faf8f3] dark:bg-[#2b2b2b] px-3 py-2.5"
+          class="rounded-xl border border-[#e5e7eb] dark:border-[#3a3a3a] bg-[#f8fafc] dark:bg-[#2b2b2b] px-3 py-2.5"
         >
           <div class="flex items-center justify-between gap-2">
             <Button
@@ -144,36 +144,36 @@ onBeforeUnmount(() => {
                 stroke-width="2"
                 stroke-linecap="round"
                 stroke-linejoin="round"
-                class="text-[#8f8678] dark:text-[#b2aa9d] transition-transform duration-200"
+                class="text-[#94a3b8] dark:text-[#b2aa9d] transition-transform duration-200"
                 :class="isEntryCollapsed(entry.id) ? '' : 'rotate-90'"
               >
                 <polyline points="9 18 15 12 9 6" />
               </svg>
-              <span class="text-[12px] font-medium text-[#4f473c] dark:text-[#e2dbcf] truncate">
+              <span class="text-[12px] font-medium text-[#111827] dark:text-[#e2dbcf] truncate">
                 {{ entry.toolName }}
               </span>
             </Button>
             <div class="inline-flex items-center gap-1">
               <span class="trace-status" :class="statusClassMap[entry.status]">{{ statusLabelMap[entry.status] }}</span>
-              <span class="text-[10px] text-[#9d9589] dark:text-[#9d9589] shrink-0">{{ formatTime(entry.startedAt) }}</span>
+              <span class="text-[10px] text-[#94a3b8] dark:text-[#9d9589] shrink-0">{{ formatTime(entry.startedAt) }}</span>
             </div>
           </div>
 
           <div
             v-if="isEntryCollapsed(entry.id)"
-            class="mt-2 text-[11px] text-[#7f7668] dark:text-[#ada496]"
+            class="mt-2 text-[11px] text-[#64748b] dark:text-[#ada496]"
           >
             <div class="font-medium mb-1">预览</div>
             <div class="trace-collapsed-preview">{{ collapsedPreview(entry) }}</div>
           </div>
 
           <template v-else>
-            <div class="mt-2 text-[11px] text-[#7f7668] dark:text-[#ada496]">
+            <div class="mt-2 text-[11px] text-[#64748b] dark:text-[#ada496]">
               <div class="font-medium mb-1">命令参数</div>
               <pre class="trace-content">{{ entry.input || '（无参数）' }}</pre>
             </div>
 
-            <div class="mt-2 text-[11px] text-[#7f7668] dark:text-[#ada496]">
+            <div class="mt-2 text-[11px] text-[#64748b] dark:text-[#ada496]">
               <div class="font-medium mb-1">执行结果</div>
               <pre class="trace-content">{{ entry.result || '（暂无结果）' }}</pre>
             </div>
@@ -188,8 +188,8 @@ onBeforeUnmount(() => {
 .trace-collapsed-preview {
   font-size: 11px;
   line-height: 1.5;
-  color: #7f7668;
-  border: 1px dashed #e2dacc;
+  color: #64748b;
+  border: 1px dashed #cbd5e1;
   border-radius: 8px;
   padding: 6px 8px;
   background: rgba(255, 255, 255, 0.55);
@@ -199,8 +199,8 @@ onBeforeUnmount(() => {
 }
 
 .dark .trace-collapsed-preview {
-  color: #b6aea1;
-  border-color: #4a443c;
+  color: #cbd5e1;
+  border-color: #475569;
   background: rgba(0, 0, 0, 0.18);
 }
 
@@ -210,7 +210,7 @@ onBeforeUnmount(() => {
   word-break: break-word;
   font-family: "SF Mono", "Fira Code", "Cascadia Mono", monospace;
   background: rgba(255, 255, 255, 0.6);
-  border: 1px solid #e9e2d5;
+  border: 1px solid #e5e7eb;
   border-radius: 8px;
   padding: 6px 8px;
   max-height: 160px;
@@ -231,9 +231,9 @@ onBeforeUnmount(() => {
 }
 
 .trace-status-running {
-  color: #8f6400;
-  background: #fff6dc;
-  border-color: #efdca6;
+  color: #1d4ed8;
+  background: #eff6ff;
+  border-color: #bfdbfe;
 }
 
 .trace-status-completed {
@@ -249,15 +249,15 @@ onBeforeUnmount(() => {
 }
 
 .trace-status-cancelled {
-  color: #6f6a62;
-  background: #f1eee8;
-  border-color: #ddd7cb;
+  color: #64748b;
+  background: #f1f5f9;
+  border-color: #cbd5e1;
 }
 
 .dark .trace-status-running {
-  color: #f4cf77;
-  background: #4a3a1c;
-  border-color: #69542a;
+  color: #bfdbfe;
+  background: #172554;
+  border-color: #1e40af;
 }
 
 .dark .trace-status-completed {
@@ -273,8 +273,8 @@ onBeforeUnmount(() => {
 }
 
 .dark .trace-status-cancelled {
-  color: #cbc3b6;
-  background: #35322d;
-  border-color: #4a453d;
+  color: #cbd5e1;
+  background: #1e293b;
+  border-color: #475569;
 }
 </style>

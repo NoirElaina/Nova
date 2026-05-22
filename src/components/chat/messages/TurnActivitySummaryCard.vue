@@ -35,12 +35,11 @@ const detailEntries = computed<ToolExecutionEntry[]>(() => props.summary.entries
 <style scoped>
 .turn-summary-card {
   margin: 10px 0 12px;
-  border: 1px solid rgba(226, 219, 205, 0.95);
-  background:
-    linear-gradient(180deg, rgba(252, 249, 244, 0.96), rgba(248, 244, 236, 0.92)),
-    #faf7f1;
+  border: 1px solid #e5e7eb;
+  background: #f3f3f3;
   border-radius: 14px;
   overflow: hidden;
+  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.035);
 }
 
 .turn-summary-card__summary {
@@ -65,20 +64,20 @@ const detailEntries = computed<ToolExecutionEntry[]>(() => props.summary.entries
   font-size: 13px;
   line-height: 1.25;
   font-weight: 700;
-  color: #574f43;
+  color: #111827;
 }
 
 .turn-summary-card__meta {
   margin-top: 3px;
   font-size: 11px;
   line-height: 1.4;
-  color: #8a8173;
+  color: #64748b;
 }
 
 .turn-summary-card__toggle {
   flex: 0 0 auto;
   font-size: 11px;
-  color: #9a927f;
+  color: #64748b;
   display: inline-flex;
   align-items: center;
   gap: 6px;
@@ -98,21 +97,21 @@ const detailEntries = computed<ToolExecutionEntry[]>(() => props.summary.entries
 }
 
 .dark .turn-summary-card {
-  border-color: #4b4439;
+  border-color: rgba(59, 130, 246, 0.38);
   background:
-    linear-gradient(180deg, rgba(44, 39, 33, 0.96), rgba(36, 32, 28, 0.94)),
-    #2c2721;
+    linear-gradient(135deg, rgba(30, 58, 138, 0.24), rgba(24, 31, 42, 0.96) 42%),
+    #1f2937;
 }
 
 .dark .turn-summary-card__title {
-  color: #ece4d8;
+  color: #f8fafc;
 }
 
 .dark .turn-summary-card__meta {
-  color: #b8aea0;
+  color: #cbd5e1;
 }
 
 .dark .turn-summary-card__toggle {
-  color: #a79f93;
+  color: #94a3b8;
 }
 </style>

@@ -1,5 +1,6 @@
 use crate::llm::services::browser_sessions::{self, BrowserAutomationResult};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
+use std::path::PathBuf;
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
 use std::time::Duration;
 use tauri::{AppHandle, Manager, Url};
@@ -224,4 +225,116 @@ pub fn browser_automation_result(payload: BrowserAutomationResultPayload) -> Res
         result: payload.result,
         error: payload.error,
     })
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BrowserTabState {
+    pub address_input: String,
+    pub current_url: String,
+    pub history: Vec<String>,
+    pub history_index: i64,
+    pub zoom_percent: i64,
+    pub show_device_toolbar: bool,
+    pub updated_at: i64,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BrowserTabStateInput {
+    pub address_input: String,
+    pub current_url: String,
+    pub history: Vec<String>,
+    pub history_index: i64,
+    pub zoom_percent: i64,
+    pub show_device_toolbar: bool,
+}
+
+fn browser_state_root(app: &AppHandle) -> Result<PathBuf, String> {
+    let app_data_dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|error| format!("Failed to resolve app_data_dir for browser state: {error}"))?;
+    Ok(app_data_dir.join("browser-tabs"))
+}
+
+fn browser_state_file_name(conversation_id: Option<&str>) -> String {
+    let raw = conversation_id
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or("__default__");
+    let mut safe = String::with_capacity(raw.len());
+    for ch in raw.chars() {
+        if ch.is_ascii_alphanumeric() || matches!(ch, '-' | '_' | '.') {
+            safe.push(ch);
+        } else {
+            safe.push('_');
+        }
+    }
+    let safe = safe.trim_matches('.');
+    if safe.is_empty() {
+        "__default__.json".to_string()
+    } else {
+        format!("{safe}.json")
+    }
+}
+
+fn browser_state_path(app: &AppHandle, conversation_id: Option<&str>) -> Result<PathBuf, String> {
+    Ok(browser_state_root(app)?.join(browser_state_file_name(conversation_id)))
+}
+
+fn now_unix_ms() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| duration.as_millis() as i64)
+        .unwrap_or_default()
+}
+
+#[tauri::command]
+pub fn load_browser_tab_state(
+    app: AppHandle,
+    conversation_id: Option<String>,
+) -> Result<Option<BrowserTabState>, String> {
+    let path = browser_state_path(&app, conversation_id.as_deref())?;
+    if !path.exists() {
+        return Ok(None);
+    }
+    let text = std::fs::read_to_string(path).map_err(|error| error.to_string())?;
+    serde_json::from_str::<BrowserTabState>(&text)
+        .map(Some)
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+pub fn save_browser_tab_state(
+    app: AppHandle,
+    conversation_id: Option<String>,
+    state: BrowserTabStateInput,
+) -> Result<(), String> {
+    let root = browser_state_root(&app)?;
+    std::fs::create_dir_all(&root).map_err(|error| error.to_string())?;
+    let path = browser_state_path(&app, conversation_id.as_deref())?;
+    let state = BrowserTabState {
+        address_input: state.address_input,
+        current_url: state.current_url,
+        history: state.history,
+        history_index: state.history_index,
+        zoom_percent: state.zoom_percent,
+        show_device_toolbar: state.show_device_toolbar,
+        updated_at: now_unix_ms(),
+    };
+    let text = serde_json::to_string_pretty(&state).map_err(|error| error.to_string())?;
+    std::fs::write(path, text).map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+pub fn clear_browser_tab_state(
+    app: AppHandle,
+    conversation_id: Option<String>,
+) -> Result<(), String> {
+    let path = browser_state_path(&app, conversation_id.as_deref())?;
+    if path.exists() {
+        std::fs::remove_file(path).map_err(|error| error.to_string())?;
+    }
+    Ok(())
 }

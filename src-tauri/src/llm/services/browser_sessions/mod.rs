@@ -9,9 +9,12 @@ use tokio::sync::oneshot;
 
 const DEFAULT_SCOPE: &str = "__default__";
 const BROWSER_COMMAND_EVENT: &str = "nova-browser-command";
+const BROWSER_OPEN_EVENT: &str = "nova-browser-open-request";
 const DEFAULT_TIMEOUT_MS: u64 = 15_000;
 const SNAPSHOT_TIMEOUT_MS: u64 = 30_000;
 const MAX_TIMEOUT_MS: u64 = 60_000;
+const OPEN_WAIT_TIMEOUT_MS: u64 = 4_000;
+const OPEN_WAIT_STEP_MS: u64 = 100;
 
 static REQUEST_COUNTER: AtomicU64 = AtomicU64::new(1);
 static STATE: OnceLock<Mutex<BrowserSessionState>> = OnceLock::new();
@@ -36,6 +39,12 @@ pub struct BrowserAutomationCommand {
     pub request_id: String,
     pub action: String,
     pub payload: Value,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BrowserOpenRequest {
+    pub conversation_id: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -156,6 +165,32 @@ pub fn complete_command(result: BrowserAutomationResult) -> Result<(), String> {
     Ok(())
 }
 
+fn registered_session(key: &str) -> Result<Option<BrowserSession>, String> {
+    let guard = state()
+        .lock()
+        .map_err(|_| "browser session registry poisoned".to_string())?;
+    Ok(guard.sessions.get(key).cloned())
+}
+
+async fn wait_for_session_after_open(app: &AppHandle, key: &str) -> Option<BrowserSession> {
+    let _ = app.emit(
+        BROWSER_OPEN_EVENT,
+        BrowserOpenRequest {
+            conversation_id: key.to_string(),
+        },
+    );
+
+    let attempts = OPEN_WAIT_TIMEOUT_MS / OPEN_WAIT_STEP_MS;
+    for _ in 0..attempts {
+        if let Ok(Some(session)) = registered_session(key) {
+            return Some(session);
+        }
+        tokio::time::sleep(Duration::from_millis(OPEN_WAIT_STEP_MS)).await;
+    }
+
+    registered_session(key).ok().flatten()
+}
+
 pub async fn run_command(
     app: &AppHandle,
     conversation_id: Option<&str>,
@@ -164,25 +199,23 @@ pub async fn run_command(
     timeout_ms: Option<u64>,
 ) -> Value {
     let key = scope_key(conversation_id);
-    let session = {
-        let guard = match state().lock() {
-            Ok(guard) => guard,
-            Err(_) => {
-                return json!({
-                    "ok": false,
-                    "error": "browser session registry poisoned",
-                });
-            }
-        };
-        guard.sessions.get(&key).cloned()
+    let session = match registered_session(&key) {
+        Ok(Some(session)) => Some(session),
+        Ok(None) => wait_for_session_after_open(app, &key).await,
+        Err(error) => {
+            return json!({
+                "ok": false,
+                "error": error,
+            });
+        }
     };
 
     let Some(session) = session else {
         return json!({
             "ok": true,
             "available": false,
-            "message": "Nova Browser tab is not open for this conversation.",
-            "hint": "Open the workspace Browser tab first, then retry.",
+            "message": "Nova Browser tab could not be opened for this conversation.",
+            "hint": "Open the workspace Browser tab and retry if the UI did not activate automatically.",
         });
     };
 

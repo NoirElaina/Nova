@@ -1,5 +1,6 @@
 <script setup lang="ts">
-import { ref } from 'vue';
+import { onBeforeUnmount, onMounted, ref } from 'vue';
+import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { Button } from "@/components/ui/button";
 import Sidebar from "./components/layout/Sidebar.vue";
 import WelcomeScreen from "./components/chat/WelcomeScreen.vue";
@@ -22,6 +23,9 @@ import { buildConversationExportHtml } from "./features/chat/utils/conversation-
 import { emitToast } from "./lib/toast";
 
 type WorkspaceTabId = "diff" | "usage" | "files" | "browser";
+type BrowserOpenRequest = {
+  conversationId?: string;
+};
 
 const {
   messages,
@@ -68,6 +72,7 @@ const isDrawerOpen = ref(false);
 const activeWorkspaceTab = ref<WorkspaceTabId>("diff");
 const exportingConversationId = ref<string | null>(null);
 const exportingFormat = ref<ConversationExportFormat | null>(null);
+let unlistenBrowserOpenRequest: UnlistenFn | null = null;
 
 const formatExportLabel = (format: ConversationExportFormat) => format.toUpperCase();
 
@@ -115,6 +120,35 @@ const handleExportConversation = async (
     exportingFormat.value = null;
   }
 };
+
+const handleBrowserOpenRequest = async (payload: BrowserOpenRequest) => {
+  const requestedConversationId = payload.conversationId?.trim();
+  if (
+    requestedConversationId &&
+    requestedConversationId !== "__default__" &&
+    requestedConversationId !== activeConversationId.value
+  ) {
+    await handleSelectConversation(requestedConversationId);
+  }
+
+  handleChangeMainView("chat");
+  activeWorkspaceTab.value = "browser";
+  isDrawerOpen.value = true;
+};
+
+onMounted(() => {
+  void listen<BrowserOpenRequest>("nova-browser-open-request", (event) => {
+    void handleBrowserOpenRequest(event.payload);
+  }).then((unlisten) => {
+    unlistenBrowserOpenRequest = unlisten;
+  }).catch((error) => {
+    console.warn("Browser open request listener failed:", error);
+  });
+});
+
+onBeforeUnmount(() => {
+  unlistenBrowserOpenRequest?.();
+});
 </script>
 
 <template>

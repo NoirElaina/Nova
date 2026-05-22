@@ -1,16 +1,17 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue';
 import { invoke } from '@tauri-apps/api/core';
-import { LogicalPosition, LogicalSize } from '@tauri-apps/api/dpi';
-import { listen, type UnlistenFn } from '@tauri-apps/api/event';
-import { Webview } from '@tauri-apps/api/webview';
-import { getCurrentWindow } from '@tauri-apps/api/window';
+import type { UnlistenFn } from '@tauri-apps/api/event';
 import { openUrl } from '@tauri-apps/plugin-opener';
 import {
-  clearBrowserTabState,
   getBrowserTabState,
+  loadBrowserTabState,
   saveBrowserTabState,
+  type BrowserTabState,
 } from '../../../features/browser/browser-tab-state';
+import { useBrowserAutomationCommands } from '../../../features/browser/useBrowserAutomationCommands';
+import { useBrowserSnapshot } from '../../../features/browser/useBrowserSnapshot';
+import { useNativeBrowserWebview } from '../../../features/browser/useNativeBrowserWebview';
 
 const props = defineProps<{
   conversationId?: string | null;
@@ -29,44 +30,9 @@ const showDeviceToolbar = ref(initialState?.showDeviceToolbar ?? false);
 const isElementPickerActive = ref(false);
 const browserHost = ref<HTMLElement | null>(null);
 const browserLabel = `nova-browser-${crypto.randomUUID()}`;
-let browserWebview: Webview | null = null;
-let isBrowserWebviewReady = false;
 let resizeObserver: ResizeObserver | null = null;
 let pickerRetryTimers: number[] = [];
-let restoreRetryTimer: number | null = null;
 let unlistenBrowserCommand: UnlistenFn | null = null;
-type BrowserSnapshotTarget = {
-  selector?: string;
-  frameId?: string;
-  contextId?: number;
-};
-
-let browserSnapshotRefMap = new Map<string, BrowserSnapshotTarget>();
-
-type BrowserFrameInfo = {
-  frameId: string;
-  parentFrameId?: string;
-  name?: string;
-  url?: string;
-  depth: number;
-  index: number;
-};
-
-type BrowserFrameSnapshot = {
-  frame: BrowserFrameInfo;
-  page?: Record<string, any>;
-  contextId?: number;
-  error?: string;
-};
-
-type BrowserAutomationCommand = {
-  conversationId: string;
-  requestId: string;
-  action: string;
-  payload?: {
-    input?: Record<string, unknown>;
-  };
-};
 
 const canGoBack = computed(() => historyIndex.value > 0);
 const canGoForward = computed(() => historyIndex.value >= 0 && historyIndex.value < history.value.length - 1);
@@ -83,8 +49,7 @@ const persistBrowserTabState = (conversationId: string | null | undefined = prop
   });
 };
 
-const restoreBrowserTabState = (conversationId: string | null | undefined) => {
-  const state = getBrowserTabState(conversationId);
+const applyBrowserTabState = (state: BrowserTabState | null) => {
   addressInput.value = state?.addressInput ?? '';
   currentUrl.value = state?.currentUrl ?? '';
   history.value = state?.history ?? [];
@@ -93,7 +58,15 @@ const restoreBrowserTabState = (conversationId: string | null | undefined) => {
   showDeviceToolbar.value = state?.showDeviceToolbar ?? false;
 };
 
+const restoreBrowserTabState = async (conversationId: string | null | undefined) => {
+  const state = await loadBrowserTabState(conversationId);
+  applyBrowserTabState(state);
+};
+
 const registerCurrentBrowserSession = async () => {
+  if (props.visible === false) {
+    return;
+  }
   await invoke('register_browser_session', {
     conversationId: props.conversationId || null,
     label: browserLabel,
@@ -136,6 +109,41 @@ const normalizeAddress = (raw: string) => {
   return `https://www.google.com/search?q=${encodeURIComponent(value)}`;
 };
 
+let schedulePickerInjection = () => {};
+
+const {
+  browserWebview,
+  isBrowserWebviewReady,
+  syncWebviewBounds,
+  closeNativeWebview,
+  hideNativeWebview,
+  navigateNativeWebview,
+  reopenSavedBrowserSurface,
+  queueReopenSavedBrowserSurface,
+  evalBrowserScript,
+  reloadNativeWebview,
+  clearBrowsingData,
+  applyZoom,
+} = useNativeBrowserWebview({
+  browserLabel,
+  browserHost,
+  currentUrl,
+  isLoading,
+  zoomPercent,
+  isVisible: () => props.visible !== false,
+  onReady: () => schedulePickerInjection(),
+  onAfterNavigate: () => schedulePickerInjection(),
+});
+
+const {
+  callDevtools,
+  flattenBrowserFrameTree,
+  createFrameExecutionContext,
+  captureBrowserSnapshot,
+  clickSnapshotRef,
+  typeSnapshotRef,
+} = useBrowserSnapshot(browserLabel, currentUrl);
+
 const visit = (raw: string, pushHistory = true) => {
   const nextUrl = normalizeAddress(raw);
   if (!nextUrl) return;
@@ -171,12 +179,12 @@ const goForward = () => {
 
 const reload = () => {
   if (!currentUrl.value) return;
-  if (!browserWebview || !isBrowserWebviewReady) {
+  if (!browserWebview.value || !isBrowserWebviewReady.value) {
     void navigateNativeWebview(currentUrl.value);
     return;
   }
   isLoading.value = true;
-  void invoke('browser_reload_webview', { label: browserLabel })
+  void reloadNativeWebview()
     .catch((error) => {
       console.warn('Browser reload failed:', error);
     })
@@ -203,8 +211,8 @@ const changeZoom = (delta: number) => {
 };
 
 const clearCookies = () => {
-  if (isBrowserWebviewReady) {
-    void browserWebview?.clearAllBrowsingData().catch((error) => {
+  if (isBrowserWebviewReady.value) {
+    void clearBrowsingData().catch((error) => {
       console.warn('Browser clear browsing data failed:', error);
     });
   }
@@ -212,8 +220,8 @@ const clearCookies = () => {
 };
 
 const clearCache = () => {
-  if (isBrowserWebviewReady) {
-    void browserWebview?.clearAllBrowsingData().catch((error) => {
+  if (isBrowserWebviewReady.value) {
+    void clearBrowsingData().catch((error) => {
       console.warn('Browser clear cache failed:', error);
     });
   }
@@ -233,75 +241,15 @@ const toggleElementPicker = () => {
   schedulePickerInjection();
 };
 
-const getHostBounds = () => {
-  const host = browserHost.value;
-  if (!host) return null;
-  const rect = host.getBoundingClientRect();
-  if (rect.width <= 0 || rect.height <= 0) return null;
-  return rect;
-};
-
-const waitForHostBounds = async (timeoutMs = 1400) => {
-  const startedAt = performance.now();
-  while (performance.now() - startedAt < timeoutMs) {
-    await nextTick();
-    const rect = getHostBounds();
-    if (rect) return rect;
-    await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
-  }
-  return getHostBounds();
-};
-
-const syncWebviewBounds = async () => {
-  if (!browserWebview || !isBrowserWebviewReady) return;
-  try {
-    const rect = getHostBounds();
-    if (!rect || !currentUrl.value) {
-      await browserWebview.hide();
-      return;
-    }
-
-    await browserWebview.setPosition(new LogicalPosition(Math.round(rect.left), Math.round(rect.top)));
-    await browserWebview.setSize(new LogicalSize(Math.round(rect.width), Math.round(rect.height)));
-    await browserWebview.show();
-  } catch (error) {
-    console.warn('Browser webview bounds sync failed:', error);
-  }
-};
-
-const closeNativeWebview = async () => {
-  if (!browserWebview || !isBrowserWebviewReady) {
-    browserWebview = null;
-    isBrowserWebviewReady = false;
-    return;
-  }
-  try {
-    await browserWebview.close();
-  } catch (error) {
-    console.warn('Browser webview close failed:', error);
-  } finally {
-    browserWebview = null;
-    isBrowserWebviewReady = false;
-  }
-};
-
 const hideBrowserSurface = async () => {
   persistBrowserTabState();
   pickerRetryTimers.forEach((timer) => window.clearTimeout(timer));
   pickerRetryTimers = [];
-  if (restoreRetryTimer !== null) {
-    window.clearTimeout(restoreRetryTimer);
-    restoreRetryTimer = null;
-  }
   isElementPickerActive.value = false;
   await applyElementPickerState().catch((error) => {
     console.warn('Browser element picker cleanup failed:', error);
   });
-  if (browserWebview && isBrowserWebviewReady) {
-    await browserWebview.hide().catch((error) => {
-      console.warn('Browser webview hide failed:', error);
-    });
-  }
+  await hideNativeWebview();
 };
 
 const closeBrowserSurface = async () => {
@@ -311,719 +259,32 @@ const closeBrowserSurface = async () => {
 
 defineExpose({ hideBrowserSurface, closeBrowserSurface });
 
-const reopenSavedBrowserSurface = async () => {
-  if (props.visible === false) return;
-  if (!currentUrl.value) return;
-  isLoading.value = true;
-  const opened = await navigateNativeWebview(currentUrl.value);
-  if (!opened) {
-    isLoading.value = false;
-    queueReopenSavedBrowserSurface();
-  }
-};
-
-const queueReopenSavedBrowserSurface = () => {
-  if (props.visible === false) return;
-  if (!currentUrl.value || browserWebview || restoreRetryTimer !== null) return;
-  restoreRetryTimer = window.setTimeout(() => {
-    restoreRetryTimer = null;
-    void reopenSavedBrowserSurface();
-  }, 120);
-};
-
-const createNativeWebview = async (url: string): Promise<boolean> => {
-  await nextTick();
-  const rect = await waitForHostBounds();
-  if (!rect) return false;
-  if (browserWebview && !isBrowserWebviewReady) return false;
-
-  const child = new Webview(getCurrentWindow(), browserLabel, {
-    url,
-    x: Math.round(rect.left),
-    y: Math.round(rect.top),
-    width: Math.round(rect.width),
-    height: Math.round(rect.height),
-    focus: true,
-    devtools: true,
-  });
-
-  browserWebview = child;
-  isBrowserWebviewReady = false;
-  void child.once('tauri://error', (event) => {
-    console.error('Browser webview failed to create:', event.payload);
-    browserWebview = null;
-    isBrowserWebviewReady = false;
-    isLoading.value = false;
-  });
-  void child.once('tauri://created', () => {
-    isBrowserWebviewReady = true;
-    isLoading.value = false;
-    void child.setZoom(zoomPercent.value / 100).catch((error) => {
-      console.warn('Browser zoom failed:', error);
-    });
-    void syncWebviewBounds();
-    schedulePickerInjection();
-  });
-  return true;
-};
-
-const navigateNativeWebview = async (url: string): Promise<boolean> => {
-  await nextTick();
-  if (!browserWebview) {
-    return createNativeWebview(url);
-  }
-  if (!isBrowserWebviewReady) return false;
-
-  await syncWebviewBounds();
-  await invoke('browser_navigate_webview', { label: browserLabel, url }).catch((error) => {
-    console.warn('Browser navigation failed:', error);
-  });
-  window.setTimeout(() => {
-    isLoading.value = false;
-    schedulePickerInjection();
-  }, 900);
-  return true;
-};
-
-const evalBrowserScript = async (script: string) => {
-  if (!browserWebview || !isBrowserWebviewReady) return;
-  await invoke('browser_eval_webview_script', { label: browserLabel, script }).catch((error) => {
-    console.warn('Browser script evaluation failed:', error);
-  });
-};
-
-const wait = (ms: number) => new Promise((resolve) => window.setTimeout(resolve, ms));
-
-const browserStatePayload = (extra: Record<string, unknown> = {}) => ({
-  url: currentUrl.value || null,
-  address: addressInput.value || null,
-  canGoBack: canGoBack.value,
-  canGoForward: canGoForward.value,
-  isLoading: isLoading.value,
-  zoomPercent: zoomPercent.value,
-  note:
-    'Nova Browser v1 can navigate/click/type/reset the visible built-in browser and return a bounded DOM summary for the current page.',
-  ...extra,
+const {
+  listenBrowserAutomationCommands,
+} = useBrowserAutomationCommands({
+  conversationId: () => browserConversationId.value,
+  rawConversationId: () => props.conversationId,
+  currentUrl,
+  addressInput,
+  history,
+  historyIndex,
+  isLoading,
+  zoomPercent,
+  isBrowserWebviewReady,
+  canGoBack,
+  canGoForward,
+  visit,
+  evalBrowserScript,
+  closeNativeWebview,
+  clearBrowsingData,
+  updateBrowserSessionUrl,
+  setElementPickerActive: (value) => {
+    isElementPickerActive.value = value;
+  },
+  captureBrowserSnapshot,
+  clickSnapshotRef,
+  typeSnapshotRef,
 });
-
-const reportBrowserCommandResult = async (
-  requestId: string,
-  ok: boolean,
-  result?: Record<string, unknown>,
-  error?: string,
-) => {
-  await invoke('browser_automation_result', {
-    payload: {
-      requestId,
-      ok,
-      result: result ?? null,
-      error: error ?? null,
-    },
-  }).catch((invokeError) => {
-    console.warn('Browser automation result report failed:', invokeError);
-  });
-};
-
-const automationInput = (command: BrowserAutomationCommand) =>
-  command.payload?.input ?? {};
-
-const clickScript = (input: Record<string, unknown>) => {
-  const selector = typeof input.selector === 'string' ? input.selector.trim() : '';
-  const x = typeof input.x === 'number' ? input.x : null;
-  const y = typeof input.y === 'number' ? input.y : null;
-
-  return `
-(() => {
-  const selector = ${JSON.stringify(selector || null)};
-  const x = ${JSON.stringify(x)};
-  const y = ${JSON.stringify(y)};
-  const target = selector
-    ? document.querySelector(selector)
-    : (Number.isFinite(x) && Number.isFinite(y) ? document.elementFromPoint(x, y) : null);
-  if (!target) return { ok: false, error: 'No browser element matched the click target.' };
-  target.scrollIntoView({ block: 'center', inline: 'center', behavior: 'instant' });
-  const rect = target.getBoundingClientRect();
-  const clientX = Number.isFinite(x) ? x : rect.left + rect.width / 2;
-  const clientY = Number.isFinite(y) ? y : rect.top + rect.height / 2;
-  for (const type of ['pointerdown', 'mousedown', 'pointerup', 'mouseup', 'click']) {
-    target.dispatchEvent(new MouseEvent(type, {
-      bubbles: true,
-      cancelable: true,
-      view: window,
-      clientX,
-      clientY,
-    }));
-  }
-  return { ok: true };
-})();
-`;
-};
-
-const typeScript = (input: Record<string, unknown>) => {
-  const selector = typeof input.selector === 'string' ? input.selector.trim() : '';
-  const text = typeof input.text === 'string' ? input.text : '';
-  const x = typeof input.x === 'number' ? input.x : null;
-  const y = typeof input.y === 'number' ? input.y : null;
-  const clear = input.clear === true;
-  const submit = input.submit === true;
-
-  return `
-(() => {
-  const selector = ${JSON.stringify(selector || null)};
-  const text = ${JSON.stringify(text)};
-  const x = ${JSON.stringify(x)};
-  const y = ${JSON.stringify(y)};
-  const clear = ${clear ? 'true' : 'false'};
-  const submit = ${submit ? 'true' : 'false'};
-  let target = selector ? document.querySelector(selector) : null;
-  if (!target && Number.isFinite(x) && Number.isFinite(y)) {
-    target = document.elementFromPoint(x, y);
-  }
-  if (!target) {
-    target = document.activeElement;
-  }
-  if (!target || target === document.body || target === document.documentElement) {
-    return { ok: false, error: 'No editable browser element matched the typing target.' };
-  }
-  target.scrollIntoView({ block: 'center', inline: 'center', behavior: 'instant' });
-  if (typeof target.focus === 'function') target.focus();
-
-  const isEditable = target.isContentEditable;
-  if (isEditable) {
-    if (clear) target.textContent = '';
-    document.execCommand('insertText', false, text);
-  } else {
-    const currentValue = clear ? '' : (target.value || '');
-    const nextValue = currentValue + text;
-    const prototype = target instanceof HTMLTextAreaElement
-      ? HTMLTextAreaElement.prototype
-      : HTMLInputElement.prototype;
-    const descriptor = Object.getOwnPropertyDescriptor(prototype, 'value');
-    if (descriptor && descriptor.set) {
-      descriptor.set.call(target, nextValue);
-    } else {
-      target.value = nextValue;
-    }
-    target.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'insertText', data: text }));
-    target.dispatchEvent(new Event('change', { bubbles: true }));
-  }
-
-  if (submit) {
-    target.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', code: 'Enter', bubbles: true, cancelable: true }));
-    target.dispatchEvent(new KeyboardEvent('keyup', { key: 'Enter', code: 'Enter', bubbles: true, cancelable: true }));
-    if (target.form && typeof target.form.requestSubmit === 'function') {
-      target.form.requestSubmit();
-    }
-  }
-  return { ok: true };
-})();
-`;
-};
-
-const parseWebviewScriptResult = (raw: string) => {
-  const first = JSON.parse(raw);
-  if (typeof first === 'string') {
-    return JSON.parse(first);
-  }
-  return first;
-};
-
-const browserSnapshotExpression = (refPrefix: string, maxTextLength = 9000, maxElements = 90) => `
-(() => {
-  const refPrefix = ${JSON.stringify(refPrefix)};
-  const maxTextLength = ${maxTextLength};
-  const maxElements = ${maxElements};
-  const importantSelector = [
-    'a[href]',
-    'button',
-    'input',
-    'textarea',
-    'select',
-    'summary',
-    '[role]',
-    '[aria-label]',
-    '[title]',
-    'img[alt]',
-    'img[title]',
-    'iframe[title]',
-    'iframe[name]',
-    '[contenteditable="true"]',
-    'h1',
-    'h2',
-    'h3',
-    'h4',
-    'h5',
-    'h6'
-  ].join(',');
-
-  const visible = (element) => {
-    if (!(element instanceof Element)) return false;
-    const rect = element.getBoundingClientRect();
-    if (rect.width < 2 || rect.height < 2) return false;
-    const style = window.getComputedStyle(element);
-    return style.visibility !== 'hidden' && style.display !== 'none' && Number(style.opacity || '1') > 0.01;
-  };
-
-  const cleanText = (value) => String(value || '').replace(/\\s+/g, ' ').trim();
-  const roleFor = (element) => {
-    const explicitRole = element.getAttribute('role');
-    if (explicitRole) return explicitRole;
-    const tag = element.tagName.toLowerCase();
-    if (tag === 'a') return 'link';
-    if (tag === 'button') return 'button';
-    if (tag === 'input') return element.getAttribute('type') || 'input';
-    if (tag === 'img') return 'image';
-    if (tag === 'iframe') return 'frame';
-    if (/^h[1-6]$/.test(tag)) return 'heading';
-    return tag;
-  };
-  const labelFor = (element) => {
-    const aria = cleanText(element.getAttribute('aria-label'));
-    if (aria) return aria;
-    const title = cleanText(element.getAttribute('title'));
-    if (title) return title;
-    const placeholder = cleanText(element.getAttribute('placeholder'));
-    if (placeholder) return placeholder;
-    const alt = cleanText(element.getAttribute('alt'));
-    if (alt) return alt;
-    const name = cleanText(element.getAttribute('name'));
-    if (name) return name;
-    const value = element instanceof HTMLInputElement || element instanceof HTMLTextAreaElement
-      ? cleanText(element.value)
-      : '';
-    if (value) return value;
-    return cleanText(element.innerText || element.textContent).slice(0, 220);
-  };
-
-  const elements = [];
-  const seen = new Set();
-  for (const element of Array.from(document.querySelectorAll(importantSelector))) {
-    if (elements.length >= maxElements) break;
-    if (seen.has(element) || !visible(element)) continue;
-    const name = labelFor(element);
-    if (!name) continue;
-    seen.add(element);
-    const ref = refPrefix + (elements.length + 1);
-    element.setAttribute('data-nova-browser-ref', ref);
-    const rect = element.getBoundingClientRect();
-    elements.push({
-      ref,
-      role: roleFor(element),
-      name,
-      selector: '[data-nova-browser-ref="' + ref + '"]',
-      tag: element.tagName.toLowerCase(),
-      x: Math.round(rect.left + rect.width / 2),
-      y: Math.round(rect.top + rect.height / 2),
-      href: element instanceof HTMLAnchorElement ? element.href : null,
-      source: element instanceof HTMLImageElement ? (element.currentSrc || element.src || null) : null,
-    });
-  }
-
-  const headings = Array.from(document.querySelectorAll('h1,h2,h3,h4,h5,h6'))
-    .filter(visible)
-    .slice(0, 60)
-    .map((element) => ({
-      level: Number(element.tagName.slice(1)),
-      text: cleanText(element.innerText || element.textContent).slice(0, 220),
-    }))
-    .filter((heading) => heading.text);
-
-  const textChunks = [];
-  let textLength = 0;
-  let visitedTextNodes = 0;
-  const blockedTags = new Set(['SCRIPT', 'STYLE', 'NOSCRIPT', 'TEMPLATE', 'SVG']);
-  const walkerRoot = document.body || document.documentElement;
-  if (walkerRoot) {
-    const walker = document.createTreeWalker(walkerRoot, NodeFilter.SHOW_TEXT, {
-      acceptNode(node) {
-        if (visitedTextNodes >= 900 || textLength >= maxTextLength) {
-          return NodeFilter.FILTER_REJECT;
-        }
-        const text = cleanText(node.nodeValue);
-        if (!text) return NodeFilter.FILTER_REJECT;
-        const parent = node.parentElement;
-        if (!parent || !visible(parent)) return NodeFilter.FILTER_REJECT;
-        if (blockedTags.has(parent.tagName)) return NodeFilter.FILTER_REJECT;
-        return NodeFilter.FILTER_ACCEPT;
-      },
-    });
-    while (walker.nextNode() && visitedTextNodes < 900 && textLength < maxTextLength) {
-      visitedTextNodes += 1;
-      const text = cleanText(walker.currentNode.nodeValue);
-      textChunks.push(text);
-      textLength += text.length + 1;
-    }
-  }
-  const bodyText = textChunks.join('\\n').slice(0, maxTextLength);
-
-  return {
-    mode: 'runtime-dom-summary',
-    title: document.title || '',
-    url: location.href,
-    text: bodyText,
-    elements,
-    headings,
-    language: document.documentElement ? document.documentElement.lang || '' : '',
-    capturedAt: new Date().toISOString(),
-  };
-})()
-`;
-
-const callDevtools = async (method: string, params: Record<string, unknown>) => {
-  const raw = await invoke<string>('browser_call_devtools_protocol_method', {
-    label: browserLabel,
-    method,
-    paramsJson: JSON.stringify(params),
-  });
-  return parseWebviewScriptResult(raw) as Record<string, any>;
-};
-
-const flattenBrowserFrameTree = (frameTree: any, depth = 0, frames: BrowserFrameInfo[] = []) => {
-  const frame = frameTree?.frame;
-  if (frame?.id) {
-    frames.push({
-      frameId: String(frame.id),
-      parentFrameId: typeof frame.parentId === 'string' ? frame.parentId : undefined,
-      name: typeof frame.name === 'string' ? frame.name : undefined,
-      url: typeof frame.url === 'string' ? frame.url : undefined,
-      depth,
-      index: frames.length + 1,
-    });
-  }
-  const children = Array.isArray(frameTree?.childFrames) ? frameTree.childFrames : [];
-  for (const child of children) {
-    flattenBrowserFrameTree(child, depth + 1, frames);
-  }
-  return frames;
-};
-
-const createFrameExecutionContext = async (frameId: string) => {
-  const result = await callDevtools('Page.createIsolatedWorld', {
-    frameId,
-    worldName: 'nova-browser-snapshot',
-    grantUniveralAccess: true,
-  });
-  const contextId = result.executionContextId;
-  return typeof contextId === 'number' ? contextId : undefined;
-};
-
-const runtimeErrorMessage = (evaluated: Record<string, any>, fallback: string) => {
-  if (evaluated.exceptionDetails) {
-    return evaluated.exceptionDetails.exception?.description || evaluated.exceptionDetails.text || fallback;
-  }
-  const value = evaluated.result?.value;
-  if (value && typeof value === 'object' && value.ok === false) {
-    return typeof value.error === 'string' ? value.error : fallback;
-  }
-  return null;
-};
-
-const assertRuntimeEvaluationOk = (evaluated: Record<string, any>, fallback: string) => {
-  const error = runtimeErrorMessage(evaluated, fallback);
-  if (error) throw new Error(error);
-};
-
-const evaluateScriptInSnapshotContext = async (
-  target: BrowserSnapshotTarget,
-  expression: string,
-  fallbackError: string,
-) => {
-  const params: Record<string, unknown> = {
-    expression,
-    returnByValue: true,
-    awaitPromise: true,
-  };
-  if (typeof target.contextId === 'number') {
-    params.contextId = target.contextId;
-  }
-  const evaluated = await callDevtools('Runtime.evaluate', params);
-  assertRuntimeEvaluationOk(evaluated, fallbackError);
-  return evaluated.result?.value;
-};
-
-const captureFrameSnapshot = async (
-  frame: BrowserFrameInfo,
-  topFrameId: string | undefined,
-): Promise<BrowserFrameSnapshot> => {
-  const refPrefix = `f${frame.index}_el`;
-  let contextId: number | undefined;
-  try {
-    contextId = await createFrameExecutionContext(frame.frameId);
-  } catch (error) {
-    if (frame.frameId !== topFrameId) {
-      throw error;
-    }
-  }
-
-  const params: Record<string, unknown> = {
-    expression: browserSnapshotExpression(refPrefix),
-    returnByValue: true,
-    awaitPromise: false,
-  };
-  if (typeof contextId === 'number') {
-    params.contextId = contextId;
-  }
-  const evaluated = await callDevtools('Runtime.evaluate', params);
-  assertRuntimeEvaluationOk(evaluated, 'Browser DOM snapshot script failed');
-
-  const page = (evaluated.result?.value ?? {}) as Record<string, any>;
-  const frameUrl = page.url || frame.url || '';
-  const elements = Array.isArray(page.elements) ? page.elements : [];
-  page.elements = elements.map((element: Record<string, any>) => ({
-    ...element,
-    frameId: frame.frameId,
-    frameIndex: frame.index,
-    frameName: frame.name || null,
-    frameUrl,
-  }));
-  page.headings = Array.isArray(page.headings)
-    ? page.headings.map((heading: Record<string, any>) => ({
-        ...heading,
-        frameId: frame.frameId,
-        frameIndex: frame.index,
-        frameUrl,
-      }))
-    : [];
-
-  return {
-    frame: {
-      ...frame,
-      url: frameUrl,
-    },
-    page,
-    contextId,
-  };
-};
-
-const captureBrowserSnapshot = async () => {
-  const frameTreeResult = await callDevtools('Page.getFrameTree', {});
-  const allFrames = flattenBrowserFrameTree(frameTreeResult.frameTree);
-  const maxFrames = 35;
-  const frames = allFrames.slice(0, maxFrames);
-  const topFrameId = frames[0]?.frameId;
-
-  browserSnapshotRefMap = new Map();
-  const frameSnapshots: BrowserFrameSnapshot[] = [];
-  for (const frame of frames) {
-    try {
-      const snapshot = await captureFrameSnapshot(frame, topFrameId);
-      frameSnapshots.push(snapshot);
-      const elements = Array.isArray(snapshot.page?.elements) ? snapshot.page.elements : [];
-      for (const element of elements) {
-        if (typeof element.ref !== 'string' || typeof element.selector !== 'string') continue;
-        browserSnapshotRefMap.set(element.ref, {
-          selector: element.selector,
-          frameId: snapshot.frame.frameId,
-          contextId: snapshot.contextId,
-        });
-      }
-    } catch (error) {
-      frameSnapshots.push({
-        frame,
-        error: error instanceof Error ? error.message : String(error),
-      });
-    }
-  }
-
-  const capturedFrames = frameSnapshots.filter((snapshot) => snapshot.page);
-  const allElements = capturedFrames.flatMap((snapshot) =>
-    Array.isArray(snapshot.page?.elements) ? snapshot.page.elements : [],
-  );
-  const allHeadings = capturedFrames.flatMap((snapshot) =>
-    Array.isArray(snapshot.page?.headings) ? snapshot.page.headings : [],
-  );
-  const textByFrame = capturedFrames
-    .map((snapshot) => {
-      const page = snapshot.page ?? {};
-      const text = typeof page.text === 'string' ? page.text.trim() : '';
-      if (!text) return '';
-      const title = typeof page.title === 'string' && page.title ? ` ${page.title}` : '';
-      const url = snapshot.frame.url ? ` ${snapshot.frame.url}` : '';
-      return `[Frame ${snapshot.frame.index}${title}${url}]\n${text}`;
-    })
-    .filter(Boolean)
-    .join('\n\n')
-    .slice(0, 52000);
-  const topPage = capturedFrames[0]?.page ?? {};
-
-  return {
-    mode: 'cdp-frame-dom-summary',
-    title: topPage.title ?? '',
-    url: currentUrl.value || topPage.url || '',
-    text: textByFrame,
-    elements: allElements,
-    headings: allHeadings,
-    frames: frameSnapshots.map((snapshot) => ({
-      frameId: snapshot.frame.frameId,
-      parentFrameId: snapshot.frame.parentFrameId ?? null,
-      index: snapshot.frame.index,
-      depth: snapshot.frame.depth,
-      name: snapshot.frame.name ?? null,
-      url: snapshot.frame.url ?? null,
-      title: snapshot.page?.title ?? null,
-      elementCount: Array.isArray(snapshot.page?.elements) ? snapshot.page.elements.length : 0,
-      textPreview:
-        typeof snapshot.page?.text === 'string' ? snapshot.page.text.slice(0, 600) : '',
-      error: snapshot.error ?? null,
-    })),
-    frameCount: allFrames.length,
-    capturedFrameCount: capturedFrames.length,
-    skippedFrameCount: Math.max(0, allFrames.length - frames.length),
-    elementCount: allElements.length,
-    capturedAt: new Date().toISOString(),
-  } as Record<string, unknown>;
-};
-
-const clickSnapshotRef = async (ref: string) => {
-  const target = browserSnapshotRefMap.get(ref);
-  if (!target) {
-    throw new Error(`Unknown browser snapshot ref: ${ref}. Run nova_browser_snapshot again.`);
-  }
-  if (target.selector) {
-    await evaluateScriptInSnapshotContext(
-      target,
-      clickScript({ selector: target.selector }),
-      `Unable to click browser snapshot ref: ${ref}`,
-    );
-    return;
-  }
-  throw new Error(`Browser snapshot ref has no click target: ${ref}`);
-};
-
-const typeSnapshotRef = async (ref: string, input: Record<string, unknown>) => {
-  const target = browserSnapshotRefMap.get(ref);
-  if (!target) {
-    throw new Error(`Unknown browser snapshot ref: ${ref}. Run nova_browser_snapshot again.`);
-  }
-  if (!target.selector) {
-    throw new Error(`Browser snapshot ref has no typing target: ${ref}`);
-  }
-  await evaluateScriptInSnapshotContext(
-    target,
-    typeScript({ ...input, selector: target.selector }),
-    `Unable to type into browser snapshot ref: ${ref}`,
-  );
-};
-
-const runBrowserAutomationCommand = async (command: BrowserAutomationCommand) => {
-  const input = automationInput(command);
-
-  if (command.action === 'snapshot') {
-    if (!currentUrl.value || !browserWebview || !isBrowserWebviewReady) {
-      return browserStatePayload({
-        contentAvailable: false,
-        note: 'Browser has no ready page to snapshot yet.',
-      });
-    }
-
-    try {
-      const page = await captureBrowserSnapshot();
-      return browserStatePayload({
-        contentAvailable: true,
-        title: page.title ?? null,
-        text: page.text ?? '',
-        elements: page.elements ?? [],
-        headings: page.headings ?? [],
-        frames: page.frames ?? [],
-        page,
-        note:
-          'Snapshot includes DOM text and visible interactive elements from the current Nova built-in browser page, including reachable iframes.',
-      });
-    } catch (error) {
-      return browserStatePayload({
-        contentAvailable: false,
-        extractionError: error instanceof Error ? error.message : String(error),
-        note: 'Browser state is available, but DOM snapshot extraction failed.',
-      });
-    }
-  }
-
-  if (command.action === 'navigate') {
-    const url = typeof input.url === 'string' ? input.url.trim() : '';
-    if (!url) {
-      throw new Error("Missing 'url' argument");
-    }
-    visit(url);
-    await wait(1000);
-    return browserStatePayload({ action: 'navigate' });
-  }
-
-  if (command.action === 'click') {
-    if (!currentUrl.value) {
-      throw new Error('Browser has no page loaded');
-    }
-    const ref = typeof input.ref === 'string' ? input.ref.trim() : '';
-    const hasRef = Boolean(ref);
-    const hasSelector = typeof input.selector === 'string' && input.selector.trim().length > 0;
-    const hasCoordinates = typeof input.x === 'number' && typeof input.y === 'number';
-    if (!hasRef && !hasSelector && !hasCoordinates) {
-      throw new Error("Provide 'ref' from nova_browser_snapshot, 'selector', or both 'x' and 'y'");
-    }
-    if (hasRef) {
-      await clickSnapshotRef(ref);
-    } else {
-      await evalBrowserScript(clickScript(input));
-    }
-    await wait(250);
-    return browserStatePayload({ action: 'click' });
-  }
-
-  if (command.action === 'type') {
-    if (!currentUrl.value) {
-      throw new Error('Browser has no page loaded');
-    }
-    if (typeof input.text !== 'string') {
-      throw new Error("Missing 'text' argument");
-    }
-    const ref = typeof input.ref === 'string' ? input.ref.trim() : '';
-    if (ref) {
-      await typeSnapshotRef(ref, input);
-    } else {
-      await evalBrowserScript(typeScript(input));
-    }
-    await wait(250);
-    return browserStatePayload({ action: 'type' });
-  }
-
-  if (command.action === 'reset') {
-    const clearData = input.clear_data === true || input.clearData === true;
-    if (clearData && isBrowserWebviewReady) {
-      await browserWebview?.clearAllBrowsingData().catch((error) => {
-        console.warn('Browser clear data during reset failed:', error);
-      });
-    }
-    isElementPickerActive.value = false;
-    currentUrl.value = '';
-    addressInput.value = '';
-    history.value = [];
-    historyIndex.value = -1;
-    clearBrowserTabState(props.conversationId);
-    await closeNativeWebview();
-    await updateBrowserSessionUrl();
-    return browserStatePayload({ action: 'reset', clearedData: clearData });
-  }
-
-  throw new Error(`Unsupported browser action: ${command.action}`);
-};
-
-const handleBrowserAutomationCommand = async (event: { payload: BrowserAutomationCommand }) => {
-  const command = event.payload;
-  if (!command || command.conversationId !== browserConversationId.value) {
-    return;
-  }
-
-  try {
-    const result = await runBrowserAutomationCommand(command);
-    await reportBrowserCommandResult(command.requestId, true, result);
-  } catch (error) {
-    await reportBrowserCommandResult(
-      command.requestId,
-      false,
-      browserStatePayload(),
-      error instanceof Error ? error.message : String(error),
-    );
-  }
-};
 
 const elementPickerCleanupScript = () => `
 (() => {
@@ -1092,7 +353,7 @@ const setNativeInspectMode = async (enabled: boolean) => {
 };
 
 const applyElementPickerState = async () => {
-  if (!browserWebview || !isBrowserWebviewReady) return;
+  if (!browserWebview.value || !isBrowserWebviewReady.value) return;
   await cleanupLegacyElementPickerOverlays();
   try {
     await setNativeInspectMode(isElementPickerActive.value);
@@ -1102,7 +363,7 @@ const applyElementPickerState = async () => {
   }
 };
 
-const schedulePickerInjection = () => {
+schedulePickerInjection = () => {
   pickerRetryTimers.forEach((timer) => window.clearTimeout(timer));
   pickerRetryTimers = [];
   if (!isElementPickerActive.value) return;
@@ -1121,8 +382,7 @@ const openBrowserMenu = async (event: MouseEvent) => {
 };
 
 watch(zoomPercent, (value) => {
-  if (!isBrowserWebviewReady) return;
-  void browserWebview?.setZoom(value / 100).catch((error) => {
+  void applyZoom(value).catch((error) => {
     console.warn('Browser zoom failed:', error);
   });
 });
@@ -1136,9 +396,11 @@ watch(
   (visible) => {
     if (visible === false) {
       void hideBrowserSurface();
+      void unregisterBrowserSession();
       return;
     }
-    if (browserWebview) {
+    void registerCurrentBrowserSession();
+    if (browserWebview.value) {
       void nextTick().then(syncWebviewBounds);
     } else {
       queueReopenSavedBrowserSurface();
@@ -1158,13 +420,18 @@ watch([addressInput, history, historyIndex, zoomPercent, showDeviceToolbar], () 
 watch(
   () => props.conversationId,
   (next, previous) => {
-    if (previous !== undefined && previous !== next) {
-      persistBrowserTabState(previous);
-      void unregisterBrowserSession(previous);
-      restoreBrowserTabState(next);
-      void closeNativeWebview().then(reopenSavedBrowserSurface);
-    }
-    void registerCurrentBrowserSession();
+    void (async () => {
+      if (previous !== undefined && previous !== next) {
+        persistBrowserTabState(previous);
+        await unregisterBrowserSession(previous);
+        await restoreBrowserTabState(next);
+        await closeNativeWebview();
+        await reopenSavedBrowserSurface();
+      }
+      if (props.visible !== false) {
+        await registerCurrentBrowserSession();
+      }
+    })();
   },
 );
 
@@ -1175,7 +442,7 @@ watch(browserHost, (host, oldHost) => {
   if (host) {
     resizeObserver?.observe(host);
   }
-  if (browserWebview) {
+  if (browserWebview.value) {
     void syncWebviewBounds();
   } else {
     queueReopenSavedBrowserSurface();
@@ -1183,25 +450,29 @@ watch(browserHost, (host, oldHost) => {
 });
 
 onMounted(() => {
-  void registerCurrentBrowserSession();
-  void listen<BrowserAutomationCommand>('nova-browser-command', handleBrowserAutomationCommand).then((unlisten) => {
-    unlistenBrowserCommand = unlisten;
-  }).catch((error) => {
-    console.warn('Browser automation listener failed:', error);
-  });
-
-  resizeObserver = new ResizeObserver(() => {
-    if (browserWebview) {
-      void syncWebviewBounds();
-    } else {
-      queueReopenSavedBrowserSurface();
+  void (async () => {
+    await restoreBrowserTabState(props.conversationId);
+    if (props.visible !== false) {
+      await registerCurrentBrowserSession();
     }
-  });
-  if (browserHost.value) {
-    resizeObserver.observe(browserHost.value);
-  }
-  window.addEventListener('resize', handleWindowResize);
-  void reopenSavedBrowserSurface();
+    unlistenBrowserCommand = await listenBrowserAutomationCommands().catch((error) => {
+      console.warn('Browser automation listener failed:', error);
+      return null;
+    });
+
+    resizeObserver = new ResizeObserver(() => {
+      if (browserWebview.value) {
+        void syncWebviewBounds();
+      } else {
+        queueReopenSavedBrowserSurface();
+      }
+    });
+    if (browserHost.value) {
+      resizeObserver.observe(browserHost.value);
+    }
+    window.addEventListener('resize', handleWindowResize);
+    void reopenSavedBrowserSurface();
+  })();
 });
 
 onBeforeUnmount(() => {

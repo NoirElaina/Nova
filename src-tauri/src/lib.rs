@@ -122,7 +122,10 @@ pub fn run() {
             command::browser::register_browser_session,
             command::browser::unregister_browser_session,
             command::browser::update_browser_session_url,
-            command::browser::browser_automation_result
+            command::browser::browser_automation_result,
+            command::browser::load_browser_tab_state,
+            command::browser::save_browser_tab_state,
+            command::browser::clear_browser_tab_state
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application");

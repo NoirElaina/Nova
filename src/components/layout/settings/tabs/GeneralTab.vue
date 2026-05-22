@@ -20,7 +20,7 @@ import {
 
 const theme = ref<UiTheme>(getStoredUiTheme())
 const language = ref<UiLanguage>(getStoredUiLanguage())
-const enableAppLog = ref(true)
+const enableAppLog = ref(false)
 const isSavingPreferences = ref(false)
 const cachedSettings = ref<Record<string, unknown> | null>(null)
 
@@ -80,7 +80,7 @@ const loadSettings = async () => {
 
     const nextLanguage = normalizeUiLanguage(settings.uiLanguage)
     const nextTheme = normalizeUiTheme(settings.uiTheme)
-    const nextEnableAppLog = settings.enableAppLog !== false
+    const nextEnableAppLog = settings.enableAppLog === true
     language.value = nextLanguage
     theme.value = nextTheme
     enableAppLog.value = nextEnableAppLog

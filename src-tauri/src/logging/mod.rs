@@ -13,7 +13,7 @@ static FILE_LOG_GUARD: OnceLock<WorkerGuard> = OnceLock::new();
 static FILE_LOG_ENABLED: OnceLock<AtomicBool> = OnceLock::new();
 
 fn file_log_enabled_flag() -> &'static AtomicBool {
-    FILE_LOG_ENABLED.get_or_init(|| AtomicBool::new(true))
+    FILE_LOG_ENABLED.get_or_init(|| AtomicBool::new(false))
 }
 
 pub fn set_file_logging_enabled(enabled: bool) {
@@ -83,19 +83,19 @@ fn build_env_filter() -> EnvFilter {
 
 fn load_initial_file_logging_enabled(app: &AppHandle) -> bool {
     let Ok(app_data_dir) = app.path().app_data_dir() else {
-        return true;
+        return false;
     };
     let settings_path = app_data_dir.join("settings.json");
     let Ok(content) = std::fs::read_to_string(settings_path) else {
-        return true;
+        return false;
     };
     let Ok(json) = serde_json::from_str::<serde_json::Value>(&content) else {
-        return true;
+        return false;
     };
 
     json.get("enableAppLog")
         .and_then(|value| value.as_bool())
-        .unwrap_or(true)
+        .unwrap_or(false)
 }
 
 fn install_panic_hook() {

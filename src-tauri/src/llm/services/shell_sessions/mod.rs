@@ -20,7 +20,8 @@ const DEFAULT_TIMEOUT_MS: u64 = 300_000;
 const MAX_TIMEOUT_MS: u64 = 1_800_000;
 const MARKER_PREFIX: &str = "__NOVA_CMD_END__|";
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct ShellExecutionResult {
     pub stdout: String,
     pub stderr: String,
@@ -133,6 +134,8 @@ fn build_bootstrap_script() -> String {
         "$OutputEncoding = [System.Text.Encoding]::UTF8",
         "$ProgressPreference = 'SilentlyContinue'",
         "$ErrorActionPreference = 'Continue'",
+        "$env:NO_COLOR = '1'",
+        "if ($PSStyle) { $PSStyle.OutputRendering = 'PlainText' }",
         "function global:prompt { '' }",
         "",
     ]
@@ -146,6 +149,8 @@ fn build_foreground_wrapper(command_id: &str, command: &str) -> String {
         r#"$__novaCommandId = '{command_id}'
 $__novaEncodedCommand = '{encoded}'
 $__novaCommand = [System.Text.Encoding]::UTF8.GetString([System.Convert]::FromBase64String($__novaEncodedCommand))
+$env:NO_COLOR = '1'
+if ($PSStyle) {{ $PSStyle.OutputRendering = 'PlainText' }}
 $global:LASTEXITCODE = 0
 try {{
     Invoke-Expression $__novaCommand

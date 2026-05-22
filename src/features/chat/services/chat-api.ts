@@ -62,6 +62,17 @@ export type ShellSessionStatus = {
   backgroundCount: number;
 };
 
+export type ShellCommandResult = {
+  stdout: string;
+  stderr: string;
+  exitCode?: number | null;
+  cwd?: string | null;
+  timedOut: boolean;
+  cancelled: boolean;
+  background: boolean;
+  pid?: number | null;
+};
+
 export async function listConversations(): Promise<ConversationMeta[]> {
   const items = await invoke<ConversationMeta[]>("list_conversations");
   return items || [];
@@ -181,6 +192,22 @@ export async function resetShellSessionForConversation(
 ): Promise<void> {
   await invoke("reset_shell_session_for_conversation", {
     conversationId,
+  });
+}
+
+export async function executeShellCommandForConversation(
+  conversationId: string | null,
+  command: string,
+  options?: {
+    timeoutMs?: number;
+    background?: boolean;
+  },
+): Promise<ShellCommandResult> {
+  return invoke<ShellCommandResult>("execute_shell_command_for_conversation", {
+    conversationId,
+    command,
+    timeoutMs: options?.timeoutMs,
+    background: options?.background,
   });
 }
 

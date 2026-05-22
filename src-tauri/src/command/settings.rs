@@ -46,7 +46,7 @@ fn default_ui_theme() -> String {
 }
 
 fn default_enable_app_log() -> bool {
-    true
+    false
 }
 
 const STOP_HOOK_MAX_ASSISTANT_MESSAGES_KEY: &str = "NOVA_STOP_HOOK_MAX_ASSISTANT_MESSAGES";

@@ -511,18 +511,18 @@ onBeforeUnmount(() => {
 
 .usage-trends-panel {
   margin-top: 16px;
-  border: 1px solid #e7e2d7;
+  border: 1px solid #e5e7eb;
   border-radius: 20px;
   background:
-    radial-gradient(circle at 12% 0%, rgba(187, 134, 78, 0.12), transparent 34%),
-    linear-gradient(180deg, rgba(255, 255, 255, 0.92), rgba(250, 248, 243, 0.72));
+    radial-gradient(circle at 12% 0%, rgba(148, 163, 184, 0.12), transparent 34%),
+    linear-gradient(180deg, rgba(255, 255, 255, 0.96), rgba(248, 250, 252, 0.82));
   padding: 16px;
 }
 
 .dark .usage-trends-panel {
   border-color: #333;
   background:
-    radial-gradient(circle at 12% 0%, rgba(187, 134, 78, 0.14), transparent 34%),
+    radial-gradient(circle at 12% 0%, rgba(148, 163, 184, 0.14), transparent 34%),
     linear-gradient(180deg, rgba(40, 40, 40, 0.96), rgba(31, 31, 31, 0.9));
 }
 

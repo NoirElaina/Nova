@@ -487,22 +487,22 @@ onBeforeUnmount(() => {
 
     <div ref="workspaceBodyRef" class="flex min-h-0 flex-1">
       <section class="flex min-w-0 flex-1 flex-col">
-        <div v-if="selectedFile" class="flex h-12 shrink-0 items-center justify-between border-b border-[#e5e7eb] px-5 dark:border-[#333]">
-          <div class="min-w-0 text-sm text-[#6b7280] dark:text-[#aaa]">
+        <div v-if="selectedFile" class="flex h-9 shrink-0 items-center justify-between border-b border-[#e5e7eb] px-3 dark:border-[#333]">
+          <div class="min-w-0 text-[13px] text-[#6b7280] dark:text-[#aaa]">
             <span class="text-[#6b7280]">Nova</span>
-            <span class="px-2 text-[#9aa0a6]">›</span>
+            <span class="px-1.5 text-[#9aa0a6]">›</span>
             <span class="font-semibold text-[#202124] dark:text-[#ececec]">{{ selectedFile.name }}</span>
           </div>
-          <div class="flex items-center gap-1">
-            <Button type="button" variant="ghost" size="icon-sm" class="h-7 w-7 rounded-md text-[#6b7280] hover:bg-[#f1f3f4] dark:hover:bg-[#2d2d2d]">
-              <svg width="15" height="15" viewBox="0 0 24 24" fill="none">
+          <div class="flex items-center gap-0.5">
+            <Button type="button" variant="ghost" size="icon-sm" class="h-6 w-6 rounded-md text-[#6b7280] hover:bg-[#f7f7f8] dark:hover:bg-[#2d2d2d]">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none">
                 <circle cx="12" cy="12" r="1.5" fill="currentColor" />
                 <circle cx="5" cy="12" r="1.5" fill="currentColor" />
                 <circle cx="19" cy="12" r="1.5" fill="currentColor" />
               </svg>
             </Button>
-            <Button type="button" variant="ghost" size="icon-sm" class="h-7 w-7 rounded-md text-[#6b7280] hover:bg-[#f1f3f4] dark:hover:bg-[#2d2d2d]">
-              <svg width="15" height="15" viewBox="0 0 24 24" fill="none">
+            <Button type="button" variant="ghost" size="icon-sm" class="h-6 w-6 rounded-md text-[#6b7280] hover:bg-[#f7f7f8] dark:hover:bg-[#2d2d2d]">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none">
                 <path d="M14 3h7v7M10 14 21 3M21 14v5a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>
               </svg>
             </Button>

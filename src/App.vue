@@ -6,7 +6,6 @@ import Sidebar from "./components/layout/Sidebar.vue";
 import WelcomeScreen from "./components/chat/WelcomeScreen.vue";
 import ChatScreen from "./components/chat/ChatScreen.vue";
 import ExecutionTracePopover from "./components/chat/files/ExecutionTracePopover.vue";
-import ShellSessionPopover from "./components/chat/files/ShellSessionPopover.vue";
 import WorkspaceDrawer from "./components/chat/WorkspaceDrawer.vue";
 import HooksConfigScreen from "./components/hooks/HooksConfigScreen.vue";
 import AgentConfigScreen from "./components/agent/AgentConfigScreen.vue";
@@ -228,11 +227,6 @@ onBeforeUnmount(() => {
           </div>
 
           <div v-if="mainView === 'chat'" class="flex items-center gap-2 pointer-events-auto">
-            <ShellSessionPopover
-              :conversationId="activeConversationId || null"
-              :refreshKey="toolExecutionLogs.length"
-              :currentTurnToolEntries="currentTurnToolExecutionLogs"
-            />
             <ExecutionTracePopover :entries="toolExecutionLogs" />
             <Button
               variant="ghost"

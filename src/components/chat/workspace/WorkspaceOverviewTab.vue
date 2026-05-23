@@ -12,6 +12,7 @@ import {
   getLspDiagnostics,
   getLspStatus,
   type LspDiagnostic,
+  type LspServerStatus,
   type LspStatusResponse,
   type WorkspaceDirectoryListing,
   type WorkspaceEntry,
@@ -71,6 +72,26 @@ const LSP_SUPPORTED_EXTENSIONS = new Set([
   "tsx",
   "vue",
 ]);
+const LSP_LANGUAGE_BY_EXTENSION: Record<string, string> = {
+  c: "clangd",
+  cc: "clangd",
+  cpp: "clangd",
+  cxx: "clangd",
+  go: "go",
+  h: "clangd",
+  hh: "clangd",
+  hpp: "clangd",
+  js: "typescript",
+  jsx: "typescript",
+  mjs: "typescript",
+  cjs: "typescript",
+  py: "python",
+  pyi: "python",
+  rs: "rust",
+  ts: "typescript",
+  tsx: "typescript",
+  vue: "vue",
+};
 
 let resizeStartX = 0;
 let resizeStartWidth = 0;
@@ -149,6 +170,10 @@ const highlightLine = (line: string) => {
 };
 
 const selectedPreviewLines = computed(() => selectedLines.value.map(highlightLine));
+const lspLanguageIdForEntry = (entry: WorkspaceEntry | null) => {
+  const extension = entry?.extension?.toLowerCase();
+  return extension ? LSP_LANGUAGE_BY_EXTENSION[extension] : null;
+};
 const entryHasLspSupport = (entry: WorkspaceEntry | null) => {
   const extension = entry?.extension?.toLowerCase();
   return Boolean(extension && LSP_SUPPORTED_EXTENSIONS.has(extension));
@@ -157,17 +182,34 @@ const selectedFileHasLspSupport = computed(() => entryHasLspSupport(selectedFile
 const activeLspServers = computed(() =>
   (lspStatus.value?.servers ?? []).filter((server) => server.available || server.running),
 );
+const lspServerForEntry = (entry: WorkspaceEntry | null): LspServerStatus | null => {
+  const languageId = lspLanguageIdForEntry(entry);
+  if (!languageId) return null;
+  return lspStatus.value?.servers.find((server) => server.languageId === languageId) ?? null;
+};
+const selectedLspServer = computed(() => lspServerForEntry(selectedFile.value));
+const entryHasUnavailableLsp = (entry: WorkspaceEntry | null) => {
+  if (!entryHasLspSupport(entry) || !lspStatus.value) return false;
+  const server = lspServerForEntry(entry);
+  return !server || (!server.available && !server.running);
+};
 const lspStatusLabel = computed(() => {
   if (selectedFile.value && !selectedFileHasLspSupport.value) return "当前文件不适用 LSP";
   if (isLoadingLspStatus.value) return "LSP 检测中";
+  if (selectedFile.value && selectedLspServer.value?.running) return `${selectedLspServer.value.displayName} 运行中`;
+  if (selectedFile.value && selectedLspServer.value?.available) return `${selectedLspServer.value.displayName} 可用`;
+  if (selectedFile.value && selectedFileHasLspSupport.value) return "未启用 LSP";
   const running = activeLspServers.value.filter((server) => server.running);
   if (running.length) return `${running.map((server) => server.displayName).join(" / ")} 运行中`;
   const available = activeLspServers.value.filter((server) => server.available);
   if (available.length) return `${available.length} 个语言服务器可用`;
-  return "未发现语言服务器";
+  return "未启用 LSP";
 });
 const lspStatusDotClass = computed(() => {
   if (selectedFile.value && !selectedFileHasLspSupport.value) return "bg-[#cbd5e1]";
+  if (selectedFile.value && selectedLspServer.value?.running) return "bg-[#22c55e]";
+  if (selectedFile.value && selectedLspServer.value?.available) return "bg-[#f59e0b]";
+  if (selectedFile.value && selectedFileHasLspSupport.value) return "bg-[#cbd5e1]";
   if (activeLspServers.value.some((server) => server.running)) return "bg-[#22c55e]";
   if (activeLspServers.value.some((server) => server.available)) return "bg-[#f59e0b]";
   return "bg-[#cbd5e1]";
@@ -175,6 +217,7 @@ const lspStatusDotClass = computed(() => {
 const diagnosticsStatusLabel = computed(() => {
   if (selectedFile.value && !selectedFileHasLspSupport.value) return "不适用";
   if (isLoadingDiagnostics.value) return "诊断中...";
+  if (selectedFile.value && entryHasUnavailableLsp(selectedFile.value)) return "未启用 LSP";
   if (lspDiagnostics.value.length) return `${lspDiagnostics.value.length} 个诊断`;
   return "无诊断";
 });
@@ -253,6 +296,12 @@ const loadLspStatus = async () => {
 const loadDiagnosticsForFile = async (entry: WorkspaceEntry) => {
   const selectedPath = entry.relativePath;
   if (!entryHasLspSupport(entry)) {
+    lspDiagnostics.value = [];
+    lspError.value = "";
+    isLoadingDiagnostics.value = false;
+    return;
+  }
+  if (entryHasUnavailableLsp(entry)) {
     lspDiagnostics.value = [];
     lspError.value = "";
     isLoadingDiagnostics.value = false;

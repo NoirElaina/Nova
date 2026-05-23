@@ -818,10 +818,17 @@ pub async fn diagnostics(
     let root = crate::command::workspace::workspace_root_for_conversation(app, conversation_id)?;
     if let Some(path) = path {
         let (target, _) = resolve_workspace_file(&root, path)?;
-        if spec_for_path(&target).is_none() {
+        let Some(spec) = spec_for_path(&target) else {
             return Ok(LspDiagnosticsResponse {
                 workspace_root: root.display().to_string(),
                 server: None,
+                diagnostics: Vec::new(),
+            });
+        };
+        if resolve_command(&root, &spec).is_none() {
+            return Ok(LspDiagnosticsResponse {
+                workspace_root: root.display().to_string(),
+                server: Some(spec.display_name.to_string()),
                 diagnostics: Vec::new(),
             });
         }

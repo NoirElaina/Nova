@@ -36,7 +36,7 @@ const detailEntries = computed<ToolExecutionEntry[]>(() => props.summary.entries
 .turn-summary-card {
   margin: 10px 0 12px;
   border: 1px solid #e5e7eb;
-  background: #fafafa;
+  background: #f7f7f7;
   border-radius: 14px;
   overflow: hidden;
   box-shadow: 0 1px 2px rgba(15, 23, 42, 0.035);

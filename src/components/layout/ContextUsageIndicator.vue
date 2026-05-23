@@ -129,13 +129,13 @@ const formatTokens = (value: number) => {
   align-items: center;
   justify-content: center;
   border-radius: 999px;
-  color: #7f7970;
+  color: #8b929d;
   transition: background-color 160ms ease, color 160ms ease;
 }
 
 .context-usage-button:hover {
-  background: rgba(120, 112, 100, 0.1);
-  color: #4f4941;
+  background: rgba(15, 23, 42, 0.055);
+  color: #596273;
 }
 
 .dark .context-usage-button {
@@ -176,10 +176,10 @@ const formatTokens = (value: number) => {
   width: 242px;
   padding: 11px 11px 10px;
   border-radius: 13px;
-  border: 1px solid rgba(221, 213, 199, 0.95);
-  background: rgba(255, 252, 246, 0.98);
-  color: #625a4d;
-  box-shadow: 0 18px 42px rgba(68, 55, 36, 0.14);
+  border: 1px solid rgba(229, 231, 235, 0.96);
+  background: rgba(255, 255, 255, 0.98);
+  color: #667085;
+  box-shadow: 0 16px 36px rgba(15, 23, 42, 0.1);
   opacity: 0;
   transform: translateY(4px);
   pointer-events: none;
@@ -193,9 +193,9 @@ const formatTokens = (value: number) => {
   bottom: -7px;
   width: 12px;
   height: 12px;
-  border-right: 1px solid rgba(221, 213, 199, 0.95);
-  border-bottom: 1px solid rgba(221, 213, 199, 0.95);
-  background: rgba(255, 252, 246, 0.98);
+  border-right: 1px solid rgba(229, 231, 235, 0.96);
+  border-bottom: 1px solid rgba(229, 231, 235, 0.96);
+  background: rgba(255, 255, 255, 0.98);
   transform: rotate(45deg);
 }
 
@@ -209,7 +209,7 @@ const formatTokens = (value: number) => {
 .context-title {
   font-size: 13px;
   font-weight: 650;
-  color: #6a6256;
+  color: #475467;
   line-height: 1.2;
 }
 
@@ -220,7 +220,7 @@ const formatTokens = (value: number) => {
   justify-content: space-between;
   font-size: 12px;
   line-height: 1.2;
-  color: #4f473b;
+  color: #596273;
   font-variant-numeric: tabular-nums;
 }
 
@@ -230,13 +230,13 @@ const formatTokens = (value: number) => {
   height: 4px;
   overflow: hidden;
   border-radius: 999px;
-  background: rgba(214, 205, 190, 0.72);
+  background: rgba(229, 231, 235, 0.84);
 }
 
 .context-bar-fill {
   height: 100%;
   border-radius: inherit;
-  background: #d57956;
+  background: #c98264;
 }
 
 .context-bar-reserve {
@@ -247,8 +247,8 @@ const formatTokens = (value: number) => {
   border-radius: inherit;
   background: repeating-linear-gradient(
     135deg,
-    #d57956 0,
-    #d57956 3px,
+    #c98264 0,
+    #c98264 3px,
     transparent 3px,
     transparent 6px
   );
@@ -259,7 +259,7 @@ const formatTokens = (value: number) => {
   display: flex;
   align-items: center;
   gap: 8px;
-  color: #8c8376;
+  color: #98a2b3;
   font-size: 11px;
 }
 
@@ -269,8 +269,8 @@ const formatTokens = (value: number) => {
   border-radius: 2px;
   background: repeating-linear-gradient(
     135deg,
-    #d57956 0,
-    #d57956 3px,
+    #c98264 0,
+    #c98264 3px,
     transparent 3px,
     transparent 6px
   );
@@ -281,16 +281,16 @@ const formatTokens = (value: number) => {
   margin-top: 12px;
   height: 30px;
   border-radius: 9px;
-  border: 1px solid rgba(218, 211, 199, 0.95);
-  color: #6a5f50;
-  background: rgba(247, 243, 236, 0.82);
+  border: 1px solid rgba(229, 231, 235, 0.96);
+  color: #596273;
+  background: #f7f7f7;
   font-size: 12px;
   transition: background-color 140ms ease, border-color 140ms ease;
 }
 
 .compact-button:hover {
-  background: rgba(241, 234, 223, 0.95);
-  border-color: rgba(205, 195, 178, 0.95);
+  background: #f2f4f7;
+  border-color: rgba(208, 213, 221, 0.96);
 }
 
 .dark .context-usage-popover {

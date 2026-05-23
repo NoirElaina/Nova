@@ -77,11 +77,12 @@ const rendered = computed(() => renderMarkdown(props.content || ''))
 .md-body code:not(.hljs) {
   font-family: 'SF Mono', 'Fira Code', 'Cascadia Code', monospace;
   font-size: 0.85em;
-  background: #f1f5f9;
-  color: #1d4ed8;
+  background: #f6f1e9;
+  color: #2f3a4a;
   padding: 1px 5px;
   border-radius: 4px;
-  border: 1px solid #e5e7eb;
+  border: 1px solid #e4ddd3;
+  box-shadow: inset 0 -1px 0 rgba(120, 92, 64, 0.08);
 }
 
 .hljs-block {
@@ -137,10 +138,10 @@ const rendered = computed(() => renderMarkdown(props.content || ''))
 .md-body blockquote {
   margin: 0.8em 0;
   padding: 10px 16px;
-  border-left: 3px solid #cbd5e1;
-  background: #f8fafc;
+  border-left: 3px solid #d8c6ad;
+  background: #fbf7ef;
   border-radius: 0 6px 6px 0;
-  color: #475569;
+  color: #4b5563;
 }
 
 .md-body blockquote p {
@@ -158,7 +159,7 @@ const rendered = computed(() => renderMarkdown(props.content || ''))
 }
 
 .md-body li::marker {
-  color: #94a3b8;
+  color: #a3917a;
 }
 
 .md-body ul>li {
@@ -179,24 +180,24 @@ const rendered = computed(() => renderMarkdown(props.content || ''))
 }
 
 .md-body th {
-  background: #f8fafc;
+  background: #fbf7ef;
   font-weight: 600;
   color: #111827;
   padding: 8px 12px;
-  border: 1px solid #e5e7eb;
+  border: 1px solid #e7ded2;
   text-align: left;
   white-space: nowrap;
 }
 
 .md-body td {
   padding: 7px 12px;
-  border: 1px solid #e5e7eb;
+  border: 1px solid #e7ded2;
   color: #334155;
   white-space: nowrap;
 }
 
 .md-body tr:nth-child(even) td {
-  background: #f8fafc;
+  background: #fdfaf5;
 }
 
 .md-body hr {
@@ -206,7 +207,7 @@ const rendered = computed(() => renderMarkdown(props.content || ''))
 }
 
 .md-body a {
-  color: #2563eb;
+  color: #315f8f;
   text-decoration: none;
 }
 
@@ -232,7 +233,7 @@ const rendered = computed(() => renderMarkdown(props.content || ''))
 /* details / summary */
 .md-body details {
   margin: 0.8em 0;
-  border: 1px solid #e5e7eb;
+  border: 1px solid #e7ded2;
   border-radius: 6px;
   overflow: hidden;
 }
@@ -241,13 +242,13 @@ const rendered = computed(() => renderMarkdown(props.content || ''))
   padding: 8px 14px;
   cursor: pointer;
   font-weight: 500;
-  background: #f8fafc;
+  background: #fbf7ef;
   user-select: none;
   list-style: revert;
 }
 
 .md-body summary:hover {
-  background: #f1f5f9;
+  background: #f6f1e9;
 }
 
 .md-body .details-body {

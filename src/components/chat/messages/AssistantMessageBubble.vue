@@ -182,7 +182,7 @@ const triggerReaction = (value: 'up' | 'down') => {
 .reasoning-panel {
   margin-bottom: 10px;
   border: 1px solid #e5e7eb;
-  background: #fafafa;
+  background: #f7f7f7;
   border-radius: 10px;
   padding: 8px 10px;
   box-shadow: 0 1px 2px rgba(15, 23, 42, 0.035);

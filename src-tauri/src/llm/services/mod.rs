@@ -1,5 +1,6 @@
 pub mod browser_sessions;
 pub mod compact;
+pub mod file_changes;
 pub mod hooks;
 pub mod lsp;
 pub mod mcp;

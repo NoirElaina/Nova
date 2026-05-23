@@ -86,6 +86,8 @@ pub fn run() {
             command::history::upsert_global_memory,
             command::history::delete_global_memory,
             command::history::clear_global_memory,
+            command::file_changes::list_file_changes,
+            command::file_changes::revert_file_change,
             command::mcp::add_mcp_server,
             command::mcp::get_mcp_server,
             command::mcp::update_mcp_server,

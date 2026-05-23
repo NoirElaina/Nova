@@ -4,6 +4,8 @@ pub mod settings;
 pub mod settings_secrets;
 // 会话历史与 compact 相关命令入口。
 pub mod history;
+// 会话文件变更审查与回退命令入口。
+pub mod file_changes;
 // 原生 LSP 语言服务状态与诊断命令入口。
 pub mod lsp;
 // MCP 服务管理相关命令入口。

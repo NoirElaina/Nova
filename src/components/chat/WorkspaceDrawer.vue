@@ -101,6 +101,7 @@ watch(
 
           <CodeDiffTab
             v-else-if="activeTab === 'diff'"
+            :conversationId="conversationId ?? null"
           />
 
           <UsageTab

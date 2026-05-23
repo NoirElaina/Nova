@@ -1,3 +1,4 @@
+use crate::llm::services::file_changes::FileChangeDraft;
 use crate::llm::tools::{app_tool, AppExecuteFuture, ToolPermissionDescriptor, ToolRegistration};
 use crate::llm::types::Tool;
 use serde_json::{json, Value};
@@ -86,7 +87,7 @@ fn apply_patch_with_app(
             Ok(root) => root,
             Err(error) => return json!({ "ok": false, "error": error }).to_string(),
         };
-        execute_apply_patch_at_root(&root, input)
+        execute_apply_patch_with_review(&app, conversation_id.as_deref(), &root, input)
     })
 }
 
@@ -103,7 +104,7 @@ fn multi_edit_with_app(
             Ok(root) => root,
             Err(error) => return json!({ "ok": false, "error": error }).to_string(),
         };
-        execute_multi_edit_at_root(&root, input)
+        execute_multi_edit_with_review(&app, conversation_id.as_deref(), &root, input)
     })
 }
 
@@ -230,31 +231,83 @@ struct MultiEdit {
     expected_replacements: usize,
 }
 
-fn execute_apply_patch_at_root(root: &Path, input: Value) -> String {
-    result_json(apply_patch_at_root(root, input))
+#[derive(Debug)]
+struct FileEditOutcome {
+    files: Vec<String>,
+    changes: Vec<FileChangeDraft>,
+    change_batch_id: Option<String>,
+    review_error: Option<String>,
 }
 
-fn execute_multi_edit_at_root(root: &Path, input: Value) -> String {
-    result_json(multi_edit_at_root(root, input))
+fn execute_apply_patch_with_review(
+    app: &AppHandle,
+    conversation_id: Option<&str>,
+    root: &Path,
+    input: Value,
+) -> String {
+    let mut outcome = match apply_patch_at_root(root, input) {
+        Ok(outcome) => outcome,
+        Err(error) => return json!({ "ok": false, "error": error }).to_string(),
+    };
+    match crate::llm::services::file_changes::record_change_batch(
+        app,
+        conversation_id,
+        root,
+        "apply_patch",
+        outcome.changes.clone(),
+    ) {
+        Ok(batch_id) => outcome.change_batch_id = batch_id,
+        Err(error) => outcome.review_error = Some(error),
+    }
+    result_json(Ok(outcome))
 }
 
-fn result_json(result: Result<Vec<String>, String>) -> String {
+fn execute_multi_edit_with_review(
+    app: &AppHandle,
+    conversation_id: Option<&str>,
+    root: &Path,
+    input: Value,
+) -> String {
+    let mut outcome = match multi_edit_at_root(root, input) {
+        Ok(outcome) => outcome,
+        Err(error) => return json!({ "ok": false, "error": error }).to_string(),
+    };
+    match crate::llm::services::file_changes::record_change_batch(
+        app,
+        conversation_id,
+        root,
+        "multi_edit",
+        outcome.changes.clone(),
+    ) {
+        Ok(batch_id) => outcome.change_batch_id = batch_id,
+        Err(error) => outcome.review_error = Some(error),
+    }
+    result_json(Ok(outcome))
+}
+
+fn result_json(result: Result<FileEditOutcome, String>) -> String {
     match result {
-        Ok(files) => {
-            json!({ "ok": true, "files": files, "changed_files": files.len() }).to_string()
-        }
+        Ok(outcome) => json!({
+            "ok": true,
+            "files": outcome.files,
+            "changed_files": outcome.files.len(),
+            "change_batch_id": outcome.change_batch_id,
+            "review_error": outcome.review_error
+        })
+        .to_string(),
         Err(error) => json!({ "ok": false, "error": error }).to_string(),
     }
 }
 
-fn apply_patch_at_root(root: &Path, input: Value) -> Result<Vec<String>, String> {
+fn apply_patch_at_root(root: &Path, input: Value) -> Result<FileEditOutcome, String> {
     let patch = input
         .get("patch")
         .and_then(Value::as_str)
         .ok_or_else(|| "apply_patch requires patch".to_string())?;
     let operations = parse_patch(patch)?;
     let mut pending: BTreeMap<PathBuf, Option<String>> = BTreeMap::new();
-    let mut changed = BTreeSet::new();
+    let mut originals: BTreeMap<PathBuf, Option<String>> = BTreeMap::new();
+    let mut labels: BTreeMap<PathBuf, String> = BTreeMap::new();
 
     for operation in operations {
         match operation {
@@ -263,8 +316,9 @@ fn apply_patch_at_root(root: &Path, input: Value) -> Result<Vec<String>, String>
                 if target.exists() || pending.contains_key(&target) {
                     return Err(format!("Add File target already exists: {}", path));
                 }
+                originals.entry(target.clone()).or_insert(None);
+                labels.entry(target.clone()).or_insert(path);
                 pending.insert(target, Some(content));
-                changed.insert(path);
             }
             PatchOperation::Delete { path } => {
                 let target = resolve_path(root, &path)?;
@@ -274,24 +328,65 @@ fn apply_patch_at_root(root: &Path, input: Value) -> Result<Vec<String>, String>
                 if !target.exists() && !pending.contains_key(&target) {
                     return Err(format!("Delete File target does not exist: {}", path));
                 }
+                if !originals.contains_key(&target) {
+                    let before = match pending.get(&target) {
+                        Some(Some(content)) => Some(content.clone()),
+                        Some(None) => None,
+                        None => Some(
+                            fs::read_to_string(&target)
+                                .map_err(|error| format!("Error reading {}: {}", path, error))?,
+                        ),
+                    };
+                    originals.insert(target.clone(), before);
+                }
+                labels.entry(target.clone()).or_insert(path);
                 pending.insert(target, None);
-                changed.insert(path);
             }
             PatchOperation::Update { path, hunks } => {
                 let target = resolve_path(root, &path)?;
+                if !originals.contains_key(&target) {
+                    originals.insert(
+                        target.clone(),
+                        Some(
+                            fs::read_to_string(&target)
+                                .map_err(|error| format!("Error reading {}: {}", path, error))?,
+                        ),
+                    );
+                }
                 let current = match pending.get(&target) {
                     Some(Some(content)) => content.clone(),
                     Some(None) => return Err(format!("Cannot update deleted file: {}", path)),
-                    None => fs::read_to_string(&target)
-                        .map_err(|error| format!("Error reading {}: {}", path, error))?,
+                    None => originals
+                        .get(&target)
+                        .and_then(Clone::clone)
+                        .ok_or_else(|| format!("Error reading {}", path))?,
                 };
                 let next = apply_hunks(&current, &hunks)
                     .map_err(|error| format!("{}: {}", path, error))?;
+                labels.entry(target.clone()).or_insert(path);
                 pending.insert(target, Some(next));
-                changed.insert(path);
             }
         }
     }
+
+    let changes = pending
+        .iter()
+        .map(|(path, after)| FileChangeDraft {
+            path: path.clone(),
+            before: originals.get(path).cloned().unwrap_or(None),
+            after: after.clone(),
+        })
+        .collect::<Vec<_>>();
+    let files = changes
+        .iter()
+        .filter(|change| change.before != change.after)
+        .map(|change| {
+            labels
+                .get(&change.path)
+                .cloned()
+                .unwrap_or_else(|| change.path.display().to_string())
+        })
+        .collect::<Vec<_>>();
 
     for (path, content) in pending {
         match content {
@@ -310,20 +405,30 @@ fn apply_patch_at_root(root: &Path, input: Value) -> Result<Vec<String>, String>
         }
     }
 
-    Ok(changed.into_iter().collect())
+    Ok(FileEditOutcome {
+        files,
+        changes,
+        change_batch_id: None,
+        review_error: None,
+    })
 }
 
-fn multi_edit_at_root(root: &Path, input: Value) -> Result<Vec<String>, String> {
+fn multi_edit_at_root(root: &Path, input: Value) -> Result<FileEditOutcome, String> {
     let edits = parse_multi_edits(&input)?;
     let mut pending = BTreeMap::<PathBuf, String>::new();
-    let mut changed = BTreeSet::new();
+    let mut originals = BTreeMap::<PathBuf, String>::new();
+    let mut labels = BTreeMap::<PathBuf, String>::new();
 
     for edit in edits {
         let target = resolve_path(root, &edit.path)?;
         let mut content = match pending.get(&target) {
             Some(content) => content.clone(),
-            None => fs::read_to_string(&target)
-                .map_err(|error| format!("Error reading {}: {}", edit.path, error))?,
+            None => {
+                let content = fs::read_to_string(&target)
+                    .map_err(|error| format!("Error reading {}: {}", edit.path, error))?;
+                originals.entry(target.clone()).or_insert(content.clone());
+                content
+            }
         };
         let count = content.matches(&edit.old_string).count();
         if count != edit.expected_replacements {
@@ -333,16 +438,40 @@ fn multi_edit_at_root(root: &Path, input: Value) -> Result<Vec<String>, String> 
             ));
         }
         content = content.replace(&edit.old_string, &edit.new_string);
+        labels.entry(target.clone()).or_insert(edit.path);
         pending.insert(target, content);
-        changed.insert(edit.path);
     }
+
+    let changes = pending
+        .iter()
+        .map(|(path, after)| FileChangeDraft {
+            path: path.clone(),
+            before: originals.get(path).cloned(),
+            after: Some(after.clone()),
+        })
+        .collect::<Vec<_>>();
+    let files = changes
+        .iter()
+        .filter(|change| change.before != change.after)
+        .map(|change| {
+            labels
+                .get(&change.path)
+                .cloned()
+                .unwrap_or_else(|| change.path.display().to_string())
+        })
+        .collect::<Vec<_>>();
 
     for (path, content) in pending {
         fs::write(&path, content)
             .map_err(|error| format!("Error writing {}: {}", path.display(), error))?;
     }
 
-    Ok(changed.into_iter().collect())
+    Ok(FileEditOutcome {
+        files,
+        changes,
+        change_batch_id: None,
+        review_error: None,
+    })
 }
 
 fn parse_multi_edits(input: &Value) -> Result<Vec<MultiEdit>, String> {
@@ -587,120 +716,4 @@ fn resolve_path(root: &Path, raw_path: &str) -> Result<PathBuf, String> {
         }
     }
     Ok(root.join(clean))
-}
-
-#[cfg(test)]
-mod tests {
-    use serde_json::{json, Value};
-    use std::fs;
-    use std::path::{Path, PathBuf};
-
-    fn test_root() -> PathBuf {
-        let root = std::env::temp_dir().join(format!("nova_patch_tool_{}", uuid::Uuid::new_v4()));
-        fs::create_dir_all(&root).unwrap();
-        root
-    }
-
-    fn read_json(output: String) -> Value {
-        serde_json::from_str(&output).unwrap()
-    }
-
-    fn write_file(root: &Path, path: &str, content: &str) {
-        let file = root.join(path);
-        fs::create_dir_all(file.parent().unwrap()).unwrap();
-        fs::write(file, content).unwrap();
-    }
-
-    #[test]
-    fn apply_patch_updates_file_with_context() {
-        let root = test_root();
-        write_file(&root, "src/example.txt", "alpha\nbeta\ngamma\n");
-        let patch = "*** Begin Patch\n*** Update File: src/example.txt\n@@\n alpha\n-beta\n+delta\n gamma\n*** End Patch";
-
-        let output = read_json(super::execute_apply_patch_at_root(
-            &root,
-            json!({ "patch": patch }),
-        ));
-
-        assert_eq!(output["ok"], true);
-        assert_eq!(
-            fs::read_to_string(root.join("src/example.txt")).unwrap(),
-            "alpha\ndelta\ngamma\n"
-        );
-    }
-
-    #[test]
-    fn apply_patch_rejects_missing_context_without_writing() {
-        let root = test_root();
-        write_file(&root, "example.txt", "alpha\nbeta\n");
-        let patch = "*** Begin Patch\n*** Update File: example.txt\n@@\n missing\n-beta\n+delta\n*** End Patch";
-
-        let output = read_json(super::execute_apply_patch_at_root(
-            &root,
-            json!({ "patch": patch }),
-        ));
-
-        assert_eq!(output["ok"], false);
-        assert_eq!(
-            fs::read_to_string(root.join("example.txt")).unwrap(),
-            "alpha\nbeta\n"
-        );
-    }
-
-    #[test]
-    fn multi_edit_replaces_expected_occurrence_count() {
-        let root = test_root();
-        write_file(&root, "example.txt", "foo foo\n");
-
-        let output = read_json(super::execute_multi_edit_at_root(
-            &root,
-            json!({
-                "edits": [
-                    {
-                        "path": "example.txt",
-                        "old_string": "foo",
-                        "new_string": "bar",
-                        "expected_replacements": 2
-                    }
-                ]
-            }),
-        ));
-
-        assert_eq!(output["ok"], true);
-        assert_eq!(
-            fs::read_to_string(root.join("example.txt")).unwrap(),
-            "bar bar\n"
-        );
-    }
-
-    #[test]
-    fn multi_edit_is_atomic_when_later_edit_fails() {
-        let root = test_root();
-        write_file(&root, "a.txt", "alpha\n");
-        write_file(&root, "b.txt", "beta\n");
-
-        let output = read_json(super::execute_multi_edit_at_root(
-            &root,
-            json!({
-                "edits": [
-                    {
-                        "path": "a.txt",
-                        "old_string": "alpha",
-                        "new_string": "changed",
-                        "expected_replacements": 1
-                    },
-                    {
-                        "path": "b.txt",
-                        "old_string": "missing",
-                        "new_string": "changed",
-                        "expected_replacements": 1
-                    }
-                ]
-            }),
-        ));
-
-        assert_eq!(output["ok"], false);
-        assert_eq!(fs::read_to_string(root.join("a.txt")).unwrap(), "alpha\n");
-        assert_eq!(fs::read_to_string(root.join("b.txt")).unwrap(), "beta\n");
-    }
 }

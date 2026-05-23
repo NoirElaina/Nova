@@ -73,6 +73,30 @@ export type ShellCommandResult = {
   pid?: number | null;
 };
 
+export type FileDiffLine = {
+  kind: "context" | "add" | "remove";
+  oldLine?: number | null;
+  newLine?: number | null;
+  text: string;
+};
+
+export type FileChangeEntry = {
+  path: string;
+  absolutePath: string;
+  changeType: "added" | "deleted" | "modified";
+  diff: FileDiffLine[];
+};
+
+export type FileChangeBatch = {
+  id: string;
+  conversationId: string;
+  toolName: string;
+  createdAt: number;
+  reverted: boolean;
+  revertedAt?: number | null;
+  files: FileChangeEntry[];
+};
+
 export async function listConversations(): Promise<ConversationMeta[]> {
   const items = await invoke<ConversationMeta[]>("list_conversations");
   return items || [];
@@ -208,6 +232,24 @@ export async function executeShellCommandForConversation(
     command,
     timeoutMs: options?.timeoutMs,
     background: options?.background,
+  });
+}
+
+export async function listFileChanges(
+  conversationId: string | null,
+): Promise<FileChangeBatch[]> {
+  return invoke<FileChangeBatch[]>("list_file_changes", {
+    conversationId,
+  });
+}
+
+export async function revertFileChange(
+  conversationId: string | null,
+  batchId: string,
+): Promise<FileChangeBatch> {
+  return invoke<FileChangeBatch>("revert_file_change", {
+    conversationId,
+    batchId,
   });
 }
 

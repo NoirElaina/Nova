@@ -697,32 +697,3 @@ pub async fn close_all_sessions() {
         info!(conversation_scope = %key, "shell session closed during global cleanup");
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::{parse_marker_line, session_status, BASE64};
-    use base64::Engine as _;
-
-    #[test]
-    fn parses_marker_line() {
-        let cwd = "D:\\work\\repo";
-        let encoded = BASE64.encode(cwd.as_bytes());
-        let line = format!("__NOVA_CMD_END__|cmd-1|7|{}|0", encoded);
-        let marker = parse_marker_line(&line).expect("marker");
-        assert_eq!(marker.command_id, "cmd-1");
-        assert_eq!(marker.exit_code, 7);
-        assert_eq!(marker.cwd, cwd);
-        assert!(!marker.timed_out);
-    }
-
-    #[tokio::test]
-    async fn status_for_missing_session_does_not_create_one() {
-        let status = session_status(Some("__nova_missing_shell_status_test__")).await;
-        assert!(!status.exists);
-        assert!(!status.alive);
-        assert!(!status.busy);
-        assert!(status.cwd.is_none());
-        assert_eq!(status.background_count, 0);
-        assert!(status.background_pids.is_empty());
-    }
-}

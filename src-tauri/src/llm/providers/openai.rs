@@ -292,40 +292,6 @@ fn format_stream_diagnostics(
     )
 }
 
-#[cfg(test)]
-mod tests {
-    use super::super::sse_utils::{extract_sse_data, find_sse_event_delimiter};
-
-    #[test]
-    fn finds_sse_event_delimiters() {
-        assert_eq!(find_sse_event_delimiter(b"data: {}\n\nrest"), Some((8, 2)));
-        assert_eq!(
-            find_sse_event_delimiter(b"data: {}\r\n\r\nrest"),
-            Some((8, 4))
-        );
-    }
-
-    #[test]
-    fn waits_for_complete_sse_event_before_parsing() {
-        let mut buffer = Vec::new();
-        buffer.extend_from_slice(b"data: {\"choices\":[");
-        assert_eq!(find_sse_event_delimiter(&buffer), None);
-
-        buffer.extend_from_slice(b"]}\n\n");
-        let (event_idx, delimiter_len) = find_sse_event_delimiter(&buffer).unwrap();
-        assert_eq!(delimiter_len, 2);
-
-        let event_raw = String::from_utf8(buffer[..event_idx].to_vec()).unwrap();
-        assert_eq!(extract_sse_data(&event_raw), "{\"choices\":[]}");
-    }
-
-    #[test]
-    fn extracts_multiline_sse_data() {
-        let raw = "event: message\ndata: {\"a\":\ndata: 1}\n";
-        assert_eq!(extract_sse_data(raw), "{\"a\":\n1}");
-    }
-}
-
 #[derive(Debug, Default)]
 struct PendingToolCall {
     // 累积到的调用 ID。

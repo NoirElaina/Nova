@@ -18,6 +18,7 @@ const batches = ref<FileChangeBatch[]>([]);
 const loading = ref(false);
 const revertingId = ref<string | null>(null);
 const error = ref("");
+const expandedBatchIds = ref<Set<string>>(new Set());
 let refreshTimer: number | null = null;
 
 const hasChanges = computed(() => batches.value.length > 0);
@@ -55,6 +56,17 @@ const fileStats = (file: FileChangeEntry) => {
   return { added, removed };
 };
 
+const batchStats = (batch: FileChangeBatch) =>
+  batch.files.reduce(
+    (total, file) => {
+      const stats = fileStats(file);
+      total.added += stats.added;
+      total.removed += stats.removed;
+      return total;
+    },
+    { added: 0, removed: 0 },
+  );
+
 const lineClass = (line: FileDiffLine) => {
   if (line.kind === "add") return "bg-emerald-50 text-emerald-950 dark:bg-emerald-950/30 dark:text-emerald-100";
   if (line.kind === "remove") return "bg-rose-50 text-rose-950 dark:bg-rose-950/30 dark:text-rose-100";
@@ -69,6 +81,18 @@ const linePrefix = (line: FileDiffLine) => {
 
 const lineNumber = (line: FileDiffLine) => {
   return line.newLine ?? line.oldLine ?? "";
+};
+
+const isBatchExpanded = (batchId: string) => expandedBatchIds.value.has(batchId);
+
+const toggleBatch = (batchId: string) => {
+  const next = new Set(expandedBatchIds.value);
+  if (next.has(batchId)) {
+    next.delete(batchId);
+  } else {
+    next.add(batchId);
+  }
+  expandedBatchIds.value = next;
 };
 
 const handleRevert = async (batch: FileChangeBatch) => {
@@ -154,9 +178,27 @@ onBeforeUnmount(() => {
           :key="batch.id"
           class="overflow-hidden rounded-xl border border-[#e5e7eb] bg-white dark:border-[#333] dark:bg-[#202020]"
         >
-          <header class="flex items-center justify-between gap-3 border-b border-[#eef0f3] px-3 py-2 dark:border-[#333]">
+          <header
+            class="flex cursor-pointer items-center justify-between gap-3 border-b border-[#eef0f3] px-3 py-2 transition-colors hover:bg-[#fafafa] dark:border-[#333] dark:hover:bg-[#262626]"
+            @click="toggleBatch(batch.id)"
+          >
             <div class="min-w-0">
               <div class="flex items-center gap-2">
+                <svg
+                  width="13"
+                  height="13"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="2"
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                  class="shrink-0 text-[#94a3b8] transition-transform duration-150"
+                  :class="isBatchExpanded(batch.id) ? 'rotate-90' : ''"
+                  aria-hidden="true"
+                >
+                  <polyline points="9 18 15 12 9 6" />
+                </svg>
                 <span class="truncate font-mono text-xs text-[#0f172a] dark:text-[#e2e8f0]">{{ batch.toolName }}</span>
                 <span class="text-[11px] text-[#94a3b8]">{{ formatTime(batch.createdAt) }}</span>
                 <span
@@ -170,18 +212,33 @@ onBeforeUnmount(() => {
                 {{ batch.files.map((file) => file.path).join(", ") }}
               </div>
             </div>
-            <Button
-              variant="outline"
-              size="sm"
-              class="h-7 shrink-0 px-2 text-xs"
-              :disabled="batch.reverted || revertingId === batch.id"
-              @click="handleRevert(batch)"
-            >
-              {{ revertingId === batch.id ? "回退中" : "回退" }}
-            </Button>
+            <div class="flex shrink-0 items-center gap-1.5">
+              <div class="mr-1 flex items-center gap-1.5 text-[11px]">
+                <span class="text-[#64748b] dark:text-[#94a3b8]">{{ batch.files.length }} 文件</span>
+                <span class="text-emerald-600">+{{ batchStats(batch).added }}</span>
+                <span class="text-rose-600">-{{ batchStats(batch).removed }}</span>
+              </div>
+              <Button
+                variant="ghost"
+                size="sm"
+                class="h-7 px-2 text-xs text-[#64748b]"
+                @click.stop="toggleBatch(batch.id)"
+              >
+                {{ isBatchExpanded(batch.id) ? "收起" : "展开" }}
+              </Button>
+              <Button
+                variant="outline"
+                size="sm"
+                class="h-7 px-2 text-xs"
+                :disabled="batch.reverted || revertingId === batch.id"
+                @click.stop="handleRevert(batch)"
+              >
+                {{ revertingId === batch.id ? "回退中" : "回退" }}
+              </Button>
+            </div>
           </header>
 
-          <div class="divide-y divide-[#eef0f3] dark:divide-[#333]">
+          <div v-if="isBatchExpanded(batch.id)" class="divide-y divide-[#eef0f3] dark:divide-[#333]">
             <article v-for="file in batch.files" :key="`${batch.id}:${file.path}`">
               <div class="flex items-center justify-between gap-3 px-3 py-2">
                 <div class="min-w-0 truncate font-mono text-xs text-[#0f172a] dark:text-[#e2e8f0]">

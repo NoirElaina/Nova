@@ -10,7 +10,7 @@ interface ConversationItem {
   pinnedAt?: number | null;
 }
 
-type MainView = "chat" | "hooks" | "agent" | "schedule";
+type MainView = "chat" | "custom" | "hooks" | "agent" | "agentMarket" | "schedule";
 type ConversationExportFormat = "json" | "pdf";
 
 const props = defineProps<{
@@ -279,9 +279,25 @@ watch(
         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" class="text-[#64748b]"><circle cx="11" cy="11" r="8" stroke="currentColor" stroke-width="1.8"/><path d="M21 21l-4.35-4.35" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>
         <span>搜索</span>
       </Button>
-      <Button variant="ghost" :class="[sidebarItemClass, sidebarItemIdleClass]" @click="openSettings">
+      <Button
+        variant="ghost"
+        :class="[sidebarItemClass, props.activeMainView === 'custom' ? sidebarItemActiveClass : sidebarItemIdleClass]"
+        @click="emit('change-main-view', 'custom')"
+      >
         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" class="text-[#64748b]"><path d="M12 20.5V20m0-16v-.5m0 0a2.5 2.5 0 100 5 2.5 2.5 0 000-5zm0 16a2.5 2.5 0 100-5 2.5 2.5 0 000 5zm-8.5-8H4m16 0h-.5m0 0a2.5 2.5 0 10-5 0 2.5 2.5 0 005 0zm-16 0a2.5 2.5 0 105 0 2.5 2.5 0 00-5 0z" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>
         <span>自定义</span>
+      </Button>
+      <Button
+        variant="ghost"
+        :class="[sidebarItemClass, props.activeMainView === 'agentMarket' ? sidebarItemActiveClass : sidebarItemIdleClass]"
+        @click="emit('change-main-view', 'agentMarket')"
+      >
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" class="text-[#64748b]">
+          <path d="M4 7h16l-1 13H5L4 7Z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/>
+          <path d="M8 7a4 4 0 0 1 8 0" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/>
+          <path d="M9 12h6" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/>
+        </svg>
+        <span>Agent 市场</span>
       </Button>
 
       <div v-if="isSearchOpen" class="px-0.5 pb-1 pt-1">

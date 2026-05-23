@@ -7,8 +7,10 @@ import WelcomeScreen from "./components/chat/WelcomeScreen.vue";
 import ChatScreen from "./components/chat/ChatScreen.vue";
 import ExecutionTracePopover from "./components/chat/files/ExecutionTracePopover.vue";
 import WorkspaceDrawer from "./components/chat/WorkspaceDrawer.vue";
+import CustomScreen from "./components/custom/CustomScreen.vue";
 import HooksConfigScreen from "./components/hooks/HooksConfigScreen.vue";
 import AgentConfigScreen from "./components/agent/AgentConfigScreen.vue";
+import AgentMarketScreen from "./components/agent/AgentMarketScreen.vue";
 import ScheduleTaskScreen from "./components/schedule/ScheduleTaskScreen.vue";
 import GlobalToastHost from "./components/layout/GlobalToastHost.vue";
 import { useChatController } from "./features/chat/controllers/useChatController";
@@ -249,9 +251,17 @@ onBeforeUnmount(() => {
           @change-main-view="handleChangeMainView"
         />
 
+        <CustomScreen
+          v-else-if="mainView === 'custom'"
+        />
+
         <AgentConfigScreen
           v-else-if="mainView === 'agent'"
           @change-main-view="handleChangeMainView"
+        />
+
+        <AgentMarketScreen
+          v-else-if="mainView === 'agentMarket'"
         />
 
         <ScheduleTaskScreen

@@ -329,6 +329,29 @@ pub fn get_settings(app: AppHandle) -> AppSettings {
                 Ok(mut settings) => {
                     // 运行时规范化后返回。
                     settings.normalize_for_runtime();
+                    if crate::command::settings_secrets::has_plaintext_provider_api_keys(&settings)
+                    {
+                        let mut persisted = settings.clone();
+                        match crate::command::settings_secrets::encrypt_provider_api_keys(
+                            &mut persisted,
+                        )
+                        .and_then(|_| {
+                            serde_json::to_string_pretty(&persisted)
+                                .map_err(|error| error.to_string())
+                        })
+                        .and_then(|content| {
+                            std::fs::write(&path, content).map_err(|error| error.to_string())
+                        }) {
+                            Ok(()) => {}
+                            Err(error) => warn!(
+                                operation = "command.settings.get_settings",
+                                path = %path.display(),
+                                error = %error,
+                                "failed to migrate plaintext API keys"
+                            ),
+                        }
+                    }
+                    crate::command::settings_secrets::decrypt_provider_api_keys(&mut settings);
                     return settings;
                 }
                 Err(error) => {
@@ -372,6 +395,7 @@ pub fn save_settings(app: AppHandle, settings: AppSettings) -> Result<(), String
         normalized.normalize_for_runtime();
         validate_hook_env(&normalized)?;
         validate_rag_settings(&normalized)?;
+        crate::command::settings_secrets::encrypt_provider_api_keys(&mut normalized)?;
         // 序列化为美化 JSON。
         let content = serde_json::to_string_pretty(&normalized).map_err(|e| e.to_string())?;
         // 写入文件。

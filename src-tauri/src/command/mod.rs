@@ -1,5 +1,7 @@
 // 设置相关 tauri 命令入口。
 pub mod settings;
+// 设置中的敏感字段加密/解密。
+pub mod settings_secrets;
 // 会话历史与 compact 相关命令入口。
 pub mod history;
 // MCP 服务管理相关命令入口。

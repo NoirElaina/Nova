@@ -293,7 +293,7 @@ const formatFileSize = (bytes?: number) => {
   padding: 0;
   border: none;
   background: transparent;
-  color: #2563eb;
+  color: #64748b;
   font-size: 12px;
   line-height: 1;
   cursor: pointer;
@@ -301,15 +301,15 @@ const formatFileSize = (bytes?: number) => {
 }
 
 .user-message-toggle:hover {
-  color: #1d4ed8;
+  color: #334155;
 }
 
 .dark .user-message-toggle {
-  color: #93c5fd;
+  color: #cbd5e1;
 }
 
 .dark .user-message-toggle:hover {
-  color: #bfdbfe;
+  color: #f8fafc;
 }
 
 .edit-card {

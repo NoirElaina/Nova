@@ -1,5 +1,6 @@
-use reqwest::header::{ACCEPT, CONTENT_TYPE};
+use reqwest::header::{HeaderMap, HeaderName, HeaderValue, ACCEPT, CONTENT_TYPE};
 use serde_json::{json, Value};
+use std::collections::HashMap;
 use tokio::time::timeout;
 
 use super::{McpResourceInfo, McpToolInfo, MCP_CONNECT_TIMEOUT};
@@ -7,6 +8,7 @@ use super::{McpResourceInfo, McpToolInfo, MCP_CONNECT_TIMEOUT};
 pub(super) struct StreamableHttpMcpConnection {
     client: reqwest::Client,
     url: String,
+    headers: HeaderMap,
     session_id: Option<String>,
     next_id: u64,
 }
@@ -121,6 +123,16 @@ fn parse_mcp_response_for_id(body: &str, request_id: u64) -> Result<Value, Strin
 }
 
 impl StreamableHttpMcpConnection {
+    fn with_custom_headers(
+        &self,
+        mut request_builder: reqwest::RequestBuilder,
+    ) -> reqwest::RequestBuilder {
+        for (name, value) in self.headers.iter() {
+            request_builder = request_builder.header(name, value);
+        }
+        request_builder
+    }
+
     async fn send_request(&mut self, method: &str, params: Value) -> Result<Value, String> {
         let id = self.next_id;
         self.next_id += 1;
@@ -133,10 +145,12 @@ impl StreamableHttpMcpConnection {
         });
 
         let mut request_builder = self
-            .client
-            .post(&self.url)
-            .header(ACCEPT, "application/json, text/event-stream")
-            .header(CONTENT_TYPE, "application/json")
+            .with_custom_headers(
+                self.client
+                    .post(&self.url)
+                    .header(ACCEPT, "application/json, text/event-stream")
+                    .header(CONTENT_TYPE, "application/json"),
+            )
             .json(&req);
 
         if let Some(session_id) = self.session_id.as_deref() {
@@ -181,10 +195,12 @@ impl StreamableHttpMcpConnection {
         });
 
         let mut request_builder = self
-            .client
-            .post(&self.url)
-            .header(ACCEPT, "application/json, text/event-stream")
-            .header(CONTENT_TYPE, "application/json")
+            .with_custom_headers(
+                self.client
+                    .post(&self.url)
+                    .header(ACCEPT, "application/json, text/event-stream")
+                    .header(CONTENT_TYPE, "application/json"),
+            )
             .json(&req);
 
         if let Some(session_id) = self.session_id.as_deref() {
@@ -299,8 +315,33 @@ impl StreamableHttpMcpConnection {
     }
 }
 
+fn build_header_map(headers: &HashMap<String, String>) -> Result<HeaderMap, String> {
+    let mut map = HeaderMap::new();
+    for (key, value) in headers {
+        let trimmed_key = key.trim();
+        let trimmed_value = value.trim();
+        if trimmed_key.is_empty() || trimmed_value.is_empty() {
+            continue;
+        }
+        if trimmed_key.eq_ignore_ascii_case("mcp-session-id") {
+            return Err(
+                "MCP header 'mcp-session-id' is managed by Nova and cannot be configured manually"
+                    .to_string(),
+            );
+        }
+        let name = HeaderName::from_bytes(trimmed_key.as_bytes())
+            .map_err(|error| format!("Invalid MCP header name '{}': {}", trimmed_key, error))?;
+        let value = HeaderValue::from_str(trimmed_value).map_err(|error| {
+            format!("Invalid MCP header value for '{}': {}", trimmed_key, error)
+        })?;
+        map.insert(name, value);
+    }
+    Ok(map)
+}
+
 pub(super) async fn connect_streamable_http(
     url: &str,
+    headers: &HashMap<String, String>,
 ) -> Result<StreamableHttpMcpConnection, String> {
     let client = reqwest::Client::builder()
         .timeout(MCP_CONNECT_TIMEOUT)
@@ -310,6 +351,7 @@ pub(super) async fn connect_streamable_http(
     let mut conn = StreamableHttpMcpConnection {
         client,
         url: url.to_string(),
+        headers: build_header_map(headers)?,
         session_id: None,
         next_id: 1,
     };

@@ -5,10 +5,10 @@ import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Textarea } from '@/components/ui/textarea'
 
-type MCPServerConfig = { type: 'stdio'; command: string; args: string[]; env?: Record<string, string> } | { type: 'sse'; url: string } | { type: 'streamable_http'; url: string }
+type MCPServerConfig = { type: 'stdio'; command: string; args: string[]; env?: Record<string, string> } | { type: 'sse'; url: string; headers?: Record<string, string> } | { type: 'streamable_http'; url: string; headers?: Record<string, string> }
 type MCPServerEntry = { name: string; enabled: boolean; config: MCPServerConfig }
 type ServerStatus = { name: string; status: 'connected' | 'error' | 'connecting' | 'disconnected'; type: 'stdio' | 'sse' | 'streamable_http'; enabled: boolean; toolCount?: number; error?: string }
-type MCPForm = { name: string; type: 'stdio' | 'sse' | 'streamable_http'; command: string; args: string; env: string; url: string }
+type MCPForm = { name: string; type: 'stdio' | 'sse' | 'streamable_http'; command: string; args: string; env: string; url: string; headers: string }
 type ToastItem = { id: number; message: string; variant: 'error' | 'success' }
 
 const addServer = async (name: string, config: MCPServerConfig) => {
@@ -45,7 +45,7 @@ const editingEnabled = ref(true)
 const loadingEditName = ref<string | null>(null)
 const removingName = ref<string | null>(null)
 const togglingName = ref<string | null>(null)
-const form = ref<MCPForm>({ name: '', type: 'stdio', command: 'npx', args: '-y @playwright/mcp@latest', env: '', url: '' })
+const form = ref<MCPForm>({ name: '', type: 'stdio', command: 'npx', args: '-y @playwright/mcp@latest', env: '', url: '', headers: '' })
 
 const pushToast = (message: string, variant: ToastItem['variant']) => {
   const id = Date.now() + Math.floor(Math.random() * 1000)
@@ -55,8 +55,22 @@ const pushToast = (message: string, variant: ToastItem['variant']) => {
   }, 3500)
 }
 
+const parseKeyValueLines = (value: string) => {
+  const result: Record<string, string> = {}
+  value.trim().split('\n').forEach(line => {
+    const eq = line.indexOf('=')
+    if (eq > 0) result[line.slice(0, eq).trim()] = line.slice(eq + 1).trim()
+  })
+  return result
+}
+
+const keyValueText = (value?: Record<string, string>) => {
+  if (!value) return ''
+  return Object.entries(value).map(([key, item]) => `${key}=${item}`).join('\n')
+}
+
 const resetForm = () => {
-  form.value = { name: '', type: 'stdio', command: 'npx', args: '-y @playwright/mcp@latest', env: '', url: '' }
+  form.value = { name: '', type: 'stdio', command: 'npx', args: '-y @playwright/mcp@latest', env: '', url: '', headers: '' }
   editingOriginalName.value = null
   editingEnabled.value = true
   error.value = ''
@@ -87,7 +101,8 @@ const fillFormFromServer = (server: MCPServerEntry) => {
       command: config.command,
       args: config.args.join(' '),
       env,
-      url: ''
+      url: '',
+      headers: ''
     }
     return
   }
@@ -98,7 +113,8 @@ const fillFormFromServer = (server: MCPServerEntry) => {
     command: '',
     args: '',
     env: '',
-    url: config.url
+    url: config.url,
+    headers: keyValueText(config.headers)
   }
 }
 
@@ -138,17 +154,14 @@ const submit = async () => {
   if (form.value.type === 'stdio') {
     if (!form.value.command.trim()) { error.value = '请填写命令'; return }
     const args = form.value.args.trim() ? form.value.args.trim().split(/\s+/) : []
-    const env: Record<string, string> = {}
-    form.value.env.trim().split('\n').forEach(line => {
-      const eq = line.indexOf('=')
-      if (eq > 0) env[line.slice(0, eq).trim()] = line.slice(eq + 1).trim()
-    })
+    const env = parseKeyValueLines(form.value.env)
     config = { type: 'stdio', command: form.value.command.trim(), args, ...(Object.keys(env).length ? { env } : {}) }
   } else {
     if (!form.value.url.trim()) { error.value = '请填写 URL'; return }
+    const headers = parseKeyValueLines(form.value.headers)
     config = form.value.type === 'sse'
-      ? { type: 'sse', url: form.value.url.trim() }
-      : { type: 'streamable_http', url: form.value.url.trim() }
+      ? { type: 'sse', url: form.value.url.trim(), ...(Object.keys(headers).length ? { headers } : {}) }
+      : { type: 'streamable_http', url: form.value.url.trim(), ...(Object.keys(headers).length ? { headers } : {}) }
   }
   adding.value = true; error.value = ''
   try {
@@ -292,6 +305,11 @@ refresh()
         <div class="mb-2.5 flex flex-col text-[14px]">
           <label class="text-[13px] font-semibold text-[#1a1915] dark:text-[#e8e3db] mb-[6px] uppercase tracking-wider">{{ form.type === 'sse' ? 'SSE URL' : 'HTTP URL' }}</label>
           <Input v-model="form.url" :placeholder="form.type === 'sse' ? 'http://localhost:8080/sse' : 'https://example.com/mcp'" class="w-full h-9 px-3 text-[14px] bg-white dark:bg-[#2e2d2a] border border-[#e8e3db] dark:border-[#44423f] rounded-lg text-[#1a1915] dark:text-[#d3d0c9] placeholder:text-[#b0a99f] dark:placeholder:text-[#66645e] focus:outline-none focus:border-[#d7a16f] font-mono"/>
+        </div>
+        <div class="mb-2.5 flex flex-col text-[14px]">
+          <label class="text-[13px] font-semibold text-[#1a1915] dark:text-[#e8e3db] mb-[6px] uppercase tracking-wider">请求头 <span class="font-normal text-[#aaa49a] dark:text-[#88857f] ml-1 lowercase">每行 KEY=VALUE（可选）</span></label>
+          <Textarea v-model="form.headers" placeholder="Authorization=Bearer xxx&#10;X-API-Key=xxx" rows="3" class="w-full px-3 py-2 text-[14px] bg-white dark:bg-[#2e2d2a] border border-[#e8e3db] dark:border-[#44423f] rounded-lg text-[#1a1915] dark:text-[#d3d0c9] placeholder:text-[#b0a99f] dark:placeholder:text-[#66645e] focus:outline-none focus:border-[#d7a16f] font-mono resize-y"/>
+          <div class="mt-1 text-[12px] text-[#8a8478] dark:text-[#a09e99]">保存时后端会加密这些值，连接时自动带上。</div>
         </div>
       </template>
       <div v-if="error" class="text-[12.5px] text-[#c0392b] dark:text-[#e57373] mb-2.5">{{ error }}</div>

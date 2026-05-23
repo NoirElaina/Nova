@@ -35,6 +35,8 @@ pub enum McpServerConfig {
     // 预留的 SSE 连接配置。
     Sse {
         url: String,
+        #[serde(default)]
+        headers: HashMap<String, String>,
     },
     #[serde(
         rename = "streamable_http",
@@ -44,6 +46,8 @@ pub enum McpServerConfig {
     // 基于 streamable HTTP 的远程服务配置。
     StreamableHttp {
         url: String,
+        #[serde(default)]
+        headers: HashMap<String, String>,
     },
 }
 

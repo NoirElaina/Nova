@@ -14,7 +14,7 @@ Nova is a local desktop coding assistant for real project execution, controllabl
 - Native LSP tools: diagnostics, definitions, references, symbols, hover, and language-server status are handled by Nova's backend instead of MCP.
 - Multi-provider model access: switch providers and models with isolated per-provider profiles.
 - Agent modes: `Agent`, `Plan`, and `Auto` modes are available from the input area.
-- MCP connectivity: register MCP servers, inspect tools/resources, and invoke MCP tools through explicit tool names such as `mcp__server__tool`.
+- MCP connectivity: register MCP servers, attach encrypted HTTP request headers for authenticated endpoints, inspect tools/resources, and invoke MCP tools through explicit tool names such as `mcp__server__tool`.
 - Human clarification flow: pauses and asks focused questions when key details are missing.
 - Approval controls: supports allow once, allow for session, and deny decisions for sensitive operations.
 - Conversation continuity: restores trusted model context from turn snapshots, with compact context and memory updates for long-running sessions.
@@ -50,6 +50,7 @@ Nova Browser is intentionally not rendered as an embedded page inside the main c
 - Built-in tools are mounted through the central registry in `src-tauri/src/llm/tools/mod.rs`.
 - Each tool module owns its own registration metadata instead of spreading behavior across global `match` branches.
 - New tools can be scaffolded from `src-tauri/src/llm/tools/NewToolTemplate/`.
+- Code edits should use `apply_patch` by default; `multi_edit` is available for atomic exact replacements, while `write_file` is mainly for new or generated files.
 - MCP tools are exposed as explicit names like `mcp__playwright__browser_navigate` instead of a generic dispatcher tool.
 - Shell tools use conversation-scoped persistent sessions, start in the conversation workspace root, and support foreground timeouts plus background processes.
 - LSP tools are built in as `lsp_status`, `lsp_diagnostics`, `lsp_definition`, `lsp_references`, `lsp_symbols`, and `lsp_hover`; they do not require an MCP language-server bridge.
@@ -97,7 +98,7 @@ Nova includes a built-in scheduled task system for recurring or one-shot prompt 
 
 - General: theme, language, and app file logging.
 - Model: provider profiles, API settings, and custom model names.
-- MCP: server registration and enable/disable controls.
+- MCP: server registration, HTTP/SSE request headers for authenticated services, and enable/disable controls.
 - RAG, skills, memory, and data settings live under the settings modal.
 - Agent, Scheduled Tasks, and Hooks are top-level sidebar screens with compact shadcn-vue based layouts.
 

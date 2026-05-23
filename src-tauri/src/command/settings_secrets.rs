@@ -3,15 +3,15 @@ use tracing::warn;
 
 use crate::command::settings::AppSettings;
 
-const API_KEY_PREFIX: &str = "nova:dpapi:v1:";
+const SECRET_PREFIX: &str = "nova:dpapi:v1:";
 
 pub fn encrypt_provider_api_keys(settings: &mut AppSettings) -> Result<(), String> {
     for (provider, profile) in settings.provider_profiles.iter_mut() {
         let api_key = profile.api_key.trim();
-        if api_key.is_empty() || is_encrypted_api_key(api_key) {
+        if api_key.is_empty() || is_encrypted_secret_value(api_key) {
             continue;
         }
-        profile.api_key = encrypt_api_key(api_key)
+        profile.api_key = encrypt_secret_value(api_key)
             .map_err(|error| format!("Failed to encrypt API key for {}: {}", provider, error))?;
     }
     Ok(())
@@ -20,10 +20,10 @@ pub fn encrypt_provider_api_keys(settings: &mut AppSettings) -> Result<(), Strin
 pub fn decrypt_provider_api_keys(settings: &mut AppSettings) {
     for (provider, profile) in settings.provider_profiles.iter_mut() {
         let api_key = profile.api_key.trim();
-        if !is_encrypted_api_key(api_key) {
+        if !is_encrypted_secret_value(api_key) {
             continue;
         }
-        match decrypt_api_key(api_key) {
+        match decrypt_secret_value(api_key) {
             Ok(plain) => profile.api_key = plain,
             Err(error) => {
                 warn!(
@@ -40,22 +40,22 @@ pub fn decrypt_provider_api_keys(settings: &mut AppSettings) {
 pub fn has_plaintext_provider_api_keys(settings: &AppSettings) -> bool {
     settings.provider_profiles.values().any(|profile| {
         let api_key = profile.api_key.trim();
-        !api_key.is_empty() && !is_encrypted_api_key(api_key)
+        !api_key.is_empty() && !is_encrypted_secret_value(api_key)
     })
 }
 
-fn is_encrypted_api_key(value: &str) -> bool {
-    value.starts_with(API_KEY_PREFIX)
+pub fn is_encrypted_secret_value(value: &str) -> bool {
+    value.starts_with(SECRET_PREFIX)
 }
 
-fn encrypt_api_key(value: &str) -> Result<String, String> {
+pub fn encrypt_secret_value(value: &str) -> Result<String, String> {
     let protected = platform::protect(value.as_bytes())?;
-    Ok(format!("{}{}", API_KEY_PREFIX, STANDARD.encode(protected)))
+    Ok(format!("{}{}", SECRET_PREFIX, STANDARD.encode(protected)))
 }
 
-fn decrypt_api_key(value: &str) -> Result<String, String> {
+pub fn decrypt_secret_value(value: &str) -> Result<String, String> {
     let encoded = value
-        .strip_prefix(API_KEY_PREFIX)
+        .strip_prefix(SECRET_PREFIX)
         .ok_or_else(|| "missing encrypted API key prefix".to_string())?;
     let protected = STANDARD
         .decode(encoded)

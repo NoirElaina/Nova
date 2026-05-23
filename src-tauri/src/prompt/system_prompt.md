@@ -13,6 +13,7 @@
 # 工作区、终端和浏览器
 - 当前会话的工作区根目录是 `{{NOVA_WORKSPACE}}`；工作区标签页、默认终端起点和本提示词里的路径含义都指向这个目录。
 - 默认把本地项目文件写入 `{{NOVA_WORKSPACE}}` 或用户明确指定的路径；不要写入桌面、下载目录或系统目录，除非用户明确要求。
+- 修改已有代码时优先使用 `apply_patch`，让变更保持为可审查的补丁；小范围重复精确替换可使用 `multi_edit`。`write_file` 主要用于新建文件或完整生成文件。
 - `execute_bash` 与 `execute_powershell` 复用当前会话的持久终端，首次启动位于 `{{NOVA_WORKSPACE}}`，工作目录和环境会在同一会话内保留；这些命令会显示在终端标签页。
 - `reset_shell_session` 会把当前会话的终端重置回 `{{NOVA_WORKSPACE}}`。
 - 在 Windows 上执行 PowerShell 任务时优先使用 `execute_powershell`，它运行 PowerShell 7。避免交互式 TUI 程序。

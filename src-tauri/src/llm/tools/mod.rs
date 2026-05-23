@@ -1,5 +1,7 @@
 #[path = "LspTools/mod.rs"]
 pub mod language_server_tools;
+#[path = "PatchTool/mod.rs"]
+pub mod patch_tools;
 
 // 这是工具注册入口模块，定义了所有内置工具（Bash/PowerShell/File/Task/... 等）
 // 以及工具发现、执行、权限检查的统一接口。
@@ -17,6 +19,7 @@ macro_rules! declare_builtin_tools {
                 )*
             ];
             tools.extend(language_server_tools::registrations());
+            tools.extend(patch_tools::registrations());
             tools
         }
     };

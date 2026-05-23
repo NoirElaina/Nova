@@ -116,7 +116,8 @@ fn load_persisted_servers(app: &AppHandle) -> Vec<PersistedServer> {
         Err(_) => return Vec::new(),
     };
 
-    if let Ok(list) = serde_json::from_str::<Vec<PersistedServer>>(&content) {
+    if let Ok(mut list) = serde_json::from_str::<Vec<PersistedServer>>(&content) {
+        decrypt_persisted_server_headers(&mut list);
         return list;
     }
 
@@ -148,6 +149,7 @@ fn load_persisted_servers(app: &AppHandle) -> Vec<PersistedServer> {
         });
     }
 
+    decrypt_persisted_server_headers(&mut servers);
     servers
 }
 
@@ -156,8 +158,58 @@ fn save_persisted_servers(app: &AppHandle, servers: &[PersistedServer]) -> Resul
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
     }
-    let content = serde_json::to_string_pretty(servers).map_err(|e| e.to_string())?;
+    let mut encrypted_servers = servers.to_vec();
+    encrypt_persisted_server_headers(&mut encrypted_servers)?;
+    let content = serde_json::to_string_pretty(&encrypted_servers).map_err(|e| e.to_string())?;
     std::fs::write(path, content).map_err(|e| e.to_string())
+}
+
+fn encrypt_headers(headers: &mut HashMap<String, String>) -> Result<(), String> {
+    for (name, value) in headers.iter_mut() {
+        let trimmed = value.trim();
+        if trimmed.is_empty()
+            || crate::command::settings_secrets::is_encrypted_secret_value(trimmed)
+        {
+            continue;
+        }
+        *value = crate::command::settings_secrets::encrypt_secret_value(trimmed)
+            .map_err(|error| format!("Failed to encrypt MCP header '{}': {}", name, error))?;
+    }
+    Ok(())
+}
+
+fn decrypt_headers(headers: &mut HashMap<String, String>) {
+    for value in headers.values_mut() {
+        let trimmed = value.trim();
+        if !crate::command::settings_secrets::is_encrypted_secret_value(trimmed) {
+            continue;
+        }
+        match crate::command::settings_secrets::decrypt_secret_value(trimmed) {
+            Ok(plain) => *value = plain,
+            Err(_) => value.clear(),
+        }
+    }
+}
+
+fn encrypt_persisted_server_headers(servers: &mut [PersistedServer]) -> Result<(), String> {
+    for server in servers {
+        match &mut server.config {
+            McpServerConfig::Sse { headers, .. }
+            | McpServerConfig::StreamableHttp { headers, .. } => encrypt_headers(headers)?,
+            McpServerConfig::Stdio { .. } => {}
+        }
+    }
+    Ok(())
+}
+
+fn decrypt_persisted_server_headers(servers: &mut [PersistedServer]) {
+    for server in servers {
+        match &mut server.config {
+            McpServerConfig::Sse { headers, .. }
+            | McpServerConfig::StreamableHttp { headers, .. } => decrypt_headers(headers),
+            McpServerConfig::Stdio { .. } => {}
+        }
+    }
 }
 
 async fn persist_runtime(app: &AppHandle) -> Result<(), String> {
@@ -218,45 +270,47 @@ async fn connect_server(
                 Err(e) => (McpRuntimeStatus::Error, 0, Some(e), None),
             }
         }
-        McpServerConfig::Sse { url } => {
-            let error = connect_sse(url).err().unwrap_or_else(|| {
+        McpServerConfig::Sse { url, headers } => {
+            let error = connect_sse(url, headers).err().unwrap_or_else(|| {
                 "SSE MCP runtime not implemented yet. Use stdio for now.".to_string()
             });
             (McpRuntimeStatus::Error, 0, Some(error), None)
         }
-        McpServerConfig::StreamableHttp { url } => match connect_streamable_http(url).await {
-            Ok(mut conn) => {
-                let tool_count = match timeout(MCP_CONNECT_TIMEOUT, conn.list_tools()).await {
-                    Err(_) => {
-                        let _ = conn.shutdown().await;
-                        return (
+        McpServerConfig::StreamableHttp { url, headers } => {
+            match connect_streamable_http(url, headers).await {
+                Ok(mut conn) => {
+                    let tool_count = match timeout(MCP_CONNECT_TIMEOUT, conn.list_tools()).await {
+                        Err(_) => {
+                            let _ = conn.shutdown().await;
+                            return (
                             McpRuntimeStatus::Error,
                             0,
                             Some("MCP tools/list timeout (30s). streamable_http server may be overloaded or blocked.".to_string()),
                             None,
                         );
-                    }
-                    Ok(result) => match result {
-                        Ok(tools) => tools.len(),
-                        Err(e) => {
-                            return (
-                                McpRuntimeStatus::Connected,
-                                0,
-                                Some(e),
-                                Some(ServerConnection::StreamableHttp(conn)),
-                            )
                         }
-                    },
-                };
-                (
-                    McpRuntimeStatus::Connected,
-                    tool_count,
-                    None,
-                    Some(ServerConnection::StreamableHttp(conn)),
-                )
+                        Ok(result) => match result {
+                            Ok(tools) => tools.len(),
+                            Err(e) => {
+                                return (
+                                    McpRuntimeStatus::Connected,
+                                    0,
+                                    Some(e),
+                                    Some(ServerConnection::StreamableHttp(conn)),
+                                )
+                            }
+                        },
+                    };
+                    (
+                        McpRuntimeStatus::Connected,
+                        tool_count,
+                        None,
+                        Some(ServerConnection::StreamableHttp(conn)),
+                    )
+                }
+                Err(e) => (McpRuntimeStatus::Error, 0, Some(e), None),
             }
-            Err(e) => (McpRuntimeStatus::Error, 0, Some(e), None),
-        },
+        }
     }
 }
 

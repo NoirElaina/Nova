@@ -24,12 +24,30 @@ pub fn execute_sync_stub(_input: Value) -> String {
 }
 
 fn execute_with_app_boxed(
-    _app: AppHandle,
+    app: AppHandle,
     conversation_id: Option<String>,
     _input: Value,
 ) -> AppExecuteFuture {
     Box::pin(async move {
-        match crate::llm::services::shell_sessions::reset_session(conversation_id.as_deref()).await
+        let workspace_root = match crate::command::workspace::workspace_root_string_for_conversation(
+            &app,
+            conversation_id.as_deref(),
+        ) {
+            Ok(root) => root,
+            Err(error) => {
+                return json!({
+                    "ok": false,
+                    "error": error
+                })
+                .to_string();
+            }
+        };
+
+        match crate::llm::services::shell_sessions::reset_session(
+            conversation_id.as_deref(),
+            Some(&workspace_root),
+        )
+        .await
         {
             Ok(()) => json!({
                 "ok": true,

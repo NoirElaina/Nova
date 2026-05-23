@@ -44,14 +44,14 @@ pub fn execute_sync_stub(_input: Value) -> String {
 }
 
 fn execute_with_app_boxed(
-    _app: AppHandle,
+    app: AppHandle,
     conversation_id: Option<String>,
     input: Value,
 ) -> AppExecuteFuture {
-    Box::pin(async move { execute_async(conversation_id.as_deref(), input).await })
+    Box::pin(async move { execute_async(&app, conversation_id.as_deref(), input).await })
 }
 
-async fn execute_async(conversation_id: Option<&str>, input: Value) -> String {
+async fn execute_async(app: &AppHandle, conversation_id: Option<&str>, input: Value) -> String {
     let cmd = match input.get("command").and_then(|v| v.as_str()) {
         Some(v) if !v.trim().is_empty() => v.to_string(),
         _ => return "Error: Missing 'command' argument".into(),
@@ -62,11 +62,28 @@ async fn execute_async(conversation_id: Option<&str>, input: Value) -> String {
         .and_then(|value| value.as_bool())
         .unwrap_or(false);
 
+    let workspace_root =
+        match crate::command::workspace::workspace_root_string_for_conversation(app, conversation_id)
+        {
+            Ok(root) => root,
+            Err(error) => return format!("Failed to resolve workspace: {}", error),
+        };
+
     let result = if background {
-        crate::llm::services::shell_sessions::run_background(conversation_id, &cmd).await
+        crate::llm::services::shell_sessions::run_background(
+            conversation_id,
+            &cmd,
+            Some(&workspace_root),
+        )
+        .await
     } else {
-        crate::llm::services::shell_sessions::run_foreground(conversation_id, &cmd, timeout_ms)
-            .await
+        crate::llm::services::shell_sessions::run_foreground(
+            conversation_id,
+            &cmd,
+            timeout_ms,
+            Some(&workspace_root),
+        )
+        .await
     };
 
     match result {

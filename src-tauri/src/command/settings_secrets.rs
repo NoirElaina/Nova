@@ -151,7 +151,8 @@ mod platform {
             return Err(std::io::Error::last_os_error().to_string());
         }
 
-        let data = unsafe { slice::from_raw_parts(output.pb_data, output.cb_data as usize) }.to_vec();
+        let data =
+            unsafe { slice::from_raw_parts(output.pb_data, output.cb_data as usize) }.to_vec();
         unsafe {
             LocalFree(output.pb_data.cast::<c_void>());
         }
@@ -159,7 +160,8 @@ mod platform {
     }
 
     fn blob_from_slice(bytes: &[u8]) -> Result<DataBlob, String> {
-        let len = u32::try_from(bytes.len()).map_err(|_| "secret payload is too large".to_string())?;
+        let len =
+            u32::try_from(bytes.len()).map_err(|_| "secret payload is too large".to_string())?;
         Ok(DataBlob {
             cb_data: len,
             pb_data: bytes.as_ptr() as *mut u8,

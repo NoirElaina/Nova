@@ -35,7 +35,7 @@ const triggerReaction = (value: 'up' | 'down') => {
 
 <template>
   <div class="flex gap-3.5 w-full max-w-[85%]">
-    <div class="w-7 h-7 rounded-full flex items-center justify-center shrink-0 bg-[#f8fafc] dark:bg-[#333] text-[#475569] mt-0.5 border border-[#e5e7eb] dark:border-[#444] text-[11px] font-medium">
+    <div class="w-7 h-7 rounded-full flex items-center justify-center shrink-0 bg-[#111827] text-white mt-0.5 text-[11px] font-medium">
       N
     </div>
     <div class="min-w-0 flex-1 text-[0.95rem] leading-relaxed break-words text-[#1a1a1a] dark:text-[#ececec]">
@@ -163,9 +163,9 @@ const triggerReaction = (value: 'up' | 'down') => {
   align-items: center;
   gap: 4px;
   font-size: 9px;
-  color: #64748b;
-  border: 1px solid rgba(203, 213, 225, 0.75);
-  background: rgba(248, 250, 252, 0.85);
+  color: #047857;
+  border: 1px solid #a7f3d0;
+  background: #ecfdf5;
   padding: 3px 6px;
   border-radius: 6px;
   font-family: monospace;
@@ -174,15 +174,15 @@ const triggerReaction = (value: 'up' | 'down') => {
 }
 
 .dark .token-badge {
-  color: #a09e99;
-  border-color: #475569;
-  background: rgba(51, 65, 85, 0.35);
+  color: #86efac;
+  border-color: rgba(34, 197, 94, 0.38);
+  background: rgba(20, 83, 45, 0.32);
 }
 
 .reasoning-panel {
   margin-bottom: 10px;
   border: 1px solid #e5e7eb;
-  background: #f3f3f3;
+  background: #fafafa;
   border-radius: 10px;
   padding: 8px 10px;
   box-shadow: 0 1px 2px rgba(15, 23, 42, 0.035);
@@ -216,10 +216,8 @@ const triggerReaction = (value: 'up' | 'down') => {
 }
 
 .dark .reasoning-panel {
-  border-color: rgba(59, 130, 246, 0.38);
-  background:
-    linear-gradient(135deg, rgba(30, 58, 138, 0.24), rgba(24, 31, 42, 0.96) 46%),
-    #1f2937;
+  border-color: #3f4652;
+  background: #1f2937;
 }
 
 .dark .reasoning-panel summary {

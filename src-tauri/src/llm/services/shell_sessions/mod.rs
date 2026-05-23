@@ -327,10 +327,11 @@ async fn spawn_session(initial_cwd: Option<&str>) -> Result<ShellSession, String
             .map_err(|error| format!("Failed to flush shell bootstrap: {}", error))?;
     }
 
-    session.last_known_cwd = std::env::current_dir()
-        .ok()
-        .map(|path| path.display().to_string())
-        .or_else(|| initial_cwd.map(|value| value.to_string()));
+    session.last_known_cwd = initial_cwd.map(|value| value.to_string()).or_else(|| {
+        std::env::current_dir()
+            .ok()
+            .map(|path| path.display().to_string())
+    });
 
     Ok(session)
 }
@@ -352,8 +353,13 @@ async fn ensure_session_alive(session: &mut ShellSession) -> Result<(), String> 
     Ok(())
 }
 
-async fn restart_session(session: &mut ShellSession) -> Result<(), String> {
-    let cwd = session.last_known_cwd.clone();
+async fn restart_session(
+    session: &mut ShellSession,
+    cwd_override: Option<&str>,
+) -> Result<(), String> {
+    let cwd = cwd_override
+        .map(str::to_string)
+        .or_else(|| session.last_known_cwd.clone());
     let background_pids = std::mem::take(&mut session.background_pids);
     for pid in background_pids {
         kill_pid(pid);
@@ -409,7 +415,7 @@ async fn execute_wrapped_command(
 
         if crate::llm::cancellation::is_cancelled(conversation_id) {
             warn!("shell command cancelled; restarting session");
-            restart_session(session).await?;
+            restart_session(session, None).await?;
             session.last_known_cwd = cwd_before;
             return Ok(ShellExecutionResult {
                 stdout: trim_trailing_newline(stdout),
@@ -426,7 +432,7 @@ async fn execute_wrapped_command(
         let now = tokio::time::Instant::now();
         if now >= timeout_at {
             warn!("shell command timed out; restarting session");
-            restart_session(session).await?;
+            restart_session(session, None).await?;
             session.last_known_cwd = cwd_before;
             return Ok(ShellExecutionResult {
                 stdout: trim_trailing_newline(stdout),
@@ -448,7 +454,7 @@ async fn execute_wrapped_command(
             Ok(Some(event)) => event,
             Ok(None) => {
                 warn!("shell session stream closed unexpectedly; restarting");
-                restart_session(session).await?;
+                restart_session(session, None).await?;
                 session.last_known_cwd = cwd_before;
                 return Err("Shell session closed unexpectedly".to_string());
             }
@@ -487,7 +493,10 @@ async fn execute_wrapped_command(
     })
 }
 
-async fn get_or_create_handle(conversation_id: Option<&str>) -> Result<Arc<SessionHandle>, String> {
+async fn get_or_create_handle(
+    conversation_id: Option<&str>,
+    initial_cwd: Option<&str>,
+) -> Result<Arc<SessionHandle>, String> {
     let key = scope_key(conversation_id);
     if let Some(existing) = session_registry()
         .lock()
@@ -498,7 +507,7 @@ async fn get_or_create_handle(conversation_id: Option<&str>) -> Result<Arc<Sessi
         return Ok(existing);
     }
 
-    let session = spawn_session(None).await?;
+    let session = spawn_session(initial_cwd).await?;
     let handle = Arc::new(SessionHandle {
         inner: AsyncMutex::new(session),
     });
@@ -546,8 +555,9 @@ pub async fn run_foreground(
     conversation_id: Option<&str>,
     command: &str,
     timeout_ms: Option<u64>,
+    initial_cwd: Option<&str>,
 ) -> Result<ShellExecutionResult, String> {
-    let handle = get_or_create_handle(conversation_id).await?;
+    let handle = get_or_create_handle(conversation_id, initial_cwd).await?;
     let mut session = handle.inner.lock().await;
     let command_id = "{command_id}";
     let script = build_foreground_wrapper(command_id, command);
@@ -563,8 +573,9 @@ pub async fn run_foreground(
 pub async fn run_background(
     conversation_id: Option<&str>,
     command: &str,
+    initial_cwd: Option<&str>,
 ) -> Result<ShellExecutionResult, String> {
-    let handle = get_or_create_handle(conversation_id).await?;
+    let handle = get_or_create_handle(conversation_id, initial_cwd).await?;
     let mut session = handle.inner.lock().await;
     let command_id = "{command_id}";
     let script = build_background_wrapper(command_id, command);
@@ -598,10 +609,13 @@ pub async fn run_background(
     Ok(result)
 }
 
-pub async fn reset_session(conversation_id: Option<&str>) -> Result<(), String> {
-    let handle = get_or_create_handle(conversation_id).await?;
+pub async fn reset_session(
+    conversation_id: Option<&str>,
+    workspace_root: Option<&str>,
+) -> Result<(), String> {
+    let handle = get_or_create_handle(conversation_id, workspace_root).await?;
     let mut session = handle.inner.lock().await;
-    restart_session(&mut session).await
+    restart_session(&mut session, workspace_root).await
 }
 
 pub async fn session_status(conversation_id: Option<&str>) -> ShellSessionStatus {

@@ -227,7 +227,7 @@ impl AnthropicProvider {
         let request = AnthropicRequest {
             model: profile.model.clone(),
             max_tokens: max_output_tokens,
-            system: Some(load_system_prompt(app, agent_mode)?),
+            system: Some(load_system_prompt(app, agent_mode, conversation_id)?),
             messages: messages.to_vec(),
             tools: available_tools,
             stream: true,

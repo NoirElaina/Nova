@@ -26,20 +26,32 @@ export type WorkspaceFileContent = {
   size: number;
 };
 
-export async function listWorkspaceDirectory(path = ''): Promise<WorkspaceDirectoryListing> {
+export async function listWorkspaceDirectory(
+  conversationId: string | null,
+  path = '',
+): Promise<WorkspaceDirectoryListing> {
   return invoke<WorkspaceDirectoryListing>('workspace_list_directory', {
+    conversationId,
     path,
   });
 }
 
-export async function readWorkspaceTextFile(path: string): Promise<WorkspaceFileContent> {
+export async function readWorkspaceTextFile(
+  conversationId: string | null,
+  path: string,
+): Promise<WorkspaceFileContent> {
   return invoke<WorkspaceFileContent>('workspace_read_text_file', {
+    conversationId,
     path,
   });
 }
 
-export async function setWorkspaceRoot(path: string): Promise<WorkspaceDirectoryListing> {
+export async function setWorkspaceRoot(
+  conversationId: string | null,
+  path: string,
+): Promise<WorkspaceDirectoryListing> {
   return invoke<WorkspaceDirectoryListing>('workspace_set_root', {
+    conversationId,
     path,
   });
 }

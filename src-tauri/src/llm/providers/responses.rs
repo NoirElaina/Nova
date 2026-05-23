@@ -362,7 +362,7 @@ impl ResponsesProvider {
         let profile = settings.active_provider_profile();
 
         let available_tools = tools::get_available_tools();
-        let system_prompt = load_system_prompt(app, agent_mode)?;
+        let system_prompt = load_system_prompt(app, agent_mode, conversation_id)?;
 
         let input = messages_to_input(messages);
 

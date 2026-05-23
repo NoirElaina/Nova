@@ -1,7 +1,9 @@
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::path::{Component, Path, PathBuf};
-use std::sync::{OnceLock, RwLock};
+use std::sync::{Mutex, OnceLock};
 use std::time::UNIX_EPOCH;
+use tauri::{AppHandle, Manager};
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -35,30 +37,146 @@ pub struct WorkspaceFileContent {
 
 const MAX_TEXT_FILE_BYTES: u64 = 1024 * 1024;
 
-static WORKSPACE_ROOT_OVERRIDE: OnceLock<RwLock<Option<PathBuf>>> = OnceLock::new();
-
-fn workspace_root_override() -> &'static RwLock<Option<PathBuf>> {
-    WORKSPACE_ROOT_OVERRIDE.get_or_init(|| RwLock::new(None))
+#[derive(Debug, Serialize, Deserialize, Default)]
+struct ConversationWorkspaceStore {
+    #[serde(default)]
+    roots: HashMap<String, String>,
 }
 
-fn default_workspace_root() -> Result<PathBuf, String> {
-    std::env::current_dir()
-        .map_err(|error| format!("无法读取当前工作区目录: {}", error))?
-        .canonicalize()
-        .map_err(|error| format!("无法解析当前工作区目录: {}", error))
+static WORKSPACE_STORE_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+
+fn workspace_store_lock() -> &'static Mutex<()> {
+    WORKSPACE_STORE_LOCK.get_or_init(|| Mutex::new(()))
 }
 
-fn workspace_root() -> Result<PathBuf, String> {
-    let override_root = workspace_root_override()
-        .read()
-        .map_err(|_| "工作区状态锁已损坏".to_string())?
-        .clone();
+fn normalize_conversation_id(conversation_id: Option<&str>) -> Option<String> {
+    conversation_id
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+}
 
-    if let Some(root) = override_root {
-        return Ok(root);
+fn workspace_store_path(app: &AppHandle) -> Result<PathBuf, String> {
+    app.path()
+        .app_data_dir()
+        .map(|path| path.join("conversation_workspaces.json"))
+        .map_err(|error| format!("无法读取应用数据目录: {}", error))
+}
+
+fn read_workspace_store(app: &AppHandle) -> Result<ConversationWorkspaceStore, String> {
+    let path = workspace_store_path(app)?;
+    if !path.exists() {
+        return Ok(ConversationWorkspaceStore::default());
     }
 
-    default_workspace_root()
+    let text =
+        std::fs::read_to_string(&path).map_err(|error| format!("读取工作区配置失败: {}", error))?;
+    if text.trim().is_empty() {
+        return Ok(ConversationWorkspaceStore::default());
+    }
+
+    serde_json::from_str(&text).map_err(|error| format!("解析工作区配置失败: {}", error))
+}
+
+fn write_workspace_store(
+    app: &AppHandle,
+    store: &ConversationWorkspaceStore,
+) -> Result<(), String> {
+    let path = workspace_store_path(app)?;
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)
+            .map_err(|error| format!("创建工作区配置目录失败: {}", error))?;
+    }
+
+    let text = serde_json::to_string_pretty(store)
+        .map_err(|error| format!("序列化工作区配置失败: {}", error))?;
+    std::fs::write(&path, text).map_err(|error| format!("保存工作区配置失败: {}", error))
+}
+
+pub fn default_workspace_root(app: &AppHandle) -> Result<PathBuf, String> {
+    let root = app
+        .path()
+        .app_data_dir()
+        .map(|path| path.join("workspace"))
+        .map_err(|error| format!("无法读取默认工作区目录: {}", error))?;
+
+    std::fs::create_dir_all(&root).map_err(|error| format!("创建默认工作区失败: {}", error))?;
+    root.canonicalize()
+        .map_err(|error| format!("无法解析默认工作区目录: {}", error))
+}
+
+pub fn workspace_root_for_conversation(
+    app: &AppHandle,
+    conversation_id: Option<&str>,
+) -> Result<PathBuf, String> {
+    let Some(conversation_id) = normalize_conversation_id(conversation_id) else {
+        return default_workspace_root(app);
+    };
+
+    let _guard = workspace_store_lock()
+        .lock()
+        .map_err(|_| "工作区配置锁已损坏".to_string())?;
+    let store = read_workspace_store(app)?;
+    let Some(root) = store.roots.get(&conversation_id) else {
+        return default_workspace_root(app);
+    };
+
+    let canonical = PathBuf::from(root)
+        .canonicalize()
+        .map_err(|error| format!("无法解析会话工作区目录: {}", error))?;
+    if !canonical.is_dir() {
+        return Err("会话工作区必须是目录".to_string());
+    }
+
+    Ok(canonical)
+}
+
+pub fn workspace_root_string_for_conversation(
+    app: &AppHandle,
+    conversation_id: Option<&str>,
+) -> Result<String, String> {
+    workspace_root_for_conversation(app, conversation_id).map(|path| path.display().to_string())
+}
+
+pub fn remove_conversation_workspace(app: &AppHandle, conversation_id: &str) -> Result<(), String> {
+    let Some(conversation_id) = normalize_conversation_id(Some(conversation_id)) else {
+        return Ok(());
+    };
+
+    let _guard = workspace_store_lock()
+        .lock()
+        .map_err(|_| "工作区配置锁已损坏".to_string())?;
+    let mut store = read_workspace_store(app)?;
+    store.roots.remove(&conversation_id);
+    write_workspace_store(app, &store)
+}
+
+pub fn clear_conversation_workspaces(app: &AppHandle) -> Result<(), String> {
+    let _guard = workspace_store_lock()
+        .lock()
+        .map_err(|_| "工作区配置锁已损坏".to_string())?;
+    write_workspace_store(app, &ConversationWorkspaceStore::default())
+}
+
+fn set_workspace_root_for_conversation(
+    app: &AppHandle,
+    conversation_id: Option<&str>,
+    path: String,
+) -> Result<PathBuf, String> {
+    let conversation_id = normalize_conversation_id(conversation_id)
+        .ok_or_else(|| "当前会话尚未创建，不能更换会话工作区".to_string())?;
+    let root = validate_workspace_root(path)?;
+
+    let _guard = workspace_store_lock()
+        .lock()
+        .map_err(|_| "工作区配置锁已损坏".to_string())?;
+    let mut store = read_workspace_store(app)?;
+    store
+        .roots
+        .insert(conversation_id, root.display().to_string());
+    write_workspace_store(app, &store)?;
+
+    Ok(root)
 }
 
 fn validate_workspace_root(path: String) -> Result<PathBuf, String> {
@@ -168,8 +286,12 @@ fn entry_from_path(root: &Path, path: PathBuf) -> Option<WorkspaceEntry> {
 }
 
 #[tauri::command]
-pub fn workspace_list_directory(path: Option<String>) -> Result<WorkspaceDirectoryListing, String> {
-    let root = workspace_root()?;
+pub fn workspace_list_directory(
+    app: AppHandle,
+    conversation_id: Option<String>,
+    path: Option<String>,
+) -> Result<WorkspaceDirectoryListing, String> {
+    let root = workspace_root_for_conversation(&app, conversation_id.as_deref())?;
     list_directory_for_root(root, path)
 }
 
@@ -205,21 +327,22 @@ fn list_directory_for_root(
 }
 
 #[tauri::command]
-pub fn workspace_set_root(path: String) -> Result<WorkspaceDirectoryListing, String> {
-    let root = validate_workspace_root(path)?;
-    {
-        let mut override_root = workspace_root_override()
-            .write()
-            .map_err(|_| "工作区状态锁已损坏".to_string())?;
-        *override_root = Some(root.clone());
-    }
-
+pub fn workspace_set_root(
+    app: AppHandle,
+    conversation_id: Option<String>,
+    path: String,
+) -> Result<WorkspaceDirectoryListing, String> {
+    let root = set_workspace_root_for_conversation(&app, conversation_id.as_deref(), path)?;
     list_directory_for_root(root, None)
 }
 
 #[tauri::command]
-pub fn workspace_read_text_file(path: String) -> Result<WorkspaceFileContent, String> {
-    let root = workspace_root()?;
+pub fn workspace_read_text_file(
+    app: AppHandle,
+    conversation_id: Option<String>,
+    path: String,
+) -> Result<WorkspaceFileContent, String> {
+    let root = workspace_root_for_conversation(&app, conversation_id.as_deref())?;
     let (target, relative_path) = resolve_workspace_path(&root, Some(path))?;
     if !target.is_file() {
         return Err("目标路径不是文件".to_string());

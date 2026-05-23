@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, ref } from "vue";
+import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import hljs from "highlight.js";
 import { Button } from "@/components/ui/button";
@@ -14,6 +14,10 @@ import {
   type WorkspaceFileContent,
 } from "../../../features/workspace/workspace-api";
 import WorkspaceFileTreeNode from "./WorkspaceFileTreeNode.vue";
+
+const props = defineProps<{
+  conversationId?: string | null;
+}>();
 
 const rootListing = ref<WorkspaceDirectoryListing | null>(null);
 const childrenByPath = ref<Record<string, WorkspaceEntry[]>>({});
@@ -169,7 +173,7 @@ const setPathExpanded = (path: string, expanded: boolean) => {
 const loadDirectory = async (path = "") => {
   setPathLoading(path, true);
   try {
-    const listing = await listWorkspaceDirectory(path);
+    const listing = await listWorkspaceDirectory(props.conversationId ?? null, path);
     if (!path) {
       rootListing.value = listing;
     }
@@ -228,7 +232,7 @@ const selectFile = async (entry: WorkspaceEntry) => {
   previewError.value = "";
   isReadingFile.value = true;
   try {
-    selectedContent.value = await readWorkspaceTextFile(entry.relativePath);
+    selectedContent.value = await readWorkspaceTextFile(props.conversationId ?? null, entry.relativePath);
   } catch (error) {
     console.error("Failed to read workspace file:", error);
     previewError.value = String(error);
@@ -262,7 +266,7 @@ const changeWorkspaceRoot = async () => {
     }
 
     isChangingWorkspace.value = true;
-    const listing = await setWorkspaceRoot(path);
+    const listing = await setWorkspaceRoot(props.conversationId ?? null, path);
     applyRootListing(listing);
     isFileTreeVisible.value = true;
     emitToast({ variant: "success", source: "workspace", message: "工作区已切换。" });
@@ -373,10 +377,22 @@ const toggleFileTree = () => {
 };
 
 onMounted(() => {
-  void loadDirectory("");
   document.addEventListener("mousedown", onDocumentMouseDown);
   window.addEventListener("keydown", onWindowKeyDown);
 });
+
+watch(
+  () => props.conversationId,
+  () => {
+    childrenByPath.value = {};
+    expandedPaths.value = [];
+    selectedFile.value = null;
+    selectedContent.value = null;
+    previewError.value = "";
+    void loadDirectory("");
+  },
+  { immediate: true },
+);
 
 onBeforeUnmount(() => {
   stopFileTreeResize();

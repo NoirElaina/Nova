@@ -1007,6 +1007,7 @@ pub async fn clear_history(app: &AppHandle, conversation_id: Option<String>) -> 
 
         tx.commit().await.map_err(|e| e.to_string())?;
         crate::command::rag::rag_remove_conversation_documents(app, &id)?;
+        crate::command::workspace::remove_conversation_workspace(app, &id)?;
         crate::llm::services::shell_sessions::close_session(Some(&id)).await;
     } else {
         sqlx::query("DELETE FROM conversation_messages")
@@ -1040,6 +1041,7 @@ pub async fn clear_history(app: &AppHandle, conversation_id: Option<String>) -> 
 
         tx.commit().await.map_err(|e| e.to_string())?;
         crate::command::rag::rag_remove_all_conversation_documents(app)?;
+        crate::command::workspace::clear_conversation_workspaces(app)?;
         crate::llm::services::shell_sessions::close_all_sessions().await;
     }
 
@@ -1088,6 +1090,7 @@ pub async fn delete_conversation(app: &AppHandle, conversation_id: &str) -> Resu
         .map_err(|e| e.to_string())?;
 
     crate::command::rag::rag_remove_conversation_documents(app, conversation_id)?;
+    crate::command::workspace::remove_conversation_workspace(app, conversation_id)?;
     crate::llm::services::shell_sessions::close_session(Some(conversation_id)).await;
 
     Ok(())

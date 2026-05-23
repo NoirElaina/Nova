@@ -36,7 +36,7 @@ const detailEntries = computed<ToolExecutionEntry[]>(() => props.summary.entries
 .turn-summary-card {
   margin: 10px 0 12px;
   border: 1px solid #e5e7eb;
-  background: #f3f3f3;
+  background: #fafafa;
   border-radius: 14px;
   overflow: hidden;
   box-shadow: 0 1px 2px rgba(15, 23, 42, 0.035);
@@ -97,10 +97,8 @@ const detailEntries = computed<ToolExecutionEntry[]>(() => props.summary.entries
 }
 
 .dark .turn-summary-card {
-  border-color: rgba(59, 130, 246, 0.38);
-  background:
-    linear-gradient(135deg, rgba(30, 58, 138, 0.24), rgba(24, 31, 42, 0.96) 42%),
-    #1f2937;
+  border-color: #3f4652;
+  background: #1f2937;
 }
 
 .dark .turn-summary-card__title {

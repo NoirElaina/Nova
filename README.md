@@ -4,7 +4,7 @@ Nova is a local desktop coding assistant for real project execution, controllabl
 
 ## Core Features
 
-- Workspace-aware coding: reads, searches, edits, and organizes files in the current project.
+- Conversation-scoped workspace root: each conversation has one persisted `WorkspaceRoot` used by the file tree, `NOVA_WORKSPACE`, and terminal reset.
 - Tool-driven execution: runs shell commands, inspects output, and continues tasks end-to-end.
 - Conversation-scoped persistent terminal sessions for `execute_bash` / `execute_powershell`, with command history visible in the Terminal workspace tab.
 - Built-in Nova Browser automation: agents can open or focus the Browser tab, launch the independent browser window, navigate, snapshot, click, type, and reset pages.
@@ -27,11 +27,11 @@ Nova is a local desktop coding assistant for real project execution, controllabl
 
 The right-side workspace drawer is the main companion panel for a conversation.
 
-- Workspace: browse and open files from the current workspace root, resize or hide the file tree, and switch the workspace root.
+- Workspace: browse and open files from the current conversation's workspace root, resize or hide the file tree, and switch that conversation's root.
 - Review: inspect agent changes and execution context.
 - Usage: view token and cost trends without altering chart animations.
 - Files: inspect files uploaded into the current session.
-- Terminal: watch AI shell commands in real time and run manual commands in the same persistent conversation shell.
+- Terminal: watch AI shell commands in real time and run manual commands in the same persistent conversation shell; reset returns to that conversation's workspace root.
 - Browser: keep browser status, annotation controls, and automation entry points while real page rendering runs in an independent Nova Browser window.
 
 ## Built-In Browser
@@ -50,7 +50,7 @@ Nova Browser is intentionally not rendered as an embedded page inside the main c
 - Each tool module owns its own registration metadata instead of spreading behavior across global `match` branches.
 - New tools can be scaffolded from `src-tauri/src/llm/tools/NewToolTemplate/`.
 - MCP tools are exposed as explicit names like `mcp__playwright__browser_navigate` instead of a generic dispatcher tool.
-- Shell tools use conversation-scoped persistent sessions and support foreground timeouts plus background processes.
+- Shell tools use conversation-scoped persistent sessions, start in the conversation workspace root, and support foreground timeouts plus background processes.
 
 ## Agent Turn Flow
 

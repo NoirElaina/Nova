@@ -572,7 +572,7 @@ impl OpenAiProvider {
         let available_tools = tools::get_available_tools();
 
         // 加载系统提示词（含 Agent/Plan/Auto 模式逻辑）。
-        let system_prompt = load_system_prompt(app, agent_mode)?;
+        let system_prompt = load_system_prompt(app, agent_mode, conversation_id)?;
 
         // 先注入 system 消息。
         let mut oai_messages = vec![OpenAiMessage {

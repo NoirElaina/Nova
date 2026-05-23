@@ -1,6 +1,6 @@
 use std::path::PathBuf;
 
-use tauri::{AppHandle, Manager};
+use tauri::AppHandle;
 
 use crate::llm::tools::skill_tool::list_skill_summaries_with_app;
 use crate::llm::types::AgentMode;
@@ -66,13 +66,15 @@ fn main_prompt_path() -> PathBuf {
 }
 
 pub fn workspace_dir(app: &AppHandle) -> PathBuf {
-    app.path()
-        .app_data_dir()
-        .map(|d| d.join("workspace"))
+    crate::command::workspace::default_workspace_root(app)
         .unwrap_or_else(|_| PathBuf::from("workspace"))
 }
 
-pub fn load_system_prompt(app: &AppHandle, agent_mode: AgentMode) -> Result<String, String> {
+pub fn load_system_prompt(
+    app: &AppHandle,
+    agent_mode: AgentMode,
+    conversation_id: Option<&str>,
+) -> Result<String, String> {
     // 计算系统提示文件路径。
     let path = main_prompt_path();
     // 读取并校验主提示词文件，失败时拒绝 fallback。
@@ -84,7 +86,7 @@ pub fn load_system_prompt(app: &AppHandle, agent_mode: AgentMode) -> Result<Stri
     })?;
 
     // 将 workspace 路径注入提示词。
-    let ws = workspace_dir(app);
+    let ws = crate::command::workspace::workspace_root_for_conversation(app, conversation_id)?;
     let prompt = prompt.replace("{{NOVA_WORKSPACE}}", &ws.display().to_string());
 
     let prompt_with_memory = format!("{}{}", prompt, GLOBAL_MEMORY_SECTION);

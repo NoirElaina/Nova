@@ -258,9 +258,9 @@ const formatFileSize = (bytes?: number) => {
   align-items: center;
   gap: 4px;
   font-size: 9px;
-  color: #64748b;
-  border: 1px solid rgba(203, 213, 225, 0.75);
-  background: rgba(248, 250, 252, 0.85);
+  color: #047857;
+  border: 1px solid #a7f3d0;
+  background: #ecfdf5;
   padding: 3px 6px;
   border-radius: 6px;
   font-family: 'SF Mono', 'Fira Code', 'Cascadia Mono', monospace;
@@ -269,9 +269,9 @@ const formatFileSize = (bytes?: number) => {
 }
 
 .dark .token-badge {
-  color: #a09e99;
-  border-color: #475569;
-  background: rgba(51, 65, 85, 0.35);
+  color: #86efac;
+  border-color: rgba(34, 197, 94, 0.38);
+  background: rgba(20, 83, 45, 0.32);
 }
 
 .user-message-text {

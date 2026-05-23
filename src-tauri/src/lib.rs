@@ -25,12 +25,11 @@ pub fn run() {
             }
             info!("application setup started");
 
-            // 启动时自动创建 workspace 目录，确保 AI 有默认工作区。
-            let ws = crate::llm::utils::system_prompt::workspace_dir(app.handle());
-            if !ws.exists() {
-                match std::fs::create_dir_all(&ws) {
-                    Ok(()) => info!(path = %ws.display(), "workspace directory created"),
-                    Err(error) => warn!(path = %ws.display(), error = %error, "failed to create workspace directory"),
+            // 启动时自动创建默认 workspace 目录，确保 AI 有默认工作区。
+            match crate::command::workspace::default_workspace_root(app.handle()) {
+                Ok(ws) => info!(path = %ws.display(), "default workspace directory ready"),
+                Err(error) => {
+                    warn!(error = %error, "failed to prepare default workspace directory")
                 }
             }
 

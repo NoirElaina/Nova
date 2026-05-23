@@ -154,10 +154,8 @@ const chips = computed<ActivityChip[]>(() =>
   max-width: 100%;
   border-radius: 14px;
   padding: 9px 11px;
-  border: 1px solid #dbeafe;
-  background:
-    linear-gradient(135deg, rgba(239, 246, 255, 0.62), rgba(255, 255, 255, 0.98) 48%),
-    #ffffff;
+  border: 1px solid #e5e7eb;
+  background: #ffffff;
   box-shadow: 0 1px 2px rgba(15, 23, 42, 0.035);
 }
 

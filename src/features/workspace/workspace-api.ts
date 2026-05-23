@@ -26,6 +26,41 @@ export type WorkspaceFileContent = {
   size: number;
 };
 
+export type LspServerStatus = {
+  languageId: string;
+  displayName: string;
+  command?: string | null;
+  available: boolean;
+  running: boolean;
+  diagnosticCount: number;
+  error?: string | null;
+};
+
+export type LspStatusResponse = {
+  workspaceRoot: string;
+  servers: LspServerStatus[];
+};
+
+export type LspDiagnostic = {
+  uri: string;
+  path: string;
+  relativePath: string;
+  message: string;
+  severity?: number | null;
+  source?: string | null;
+  code?: string | null;
+  line: number;
+  character: number;
+  endLine: number;
+  endCharacter: number;
+};
+
+export type LspDiagnosticsResponse = {
+  workspaceRoot: string;
+  server?: string | null;
+  diagnostics: LspDiagnostic[];
+};
+
 export async function listWorkspaceDirectory(
   conversationId: string | null,
   path = '',
@@ -51,6 +86,24 @@ export async function setWorkspaceRoot(
   path: string,
 ): Promise<WorkspaceDirectoryListing> {
   return invoke<WorkspaceDirectoryListing>('workspace_set_root', {
+    conversationId,
+    path,
+  });
+}
+
+export async function getLspStatus(
+  conversationId: string | null,
+): Promise<LspStatusResponse> {
+  return invoke<LspStatusResponse>('lsp_status', {
+    conversationId,
+  });
+}
+
+export async function getLspDiagnostics(
+  conversationId: string | null,
+  path?: string | null,
+): Promise<LspDiagnosticsResponse> {
+  return invoke<LspDiagnosticsResponse>('lsp_diagnostics', {
     conversationId,
     path,
   });

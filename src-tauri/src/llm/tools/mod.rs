@@ -1,3 +1,6 @@
+#[path = "LspTools/mod.rs"]
+pub mod language_server_tools;
+
 // 这是工具注册入口模块，定义了所有内置工具（Bash/PowerShell/File/Task/... 等）
 // 以及工具发现、执行、权限检查的统一接口。
 macro_rules! declare_builtin_tools {
@@ -8,11 +11,13 @@ macro_rules! declare_builtin_tools {
         )*
 
         fn builtin_tool_registrations() -> Vec<ToolRegistration> {
-            vec![
+            let mut tools = vec![
                 $(
                     $module::registration(),
                 )*
-            ]
+            ];
+            tools.extend(language_server_tools::registrations());
+            tools
         }
     };
 }
@@ -43,7 +48,6 @@ declare_builtin_tools! {
     list_mcp_resources_tool => "ListMcpResourcesTool/mod.rs",
     read_mcp_resource_tool => "ReadMcpResourceTool/mod.rs",
     mcp_auth_tool => "McpAuthTool/mod.rs",
-    lsp_tool => "LSPTool/mod.rs",
     file_read_tool => "FileReadTool/mod.rs",
     file_edit_tool => "FileEditTool/mod.rs",
     ask_user_question_tool => "AskUserQuestionTool/mod.rs",

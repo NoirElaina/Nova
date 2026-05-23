@@ -11,6 +11,7 @@ Nova is a local desktop coding assistant for real project execution, controllabl
 - Browser annotation flow: users can select elements in the Nova Browser and add the captured page context back into the chat input.
 - Workspace drawer: review agent output, token usage, session files, terminal activity, project files, and browser state without leaving the conversation.
 - Modular tool registry: built-in tools self-describe registration, permissions, app execution, and post-processing so new tools can be mounted with one entry in `src-tauri/src/llm/tools/mod.rs`.
+- Native LSP tools: diagnostics, definitions, references, symbols, hover, and language-server status are handled by Nova's backend instead of MCP.
 - Multi-provider model access: switch providers and models with isolated per-provider profiles.
 - Agent modes: `Agent`, `Plan`, and `Auto` modes are available from the input area.
 - MCP connectivity: register MCP servers, inspect tools/resources, and invoke MCP tools through explicit tool names such as `mcp__server__tool`.
@@ -27,7 +28,7 @@ Nova is a local desktop coding assistant for real project execution, controllabl
 
 The right-side workspace drawer is the main companion panel for a conversation.
 
-- Workspace: browse and open files from the current conversation's workspace root, resize or hide the file tree, and switch that conversation's root.
+- Workspace: browse and open files from the current conversation's workspace root, resize or hide the file tree, switch that conversation's root, and view native LSP status/diagnostics.
 - Review: inspect agent changes and execution context.
 - Usage: view token and cost trends without altering chart animations.
 - Files: inspect files uploaded into the current session.
@@ -51,6 +52,7 @@ Nova Browser is intentionally not rendered as an embedded page inside the main c
 - New tools can be scaffolded from `src-tauri/src/llm/tools/NewToolTemplate/`.
 - MCP tools are exposed as explicit names like `mcp__playwright__browser_navigate` instead of a generic dispatcher tool.
 - Shell tools use conversation-scoped persistent sessions, start in the conversation workspace root, and support foreground timeouts plus background processes.
+- LSP tools are built in as `lsp_status`, `lsp_diagnostics`, `lsp_definition`, `lsp_references`, `lsp_symbols`, and `lsp_hover`; they do not require an MCP language-server bridge.
 
 ## Agent Turn Flow
 

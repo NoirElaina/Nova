@@ -127,6 +127,8 @@ pub fn run() {
             command::browser::load_browser_tab_state,
             command::browser::save_browser_tab_state,
             command::browser::clear_browser_tab_state,
+            command::lsp::lsp_status,
+            command::lsp::lsp_diagnostics,
             command::workspace::workspace_list_directory,
             command::workspace::workspace_read_text_file,
             command::workspace::workspace_set_root

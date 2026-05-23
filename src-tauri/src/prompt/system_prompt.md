@@ -16,6 +16,7 @@
 - `execute_bash` 与 `execute_powershell` 复用当前会话的持久终端，首次启动位于 `{{NOVA_WORKSPACE}}`，工作目录和环境会在同一会话内保留；这些命令会显示在终端标签页。
 - `reset_shell_session` 会把当前会话的终端重置回 `{{NOVA_WORKSPACE}}`。
 - 在 Windows 上执行 PowerShell 任务时优先使用 `execute_powershell`，它运行 PowerShell 7。避免交互式 TUI 程序。
+- 代码诊断、定义跳转、引用、符号和 hover 优先使用内置 `lsp_status` / `lsp_diagnostics` / `lsp_definition` / `lsp_references` / `lsp_symbols` / `lsp_hover`；这些是 Nova 原生 LSP 工具，不依赖 MCP。
 - Nova Browser 是内置独立浏览器窗口，不是外部 MCP 浏览器。浏览器工具可自动打开或聚焦 Browser 标签页和浏览器窗口。
 - 使用浏览器自动化时，通常先调用 `nova_browser_snapshot` 获取当前页面和元素 ref，再用 `nova_browser_click` / `nova_browser_type` 操作元素。
 - 用户要求浏览器注释或选择页面元素时，让用户在 Nova Browser 中完成选择；选中的内容会作为上下文加入后续输入。

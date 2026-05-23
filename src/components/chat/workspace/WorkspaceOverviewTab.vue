@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import hljs from "highlight.js";
 import { Button } from "@/components/ui/button";
@@ -9,6 +9,10 @@ import {
   listWorkspaceDirectory,
   readWorkspaceTextFile,
   setWorkspaceRoot,
+  getLspDiagnostics,
+  getLspStatus,
+  type LspDiagnostic,
+  type LspStatusResponse,
   type WorkspaceDirectoryListing,
   type WorkspaceEntry,
   type WorkspaceFileContent,
@@ -37,10 +41,36 @@ const isResizingFileTree = ref(false);
 const isMoreMenuOpen = ref(false);
 const isPreviewWrapEnabled = ref(false);
 const isChangingWorkspace = ref(false);
+const lspStatus = ref<LspStatusResponse | null>(null);
+const lspDiagnostics = ref<LspDiagnostic[]>([]);
+const lspError = ref("");
+const isLoadingLspStatus = ref(false);
+const isLoadingDiagnostics = ref(false);
+const highlightedLine = ref<number | null>(null);
 
 const FILE_TREE_MIN_WIDTH = 220;
 const FILE_TREE_MAX_WIDTH = 420;
 const PREVIEW_MIN_WIDTH = 260;
+const LSP_SUPPORTED_EXTENSIONS = new Set([
+  "c",
+  "cc",
+  "cpp",
+  "cxx",
+  "go",
+  "h",
+  "hh",
+  "hpp",
+  "js",
+  "jsx",
+  "mjs",
+  "cjs",
+  "py",
+  "pyi",
+  "rs",
+  "ts",
+  "tsx",
+  "vue",
+]);
 
 let resizeStartX = 0;
 let resizeStartWidth = 0;
@@ -119,6 +149,43 @@ const highlightLine = (line: string) => {
 };
 
 const selectedPreviewLines = computed(() => selectedLines.value.map(highlightLine));
+const entryHasLspSupport = (entry: WorkspaceEntry | null) => {
+  const extension = entry?.extension?.toLowerCase();
+  return Boolean(extension && LSP_SUPPORTED_EXTENSIONS.has(extension));
+};
+const selectedFileHasLspSupport = computed(() => entryHasLspSupport(selectedFile.value));
+const activeLspServers = computed(() =>
+  (lspStatus.value?.servers ?? []).filter((server) => server.available || server.running),
+);
+const lspStatusLabel = computed(() => {
+  if (selectedFile.value && !selectedFileHasLspSupport.value) return "当前文件不适用 LSP";
+  if (isLoadingLspStatus.value) return "LSP 检测中";
+  const running = activeLspServers.value.filter((server) => server.running);
+  if (running.length) return `${running.map((server) => server.displayName).join(" / ")} 运行中`;
+  const available = activeLspServers.value.filter((server) => server.available);
+  if (available.length) return `${available.length} 个语言服务器可用`;
+  return "未发现语言服务器";
+});
+const lspStatusDotClass = computed(() => {
+  if (selectedFile.value && !selectedFileHasLspSupport.value) return "bg-[#cbd5e1]";
+  if (activeLspServers.value.some((server) => server.running)) return "bg-[#22c55e]";
+  if (activeLspServers.value.some((server) => server.available)) return "bg-[#f59e0b]";
+  return "bg-[#cbd5e1]";
+});
+const diagnosticsStatusLabel = computed(() => {
+  if (selectedFile.value && !selectedFileHasLspSupport.value) return "不适用";
+  if (isLoadingDiagnostics.value) return "诊断中...";
+  if (lspDiagnostics.value.length) return `${lspDiagnostics.value.length} 个诊断`;
+  return "无诊断";
+});
+const diagnosticsByLine = computed(() => {
+  const map = new Map<number, LspDiagnostic[]>();
+  for (const diagnostic of lspDiagnostics.value) {
+    const line = diagnostic.line || 1;
+    map.set(line, [...(map.get(line) ?? []), diagnostic]);
+  }
+  return map;
+});
 const previewCodeGridClass = computed(() =>
   isPreviewWrapEnabled.value ? "w-full" : "min-w-max",
 );
@@ -170,6 +237,49 @@ const setPathExpanded = (path: string, expanded: boolean) => {
   expandedPaths.value = Array.from(next);
 };
 
+const loadLspStatus = async () => {
+  isLoadingLspStatus.value = true;
+  try {
+    lspStatus.value = await getLspStatus(props.conversationId ?? null);
+    lspError.value = "";
+  } catch (error) {
+    console.error("Failed to load LSP status:", error);
+    lspError.value = String(error);
+  } finally {
+    isLoadingLspStatus.value = false;
+  }
+};
+
+const loadDiagnosticsForFile = async (entry: WorkspaceEntry) => {
+  const selectedPath = entry.relativePath;
+  if (!entryHasLspSupport(entry)) {
+    lspDiagnostics.value = [];
+    lspError.value = "";
+    isLoadingDiagnostics.value = false;
+    return;
+  }
+
+  isLoadingDiagnostics.value = true;
+  try {
+    const result = await getLspDiagnostics(props.conversationId ?? null, selectedPath);
+    if (selectedFile.value?.relativePath === selectedPath) {
+      lspDiagnostics.value = result.diagnostics;
+      lspError.value = "";
+    }
+    void loadLspStatus();
+  } catch (error) {
+    console.error("Failed to load LSP diagnostics:", error);
+    if (selectedFile.value?.relativePath === selectedPath) {
+      lspDiagnostics.value = [];
+      lspError.value = String(error);
+    }
+  } finally {
+    if (selectedFile.value?.relativePath === selectedPath) {
+      isLoadingDiagnostics.value = false;
+    }
+  }
+};
+
 const loadDirectory = async (path = "") => {
   setPathLoading(path, true);
   try {
@@ -209,8 +319,10 @@ const reloadWorkspace = async () => {
   expandedPaths.value = [];
   selectedFile.value = null;
   selectedContent.value = null;
+  lspDiagnostics.value = [];
   previewError.value = "";
   await loadDirectory("");
+  void loadLspStatus();
 };
 
 const toggleDirectory = async (entry: WorkspaceEntry) => {
@@ -229,6 +341,8 @@ const toggleDirectory = async (entry: WorkspaceEntry) => {
 const selectFile = async (entry: WorkspaceEntry) => {
   selectedFile.value = entry;
   selectedContent.value = null;
+  lspDiagnostics.value = [];
+  lspError.value = "";
   previewError.value = "";
   isReadingFile.value = true;
   try {
@@ -239,6 +353,7 @@ const selectFile = async (entry: WorkspaceEntry) => {
   } finally {
     isReadingFile.value = false;
   }
+  void loadDiagnosticsForFile(entry);
 };
 
 const openSelectedFile = () => {
@@ -268,6 +383,8 @@ const changeWorkspaceRoot = async () => {
     isChangingWorkspace.value = true;
     const listing = await setWorkspaceRoot(props.conversationId ?? null, path);
     applyRootListing(listing);
+    lspDiagnostics.value = [];
+    void loadLspStatus();
     isFileTreeVisible.value = true;
     emitToast({ variant: "success", source: "workspace", message: "工作区已切换。" });
   } catch (error) {
@@ -376,6 +493,45 @@ const toggleFileTree = () => {
   isFileTreeVisible.value = !isFileTreeVisible.value;
 };
 
+const diagnosticSeverityLabel = (severity?: number | null) => {
+  if (severity === 1) return "错误";
+  if (severity === 2) return "警告";
+  if (severity === 3) return "信息";
+  if (severity === 4) return "提示";
+  return "诊断";
+};
+
+const diagnosticSeverityClass = (severity?: number | null) => {
+  if (severity === 1) return "text-[#dc2626]";
+  if (severity === 2) return "text-[#d97706]";
+  return "text-[#2563eb]";
+};
+
+const lineHasDiagnostics = (line: number) => diagnosticsByLine.value.has(line);
+
+const codeLineClass = (line: number) => {
+  if (highlightedLine.value === line) {
+    return "bg-[#e8f0fe] dark:bg-[#1f2f46]";
+  }
+  if (lineHasDiagnostics(line)) {
+    return "bg-[#fff7ed] dark:bg-[#342719]";
+  }
+  return "";
+};
+
+const jumpToDiagnostic = async (diagnostic: LspDiagnostic) => {
+  highlightedLine.value = diagnostic.line;
+  await nextTick();
+  document
+    .querySelector(`[data-workspace-code-line="${diagnostic.line}"]`)
+    ?.scrollIntoView({ block: "center", behavior: "smooth" });
+  window.setTimeout(() => {
+    if (highlightedLine.value === diagnostic.line) {
+      highlightedLine.value = null;
+    }
+  }, 1600);
+};
+
 onMounted(() => {
   document.addEventListener("mousedown", onDocumentMouseDown);
   window.addEventListener("keydown", onWindowKeyDown);
@@ -388,8 +544,11 @@ watch(
     expandedPaths.value = [];
     selectedFile.value = null;
     selectedContent.value = null;
+    lspDiagnostics.value = [];
+    lspError.value = "";
     previewError.value = "";
     void loadDirectory("");
+    void loadLspStatus();
   },
   { immediate: true },
 );
@@ -525,6 +684,16 @@ onBeforeUnmount(() => {
           </div>
         </div>
 
+        <div v-if="selectedFile" class="flex min-h-8 shrink-0 items-center justify-between gap-3 border-b border-[#eef0f3] px-3 py-1.5 text-[12px] text-[#64748b] dark:border-[#2a2a2a] dark:text-[#a8b0bd]">
+          <div class="flex min-w-0 items-center gap-2">
+            <span class="h-1.5 w-1.5 shrink-0 rounded-full" :class="lspStatusDotClass" />
+            <span class="truncate">{{ lspStatusLabel }}</span>
+          </div>
+          <div class="shrink-0">
+            {{ diagnosticsStatusLabel }}
+          </div>
+        </div>
+
         <div v-if="!selectedFile" class="flex h-full flex-col items-center justify-center px-6 text-center">
           <svg width="42" height="42" viewBox="0 0 24 24" fill="none" class="text-[#70757a]">
             <path d="M3 7.8A2.8 2.8 0 0 1 5.8 5H10l2 2h6.2A2.8 2.8 0 0 1 21 9.8v6.4a2.8 2.8 0 0 1-2.8 2.8H5.8A2.8 2.8 0 0 1 3 16.2V7.8Z" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round" />
@@ -534,6 +703,24 @@ onBeforeUnmount(() => {
         </div>
 
         <div v-else class="min-h-0 flex-1 overflow-auto">
+          <div v-if="lspError" class="mx-3 mt-2 rounded-lg border border-[#e5e7eb] bg-[#fafafa] px-3 py-2 text-[12px] text-[#64748b] dark:border-[#333] dark:bg-[#252525] dark:text-[#a8b0bd]">
+            {{ lspError }}
+          </div>
+          <div v-else-if="lspDiagnostics.length" class="mx-3 mt-2 overflow-hidden rounded-lg border border-[#e5e7eb] bg-white text-[12px] shadow-sm dark:border-[#333] dark:bg-[#242424]">
+            <button
+              v-for="diagnostic in lspDiagnostics"
+              :key="`${diagnostic.relativePath}:${diagnostic.line}:${diagnostic.character}:${diagnostic.message}`"
+              type="button"
+              class="flex w-full items-start gap-2 border-b border-[#f1f3f4] px-3 py-2 text-left last:border-b-0 hover:bg-[#f8fafc] dark:border-[#303030] dark:hover:bg-[#2d2d2d]"
+              @click="jumpToDiagnostic(diagnostic)"
+            >
+              <span class="mt-0.5 shrink-0 font-medium" :class="diagnosticSeverityClass(diagnostic.severity)">
+                {{ diagnosticSeverityLabel(diagnostic.severity) }}
+              </span>
+              <span class="shrink-0 text-[#94a3b8]">{{ diagnostic.line }}:{{ diagnostic.character }}</span>
+              <span class="min-w-0 flex-1 text-[#334155] dark:text-[#d7d7d7]">{{ diagnostic.message }}</span>
+            </button>
+          </div>
           <div v-if="isReadingFile" class="m-4 rounded-lg border border-[#e5e7eb] bg-[#f9fafb] px-3 py-2 text-sm text-[#6b7280] dark:border-[#333] dark:bg-[#252525] dark:text-[#aaa]">
             正在读取文件...
           </div>
@@ -542,8 +729,13 @@ onBeforeUnmount(() => {
           </div>
           <div v-else-if="selectedContent" class="grid grid-cols-[48px_minmax(0,1fr)] py-2 font-mono text-[12px] leading-6" :class="previewCodeGridClass">
             <template v-for="(line, index) in selectedPreviewLines" :key="index">
-              <div class="select-none pr-3 text-right text-[#6b7280]">{{ index + 1 }}</div>
-              <pre class="min-h-6 pr-6 text-[#202124] dark:text-[#ececec]" :class="previewCodeLineClass" v-html="line" />
+              <div class="select-none pr-3 text-right text-[#6b7280]" :class="codeLineClass(index + 1)">{{ index + 1 }}</div>
+              <pre
+                class="min-h-6 pr-6 text-[#202124] transition-colors dark:text-[#ececec]"
+                :class="[previewCodeLineClass, codeLineClass(index + 1)]"
+                :data-workspace-code-line="index + 1"
+                v-html="line"
+              />
             </template>
           </div>
         </div>

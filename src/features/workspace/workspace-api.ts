@@ -61,6 +61,35 @@ export type LspDiagnosticsResponse = {
   diagnostics: LspDiagnostic[];
 };
 
+export type LspLocation = {
+  uri: string;
+  path: string;
+  relativePath: string;
+  line: number;
+  character: number;
+  endLine: number;
+  endCharacter: number;
+};
+
+export type LspRequestResponse = {
+  workspaceRoot: string;
+  server: string;
+  result: unknown;
+  locations: LspLocation[];
+};
+
+export type LspSymbolsResponse = {
+  workspaceRoot: string;
+  server: string;
+  result: unknown;
+};
+
+export type LspHoverResponse = {
+  workspaceRoot: string;
+  server: string;
+  result: unknown;
+};
+
 export async function listWorkspaceDirectory(
   conversationId: string | null,
   path = '',
@@ -106,5 +135,60 @@ export async function getLspDiagnostics(
   return invoke<LspDiagnosticsResponse>('lsp_diagnostics', {
     conversationId,
     path,
+  });
+}
+
+export async function getLspDefinition(
+  conversationId: string | null,
+  path: string,
+  line: number,
+  character: number,
+): Promise<LspRequestResponse> {
+  return invoke<LspRequestResponse>('lsp_definition', {
+    conversationId,
+    path,
+    line,
+    character,
+  });
+}
+
+export async function getLspReferences(
+  conversationId: string | null,
+  path: string,
+  line: number,
+  character: number,
+  includeDeclaration = true,
+): Promise<LspRequestResponse> {
+  return invoke<LspRequestResponse>('lsp_references', {
+    conversationId,
+    path,
+    line,
+    character,
+    includeDeclaration,
+  });
+}
+
+export async function getLspSymbols(
+  conversationId: string | null,
+  options: { path?: string | null; query?: string | null } = {},
+): Promise<LspSymbolsResponse> {
+  return invoke<LspSymbolsResponse>('lsp_symbols', {
+    conversationId,
+    path: options.path,
+    query: options.query,
+  });
+}
+
+export async function getLspHover(
+  conversationId: string | null,
+  path: string,
+  line: number,
+  character: number,
+): Promise<LspHoverResponse> {
+  return invoke<LspHoverResponse>('lsp_hover', {
+    conversationId,
+    path,
+    line,
+    character,
   });
 }

@@ -131,6 +131,10 @@ pub fn run() {
             command::browser::clear_browser_tab_state,
             command::lsp::lsp_status,
             command::lsp::lsp_diagnostics,
+            command::lsp::lsp_definition,
+            command::lsp::lsp_references,
+            command::lsp::lsp_symbols,
+            command::lsp::lsp_hover,
             command::workspace::workspace_list_directory,
             command::workspace::workspace_read_text_file,
             command::workspace::workspace_set_root

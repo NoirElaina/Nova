@@ -1,4 +1,5 @@
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::sync::{Mutex, OnceLock};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -9,90 +10,124 @@ pub struct TodoItem {
     pub notes: Option<String>,
 }
 
-static TASKS: OnceLock<Mutex<Vec<TodoItem>>> = OnceLock::new();
-static NEXT_ID: OnceLock<Mutex<u64>> = OnceLock::new();
-
-// 返回任务内存仓库的全局单例。
-// 这里的 Vec 只保存当前进程生命周期内的任务列表。
-fn tasks_store() -> &'static Mutex<Vec<TodoItem>> {
-    TASKS.get_or_init(|| Mutex::new(Vec::new()))
+#[derive(Debug, Default)]
+struct ConversationTasks {
+    next_id: u64,
+    items: Vec<TodoItem>,
 }
 
-// 生成下一个任务 id。
-// NEXT_ID 是一个递增计数器，每创建一个任务就加一。
-fn next_id() -> u64 {
-    let lock = NEXT_ID.get_or_init(|| Mutex::new(1));
-    let mut id = lock.lock().expect("NEXT_ID mutex poisoned");
-    let out = *id;
-    *id += 1;
-    out
+static TASKS: OnceLock<Mutex<HashMap<String, ConversationTasks>>> = OnceLock::new();
+
+fn tasks_store() -> &'static Mutex<HashMap<String, ConversationTasks>> {
+    TASKS.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
-// 返回当前内存里的全部任务快照。
-pub fn list() -> Vec<TodoItem> {
-    tasks_store().lock().expect("TASKS mutex poisoned").clone()
+fn scope_key(conversation_id: Option<&str>) -> String {
+    conversation_id
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or("__default__")
+        .to_string()
 }
 
-// 新建一个任务并加入内存仓库。
-// `title`/`status`/`notes` 就是 TodoItem 的三个业务字段。
-pub fn create(title: String, status: String, notes: Option<String>) -> TodoItem {
-    let mut tasks = tasks_store().lock().expect("TASKS mutex poisoned");
+fn next_id(scope: &mut ConversationTasks) -> u64 {
+    if scope.next_id == 0 {
+        scope.next_id = 1;
+    }
+    let id = scope.next_id;
+    scope.next_id += 1;
+    id
+}
+
+pub fn list(conversation_id: Option<&str>) -> Vec<TodoItem> {
+    let key = scope_key(conversation_id);
+    tasks_store()
+        .lock()
+        .expect("TASKS mutex poisoned")
+        .get(&key)
+        .map(|scope| scope.items.clone())
+        .unwrap_or_default()
+}
+
+pub fn create(
+    conversation_id: Option<&str>,
+    title: String,
+    status: String,
+    notes: Option<String>,
+) -> TodoItem {
+    let key = scope_key(conversation_id);
+    let mut store = tasks_store().lock().expect("TASKS mutex poisoned");
+    let scope = store.entry(key).or_default();
     let item = TodoItem {
-        id: next_id(),
+        id: next_id(scope),
         title,
         status,
         notes,
     };
-    tasks.push(item.clone());
+    scope.items.push(item.clone());
     item
 }
 
-// 按 id 更新一个任务的部分字段。
-// `notes: Option<Option<String>>` 的双层 Option 用来区分“不改 notes”和“把 notes 清空”。
 pub fn update(
+    conversation_id: Option<&str>,
     id: u64,
     title: Option<String>,
     status: Option<String>,
     notes: Option<Option<String>>,
 ) -> Option<TodoItem> {
-    let mut tasks = tasks_store().lock().expect("TASKS mutex poisoned");
-    let task = tasks.iter_mut().find(|t| t.id == id)?;
+    let key = scope_key(conversation_id);
+    let mut store = tasks_store().lock().expect("TASKS mutex poisoned");
+    let task = store
+        .get_mut(&key)?
+        .items
+        .iter_mut()
+        .find(|task| task.id == id)?;
 
-    if let Some(t) = title {
-        task.title = t;
+    if let Some(title) = title {
+        task.title = title;
     }
-    if let Some(s) = status {
-        task.status = s;
+    if let Some(status) = status {
+        task.status = status;
     }
-    if let Some(n) = notes {
-        task.notes = n;
+    if let Some(notes) = notes {
+        task.notes = notes;
     }
 
     Some(task.clone())
 }
 
-// 按 id 读取单个任务。
-pub fn get(id: u64) -> Option<TodoItem> {
+pub fn get(conversation_id: Option<&str>, id: u64) -> Option<TodoItem> {
+    let key = scope_key(conversation_id);
     tasks_store()
         .lock()
         .expect("TASKS mutex poisoned")
+        .get(&key)?
+        .items
         .iter()
-        .find(|t| t.id == id)
+        .find(|task| task.id == id)
         .cloned()
 }
 
-// 清空当前进程内保存的全部任务。
-pub fn clear() {
-    tasks_store().lock().expect("TASKS mutex poisoned").clear();
-}
+pub fn replace_all(
+    conversation_id: Option<&str>,
+    items: Vec<(String, String, Option<String>)>,
+) -> Vec<TodoItem> {
+    let key = scope_key(conversation_id);
+    let mut store = tasks_store().lock().expect("TASKS mutex poisoned");
+    let scope = store.entry(key).or_default();
+    scope.items.clear();
+    scope.next_id = 1;
 
-// 用一组全新的任务内容替换当前仓库。
-// `items` 只提供 title/status/notes，id 会在这里重新分配。
-pub fn replace_all(items: Vec<(String, String, Option<String>)>) -> Vec<TodoItem> {
-    clear();
-    let mut out = Vec::new();
+    let mut created = Vec::with_capacity(items.len());
     for (title, status, notes) in items {
-        out.push(create(title, status, notes));
+        let item = TodoItem {
+            id: next_id(scope),
+            title,
+            status,
+            notes,
+        };
+        scope.items.push(item.clone());
+        created.push(item);
     }
-    out
+    created
 }

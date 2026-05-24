@@ -255,7 +255,7 @@ fn validate_tool_output(name: &str, output: &str) -> Result<(), String> {
 }
 
 fn infer_is_error(output: &str) -> bool {
-    let Ok(v) = serde_json::from_str::<Value>(output) else {
+    let Ok(v) = serde_json::from_str::<Value>(output.trim()) else {
         return false;
     };
 
@@ -656,7 +656,7 @@ pub fn execute_tool(name: &str, input: Value) -> String {
         return (entry.execute)(input);
     }
 
-    format!("Unknown tool: {}", name)
+    json!({ "ok": false, "error": format!("Unknown tool: {}", name) }).to_string()
 }
 
 // 在带 AppHandle 的环境中执行工具，附带权限校验和 MCP 代理能力。
@@ -709,5 +709,5 @@ pub async fn execute_tool_with_app(
         return (entry.execute)(input);
     }
 
-    format!("Unknown tool: {}", name)
+    json!({ "ok": false, "error": format!("Unknown tool: {}", name) }).to_string()
 }

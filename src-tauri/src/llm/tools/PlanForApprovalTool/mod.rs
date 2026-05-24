@@ -87,12 +87,15 @@ pub fn tool() -> Tool {
 pub fn execute(input: Value) -> String {
     let summary = match normalized_non_empty_string(&input, "summary") {
         Some(v) => v,
-        None => return "Error: Missing or empty 'summary' argument".into(),
+        None => {
+            return json!({ "ok": false, "error": "Missing or empty 'summary' argument" })
+                .to_string()
+        }
     };
 
     let steps = normalized_string_list(&input, "steps");
     if steps.is_empty() {
-        return "Error: Missing non-empty 'steps' array".into();
+        return json!({ "ok": false, "error": "Missing non-empty 'steps' array" }).to_string();
     }
 
     // title: 展示给用户看的计划标题，不传时使用默认“计划提审”。

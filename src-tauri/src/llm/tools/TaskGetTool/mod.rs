@@ -1,11 +1,12 @@
 use crate::llm::tools::shared::task_store;
-use crate::llm::tools::{sync_tool, ToolRegistration};
+use crate::llm::tools::{app_tool, AppExecuteFuture, ToolRegistration};
 use crate::llm::types::Tool;
 use serde_json::{json, Value};
+use tauri::AppHandle;
 
 // 注册 TaskGet，声明它是只读同步工具，用于按 id 读取当前会话任务。
 pub(crate) fn registration() -> ToolRegistration {
-    sync_tool(tool, execute, true, None)
+    app_tool(tool, execute, execute_with_app_boxed, true, None)
 }
 
 // 返回暴露给模型的工具元数据。
@@ -38,11 +39,23 @@ fn parse_task_id(input: &Value) -> Option<u64> {
 }
 
 // 根据解析出的 task_id 读取任务，并把任务对象原样放进 JSON 结果里。
-pub fn execute(input: Value) -> String {
+pub fn execute(_input: Value) -> String {
+    json!({ "ok": false, "error": "TaskGet requires conversation-aware execution" }).to_string()
+}
+
+fn execute_with_app_boxed(
+    _app: AppHandle,
+    conversation_id: Option<String>,
+    input: Value,
+) -> AppExecuteFuture {
+    Box::pin(async move { execute_scoped(conversation_id.as_deref(), input) })
+}
+
+fn execute_scoped(conversation_id: Option<&str>, input: Value) -> String {
     let Some(task_id) = parse_task_id(&input) else {
-        return "Error: Missing 'task_id'".into();
+        return json!({ "ok": false, "error": "Missing 'task_id'" }).to_string();
     };
 
-    let task = task_store::get(task_id);
+    let task = task_store::get(conversation_id, task_id);
     json!({ "ok": true, "task": task }).to_string()
 }

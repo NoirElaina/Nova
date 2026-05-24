@@ -1,11 +1,12 @@
 use crate::llm::tools::shared::task_store;
-use crate::llm::tools::{sync_tool, ToolRegistration};
+use crate::llm::tools::{app_tool, AppExecuteFuture, ToolRegistration};
 use crate::llm::types::Tool;
 use serde_json::{json, Value};
+use tauri::AppHandle;
 
 // 注册 task_update，声明它是写类同步工具，用于更新已有任务。
 pub(crate) fn registration() -> ToolRegistration {
-    sync_tool(tool, execute, false, None)
+    app_tool(tool, execute, execute_with_app_boxed, false, None)
 }
 
 // 返回暴露给模型的工具元数据，要求提供 id，其他字段按需更新。
@@ -27,10 +28,23 @@ pub fn tool() -> Tool {
 }
 
 // 读取要更新的 id，以及可选的 title/status/notes，再写回内存任务表。
-pub fn execute(input: Value) -> String {
+pub fn execute(_input: Value) -> String {
+    json!({ "ok": false, "error": "task_update requires conversation-aware execution" })
+        .to_string()
+}
+
+fn execute_with_app_boxed(
+    _app: AppHandle,
+    conversation_id: Option<String>,
+    input: Value,
+) -> AppExecuteFuture {
+    Box::pin(async move { execute_scoped(conversation_id.as_deref(), input) })
+}
+
+fn execute_scoped(conversation_id: Option<&str>, input: Value) -> String {
     let id = match input.get("id").and_then(|v| v.as_u64()) {
         Some(v) => v,
-        None => return "Error: Missing 'id' argument".into(),
+        None => return json!({ "ok": false, "error": "Missing 'id' argument" }).to_string(),
     };
 
     let title = input
@@ -52,8 +66,8 @@ pub fn execute(input: Value) -> String {
         None
     };
 
-    match task_store::update(id, title, status, notes) {
+    match task_store::update(conversation_id, id, title, status, notes) {
         Some(task) => json!({ "ok": true, "task": task }).to_string(),
-        None => format!("Error: Task id {} not found", id),
+        None => json!({ "ok": false, "error": format!("Task id {} not found", id) }).to_string(),
     }
 }

@@ -1,11 +1,12 @@
 use crate::llm::tools::shared::task_store;
-use crate::llm::tools::{sync_tool, ToolRegistration};
+use crate::llm::tools::{app_tool, AppExecuteFuture, ToolRegistration};
 use crate::llm::types::Tool;
 use serde_json::{json, Value};
+use tauri::AppHandle;
 
 // 注册 TaskStop，声明它是写类同步工具，用于停止当前会话里的任务。
 pub(crate) fn registration() -> ToolRegistration {
-    sync_tool(tool, execute, false, None)
+    app_tool(tool, execute, execute_with_app_boxed, false, None)
 }
 
 // 返回暴露给模型的工具元数据。
@@ -40,12 +41,24 @@ fn parse_task_id(input: &Value) -> Option<u64> {
 }
 
 // 把目标任务状态更新为 stopped，并返回停止结果。
-pub fn execute(input: Value) -> String {
+pub fn execute(_input: Value) -> String {
+    json!({ "ok": false, "error": "TaskStop requires conversation-aware execution" }).to_string()
+}
+
+fn execute_with_app_boxed(
+    _app: AppHandle,
+    conversation_id: Option<String>,
+    input: Value,
+) -> AppExecuteFuture {
+    Box::pin(async move { execute_scoped(conversation_id.as_deref(), input) })
+}
+
+fn execute_scoped(conversation_id: Option<&str>, input: Value) -> String {
     let Some(task_id) = parse_task_id(&input) else {
-        return "Error: Missing 'task_id'".into();
+        return json!({ "ok": false, "error": "Missing 'task_id'" }).to_string();
     };
 
-    match task_store::update(task_id, None, Some("stopped".into()), None) {
+    match task_store::update(conversation_id, task_id, None, Some("stopped".into()), None) {
         Some(task) => json!({
             "ok": true,
             "message": format!("Successfully stopped task: {}", task.id),
@@ -54,6 +67,6 @@ pub fn execute(input: Value) -> String {
             "command": task.title
         })
         .to_string(),
-        None => format!("Error: Task id {} not found", task_id),
+        None => json!({ "ok": false, "error": format!("Task id {} not found", task_id) }).to_string(),
     }
 }

@@ -168,7 +168,8 @@ pub fn execute(input: Value) -> String {
         .unwrap_or_default();
 
     if questions.is_empty() {
-        return "Error: ask_user_question requires non-empty 'questions'".into();
+        return json!({ "ok": false, "error": "ask_user_question requires non-empty 'questions'" })
+            .to_string();
     }
 
     json!({

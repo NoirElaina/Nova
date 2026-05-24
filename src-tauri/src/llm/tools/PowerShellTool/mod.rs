@@ -54,7 +54,7 @@ async fn execute_async(app: &AppHandle, conversation_id: Option<&str>, input: Va
     // cmd: 用户或模型传入的 PowerShell 命令文本。
     let cmd = match input.get("command").and_then(|v| v.as_str()) {
         Some(v) if !v.trim().is_empty() => v.to_string(),
-        _ => return "Error: Missing 'command' argument".into(),
+        _ => return json!({ "ok": false, "error": "Missing 'command' argument" }).to_string(),
     };
     let timeout_ms = input.get("timeout_ms").and_then(|value| value.as_u64());
     let background = input
@@ -69,7 +69,13 @@ async fn execute_async(app: &AppHandle, conversation_id: Option<&str>, input: Va
             conversation_id,
         ) {
             Ok(root) => root,
-            Err(error) => return format!("Failed to resolve workspace: {}", error),
+            Err(error) => {
+                return json!({
+                    "ok": false,
+                    "error": format!("Failed to resolve workspace: {}", error)
+                })
+                .to_string()
+            }
         };
 
         let result = if background {
@@ -93,36 +99,47 @@ async fn execute_async(app: &AppHandle, conversation_id: Option<&str>, input: Va
             Ok(result) if result.cancelled => {
                 json!({ "ok": false, "error": "cancelled" }).to_string()
             }
-            Ok(result) if result.timed_out => {
-                let stderr = result.stderr.trim();
-                let stdout = result.stdout.trim();
-                if stderr.is_empty() && stdout.is_empty() {
-                    "Error: command timed out".to_string()
-                } else {
-                    format!(
-                        "Error: command timed out\nStderr: {}\nStdout: {}",
-                        stderr, stdout
-                    )
-                }
+            Ok(result) if result.timed_out => json!({
+                "ok": false,
+                "error": "command timed out",
+                "stdout": result.stdout,
+                "stderr": result.stderr,
+                "exitCode": result.exit_code,
+                "cwd": result.cwd,
+                "timedOut": true,
+                "background": result.background,
+                "pid": result.pid
+            })
+            .to_string(),
+            Ok(result) => {
+                let ok = result.exit_code.unwrap_or(1) == 0;
+                json!({
+                    "ok": ok,
+                    "error": if ok { Value::Null } else { json!("command exited with non-zero status") },
+                    "stdout": result.stdout,
+                    "stderr": result.stderr,
+                    "exitCode": result.exit_code,
+                    "cwd": result.cwd,
+                    "timedOut": result.timed_out,
+                    "background": result.background,
+                    "pid": result.pid
+                })
+                .to_string()
             }
-            Ok(result) if result.background => result.stdout,
-            Ok(result) if result.exit_code.unwrap_or(1) == 0 => {
-                if result.stdout.trim().is_empty() {
-                    "(command executed with no output)".into()
-                } else {
-                    result.stdout
-                }
-            }
-            Ok(result) => format!("Error: {}\nStdout: {}", result.stderr, result.stdout),
-            Err(e) => format!("Failed to execute PowerShell command: {}", e),
+            Err(e) => json!({
+                "ok": false,
+                "error": format!("Failed to execute PowerShell command: {}", e)
+            })
+            .to_string(),
         };
     }
 
     #[cfg(not(target_os = "windows"))]
     {
-        format!(
-            "Error: execute_powershell is only available on Windows. Command was: {}",
-            cmd
-        )
+        json!({
+            "ok": false,
+            "error": format!("execute_powershell is only available on Windows. Command was: {}", cmd)
+        })
+        .to_string()
     }
 }

@@ -29,7 +29,7 @@ pub fn tool() -> Tool {
 pub fn execute(input: Value) -> String {
     let query = match input.get("query").and_then(|v| v.as_str()) {
         Some(v) if !v.trim().is_empty() => v.trim(),
-        _ => return "Error: Missing 'query' argument".into(),
+        _ => return json!({ "ok": false, "error": "Missing 'query' argument" }).to_string(),
     };
 
     search_tools(query, get_available_tools())
@@ -39,7 +39,7 @@ pub fn execute(input: Value) -> String {
 pub async fn execute_with_app(app: &AppHandle, input: Value) -> String {
     let query = match input.get("query").and_then(|v| v.as_str()) {
         Some(v) if !v.trim().is_empty() => v.trim(),
-        _ => return "Error: Missing 'query' argument".into(),
+        _ => return json!({ "ok": false, "error": "Missing 'query' argument" }).to_string(),
     };
 
     let mut tools = get_available_tools();

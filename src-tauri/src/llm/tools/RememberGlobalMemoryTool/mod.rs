@@ -61,7 +61,10 @@ pub fn execute(_input: Value) -> String {
 pub async fn execute_with_app(app: &AppHandle, input: Value) -> String {
     let content = match input.get("content").and_then(|v| v.as_str()) {
         Some(v) if !v.trim().is_empty() => v.trim(),
-        _ => return "Error: Missing non-empty 'content' argument".into(),
+        _ => {
+            return json!({ "ok": false, "error": "Missing non-empty 'content' argument" })
+                .to_string()
+        }
     };
 
     // kind/source: 这两个字段都是可选元数据，会原样传给底层 memory 写入逻辑。

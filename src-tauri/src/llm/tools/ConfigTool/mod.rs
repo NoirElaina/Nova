@@ -108,19 +108,19 @@ pub fn execute(_input: Value) -> String {
 pub async fn execute_with_app(app: &AppHandle, input: Value) -> String {
     let action = match input.get("action").and_then(|v| v.as_str()) {
         Some(v) => v,
-        None => return "Error: Missing 'action' argument".into(),
+        None => return json!({ "ok": false, "error": "Missing 'action' argument" }).to_string(),
     };
 
     // path: 当前用户环境下 settings.json 的绝对路径。
     let path = match settings_path(app) {
         Ok(p) => p,
-        Err(e) => return format!("Error: {}", e),
+        Err(e) => return json!({ "ok": false, "error": e }).to_string(),
     };
 
     // settings: 读出来的整份配置，会在 set/remove 分支里原地修改后再写回磁盘。
     let mut settings = match read_settings_json(&path) {
         Ok(v) => v,
-        Err(e) => return format!("Error: {}", e),
+        Err(e) => return json!({ "ok": false, "error": e }).to_string(),
     };
 
     match action {
@@ -128,7 +128,7 @@ pub async fn execute_with_app(app: &AppHandle, input: Value) -> String {
             if let Some(key) = input.get("key").and_then(|v| v.as_str()) {
                 match settings.get(key) {
                     Some(v) => json!({"ok": true, "key": key, "value": v}).to_string(),
-                    None => format!("Error: key '{}' not found", key),
+                    None => json!({ "ok": false, "error": format!("key '{}' not found", key) }).to_string(),
                 }
             } else {
                 json!({"ok": true, "config": settings}).to_string()
@@ -137,12 +137,12 @@ pub async fn execute_with_app(app: &AppHandle, input: Value) -> String {
         "set" => {
             let key = match input.get("key").and_then(|v| v.as_str()) {
                 Some(k) if !k.trim().is_empty() => k,
-                _ => return "Error: Missing 'key' for set action".into(),
+                _ => return json!({ "ok": false, "error": "Missing 'key' for set action" }).to_string(),
             };
 
             let value = match input.get("value") {
                 Some(v) => v.clone(),
-                None => return "Error: Missing 'value' for set action".into(),
+                None => return json!({ "ok": false, "error": "Missing 'value' for set action" }).to_string(),
             };
 
             if !settings.is_object() {
@@ -155,7 +155,7 @@ pub async fn execute_with_app(app: &AppHandle, input: Value) -> String {
 
             match write_settings_json(&path, &settings) {
                 Ok(_) => json!({"ok": true, "action": "set", "key": key, "value": value}).to_string(),
-                Err(e) => format!("Error: {}", e),
+                Err(e) => json!({ "ok": false, "error": e }).to_string(),
             }
         }
         "list_keys" => {
@@ -163,29 +163,29 @@ pub async fn execute_with_app(app: &AppHandle, input: Value) -> String {
                 let keys: Vec<String> = obj.keys().cloned().collect();
                 json!({"ok": true, "keys": keys}).to_string()
             } else {
-                "Error: settings root is not an object".into()
+                json!({ "ok": false, "error": "settings root is not an object" }).to_string()
             }
         }
         "remove" => {
             let key = match input.get("key").and_then(|v| v.as_str()) {
                 Some(k) if !k.trim().is_empty() => k,
-                _ => return "Error: Missing 'key' for remove action".into(),
+                _ => return json!({ "ok": false, "error": "Missing 'key' for remove action" }).to_string(),
             };
 
             if let Some(obj) = settings.as_object_mut() {
                 let existed = obj.remove(key).is_some();
                 if !existed {
-                    return format!("Error: key '{}' not found", key);
+                    return json!({ "ok": false, "error": format!("key '{}' not found", key) }).to_string();
                 }
             } else {
-                return "Error: settings root is not an object".into();
+                return json!({ "ok": false, "error": "settings root is not an object" }).to_string();
             }
 
             match write_settings_json(&path, &settings) {
                 Ok(_) => json!({"ok": true, "action": "remove", "key": key}).to_string(),
-                Err(e) => format!("Error: {}", e),
+                Err(e) => json!({ "ok": false, "error": e }).to_string(),
             }
         }
-        _ => "Error: action must be one of get | set | list_keys | remove".into(),
+        _ => json!({ "ok": false, "error": "action must be one of get | set | list_keys | remove" }).to_string(),
     }
 }

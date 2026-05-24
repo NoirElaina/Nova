@@ -1,4 +1,5 @@
 use serde::{Deserialize, Serialize};
+use similar::{ChangeTag, TextDiff};
 use std::collections::BTreeSet;
 use std::ffi::OsString;
 use std::fs;
@@ -256,7 +257,7 @@ pub fn build_batch(
     })
 }
 
-pub fn record_change_batch(
+pub fn commit_change_batch(
     app: &AppHandle,
     conversation_id: Option<&str>,
     root: &Path,
@@ -273,12 +274,17 @@ pub fn record_change_batch(
         .lock()
         .map_err(|_| "审查记录锁已损坏".to_string())?;
     let mut store = read_store(&path)?;
+    validate_batch_current_state(root, &batch)?;
+    apply_batch_after(root, &batch)?;
     store.batches.push(batch);
     if store.batches.len() > MAX_STORED_BATCHES {
         let drain_count = store.batches.len() - MAX_STORED_BATCHES;
         store.batches.drain(0..drain_count);
     }
-    write_store(&path, &store)?;
+    if let Err(error) = write_store(&path, &store) {
+        rollback_batch_after(root, store.batches.last().expect("batch was just pushed"))?;
+        return Err(error);
+    }
     Ok(Some(batch_id))
 }
 
@@ -370,69 +376,102 @@ fn apply_revert(root: &Path, batch: &mut FileChangeBatch) -> Result<(), String> 
     Ok(())
 }
 
+fn validate_batch_current_state(root: &Path, batch: &FileChangeBatch) -> Result<(), String> {
+    for file in &batch.files {
+        let target = path_inside_root(root, file)?;
+        match &file.before {
+            Some(expected) => {
+                let current = fs::read_to_string(&target)
+                    .map_err(|error| format!("读取当前文件失败 {}: {}", file.path, error))?;
+                if &current != expected {
+                    return Err(format!("文件在写入前已变化，拒绝覆盖: {}", file.path));
+                }
+            }
+            None => {
+                if target.exists() {
+                    return Err(format!("新增文件已存在，拒绝覆盖: {}", file.path));
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+fn apply_batch_after(root: &Path, batch: &FileChangeBatch) -> Result<(), String> {
+    let mut applied = Vec::<FileChangeEntry>::new();
+    for file in &batch.files {
+        if let Err(error) = apply_file_snapshot(root, file, &file.after) {
+            let rollback_error = rollback_applied(root, &applied).err();
+            return Err(match rollback_error {
+                Some(rollback_error) => format!("{}；回滚失败: {}", error, rollback_error),
+                None => error,
+            });
+        }
+        applied.push(file.clone());
+    }
+    Ok(())
+}
+
+fn rollback_batch_after(root: &Path, batch: &FileChangeBatch) -> Result<(), String> {
+    rollback_applied(root, &batch.files)
+}
+
+fn rollback_applied(root: &Path, files: &[FileChangeEntry]) -> Result<(), String> {
+    for file in files.iter().rev() {
+        apply_file_snapshot(root, file, &file.before)?;
+    }
+    Ok(())
+}
+
+fn apply_file_snapshot(
+    root: &Path,
+    file: &FileChangeEntry,
+    snapshot: &Option<String>,
+) -> Result<(), String> {
+    let target = path_inside_root(root, file)?;
+    match snapshot {
+        Some(content) => {
+            if let Some(parent) = target.parent() {
+                fs::create_dir_all(parent)
+                    .map_err(|error| format!("创建目录失败 {}: {}", file.path, error))?;
+            }
+            fs::write(&target, content)
+                .map_err(|error| format!("写入文件失败 {}: {}", file.path, error))
+        }
+        None => {
+            if target.exists() {
+                fs::remove_file(&target)
+                    .map_err(|error| format!("删除文件失败 {}: {}", file.path, error))?;
+            }
+            Ok(())
+        }
+    }
+}
+
+fn path_inside_root(root: &Path, file: &FileChangeEntry) -> Result<PathBuf, String> {
+    let target = PathBuf::from(&file.absolute_path);
+    if !target.starts_with(root) {
+        return Err(format!("拒绝访问工作区之外的文件: {}", file.path));
+    }
+    Ok(target)
+}
+
 fn diff_lines(before: Option<&str>, after: Option<&str>) -> Vec<FileDiffLine> {
-    let before_lines = before
-        .unwrap_or_default()
-        .lines()
-        .map(str::to_string)
-        .collect::<Vec<_>>();
-    let after_lines = after
-        .unwrap_or_default()
-        .lines()
-        .map(str::to_string)
-        .collect::<Vec<_>>();
-    let m = before_lines.len();
-    let n = after_lines.len();
-    let mut lcs = vec![vec![0usize; n + 1]; m + 1];
-
-    for i in (0..m).rev() {
-        for j in (0..n).rev() {
-            lcs[i][j] = if before_lines[i] == after_lines[j] {
-                lcs[i + 1][j + 1] + 1
-            } else {
-                lcs[i + 1][j].max(lcs[i][j + 1])
-            };
-        }
-    }
-
-    let mut lines = Vec::new();
-    let mut i = 0usize;
-    let mut j = 0usize;
-    let mut old_line = 1usize;
-    let mut new_line = 1usize;
-
-    while i < m || j < n {
-        if i < m && j < n && before_lines[i] == after_lines[j] {
-            lines.push(FileDiffLine {
-                kind: "context".to_string(),
-                old_line: Some(old_line),
-                new_line: Some(new_line),
-                text: before_lines[i].clone(),
-            });
-            i += 1;
-            j += 1;
-            old_line += 1;
-            new_line += 1;
-        } else if j < n && (i == m || lcs[i][j + 1] >= lcs[i + 1][j]) {
-            lines.push(FileDiffLine {
-                kind: "add".to_string(),
-                old_line: None,
-                new_line: Some(new_line),
-                text: after_lines[j].clone(),
-            });
-            j += 1;
-            new_line += 1;
-        } else if i < m {
-            lines.push(FileDiffLine {
-                kind: "remove".to_string(),
-                old_line: Some(old_line),
-                new_line: None,
-                text: before_lines[i].clone(),
-            });
-            i += 1;
-            old_line += 1;
-        }
-    }
-
-    lines
+    TextDiff::from_lines(before.unwrap_or_default(), after.unwrap_or_default())
+        .iter_all_changes()
+        .map(|change| FileDiffLine {
+            kind: match change.tag() {
+                ChangeTag::Delete => "remove",
+                ChangeTag::Insert => "add",
+                ChangeTag::Equal => "context",
+            }
+            .to_string(),
+            old_line: change.old_index().map(|index| index + 1),
+            new_line: change.new_index().map(|index| index + 1),
+            text: change
+                .value()
+                .trim_end_matches(&['\r', '\n'][..])
+                .to_string(),
+        })
+        .collect()
 }

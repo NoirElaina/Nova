@@ -236,7 +236,6 @@ struct FileEditOutcome {
     files: Vec<String>,
     changes: Vec<FileChangeDraft>,
     change_batch_id: Option<String>,
-    review_error: Option<String>,
 }
 
 fn execute_apply_patch_with_review(
@@ -249,7 +248,7 @@ fn execute_apply_patch_with_review(
         Ok(outcome) => outcome,
         Err(error) => return json!({ "ok": false, "error": error }).to_string(),
     };
-    match crate::llm::services::file_changes::record_change_batch(
+    match crate::llm::services::file_changes::commit_change_batch(
         app,
         conversation_id,
         root,
@@ -257,7 +256,7 @@ fn execute_apply_patch_with_review(
         outcome.changes.clone(),
     ) {
         Ok(batch_id) => outcome.change_batch_id = batch_id,
-        Err(error) => outcome.review_error = Some(error),
+        Err(error) => return json!({ "ok": false, "error": error }).to_string(),
     }
     result_json(Ok(outcome))
 }
@@ -272,7 +271,7 @@ fn execute_multi_edit_with_review(
         Ok(outcome) => outcome,
         Err(error) => return json!({ "ok": false, "error": error }).to_string(),
     };
-    match crate::llm::services::file_changes::record_change_batch(
+    match crate::llm::services::file_changes::commit_change_batch(
         app,
         conversation_id,
         root,
@@ -280,7 +279,7 @@ fn execute_multi_edit_with_review(
         outcome.changes.clone(),
     ) {
         Ok(batch_id) => outcome.change_batch_id = batch_id,
-        Err(error) => outcome.review_error = Some(error),
+        Err(error) => return json!({ "ok": false, "error": error }).to_string(),
     }
     result_json(Ok(outcome))
 }
@@ -291,8 +290,7 @@ fn result_json(result: Result<FileEditOutcome, String>) -> String {
             "ok": true,
             "files": outcome.files,
             "changed_files": outcome.files.len(),
-            "change_batch_id": outcome.change_batch_id,
-            "review_error": outcome.review_error
+            "change_batch_id": outcome.change_batch_id
         })
         .to_string(),
         Err(error) => json!({ "ok": false, "error": error }).to_string(),
@@ -388,28 +386,10 @@ fn apply_patch_at_root(root: &Path, input: Value) -> Result<FileEditOutcome, Str
         })
         .collect::<Vec<_>>();
 
-    for (path, content) in pending {
-        match content {
-            Some(content) => {
-                if let Some(parent) = path.parent() {
-                    fs::create_dir_all(parent)
-                        .map_err(|error| format!("Error creating parent directory: {}", error))?;
-                }
-                fs::write(&path, content)
-                    .map_err(|error| format!("Error writing {}: {}", path.display(), error))?;
-            }
-            None => {
-                fs::remove_file(&path)
-                    .map_err(|error| format!("Error deleting {}: {}", path.display(), error))?;
-            }
-        }
-    }
-
     Ok(FileEditOutcome {
         files,
         changes,
         change_batch_id: None,
-        review_error: None,
     })
 }
 
@@ -461,16 +441,10 @@ fn multi_edit_at_root(root: &Path, input: Value) -> Result<FileEditOutcome, Stri
         })
         .collect::<Vec<_>>();
 
-    for (path, content) in pending {
-        fs::write(&path, content)
-            .map_err(|error| format!("Error writing {}: {}", path.display(), error))?;
-    }
-
     Ok(FileEditOutcome {
         files,
         changes,
         change_batch_id: None,
-        review_error: None,
     })
 }
 

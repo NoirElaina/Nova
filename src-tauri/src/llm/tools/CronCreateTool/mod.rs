@@ -1,5 +1,6 @@
 use crate::llm::tools::{app_tool, AppExecuteFuture, ToolRegistration};
 use crate::llm::types::Tool;
+use chrono::Local;
 use serde_json::{json, Value};
 use tauri::AppHandle;
 
@@ -74,100 +75,6 @@ fn parse_semantic_bool(input: &Value, key: &str, default_value: bool) -> bool {
     default_value
 }
 
-// 根据 cron 字段位置返回合法数字范围。
-// `index` 对应五段 cron 中的第几段：分钟、小时、日、月、周。
-fn parse_field_range(index: usize) -> (u32, u32) {
-    match index {
-        0 => (0, 59),
-        1 => (0, 23),
-        2 => (1, 31),
-        3 => (1, 12),
-        4 => (0, 7),
-        _ => (0, 0),
-    }
-}
-
-// 判断一个纯数字片段是否落在当前字段允许的范围内。
-fn parse_number_in_range(raw: &str, min: u32, max: u32) -> bool {
-    raw.parse::<u32>()
-        .ok()
-        .map(|v| v >= min && v <= max)
-        .unwrap_or(false)
-}
-
-// 校验 cron 单个片段是否合法。
-// `segment` 可能是 `*`、`1-5`、`*/10`、`1,2,3` 这些形式，这里逐种拆开检查。
-fn validate_cron_segment(segment: &str, min: u32, max: u32) -> bool {
-    if segment.is_empty() {
-        return false;
-    }
-
-    let (base, step) = match segment.split_once('/') {
-        Some((base, step)) => (base, Some(step)),
-        None => (segment, None),
-    };
-
-    if let Some(step_raw) = step {
-        let valid_step = step_raw
-            .parse::<u32>()
-            .ok()
-            .map(|v| v > 0)
-            .unwrap_or(false);
-        if !valid_step {
-            return false;
-        }
-    }
-
-    if base == "*" {
-        return true;
-    }
-
-    if let Some((start, end)) = base.split_once('-') {
-        let valid_start = parse_number_in_range(start, min, max);
-        let valid_end = parse_number_in_range(end, min, max);
-        if !valid_start || !valid_end {
-            return false;
-        }
-        let s = start.parse::<u32>().ok().unwrap_or(0);
-        let e = end.parse::<u32>().ok().unwrap_or(0);
-        return s <= e;
-    }
-
-    parse_number_in_range(base, min, max)
-}
-
-// 校验一个完整 cron 字段。
-// 字段里允许用逗号组合多个片段，所以这里会把字段拆成多个 segment 逐个复用上面的校验。
-fn validate_cron_field(field: &str, min: u32, max: u32) -> bool {
-    field
-        .split(',')
-        .all(|segment| validate_cron_segment(segment.trim(), min, max))
-}
-
-// 校验 5 段 cron 表达式整体是否合法。
-// `expr` 是模型传来的原始字符串，出错时直接返回给模型可读的错误信息。
-fn validate_cron_expression(expr: &str) -> Result<(), String> {
-    let fields: Vec<&str> = expr.split_whitespace().collect();
-    if fields.len() != 5 {
-        return Err("Cron expression must contain exactly 5 fields: M H DoM Mon DoW".to_string());
-    }
-
-    for (index, field) in fields.iter().enumerate() {
-        let (min, max) = parse_field_range(index);
-        if !validate_cron_field(field.trim(), min, max) {
-            return Err(format!(
-                "Invalid cron field {}='{}'. Expected range {}-{} with optional *, -, /, ,",
-                index + 1,
-                field,
-                min,
-                max
-            ));
-        }
-    }
-
-    Ok(())
-}
-
 // 创建计划任务并返回保存结果。
 // `cron` 是触发表达式，`prompt` 是到时要执行的提示词，`recurring/durable` 控制重复和持久化行为。
 pub async fn execute_with_app(app: &AppHandle, input: Value) -> String {
@@ -176,9 +83,10 @@ pub async fn execute_with_app(app: &AppHandle, input: Value) -> String {
         _ => return json!({ "ok": false, "error": "CronCreate requires non-empty 'cron'" }).to_string(),
     };
 
-    if let Err(e) = validate_cron_expression(cron) {
-        return json!({ "ok": false, "error": e }).to_string();
-    }
+    let schedule_info = match crate::llm::services::cron_schedule::schedule_info(cron, &Local::now()) {
+        Ok(info) => info,
+        Err(e) => return json!({ "ok": false, "error": e }).to_string(),
+    };
 
     let prompt = match input.get("prompt").and_then(|v| v.as_str()).map(str::trim) {
         Some(v) if !v.is_empty() => v,
@@ -203,7 +111,8 @@ pub async fn execute_with_app(app: &AppHandle, input: Value) -> String {
             "ok": true,
             "id": saved.id,
             "cron": saved.cron,
-            "humanSchedule": saved.cron,
+            "humanSchedule": schedule_info.human_schedule,
+            "nextRunAt": schedule_info.next_run_at,
             "prompt": saved.prompt,
             "conversationId": saved.conversation_id,
             "recurring": saved.recurring,

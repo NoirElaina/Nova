@@ -1,7 +1,8 @@
 use crate::llm::commands::types::HistoryMessage;
+use crate::llm::services::cron_schedule;
 use crate::llm::tools::shared::cron_store::{add_job, list_jobs, remove_job, CronJob};
 use crate::llm::types::{AgentMode, Content, Message, Role};
-use chrono::{DateTime, Datelike, Local, Timelike, Utc};
+use chrono::{Local, Utc};
 use serde::Serialize;
 use std::collections::{HashMap, HashSet};
 use tauri::{AppHandle, Emitter};
@@ -24,179 +25,6 @@ pub struct ScheduledTaskTriggerEvent {
     pub durable: bool,
     pub created_at: String,
     pub triggered_at: String,
-}
-
-fn parse_field_range(index: usize) -> (u32, u32) {
-    match index {
-        0 => (0, 59),
-        1 => (0, 23),
-        2 => (1, 31),
-        3 => (1, 12),
-        4 => (0, 7),
-        _ => (0, 0),
-    }
-}
-
-fn parse_number_in_range(raw: &str, min: u32, max: u32) -> bool {
-    raw.parse::<u32>()
-        .ok()
-        .map(|v| v >= min && v <= max)
-        .unwrap_or(false)
-}
-
-fn normalize_day_of_week(value: u32) -> u32 {
-    if value == 7 {
-        0
-    } else {
-        value
-    }
-}
-
-fn parse_number_for_match(raw: &str, min: u32, max: u32, day_of_week: bool) -> Option<u32> {
-    let parsed = raw.parse::<u32>().ok()?;
-    let normalized = if day_of_week {
-        normalize_day_of_week(parsed)
-    } else {
-        parsed
-    };
-
-    if normalized < min || normalized > max {
-        return None;
-    }
-
-    Some(normalized)
-}
-
-fn validate_cron_segment(segment: &str, min: u32, max: u32) -> bool {
-    if segment.is_empty() {
-        return false;
-    }
-
-    let (base, step) = match segment.split_once('/') {
-        Some((base, step)) => (base, Some(step)),
-        None => (segment, None),
-    };
-
-    if let Some(step_raw) = step {
-        let valid_step = step_raw.parse::<u32>().ok().map(|v| v > 0).unwrap_or(false);
-        if !valid_step {
-            return false;
-        }
-    }
-
-    if base == "*" {
-        return true;
-    }
-
-    if let Some((start, end)) = base.split_once('-') {
-        let valid_start = parse_number_in_range(start, min, max);
-        let valid_end = parse_number_in_range(end, min, max);
-        if !valid_start || !valid_end {
-            return false;
-        }
-        let s = start.parse::<u32>().ok().unwrap_or(0);
-        let e = end.parse::<u32>().ok().unwrap_or(0);
-        return s <= e;
-    }
-
-    parse_number_in_range(base, min, max)
-}
-
-fn validate_cron_field(field: &str, min: u32, max: u32) -> bool {
-    field
-        .split(',')
-        .all(|segment| validate_cron_segment(segment.trim(), min, max))
-}
-
-fn cron_segment_matches(segment: &str, value: u32, min: u32, max: u32, day_of_week: bool) -> bool {
-    let (base, step) = match segment.split_once('/') {
-        Some((base, step)) => (base.trim(), Some(step.trim())),
-        None => (segment.trim(), None),
-    };
-
-    let step_value = step
-        .map(|raw| raw.parse::<u32>().ok().unwrap_or(0))
-        .unwrap_or(1);
-    if step_value == 0 {
-        return false;
-    }
-
-    let (start, end) = if base == "*" {
-        (min, max)
-    } else if let Some((raw_start, raw_end)) = base.split_once('-') {
-        let Some(start) = parse_number_for_match(raw_start.trim(), min, max, day_of_week) else {
-            return false;
-        };
-        let Some(end) = parse_number_for_match(raw_end.trim(), min, max, day_of_week) else {
-            return false;
-        };
-        if start > end {
-            return false;
-        }
-        (start, end)
-    } else {
-        let Some(exact) = parse_number_for_match(base, min, max, day_of_week) else {
-            return false;
-        };
-        (exact, exact)
-    };
-
-    if value < start || value > end {
-        return false;
-    }
-
-    if step_value == 1 {
-        return true;
-    }
-
-    (value - start) % step_value == 0
-}
-
-fn cron_field_matches(field: &str, value: u32, min: u32, max: u32, day_of_week: bool) -> bool {
-    field
-        .split(',')
-        .any(|segment| cron_segment_matches(segment.trim(), value, min, max, day_of_week))
-}
-
-fn validate_cron_expression(expr: &str) -> Result<(), String> {
-    let fields: Vec<&str> = expr.split_whitespace().collect();
-    if fields.len() != 5 {
-        return Err("Cron expression must contain exactly 5 fields: M H DoM Mon DoW".to_string());
-    }
-
-    for (index, field) in fields.iter().enumerate() {
-        let (min, max) = parse_field_range(index);
-        if !validate_cron_field(field.trim(), min, max) {
-            return Err(format!(
-                "Invalid cron field {}='{}'. Expected range {}-{} with optional *, -, /, ,",
-                index + 1,
-                field,
-                min,
-                max
-            ));
-        }
-    }
-
-    Ok(())
-}
-
-fn cron_matches_local_now(expr: &str, now: &DateTime<Local>) -> bool {
-    let fields: Vec<&str> = expr.split_whitespace().collect();
-    if fields.len() != 5 {
-        return false;
-    }
-
-    let minute = now.minute();
-    let hour = now.hour();
-    let day_of_month = now.day();
-    let month = now.month();
-    let day_of_week = now.weekday().num_days_from_sunday();
-
-    cron_field_matches(fields[0], minute, 0, 59, false)
-        && cron_field_matches(fields[1], hour, 0, 23, false)
-        && cron_field_matches(fields[2], day_of_month, 1, 31, false)
-        && cron_field_matches(fields[3], month, 1, 12, false)
-        && cron_field_matches(fields[4], day_of_week, 0, 6, true)
 }
 
 fn build_scheduled_conversation_title(cron: &str, prompt: &str) -> String {
@@ -324,7 +152,7 @@ pub async fn run_scheduler_loop(app: AppHandle) {
         for job in jobs {
             existing_ids.insert(job.id.clone());
 
-            if !cron_matches_local_now(&job.cron, &now_local) {
+            if !cron_schedule::matches_local_minute(&job.cron, &now_local) {
                 continue;
             }
 
@@ -450,7 +278,7 @@ pub async fn create_scheduled_task(
         if cron_value.is_empty() {
             return Err("cron is required".to_string());
         }
-        validate_cron_expression(cron_value)?;
+        cron_schedule::validate_expression(cron_value)?;
 
         let prompt_value = prompt.trim();
         if prompt_value.is_empty() {

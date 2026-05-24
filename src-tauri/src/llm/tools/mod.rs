@@ -67,7 +67,6 @@ declare_builtin_tools! {
     computer_use_tool => "ComputerUseTool/mod.rs",
 }
 
-pub mod process;
 pub mod shared;
 
 use crate::llm::types::{Message, Tool};

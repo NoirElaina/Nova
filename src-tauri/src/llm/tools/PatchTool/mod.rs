@@ -4,7 +4,7 @@ use crate::llm::types::Tool;
 use serde_json::{json, Value};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
-use std::path::{Component, Path, PathBuf};
+use std::path::{Path, PathBuf};
 use tauri::AppHandle;
 
 pub(crate) fn registrations() -> Vec<ToolRegistration> {
@@ -696,24 +696,5 @@ fn apply_hunks(original: &str, hunks: &[PatchHunk]) -> Result<String, String> {
 }
 
 fn resolve_path(root: &Path, raw_path: &str) -> Result<PathBuf, String> {
-    let trimmed = raw_path.trim();
-    if trimmed.is_empty() {
-        return Err("path is required".to_string());
-    }
-    let path = Path::new(trimmed);
-    if path.is_absolute() {
-        return Ok(path.to_path_buf());
-    }
-
-    let mut clean = PathBuf::new();
-    for component in path.components() {
-        match component {
-            Component::Normal(part) => clean.push(part),
-            Component::CurDir => {}
-            Component::ParentDir | Component::RootDir | Component::Prefix(_) => {
-                return Err(format!("path cannot leave workspace: {}", raw_path));
-            }
-        }
-    }
-    Ok(root.join(clean))
+    crate::llm::services::file_changes::resolve_tool_path(root, raw_path)
 }

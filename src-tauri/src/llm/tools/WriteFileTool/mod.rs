@@ -28,11 +28,11 @@ fn permission(input: &Value) -> Option<ToolPermissionDescriptor> {
 pub fn tool() -> Tool {
     Tool {
         name: "write_file".into(),
-        description: "Write content to a file on the host machine. This completely overwrites the file.".into(),
+        description: "Write content to a file inside the conversation WorkspaceRoot. This completely overwrites the file and records the change for review.".into(),
         input_schema: json!({
             "type": "object",
             "properties": {
-                "path": { "type": "string", "description": "Absolute path to the file" },
+                "path": { "type": "string", "description": "Workspace-relative path or absolute path inside WorkspaceRoot" },
                 "content": { "type": "string", "description": "The content to write" }
             },
             "required": ["path", "content"]
@@ -40,19 +40,12 @@ pub fn tool() -> Tool {
     }
 }
 
-pub fn execute(input: Value) -> String {
-    if let (Some(path), Some(content)) = (
-        input.get("path").and_then(|v| v.as_str()),
-        input.get("content").and_then(|v| v.as_str()),
-    ) {
-        // path: 目标文件路径；content: 要完整写入的新文件内容。
-        match fs::write(path, content) {
-            Ok(_) => "Successfully wrote to file".into(),
-            Err(e) => format!("Error writing file: {}", e),
-        }
-    } else {
-        "Error: Missing 'path' or 'content' argument".into()
-    }
+pub fn execute(_input: Value) -> String {
+    json!({
+        "ok": false,
+        "error": "write_file requires AppHandle-aware execution inside a conversation WorkspaceRoot."
+    })
+    .to_string()
 }
 
 fn execute_with_app_boxed(

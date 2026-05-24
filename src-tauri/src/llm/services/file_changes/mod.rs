@@ -1,5 +1,6 @@
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
+use std::ffi::OsString;
 use std::fs;
 use std::path::{Component, Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
@@ -123,9 +124,12 @@ pub fn resolve_tool_path(root: &Path, raw_path: &str) -> Result<PathBuf, String>
     if trimmed.is_empty() {
         return Err("path is required".to_string());
     }
+    let root = root
+        .canonicalize()
+        .map_err(|error| format!("failed to resolve workspace root: {}", error))?;
     let path = Path::new(trimmed);
     if path.is_absolute() {
-        return Ok(path.to_path_buf());
+        return resolve_absolute_tool_path(&root, path, raw_path);
     }
 
     let mut clean = PathBuf::new();
@@ -138,7 +142,51 @@ pub fn resolve_tool_path(root: &Path, raw_path: &str) -> Result<PathBuf, String>
             }
         }
     }
-    Ok(root.join(clean))
+    resolve_absolute_tool_path(&root, &root.join(clean), raw_path)
+}
+
+fn resolve_absolute_tool_path(root: &Path, path: &Path, raw_path: &str) -> Result<PathBuf, String> {
+    if path
+        .components()
+        .any(|component| matches!(component, Component::ParentDir))
+    {
+        return Err(format!("path cannot leave workspace: {}", raw_path));
+    }
+
+    if path.exists() {
+        let canonical = path
+            .canonicalize()
+            .map_err(|error| format!("failed to resolve path: {}", error))?;
+        if !canonical.starts_with(root) {
+            return Err(format!("path cannot leave workspace: {}", raw_path));
+        }
+        return Ok(canonical);
+    }
+
+    let mut ancestor = path;
+    let mut missing = Vec::<OsString>::new();
+    while !ancestor.exists() {
+        let name = ancestor
+            .file_name()
+            .ok_or_else(|| format!("path cannot be resolved: {}", raw_path))?;
+        missing.push(name.to_os_string());
+        ancestor = ancestor
+            .parent()
+            .ok_or_else(|| format!("path cannot be resolved: {}", raw_path))?;
+    }
+
+    let canonical_ancestor = ancestor
+        .canonicalize()
+        .map_err(|error| format!("failed to resolve path parent: {}", error))?;
+    if !canonical_ancestor.starts_with(root) {
+        return Err(format!("path cannot leave workspace: {}", raw_path));
+    }
+
+    let mut resolved = canonical_ancestor;
+    for part in missing.iter().rev() {
+        resolved.push(part);
+    }
+    Ok(resolved)
 }
 
 fn path_for_display(root: &Path, path: &Path) -> String {

@@ -52,7 +52,6 @@ declare_builtin_tools! {
     read_mcp_resource_tool => "ReadMcpResourceTool/mod.rs",
     mcp_auth_tool => "McpAuthTool/mod.rs",
     file_read_tool => "FileReadTool/mod.rs",
-    file_edit_tool => "FileEditTool/mod.rs",
     ask_user_question_tool => "AskUserQuestionTool/mod.rs",
     plan_for_approval_tool => "PlanForApprovalTool/mod.rs",
     remember_global_memory_tool => "RememberGlobalMemoryTool/mod.rs",

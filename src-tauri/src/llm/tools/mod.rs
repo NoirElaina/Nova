@@ -241,19 +241,6 @@ fn validate_tool_input(name: &str, input: &Value) -> Result<(), String> {
     Ok(())
 }
 
-fn validate_tool_output(name: &str, output: &str) -> Result<(), String> {
-    let trimmed = output.trim();
-    if trimmed.starts_with('{') || trimmed.starts_with('[') {
-        serde_json::from_str::<Value>(trimmed).map_err(|e| {
-            format!(
-                "Output validation failed for '{}': invalid JSON payload ({})",
-                name, e
-            )
-        })?;
-    }
-    Ok(())
-}
-
 fn infer_is_error(output: &str) -> bool {
     let Ok(v) = serde_json::from_str::<Value>(output.trim()) else {
         return false;
@@ -389,25 +376,21 @@ pub(crate) async fn execute_single_tool_call(
 
     let output = execute_tool_with_app(app, conversation_id, &name, input.clone()).await;
 
-    let validated_output = match validate_tool_output(&name, &output) {
-        Ok(()) => output,
-        Err(e) => json!({ "ok": false, "error": e }).to_string(),
-    };
-    let (validated_output, tool_side_channel_messages) =
+    let (tool_output, tool_side_channel_messages) =
         match find_registered_tool(&name).and_then(|entry| entry.postprocess) {
-            Some(postprocess) => postprocess(&validated_output),
-            None => (validated_output, Vec::new()),
+            Some(postprocess) => postprocess(&output),
+            None => (output, Vec::new()),
         };
     additional_messages.extend(tool_side_channel_messages);
 
-    let mut is_error = infer_is_error(&validated_output);
+    let mut is_error = infer_is_error(&tool_output);
 
     if is_error {
         let failure_hook = crate::llm::services::hooks::run_post_tool_use_failure_hooks(
             app,
             &name,
             &input,
-            &validated_output,
+            &tool_output,
             conversation_id,
         );
         additional_messages.extend(failure_hook.additional_messages);
@@ -423,7 +406,7 @@ pub(crate) async fn execute_single_tool_call(
         app,
         &name,
         &input,
-        &validated_output,
+        &tool_output,
         is_error,
         conversation_id,
     );
@@ -439,7 +422,7 @@ pub(crate) async fn execute_single_tool_call(
         is_error = true;
         json!({ "ok": false, "error": err }).to_string()
     } else {
-        validated_output
+        tool_output
     };
 
     if is_subagent_stop_tool(&name) {

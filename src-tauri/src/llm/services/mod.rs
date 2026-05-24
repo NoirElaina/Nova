@@ -2,6 +2,7 @@ pub mod browser_sessions;
 pub mod compact;
 pub mod file_changes;
 pub mod hooks;
+pub mod live_turns;
 pub mod lsp;
 pub mod mcp;
 pub mod mcp_tools;

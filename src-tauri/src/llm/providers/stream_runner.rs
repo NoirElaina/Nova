@@ -510,6 +510,7 @@ async fn process_delta(
     match delta {
         Delta::Text(text) => {
             generated_text.push_str(&text);
+            crate::llm::services::live_turns::append_text(conversation_id, &text);
             app.emit(
                 "chat-stream",
                 ChatMessageEvent {
@@ -529,6 +530,7 @@ async fn process_delta(
         }
 
         Delta::Reasoning(text) => {
+            crate::llm::services::live_turns::append_reasoning(conversation_id, &text);
             app.emit(
                 "chat-stream",
                 ChatMessageEvent {

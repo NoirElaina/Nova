@@ -235,16 +235,6 @@ export function useChatController() {
   }
 
   onMounted(async () => {
-    await conversationOps.refreshConversations();
-    if (conversations.value.length === 0) {
-      const id = await conversationOps.createNewConversation();
-      if (id) {
-        await conversationOps.loadConversation(id);
-      }
-    } else {
-      await conversationOps.loadConversation(conversations.value[0].id);
-    }
-
     try {
       unlistenChatStream = await listen<ChatMessageEvent>("chat-stream", (event) => {
         const payload = event.payload;
@@ -262,6 +252,16 @@ export function useChatController() {
       });
     } catch (err) {
       console.error("Failed to setup listener:", err);
+    }
+
+    await conversationOps.refreshConversations();
+    if (conversations.value.length === 0) {
+      const id = await conversationOps.createNewConversation();
+      if (id) {
+        await conversationOps.loadConversation(id);
+      }
+    } else {
+      await conversationOps.loadConversation(conversations.value[0].id);
     }
 
     try {

@@ -40,6 +40,7 @@ import {
   buildAssistantCostForState,
   shouldPreservePendingPromptOnStop,
 } from "./chat-message-helpers";
+import { ackChatTurnStatus } from "../services/chat-api";
 
 type PersistToolExecutionLog = (
   entry: ToolExecutionEntry,
@@ -173,6 +174,7 @@ export function createChatStreamOperations(deps: StreamOpsDeps) {
     activeRuntimeRefs.assistantTurnCost.value = undefined;
     activeRuntimeRefs.isGenerating.value = false;
     activeRuntimeRefs.currentStage.value = "processing";
+    void ackChatTurnStatus(activeConversationId.value || null);
   }
 
   async function finalizeBackgroundTurn(
@@ -235,6 +237,9 @@ export function createChatStreamOperations(deps: StreamOpsDeps) {
     if (!preservePendingPrompt) {
       cleanupRuntimeStateIfIdle(runtimeStateByConversation, conversationId);
     }
+    if (!preservePendingPrompt) {
+      await ackChatTurnStatus(conversationId);
+    }
   }
 
   function finalizeAssistantTurn(tokenUsage?: number) {
@@ -276,9 +281,14 @@ export function createChatStreamOperations(deps: StreamOpsDeps) {
       tokenUsage: resolvedTokenUsage > 0 ? resolvedTokenUsage : undefined,
       cost,
     };
+    const conversationId = activeConversationId.value || null;
     messages.value.push(assistantMessage);
-    void persistMessage(assistantMessage);
-    void persistConversationMemory(activeConversationId.value);
+    void persistMessage(assistantMessage, conversationId ?? undefined).then(() =>
+      ackChatTurnStatus(conversationId),
+    );
+    if (conversationId) {
+      void persistConversationMemory(conversationId);
+    }
     activeRuntimeRefs.assistantResponse.value = "";
     activeRuntimeRefs.assistantReasoning.value = "";
     activeRuntimeRefs.assistantTokenUsage.value = undefined;
@@ -327,8 +337,11 @@ export function createChatStreamOperations(deps: StreamOpsDeps) {
       tokenUsage: resolvedTokenUsage > 0 ? resolvedTokenUsage : undefined,
       cost,
     };
+    const conversationId = activeConversationId.value || null;
     messages.value.push(assistantMessage);
-    void persistMessage(assistantMessage);
+    void persistMessage(assistantMessage, conversationId ?? undefined).then(() =>
+      ackChatTurnStatus(conversationId),
+    );
     activeRuntimeRefs.assistantResponse.value = "";
     activeRuntimeRefs.assistantReasoning.value = "";
     activeRuntimeRefs.assistantTokenUsage.value = undefined;
@@ -667,9 +680,11 @@ export function createChatStreamOperations(deps: StreamOpsDeps) {
           if (activeConversationId.value) {
             runtimeStateByConversation.delete(normalizeConversationId(activeConversationId.value));
           }
+          void ackChatTurnStatus(activeConversationId.value || null);
         }
       } else {
         resetBackgroundRuntimeState(conversationId, state);
+        void ackChatTurnStatus(conversationId);
       }
 
       return;

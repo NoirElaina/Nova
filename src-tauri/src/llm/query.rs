@@ -759,6 +759,10 @@ pub async fn send_chat_message(
                     Some("provider.send_request"),
                 );
                 // 通知前端当前回合以错误状态结束。
+                crate::llm::services::live_turns::mark_terminal(
+                    conversation_id.as_deref(),
+                    "error",
+                );
                 app.emit(
                     "chat-stream",
                     ChatMessageEvent {
@@ -1011,6 +1015,10 @@ pub async fn send_chat_message(
 
     // 4. 业务终止：告知前端本轮结束，并携带 stop_reason/turn_state 以区分 completed/needs_user_input/error。
     // 统一发送 stop 事件，前端据此收口渲染状态。
+    crate::llm::services::live_turns::mark_terminal(
+        conversation_id.as_deref(),
+        final_outcome.turn_state.as_event_state(),
+    );
     app.emit(
         "chat-stream",
         ChatMessageEvent {

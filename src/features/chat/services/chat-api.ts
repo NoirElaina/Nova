@@ -73,6 +73,15 @@ export type ShellCommandResult = {
   pid?: number | null;
 };
 
+export type LiveChatTurnStatus = {
+  conversationId: string;
+  state: "running" | "completed" | "needs_user_input" | "cancelled" | "stop_hook_prevented" | "error";
+  assistantResponse: string;
+  assistantReasoning: string;
+  startedAt: number;
+  updatedAt: number;
+};
+
 export type FileDiffLine = {
   kind: "context" | "add" | "remove";
   oldLine?: number | null;
@@ -266,6 +275,20 @@ export async function sendChatMessage(
     messages,
     planMode,
     agentMode,
+  });
+}
+
+export async function getChatTurnStatus(
+  conversationId: string | null,
+): Promise<LiveChatTurnStatus | null> {
+  return invoke<LiveChatTurnStatus | null>("get_chat_turn_status", {
+    conversationId,
+  });
+}
+
+export async function ackChatTurnStatus(conversationId: string | null): Promise<boolean> {
+  return invoke<boolean>("ack_chat_turn_status", {
+    conversationId,
   });
 }
 

@@ -19,6 +19,7 @@ pub async fn send_chat_message(
     let conversation_scope = conversation_id.clone();
     // 标记本轮开始，初始化取消标志位。
     crate::llm::cancellation::begin_turn(conversation_scope.as_deref());
+    crate::llm::services::live_turns::begin_turn(conversation_scope.as_deref());
 
     // 兼容旧参数：未显式提供 agent_mode 时退化到 plan_mode 开关语义。
     let resolved_mode = agent_mode.unwrap_or_else(|| {
@@ -43,6 +44,9 @@ pub async fn send_chat_message(
 
     // 无论请求成功失败都结束本轮，清理取消状态。
     crate::llm::cancellation::finish_turn(conversation_scope.as_deref());
+    if result.is_err() {
+        crate::llm::services::live_turns::mark_terminal(conversation_scope.as_deref(), "error");
+    }
     match &result {
         Ok(()) => info!(
             conversation_id = %conversation_scope.as_deref().unwrap_or("__default__"),
@@ -56,6 +60,22 @@ pub async fn send_chat_message(
     }
     // 返回下游执行结果。
     result
+}
+
+#[tauri::command]
+pub async fn get_chat_turn_status(
+    conversation_id: Option<String>,
+) -> Result<Option<crate::llm::services::live_turns::LiveTurnStatus>, String> {
+    Ok(crate::llm::services::live_turns::get_status(
+        conversation_id.as_deref(),
+    ))
+}
+
+#[tauri::command]
+pub async fn ack_chat_turn_status(conversation_id: Option<String>) -> Result<bool, String> {
+    Ok(crate::llm::services::live_turns::ack_status(
+        conversation_id.as_deref(),
+    ))
 }
 
 #[tauri::command]

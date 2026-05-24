@@ -53,6 +53,8 @@ pub fn run() {
             greet,
             llm::client::send_chat_message,
             llm::client::cancel_chat_message,
+            llm::client::get_chat_turn_status,
+            llm::client::ack_chat_turn_status,
             llm::client::submit_permission_decision,
             command::settings::get_settings,
             command::settings::save_settings,

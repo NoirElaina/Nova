@@ -10,9 +10,11 @@ import type {
   TurnCost,
 } from "../../../lib/chat-types";
 import {
+  ackChatTurnStatus,
   appendConversationMessage,
   createConversation,
   deleteConversation,
+  getChatTurnStatus,
   getConversationMemory,
   listConversationRagDocuments,
   listConversations,
@@ -106,6 +108,81 @@ export function createConversationOperations(deps: ConversationOpsDeps) {
     }
   }
 
+  function clearLiveTurnRuntime() {
+    isGenerating.value = false;
+    activeRuntimeRefs.currentStage.value = "processing";
+    assistantResponse.value = "";
+    assistantReasoning.value = "";
+    assistantTokenUsage.value = undefined;
+    assistantTurnCost.value = undefined;
+    activeRuntimeRefs.pendingQuestion.value = null;
+    activeRuntimeRefs.pendingPermissionRequestId.value = null;
+    activeRuntimeRefs.currentToolStartedAt.value = null;
+    activeRuntimeRefs.currentToolCalls.value = 0;
+    activeRuntimeRefs.currentToolDurationMs.value = 0;
+    activeRuntimeRefs.currentContextUsage.value = undefined;
+    activeRuntimeRefs.currentContextCompacts.value = [];
+    activeRuntimeRefs.currentContextTokens.value = 0;
+    activeRuntimeRefs.currentInputTokens.value = 0;
+    activeRuntimeRefs.currentOutputTokens.value = 0;
+    activeRuntimeRefs.currentTurnId.value = null;
+    activeRuntimeRefs.currentTurnToolIds.value = [];
+    activeRuntimeRefs.toolInputById.clear();
+    activeRuntimeRefs.toolNameById.clear();
+  }
+
+  function isDuplicateAssistantMessage(content: string, reasoning: string) {
+    const last = messages.value[messages.value.length - 1];
+    return (
+      last?.role === "assistant" &&
+      last.content.trim() === content.trim() &&
+      (last.reasoning ?? "").trim() === reasoning.trim()
+    );
+  }
+
+  async function restoreLiveTurnStatus(conversationId: string) {
+    const liveTurn = await getChatTurnStatus(conversationId);
+    if (!liveTurn) {
+      return;
+    }
+
+    const response = liveTurn.assistantResponse ?? "";
+    const reasoning = liveTurn.assistantReasoning ?? "";
+    if (liveTurn.state === "running") {
+      isGenerating.value = true;
+      activeRuntimeRefs.currentStage.value = "processing";
+      assistantResponse.value = response;
+      assistantReasoning.value = reasoning;
+      assistantTokenUsage.value = undefined;
+      assistantTurnCost.value = undefined;
+      return;
+    }
+
+    const finalText = response.trim();
+    const finalReasoning = reasoning.trim();
+    if (finalText || finalReasoning) {
+      const content =
+        liveTurn.state === "cancelled"
+          ? finalText
+            ? `${finalText}\n\n（已取消当前轮）`
+            : "已取消当前轮。"
+          : finalText || "（本轮没有返回可显示的文本内容）";
+
+      if (!isDuplicateAssistantMessage(content, finalReasoning)) {
+        const assistantMessage: ChatMessage = {
+          role: "assistant",
+          content,
+          reasoning: finalReasoning || undefined,
+        };
+        messages.value.push(assistantMessage);
+        await persistMessage(assistantMessage, conversationId);
+      }
+    }
+
+    clearLiveTurnRuntime();
+    await ackChatTurnStatus(conversationId);
+  }
+
   async function persistConversationMemory(conversationId: string) {
     const { summary, keyFacts } = extractSessionMemory(messages.value);
     if (!summary.trim()) return;
@@ -184,6 +261,7 @@ export function createConversationOperations(deps: ConversationOpsDeps) {
       if (!restored || toolExecutionLogs.value.length === 0) {
         toolExecutionLogs.value = savedToolLogs;
       }
+      await restoreLiveTurnStatus(targetConversationId);
 
       await loadConversationMemory(targetConversationId);
       await refreshConversationFiles(targetConversationId);

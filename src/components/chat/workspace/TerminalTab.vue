@@ -40,7 +40,11 @@ const status = ref<ShellSessionStatus | null>(null);
 const localEntries = ref<TerminalEntry[]>([]);
 const terminalBodyRef = ref<HTMLElement | null>(null);
 const commandInputRef = ref<HTMLInputElement | null>(null);
+const clearedAt = ref(0);
 let refreshTimer: ReturnType<typeof setInterval> | undefined;
+
+const isClearCommand = (command: string) =>
+  ["cls", "clear", "clear-host"].includes(command.trim().toLowerCase());
 
 const isShellToolName = (toolName: string) => {
   const normalized = toolName.trim().toLowerCase();
@@ -101,9 +105,19 @@ const agentTerminalEntries = computed<TerminalEntry[]>(() =>
   })),
 );
 
-const terminalEntries = computed(() =>
+const rawTerminalEntries = computed(() =>
   [...agentTerminalEntries.value, ...localEntries.value].sort((a, b) => a.startedAt - b.startedAt),
 );
+
+const terminalEntries = computed(() => {
+  const latestClearAt = rawTerminalEntries.value.reduce(
+    (latest, entry) => (isClearCommand(entry.command) ? Math.max(latest, entry.startedAt) : latest),
+    clearedAt.value,
+  );
+  return rawTerminalEntries.value.filter(
+    (entry) => entry.startedAt > latestClearAt && !isClearCommand(entry.command),
+  );
+});
 
 const hasRunningEntry = computed(() =>
   terminalEntries.value.some((entry) => entry.status === "running"),
@@ -124,15 +138,14 @@ const shellName = computed(() => {
 const tabTitle = computed(() => {
   const cwd = currentCwd.value;
   if (!cwd) return shellName.value;
-  const parts = cwd.split(/[\\/]/).filter(Boolean);
-  return parts[parts.length - 1] || cwd;
+  return cwd;
 });
 
 const terminalBanner = computed(() => {
   if (navigator.userAgent.toLowerCase().includes("windows")) {
-    return ["Nova persistent PowerShell session", "AI 和手动命令共享同一个会话目录。"];
+    return ["PowerShell 7", "Copyright (c) Microsoft Corporation. 保留所有权利。"];
   }
-  return ["Nova persistent shell session", "AI 和手动命令共享同一个会话目录。"];
+  return ["Nova shell session"];
 });
 
 const formatPrompt = (cwd?: string | null) => `${cwd || currentCwd.value}>`;
@@ -155,7 +168,7 @@ const formatResult = (entry: TerminalEntry) => {
   if (result) {
     return result;
   }
-  return entry.status === "completed" ? "(command executed with no output)" : "";
+  return "";
 };
 
 const scrollToBottom = async () => {
@@ -205,6 +218,15 @@ const submitCommand = async () => {
   }
 
   commandText.value = "";
+  if (isClearCommand(command)) {
+    clearedAt.value = Date.now();
+    localEntries.value = [];
+    await loadStatus();
+    await scrollToBottom();
+    commandInputRef.value?.focus();
+    return;
+  }
+
   const entryId = `user-${Date.now()}-${Math.random().toString(36).slice(2)}`;
   localEntries.value.push({
     id: entryId,
@@ -268,6 +290,7 @@ watch(
   () => props.conversationId,
   () => {
     localEntries.value = [];
+    clearedAt.value = 0;
     void loadStatus();
   },
   { immediate: true },
@@ -297,10 +320,10 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <div class="flex h-full min-h-0 flex-col bg-white text-[#111827] dark:bg-[#1e1e1e] dark:text-[#ececec]">
+  <div class="flex h-full min-h-0 flex-col bg-white text-black dark:bg-[#1e1e1e] dark:text-[#f3f3f3]">
     <div class="flex h-12 shrink-0 items-center justify-between border-b border-[#e5e7eb] px-3 dark:border-[#333]">
       <div class="flex min-w-0 items-center gap-2">
-        <div class="flex h-8 max-w-[220px] items-center gap-2 rounded-lg bg-[#f4f5f7] px-2.5 text-[13px] text-[#111827] dark:bg-[#2a2a2a] dark:text-[#ececec]">
+        <div class="flex h-8 max-w-[220px] items-center gap-2 rounded-lg bg-[#f4f5f7] px-2.5 text-[13px] text-black dark:bg-[#2a2a2a] dark:text-[#f3f3f3]">
           <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
             <path d="M4 5h16a1 1 0 0 1 1 1v12a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V6a1 1 0 0 1 1-1Z" />
             <path d="m7 9 3 3-3 3" />
@@ -360,27 +383,20 @@ onBeforeUnmount(() => {
 
     <div
       ref="terminalBodyRef"
-      class="min-h-0 flex-1 overflow-y-auto px-5 py-4 font-mono text-[13px] leading-6 text-black dark:text-[#f3f3f3]"
+      class="min-h-0 flex-1 overflow-y-auto px-4 py-2 font-mono text-[13px] leading-[1.45] text-black dark:text-[#f3f3f3]"
       @click="commandInputRef?.focus()"
     >
-      <div v-if="terminalEntries.length === 0" class="whitespace-pre-wrap">
+      <div class="mb-5 whitespace-pre-wrap">
         <div v-for="line in terminalBanner" :key="line">{{ line }}</div>
       </div>
 
-      <div v-for="entry in terminalEntries" :key="entry.id" class="mb-4 whitespace-pre-wrap break-words">
-        <div class="flex min-w-0 items-start gap-2">
-          <span class="shrink-0 text-[#6b7280] dark:text-[#9ca3af]">{{ formatPrompt(entry.cwd) }}</span>
-          <span class="min-w-0 flex-1 text-black dark:text-[#f3f3f3]">{{ entry.command }}</span>
-          <span
-            v-if="entry.source === 'agent'"
-            class="shrink-0 rounded bg-[#eef2f7] px-1.5 py-0.5 font-sans text-[10px] leading-4 text-[#64748b] dark:bg-[#2a2a2a] dark:text-[#aaa]"
-          >
-            AI
-          </span>
+      <div v-for="entry in terminalEntries" :key="entry.id" class="mb-5 whitespace-pre-wrap break-words">
+        <div class="whitespace-pre-wrap break-words text-black dark:text-[#f3f3f3]">
+          <span class="text-[#6b7280] dark:text-[#9ca3af]">{{ formatPrompt(entry.cwd) }}</span>{{ entry.command }}
         </div>
         <div
           v-if="formatResult(entry)"
-          class="mt-1 whitespace-pre-wrap break-words"
+          class="mt-1 whitespace-pre-wrap break-words pl-0"
           :class="entry.status === 'error' ? 'text-[#b91c1c] dark:text-[#fca5a5]' : 'text-black dark:text-[#f3f3f3]'"
         >
           {{ formatResult(entry) }}
@@ -388,8 +404,7 @@ onBeforeUnmount(() => {
       </div>
 
       <form
-        class="mt-1 flex min-w-0 items-center gap-2"
-        :class="{ 'mt-5': terminalEntries.length === 0 }"
+        class="mt-1 flex min-w-0 items-center gap-0"
         @submit.prevent="submitCommand"
         @click.stop
       >
@@ -397,9 +412,9 @@ onBeforeUnmount(() => {
         <input
           ref="commandInputRef"
           v-model="commandText"
-          class="min-w-0 flex-1 bg-transparent text-black outline-none placeholder:text-[#9ca3af] dark:text-[#f3f3f3]"
+          class="min-w-0 flex-1 bg-transparent pl-0.5 text-black outline-none dark:text-[#f3f3f3]"
           :disabled="isExecutingUserCommand"
-          placeholder="输入命令，Enter 执行"
+          placeholder=""
           spellcheck="false"
         />
         <span v-if="isExecutingUserCommand" class="shrink-0 font-sans text-[12px] text-[#64748b] dark:text-[#aaa]">执行中</span>

@@ -2,6 +2,13 @@ use crate::llm::services::shell_sessions::{self, ShellExecutionResult, ShellSess
 use crate::llm::utils::error_event::report_backend_result;
 use tauri::AppHandle;
 
+fn is_clear_shell_command(command: &str) -> bool {
+    matches!(
+        command.trim().to_ascii_lowercase().as_str(),
+        "cls" | "clear" | "clear-host"
+    )
+}
+
 #[tauri::command]
 pub async fn get_shell_session_status(
     app: AppHandle,
@@ -53,6 +60,29 @@ pub async fn execute_shell_command_for_conversation(
         &app,
         conversation_id.as_deref(),
     )?;
+    if is_clear_shell_command(command) {
+        let cwd = shell_sessions::session_status(conversation_id.as_deref())
+            .await
+            .cwd
+            .filter(|value| !value.trim().is_empty())
+            .unwrap_or_else(|| workspace_root.clone());
+        return report_backend_result(
+            &app,
+            "command.shell.execute_shell_command",
+            Ok(ShellExecutionResult {
+                stdout: String::new(),
+                stderr: String::new(),
+                exit_code: Some(0),
+                cwd: Some(cwd),
+                timed_out: false,
+                cancelled: false,
+                background: false,
+                pid: None,
+            }),
+            Some("execute_shell_command_for_conversation"),
+        );
+    }
+
     let result = if background.unwrap_or(false) {
         shell_sessions::run_background(conversation_id.as_deref(), command, Some(&workspace_root))
             .await

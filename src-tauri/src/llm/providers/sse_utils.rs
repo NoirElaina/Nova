@@ -44,4 +44,3 @@ pub(super) fn extract_sse_data(event_raw: &str) -> String {
         .collect::<Vec<_>>()
         .join("\n")
 }
-

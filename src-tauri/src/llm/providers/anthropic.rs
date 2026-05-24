@@ -204,7 +204,8 @@ impl AnthropicProvider {
         conversation_id: Option<&str>,
     ) -> Result<ProviderTurnResult, ProviderTurnError> {
         // 读取设置与当前 provider profile。
-        let settings = crate::command::settings::get_settings(app.clone());
+        let settings =
+            crate::command::settings::get_settings(app.clone()).map_err(ProviderTurnError::new)?;
         let profile = settings.active_provider_profile();
         // 提取 API key。
         let api_key = profile.api_key;

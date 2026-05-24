@@ -10,7 +10,10 @@ pub fn run_pre_tool_use_hooks(
     _input: &serde_json::Value,
     _conversation_id: Option<&str>,
 ) -> HookOutcome {
-    let config = HookConfig::from_app(app);
+    let config = match HookConfig::from_app(app) {
+        Ok(config) => config,
+        Err(error) => return HookOutcome::from_error(error),
+    };
     let mut out = HookOutcome::default();
     let deny_list = config.csv_lower_list("NOVA_PRE_TOOL_DENY_TOOLS");
     if !deny_list.is_empty() {
@@ -39,7 +42,10 @@ pub fn run_post_tool_use_hooks(
     is_error: bool,
     _conversation_id: Option<&str>,
 ) -> HookOutcome {
-    let config = HookConfig::from_app(app);
+    let config = match HookConfig::from_app(app) {
+        Ok(config) => config,
+        Err(error) => return HookOutcome::from_error(error),
+    };
     let mut out = HookOutcome::default();
 
     if let Some(extra) = config.value("NOVA_POST_TOOL_CONTEXT") {
@@ -75,7 +81,10 @@ pub fn run_post_tool_use_failure_hooks(
     error: &str,
     _conversation_id: Option<&str>,
 ) -> HookOutcome {
-    let config = HookConfig::from_app(app);
+    let config = match HookConfig::from_app(app) {
+        Ok(config) => config,
+        Err(error) => return HookOutcome::from_error(error),
+    };
     let mut out = HookOutcome::default();
 
     if let Some(extra) = config.value("NOVA_POST_TOOL_FAILURE_CONTEXT") {

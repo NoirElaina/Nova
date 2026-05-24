@@ -2,7 +2,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::PathBuf;
 use tauri::{AppHandle, Manager};
-use tracing::{error, warn};
+use tracing::warn;
 
 use crate::llm::utils::error_event::report_backend_result;
 
@@ -311,72 +311,47 @@ fn validate_rag_settings(settings: &AppSettings) -> Result<(), String> {
 }
 
 #[tauri::command]
-pub fn get_settings(app: AppHandle) -> AppSettings {
-    // 获取 settings.json 路径。
-    let path = match get_settings_path(&app) {
-        Ok(path) => path,
-        Err(e) => {
-            error!(operation = "command.settings.get_settings", error = %e, "failed to resolve settings path");
+pub fn get_settings(app: AppHandle) -> Result<AppSettings, String> {
+    let result = (|| {
+        // 获取 settings.json 路径。
+        let path = get_settings_path(&app)?;
+
+        // 首次启动还没有 settings.json 时，返回运行时默认配置。
+        if !path.exists() {
             let mut settings = AppSettings::default();
             settings.normalize_for_runtime();
-            return settings;
+            return Ok(settings);
         }
-    };
-    // 文件存在时尝试读取并反序列化。
-    if path.exists() {
-        match std::fs::read_to_string(&path) {
-            Ok(content) => match serde_json::from_str::<AppSettings>(&content) {
-                Ok(mut settings) => {
-                    // 运行时规范化后返回。
-                    settings.normalize_for_runtime();
-                    if crate::command::settings_secrets::has_plaintext_provider_api_keys(&settings)
-                    {
-                        let mut persisted = settings.clone();
-                        match crate::command::settings_secrets::encrypt_provider_api_keys(
-                            &mut persisted,
-                        )
-                        .and_then(|_| {
-                            serde_json::to_string_pretty(&persisted)
-                                .map_err(|error| error.to_string())
-                        })
-                        .and_then(|content| {
-                            std::fs::write(&path, content).map_err(|error| error.to_string())
-                        }) {
-                            Ok(()) => {}
-                            Err(error) => warn!(
-                                operation = "command.settings.get_settings",
-                                path = %path.display(),
-                                error = %error,
-                                "failed to migrate plaintext API keys"
-                            ),
-                        }
-                    }
-                    crate::command::settings_secrets::decrypt_provider_api_keys(&mut settings);
-                    return settings;
-                }
-                Err(error) => {
-                    warn!(
-                        operation = "command.settings.get_settings",
-                        path = %path.display(),
-                        error = %error,
-                        "failed to parse settings file, falling back to defaults"
-                    );
-                }
-            },
-            Err(error) => {
-                warn!(
+
+        let content = std::fs::read_to_string(&path)
+            .map_err(|error| format!("读取设置文件失败 {}: {}", path.display(), error))?;
+        let mut settings = serde_json::from_str::<AppSettings>(&content)
+            .map_err(|error| format!("解析设置文件失败 {}: {}", path.display(), error))?;
+
+        settings.normalize_for_runtime();
+        if crate::command::settings_secrets::has_plaintext_provider_api_keys(&settings) {
+            let mut persisted = settings.clone();
+            match crate::command::settings_secrets::encrypt_provider_api_keys(&mut persisted)
+                .and_then(|_| {
+                    serde_json::to_string_pretty(&persisted).map_err(|error| error.to_string())
+                })
+                .and_then(|content| {
+                    std::fs::write(&path, content).map_err(|error| error.to_string())
+                }) {
+                Ok(()) => {}
+                Err(error) => warn!(
                     operation = "command.settings.get_settings",
                     path = %path.display(),
                     error = %error,
-                    "failed to read settings file, falling back to defaults"
-                );
+                    "failed to migrate plaintext API keys"
+                ),
             }
         }
-    }
-    // 读取失败时回退默认配置并规范化。
-    let mut settings = AppSettings::default();
-    settings.normalize_for_runtime();
-    settings
+        crate::command::settings_secrets::decrypt_provider_api_keys(&mut settings);
+        Ok(settings)
+    })();
+
+    report_backend_result(&app, "command.settings.get_settings", result, None)
 }
 
 #[tauri::command]

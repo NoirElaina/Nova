@@ -358,7 +358,8 @@ impl ResponsesProvider {
         agent_mode: AgentMode,
         conversation_id: Option<&str>,
     ) -> Result<ProviderTurnResult, ProviderTurnError> {
-        let settings = crate::command::settings::get_settings(app.clone());
+        let settings =
+            crate::command::settings::get_settings(app.clone()).map_err(ProviderTurnError::new)?;
         let profile = settings.active_provider_profile();
 
         let available_tools = tools::get_available_tools();

@@ -833,9 +833,9 @@ pub async fn compact_messages_for_turn_with_report(
     app: &AppHandle,
     conversation_id: Option<&str>,
     messages: &[Message],
-) -> CompactionOutcome {
+) -> Result<CompactionOutcome, String> {
     // 从 settings 读取当前模型的上下文窗口大小，用于动态计算压缩阈值。
-    let model = crate::command::settings::get_settings(app.clone())
+    let model = crate::command::settings::get_settings(app.clone())?
         .active_provider_profile()
         .model;
     let window_tokens = crate::llm::utils::model_context::get_context_window_tokens(&model) as i64;
@@ -859,21 +859,21 @@ pub async fn compact_messages_for_turn_with_report(
         }
     };
 
-    CompactionOutcome {
+    Ok(CompactionOutcome {
         messages,
         estimated_tokens: decision.estimated_tokens,
         level,
-    }
+    })
 }
 
 pub async fn compact_messages_for_turn(
     app: &AppHandle,
     conversation_id: Option<&str>,
     messages: &[Message],
-) -> Vec<Message> {
+) -> Result<Vec<Message>, String> {
     compact_messages_for_turn_with_report(app, conversation_id, messages)
         .await
-        .messages
+        .map(|outcome| outcome.messages)
 }
 
 // 检查当前输出消息是否包含工具结果里标记为需要用户输入的 payload，

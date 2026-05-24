@@ -68,19 +68,19 @@ pub enum LlmProvider {
 }
 
 impl LlmProvider {
-    pub fn new(app: &AppHandle) -> Self {
+    pub fn new(app: &AppHandle) -> Result<Self, String> {
         // 读取运行时设置。
-        let settings = crate::command::settings::get_settings(app.clone());
+        let settings = crate::command::settings::get_settings(app.clone())?;
         // profile key 只负责选中配置；真正路由按 profile.protocol 判断。
         let protocol = settings.active_provider_protocol();
 
         // Anthropic 协议走 AnthropicProvider，openai_responses 走 ResponsesProvider，其余默认走 OpenAI 兼容协议实现。
         if protocol == "anthropic" {
-            LlmProvider::Anthropic(anthropic::AnthropicProvider)
+            Ok(LlmProvider::Anthropic(anthropic::AnthropicProvider))
         } else if protocol == "openai_responses" {
-            LlmProvider::Responses(responses::ResponsesProvider)
+            Ok(LlmProvider::Responses(responses::ResponsesProvider))
         } else {
-            LlmProvider::OpenAi(openai::OpenAiProvider)
+            Ok(LlmProvider::OpenAi(openai::OpenAiProvider))
         }
     }
 

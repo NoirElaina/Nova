@@ -11,7 +11,10 @@ pub fn run_stop_hooks(
     messages: &[Message],
     _conversation_id: Option<&str>,
 ) -> HookOutcome {
-    let config = HookConfig::from_app(app);
+    let config = match HookConfig::from_app(app) {
+        Ok(config) => config,
+        Err(error) => return HookOutcome::from_error(error),
+    };
     let mut out = HookOutcome::default();
 
     if let Some(limit) = config.value("NOVA_STOP_HOOK_MAX_ASSISTANT_MESSAGES") {

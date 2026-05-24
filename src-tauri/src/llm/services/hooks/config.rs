@@ -7,10 +7,10 @@ pub(crate) struct HookConfig {
 }
 
 impl HookConfig {
-    pub(crate) fn from_app(app: &AppHandle) -> Self {
-        Self {
-            values: crate::command::settings::get_settings(app.clone()).hook_env,
-        }
+    pub(crate) fn from_app(app: &AppHandle) -> Result<Self, String> {
+        Ok(Self {
+            values: crate::command::settings::get_settings(app.clone())?.hook_env,
+        })
     }
 
     pub(crate) fn value(&self, key: &str) -> Option<&str> {

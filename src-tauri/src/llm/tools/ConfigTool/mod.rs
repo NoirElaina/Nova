@@ -75,7 +75,10 @@ pub async fn execute_with_app(app: &AppHandle, input: Value) -> String {
         .to_string();
     }
 
-    let settings = crate::command::settings::get_settings(app.clone());
+    let settings = match crate::command::settings::get_settings(app.clone()) {
+        Ok(settings) => settings,
+        Err(error) => return json!({ "ok": false, "error": error }).to_string(),
+    };
     let active_provider = settings.active_provider_key();
     let active_profile = settings.active_provider_profile();
     let active_protocol = settings.active_provider_protocol();

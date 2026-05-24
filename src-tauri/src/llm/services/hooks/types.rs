@@ -7,3 +7,13 @@ pub struct HookOutcome {
     pub stop_reason: Option<String>,
     pub override_error: Option<String>,
 }
+
+impl HookOutcome {
+    pub fn from_error(error: String) -> Self {
+        Self {
+            override_error: Some(error),
+            prevent_continuation: true,
+            ..Self::default()
+        }
+    }
+}

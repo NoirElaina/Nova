@@ -26,7 +26,10 @@ fn append_context_hook_message(
 }
 
 pub fn run_session_start_hooks(app: &AppHandle, _conversation_id: Option<&str>) -> HookOutcome {
-    let config = HookConfig::from_app(app);
+    let config = match HookConfig::from_app(app) {
+        Ok(config) => config,
+        Err(error) => return HookOutcome::from_error(error),
+    };
     let mut out = HookOutcome::default();
     append_context_hook_message(
         &mut out,
@@ -41,7 +44,10 @@ pub fn run_user_prompt_submit_hooks(
     app: &AppHandle,
     _conversation_id: Option<&str>,
 ) -> HookOutcome {
-    let config = HookConfig::from_app(app);
+    let config = match HookConfig::from_app(app) {
+        Ok(config) => config,
+        Err(error) => return HookOutcome::from_error(error),
+    };
     let mut out = HookOutcome::default();
     append_context_hook_message(
         &mut out,
@@ -53,7 +59,10 @@ pub fn run_user_prompt_submit_hooks(
 }
 
 pub fn run_pre_compact_hooks(app: &AppHandle, _conversation_id: Option<&str>) -> HookOutcome {
-    let config = HookConfig::from_app(app);
+    let config = match HookConfig::from_app(app) {
+        Ok(config) => config,
+        Err(error) => return HookOutcome::from_error(error),
+    };
     let mut out = HookOutcome::default();
     append_context_hook_message(
         &mut out,
@@ -65,7 +74,10 @@ pub fn run_pre_compact_hooks(app: &AppHandle, _conversation_id: Option<&str>) ->
 }
 
 pub fn run_post_compact_hooks(app: &AppHandle, _conversation_id: Option<&str>) -> HookOutcome {
-    let config = HookConfig::from_app(app);
+    let config = match HookConfig::from_app(app) {
+        Ok(config) => config,
+        Err(error) => return HookOutcome::from_error(error),
+    };
     let mut out = HookOutcome::default();
     append_context_hook_message(
         &mut out,
@@ -81,7 +93,10 @@ pub fn run_subagent_start_hooks(
     subagent_name: &str,
     _conversation_id: Option<&str>,
 ) -> HookOutcome {
-    let config = HookConfig::from_app(app);
+    let config = match HookConfig::from_app(app) {
+        Ok(config) => config,
+        Err(error) => return HookOutcome::from_error(error),
+    };
     let mut out = HookOutcome::default();
     if let Some(extra) = config.value(SUBAGENT_START_HOOK_CONTEXT_KEY) {
         out.additional_messages.push(context_message(
@@ -97,7 +112,10 @@ pub fn run_subagent_stop_hooks(
     subagent_name: &str,
     _conversation_id: Option<&str>,
 ) -> HookOutcome {
-    let config = HookConfig::from_app(app);
+    let config = match HookConfig::from_app(app) {
+        Ok(config) => config,
+        Err(error) => return HookOutcome::from_error(error),
+    };
     let mut out = HookOutcome::default();
     if let Some(extra) = config.value(SUBAGENT_STOP_HOOK_CONTEXT_KEY) {
         out.additional_messages.push(context_message(
@@ -113,7 +131,10 @@ pub fn run_session_end_hooks(
     stop_reason: &str,
     _conversation_id: Option<&str>,
 ) -> HookOutcome {
-    let config = HookConfig::from_app(app);
+    let config = match HookConfig::from_app(app) {
+        Ok(config) => config,
+        Err(error) => return HookOutcome::from_error(error),
+    };
     let mut out = HookOutcome::default();
     if let Some(extra) = config.value(SESSION_END_HOOK_CONTEXT_KEY) {
         out.stop_reason = Some(format!("{} | [SessionEnd] {}", stop_reason, extra));
@@ -126,7 +147,10 @@ pub fn run_error_hooks(
     error: &str,
     _conversation_id: Option<&str>,
 ) -> HookOutcome {
-    let config = HookConfig::from_app(app);
+    let config = match HookConfig::from_app(app) {
+        Ok(config) => config,
+        Err(error) => return HookOutcome::from_error(error),
+    };
     let mut out = HookOutcome::default();
     if let Some(extra) = config.value(ERROR_HOOK_CONTEXT_KEY) {
         out.override_error = Some(format!("{} | [ErrorHook] {}", error, extra));

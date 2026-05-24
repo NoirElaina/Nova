@@ -384,12 +384,16 @@ fn apply_post_compact_hook(
     app: &AppHandle,
     conversation_id: Option<&str>,
     messages: &mut Vec<Message>,
-) {
+) -> Result<(), String> {
     let post_compact_hook =
         crate::llm::services::hooks::run_post_compact_hooks(app, conversation_id);
+    if let Some(error) = post_compact_hook.override_error {
+        return Err(error);
+    }
     if !post_compact_hook.additional_messages.is_empty() {
         messages.extend(post_compact_hook.additional_messages);
     }
+    Ok(())
 }
 
 // 从消息列表中移除每轮动态注入的上下文消息（RAG、MCP catalog、会话恢复、全局记忆、所有 hook 注入）。
@@ -489,6 +493,9 @@ pub async fn send_chat_message(
 
     let prompt_submit_hook =
         crate::llm::services::hooks::run_user_prompt_submit_hooks(&app, conversation_id.as_deref());
+    if let Some(error) = prompt_submit_hook.override_error {
+        return Err(error);
+    }
     if !prompt_submit_hook.additional_messages.is_empty() {
         turn_messages.extend(prompt_submit_hook.additional_messages);
     }
@@ -496,6 +503,9 @@ pub async fn send_chat_message(
     if session_start_turn {
         let session_start_hook =
             crate::llm::services::hooks::run_session_start_hooks(&app, conversation_id.as_deref());
+        if let Some(error) = session_start_hook.override_error {
+            return Err(error);
+        }
         if !session_start_hook.additional_messages.is_empty() {
             turn_messages.extend(session_start_hook.additional_messages);
         }
@@ -552,6 +562,9 @@ pub async fn send_chat_message(
     // 放在 compact 前，是为了让这条临时上下文也参与 token 估算和压缩决策。
     let pre_compact_hook =
         crate::llm::services::hooks::run_pre_compact_hooks(&app, conversation_id.as_deref());
+    if let Some(error) = pre_compact_hook.override_error {
+        return Err(error);
+    }
     if !pre_compact_hook.additional_messages.is_empty() {
         assembled_messages.extend(pre_compact_hook.additional_messages);
     }
@@ -566,7 +579,7 @@ pub async fn send_chat_message(
         conversation_id.as_deref(),
         &assembled_messages,
     )
-    .await;
+    .await?;
 
     // 只有真的发生 compact 时才跑 post compact hook。
     // 当前 post hook 同样是配置文本注入：settings.hook_env["NOVA_POST_COMPACT_HOOK_CONTEXT"]。
@@ -574,7 +587,7 @@ pub async fn send_chat_message(
     let did_compact = compact_outcome.did_compact();
     let mut current_messages = compact_outcome.messages;
     if did_compact {
-        apply_post_compact_hook(&app, conversation_id.as_deref(), &mut current_messages);
+        apply_post_compact_hook(&app, conversation_id.as_deref(), &mut current_messages)?;
         let after_tokens =
             clamp_i64_to_u32(compact::estimate_tokens_for_messages(&current_messages));
         emit_context_compact_event(
@@ -621,7 +634,7 @@ pub async fn send_chat_message(
 
     // 2. 根据设置选择模型提供方（Anthropic/OpenAI）。
     // Provider 实例封装了底层调用细节。
-    let provider = LlmProvider::new(&app);
+    let provider = LlmProvider::new(&app)?;
 
     // 3. 主循环：调用 provider.send_request（流式），并根据 tool 执行情况决定是否继续下一步。
     //    - 如果发生工具调用，结果会被“注入”到 current_messages 继续下一轮。
@@ -635,7 +648,7 @@ pub async fn send_chat_message(
 
         // 每次请求 provider 前重新读取当前模型配置，拿到该模型的上下文窗口大小。
         // 模型可能在设置中切换，因此这里不复用回合开始时的窗口值。
-        let model = crate::command::settings::get_settings(app.clone())
+        let model = crate::command::settings::get_settings(app.clone())?
             .active_provider_profile()
             .model;
 
@@ -718,7 +731,7 @@ pub async fn send_chat_message(
                             &app,
                             conversation_id.as_deref(),
                             &mut current_messages,
-                        );
+                        )?;
                         emit_context_compact_event(
                             &app,
                             conversation_id.as_deref(),
@@ -956,6 +969,9 @@ pub async fn send_chat_message(
                 &current_messages,
                 conversation_id.as_deref(),
             );
+            if let Some(error) = stop_hook_result.override_error {
+                return Err(error);
+            }
             // 判断 stop hooks 是否注入了附加上下文。
             let stop_hook_added_context = !stop_hook_result.additional_messages.is_empty();
             if stop_hook_added_context {
@@ -992,6 +1008,9 @@ pub async fn send_chat_message(
         &final_outcome.stop_reason,
         conversation_id.as_deref(),
     );
+    if let Some(error) = session_end_hook.override_error {
+        return Err(error);
+    }
     if let Some(hooked_reason) = session_end_hook.stop_reason {
         final_outcome.stop_reason = hooked_reason;
     }

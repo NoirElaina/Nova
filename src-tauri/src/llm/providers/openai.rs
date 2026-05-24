@@ -531,7 +531,8 @@ impl OpenAiProvider {
         conversation_id: Option<&str>,
     ) -> Result<ProviderTurnResult, ProviderTurnError> {
         // 读取设置并拿到当前 provider profile。
-        let settings = crate::command::settings::get_settings(app.clone());
+        let settings =
+            crate::command::settings::get_settings(app.clone()).map_err(ProviderTurnError::new)?;
         let profile = settings.active_provider_profile();
 
         // 仅注入内置工具；MCP 采用 server 级发现，避免每轮发送全部动态工具 schema。

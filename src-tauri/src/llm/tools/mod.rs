@@ -210,83 +210,33 @@ fn find_registered_tool(name: &str) -> Option<ToolRegistration> {
     })
 }
 
-fn validate_type(value: &Value, expected: &str) -> bool {
-    match expected {
-        "object" => value.is_object(),
-        "array" => value.is_array(),
-        "string" => value.is_string(),
-        "number" => value.is_number(),
-        "integer" => value.as_i64().is_some() || value.as_u64().is_some(),
-        "boolean" => value.is_boolean(),
-        "null" => value.is_null(),
-        _ => true,
-    }
-}
-
-fn validate_schema_fragment(value: &Value, schema: &Value, path: &str) -> Result<(), String> {
-    if let Some(expected_type) = schema.get("type").and_then(|v| v.as_str()) {
-        if !validate_type(value, expected_type) {
-            return Err(format!(
-                "Input validation failed for '{}': expected {}, got {}",
-                path, expected_type, value
-            ));
-        }
-    }
-
-    if let Some(enum_values) = schema.get("enum").and_then(|v| v.as_array()) {
-        if !enum_values.iter().any(|allowed| allowed == value) {
-            return Err(format!(
-                "Input validation failed for '{}': value not in enum",
-                path
-            ));
-        }
-    }
-
-    if schema.get("type").and_then(|v| v.as_str()) == Some("object") {
-        let object = value
-            .as_object()
-            .ok_or_else(|| format!("Input validation failed for '{}': expected object", path))?;
-
-        if let Some(required) = schema.get("required").and_then(|v| v.as_array()) {
-            for key in required.iter().filter_map(|k| k.as_str()) {
-                if !object.contains_key(key) {
-                    return Err(format!(
-                        "Input validation failed for '{}': missing required field '{}'",
-                        path, key
-                    ));
-                }
-            }
-        }
-
-        if let Some(properties) = schema.get("properties").and_then(|v| v.as_object()) {
-            for (key, sub_schema) in properties {
-                if let Some(sub_value) = object.get(key) {
-                    let sub_path = format!("{}.{}", path, key);
-                    validate_schema_fragment(sub_value, sub_schema, &sub_path)?;
-                }
-            }
-        }
-    }
-
-    if schema.get("type").and_then(|v| v.as_str()) == Some("array") {
-        let array = value
-            .as_array()
-            .ok_or_else(|| format!("Input validation failed for '{}': expected array", path))?;
-
-        if let Some(item_schema) = schema.get("items") {
-            for (index, item) in array.iter().enumerate() {
-                let sub_path = format!("{}[{}]", path, index);
-                validate_schema_fragment(item, item_schema, &sub_path)?;
-            }
-        }
-    }
-
-    Ok(())
-}
-
 fn validate_tool_input(name: &str, input: &Value) -> Result<(), String> {
     if let Some(tool) = find_tool_definition(name) {
-        return validate_schema_fragment(input, &tool.input_schema, name);
+        let validator = jsonschema::validator_for(&tool.input_schema)
+            .map_err(|error| format!("Tool schema validation failed for '{}': {}", name, error))?;
+        let errors = validator.iter_errors(input).take(4).collect::<Vec<_>>();
+        if errors.is_empty() {
+            return Ok(());
+        }
+
+        let detail = errors
+            .iter()
+            .map(|error| {
+                let instance_path = error.instance_path().to_string();
+                let path = if instance_path.is_empty() {
+                    name.to_string()
+                } else {
+                    format!("{}{}", name, instance_path)
+                };
+                format!("{}: {}", path, error)
+            })
+            .collect::<Vec<_>>()
+            .join("; ");
+
+        return Err(format!(
+            "Input validation failed for '{}': {}",
+            name, detail
+        ));
     }
 
     Ok(())

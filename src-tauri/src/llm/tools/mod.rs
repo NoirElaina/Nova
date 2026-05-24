@@ -504,7 +504,7 @@ async fn execute_read_only_batch(
     let mut in_flight: BTreeMap<usize, ToolCallRequest> = BTreeMap::new();
     let mut results_by_index: BTreeMap<usize, ToolCallResult> = BTreeMap::new();
     let mut tasks: JoinSet<(usize, ToolCallResult)> = JoinSet::new();
-    let mut cascade_reason: Option<String> = None;
+    let mut cancellation_reason: Option<String> = None;
     let max_concurrency = max_tool_use_concurrency();
     let conversation_owned = conversation_id.map(|v| v.to_string());
 
@@ -513,11 +513,11 @@ async fn execute_read_only_batch(
         if crate::llm::cancellation::is_cancelled(conversation_id) {
             tasks.abort_all();
             while tasks.join_next().await.is_some() {}
-            cascade_reason = Some("cancelled".into());
+            cancellation_reason = Some("cancelled".into());
             break;
         }
 
-        while cascade_reason.is_none() && tasks.len() < max_concurrency && !queue.is_empty() {
+        while tasks.len() < max_concurrency && !queue.is_empty() {
             let Some((index, call)) = queue.pop_front() else {
                 break;
             };
@@ -539,27 +539,11 @@ async fn execute_read_only_batch(
 
         if let Ok((index, result)) = joined {
             in_flight.remove(&index);
-            let is_error = result.is_error;
-            let error_tool_name = result.name.clone();
             results_by_index.insert(index, result);
-
-            if cascade_reason.is_none() && is_error {
-                cascade_reason = Some(format!(
-                    "Cancelled: parallel tool call '{}' errored",
-                    error_tool_name
-                ));
-                tasks.abort_all();
-
-                while let Some(_drained) = tasks.join_next().await {
-                    // Ignore aborted task outputs; unresolved calls are converted
-                    // into deterministic synthetic cancellations below.
-                }
-                break;
-            }
         }
     }
 
-    if let Some(reason) = cascade_reason {
+    if let Some(reason) = cancellation_reason {
         for (index, call) in in_flight.into_iter() {
             results_by_index
                 .entry(index)

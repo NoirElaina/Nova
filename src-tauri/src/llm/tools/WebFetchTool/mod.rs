@@ -10,7 +10,7 @@ use url::Url;
 // 返回 web_fetch 的注册信息。
 // `read_only=true`，因为它只抓网页内容，不会修改本地状态。
 pub(crate) fn registration() -> ToolRegistration {
-    app_tool(tool, execute, execute_with_app_boxed, true, None)
+    app_tool(tool, execute_with_app_boxed, true, None)
 }
 
 // 返回模型可见的 web_fetch 元数据。
@@ -50,14 +50,6 @@ fn parse_http_url(raw: &str) -> Result<Url, String> {
         "http" | "https" => Ok(url),
         scheme => Err(format!("Unsupported URL scheme '{scheme}', expected http or https")),
     }
-}
-
-pub fn execute(_input: Value) -> String {
-    json!({
-        "ok": false,
-        "error": "web_fetch requires AppHandle-aware async execution"
-    })
-    .to_string()
 }
 
 fn execute_with_app_boxed(

@@ -4,9 +4,9 @@ use crate::llm::types::Tool;
 use serde_json::{json, Value};
 use tauri::AppHandle;
 
-// 注册 TaskOutput，声明它是只读同步工具，用于查询任务输出摘要。
+// 注册 TaskOutput，声明它是只读会话工具，用于查询任务输出摘要。
 pub(crate) fn registration() -> ToolRegistration {
-    app_tool(tool, execute, execute_with_app_boxed, true, None)
+    app_tool(tool, execute_with_app_boxed, true, None)
 }
 
 // 返回暴露给模型的工具元数据。
@@ -38,11 +38,6 @@ fn parse_task_id(input: &Value) -> Option<u64> {
         }
     }
     None
-}
-
-// 根据解析出的 task_id 读取任务，再拼出任务摘要结构。
-pub fn execute(_input: Value) -> String {
-    json!({ "ok": false, "error": "TaskOutput requires conversation-aware execution" }).to_string()
 }
 
 fn execute_with_app_boxed(

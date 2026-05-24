@@ -1,14 +1,6 @@
 use crate::llm::tools::AppExecuteFuture;
-use serde_json::{json, Value};
+use serde_json::Value;
 use tauri::AppHandle;
-
-pub fn execute_sync_stub(_input: Value) -> String {
-    json!({
-        "ok": false,
-        "error": "Nova browser tools require app execution context",
-    })
-    .to_string()
-}
 
 pub fn run_browser_action_boxed(
     action: &'static str,

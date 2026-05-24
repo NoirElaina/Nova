@@ -4,7 +4,7 @@ use serde_json::{json, Value};
 use tauri::AppHandle;
 
 pub(crate) fn registration() -> ToolRegistration {
-    app_tool(tool, execute, execute_with_app_boxed, false, None)
+    app_tool(tool, execute_with_app_boxed, false, None)
 }
 
 pub fn tool() -> Tool {
@@ -22,15 +22,6 @@ pub fn tool() -> Tool {
             "required": ["input"]
         }),
     }
-}
-
-pub fn execute(input: Value) -> String {
-    json!({
-        "ok": false,
-        "message": "app_tool requires AppHandle-aware execution and should be routed via execute_tool_with_app.",
-        "input": input
-    })
-    .to_string()
 }
 
 pub async fn execute_with_app(

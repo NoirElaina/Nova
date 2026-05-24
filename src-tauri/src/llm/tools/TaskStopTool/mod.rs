@@ -4,9 +4,9 @@ use crate::llm::types::Tool;
 use serde_json::{json, Value};
 use tauri::AppHandle;
 
-// 注册 TaskStop，声明它是写类同步工具，用于停止当前会话里的任务。
+// 注册 TaskStop，声明它是写类会话工具，用于停止当前会话里的任务。
 pub(crate) fn registration() -> ToolRegistration {
-    app_tool(tool, execute, execute_with_app_boxed, false, None)
+    app_tool(tool, execute_with_app_boxed, false, None)
 }
 
 // 返回暴露给模型的工具元数据。
@@ -38,11 +38,6 @@ fn parse_task_id(input: &Value) -> Option<u64> {
         }
     }
     None
-}
-
-// 把目标任务状态更新为 stopped，并返回停止结果。
-pub fn execute(_input: Value) -> String {
-    json!({ "ok": false, "error": "TaskStop requires conversation-aware execution" }).to_string()
 }
 
 fn execute_with_app_boxed(

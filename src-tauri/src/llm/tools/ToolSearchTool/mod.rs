@@ -7,7 +7,7 @@ use tauri::AppHandle;
 
 // 注册 tool_search，声明它是只读 app 工具，可以在运行时把 MCP 动态工具也并进搜索结果。
 pub(crate) fn registration() -> ToolRegistration {
-    app_tool(tool, execute, execute_with_app_boxed, true, None)
+    app_tool(tool, execute_with_app_boxed, true, None)
 }
 
 // 返回暴露给模型的工具元数据，要求传入 query 作为搜索关键字。
@@ -23,16 +23,6 @@ pub fn tool() -> Tool {
             "required": ["query"]
         }),
     }
-}
-
-// 只搜索内置工具；用于没有 AppHandle 的同步调用路径。
-pub fn execute(input: Value) -> String {
-    let query = match input.get("query").and_then(|v| v.as_str()) {
-        Some(v) if !v.trim().is_empty() => v.trim(),
-        _ => return json!({ "ok": false, "error": "Missing 'query' argument" }).to_string(),
-    };
-
-    search_tools(query, get_available_tools())
 }
 
 // 搜索内置工具加已连接的 MCP 动态工具；这是运行时实际使用的完整搜索路径。

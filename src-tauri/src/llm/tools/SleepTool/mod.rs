@@ -9,7 +9,7 @@ const MAX_SLEEP_MS: u64 = 5 * 60 * 1000;
 // 返回 Sleep 工具的注册信息。
 // 这个工具只等待时间流逝，不修改任何外部状态，所以标成只读。
 pub(crate) fn registration() -> ToolRegistration {
-    app_tool(tool, execute_sync_stub, execute_with_app_boxed, true, None)
+    app_tool(tool, execute_with_app_boxed, true, None)
 }
 
 // 返回模型可见的 Sleep 元数据。
@@ -42,11 +42,6 @@ fn parse_positive_u64(value: &Value) -> Option<u64> {
 
 fn parse_sleep_ms(input: &Value) -> Option<u64> {
     input.get("duration_ms").and_then(parse_positive_u64)
-}
-
-// execute_with_app 优先；此路径仅在脱离 AppHandle 的同步调用链中触发（极少见）。
-pub fn execute_sync_stub(_input: Value) -> String {
-    json!({ "ok": false, "error": "SleepTool requires async execution context" }).to_string()
 }
 
 // 分块异步 sleep，每 50ms 检查一次取消标记，保证用户取消可以中断等待。

@@ -16,7 +16,7 @@ fn execute_with_app_boxed(
 // 返回 remember_global_memory 的注册信息。
 // 这是写类工具，因为它会把记忆持久化到跨会话存储中。
 pub(crate) fn registration() -> ToolRegistration {
-    app_tool(tool, execute, execute_with_app_boxed, false, None)
+    app_tool(tool, execute_with_app_boxed, false, None)
 }
 
 // 返回模型可见的 remember_global_memory 元数据。
@@ -45,15 +45,6 @@ pub fn tool() -> Tool {
             "required": ["content"]
         }),
     }
-}
-
-// 同步入口只返回提示，要求调用方改走带 AppHandle 的记忆写入路径。
-pub fn execute(_input: Value) -> String {
-    json!({
-        "ok": false,
-        "message": "remember_global_memory requires AppHandle-aware execution and should be routed via execute_tool_with_app."
-    })
-    .to_string()
 }
 
 // 把一条稳定信息写进全局记忆库。

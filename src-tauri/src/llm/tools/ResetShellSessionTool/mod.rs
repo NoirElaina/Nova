@@ -4,7 +4,7 @@ use serde_json::{json, Value};
 use tauri::AppHandle;
 
 pub(crate) fn registration() -> ToolRegistration {
-    app_tool(tool, execute_sync_stub, execute_with_app_boxed, false, None)
+    app_tool(tool, execute_with_app_boxed, false, None)
 }
 
 pub fn tool() -> Tool {
@@ -16,11 +16,6 @@ pub fn tool() -> Tool {
             "properties": {}
         }),
     }
-}
-
-pub fn execute_sync_stub(_input: Value) -> String {
-    json!({ "ok": false, "error": "reset_shell_session requires async execution context" })
-        .to_string()
 }
 
 fn execute_with_app_boxed(

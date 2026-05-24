@@ -6,13 +6,7 @@ use std::fs;
 use tauri::AppHandle;
 
 pub(crate) fn registration() -> ToolRegistration {
-    app_tool(
-        tool,
-        execute,
-        execute_with_app_boxed,
-        false,
-        Some(permission),
-    )
+    app_tool(tool, execute_with_app_boxed, false, Some(permission))
 }
 
 fn permission(input: &Value) -> Option<ToolPermissionDescriptor> {
@@ -38,14 +32,6 @@ pub fn tool() -> Tool {
             "required": ["path", "content"]
         }),
     }
-}
-
-pub fn execute(_input: Value) -> String {
-    json!({
-        "ok": false,
-        "error": "write_file requires AppHandle-aware execution inside a conversation WorkspaceRoot."
-    })
-    .to_string()
 }
 
 fn execute_with_app_boxed(

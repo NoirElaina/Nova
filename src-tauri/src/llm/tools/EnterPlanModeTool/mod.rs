@@ -1,10 +1,11 @@
-use crate::llm::tools::{sync_tool, ToolRegistration};
+use crate::llm::tools::{app_tool, AppExecuteFuture, ToolRegistration};
 use crate::llm::types::Tool;
 use serde_json::{json, Value};
+use tauri::AppHandle;
 
 // 注册 enter_plan_mode，声明它是无权限要求的同步状态切换工具。
 pub(crate) fn registration() -> ToolRegistration {
-    sync_tool(tool, execute, false, None)
+    app_tool(tool, execute_with_app_boxed, false, None)
 }
 
 // 返回暴露给模型的工具元数据，告诉模型这个工具用于进入 plan 模式。
@@ -25,7 +26,7 @@ pub fn tool() -> Tool {
 }
 
 // 读取可选 goal，并返回一个 plan_mode_change payload 给前端切换模式。
-pub fn execute(input: Value) -> String {
+fn execute_local(input: Value) -> String {
     let goal = input
         .get("goal")
         .and_then(|v| v.as_str())
@@ -39,4 +40,12 @@ pub fn execute(input: Value) -> String {
         "message": "Entered plan mode. Focus on exploration, trade-offs, and a concrete plan before editing files."
     })
     .to_string()
+}
+
+fn execute_with_app_boxed(
+    _app: AppHandle,
+    _conversation_id: Option<String>,
+    input: Value,
+) -> AppExecuteFuture {
+    Box::pin(async move { execute_local(input) })
 }

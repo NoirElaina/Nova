@@ -5,13 +5,7 @@ use tauri::AppHandle;
 
 // 返回 BashTool 的注册信息。
 pub(crate) fn registration() -> ToolRegistration {
-    app_tool(
-        tool,
-        execute_sync_stub,
-        execute_with_app_boxed,
-        false,
-        Some(permission),
-    )
+    app_tool(tool, execute_with_app_boxed, false, Some(permission))
 }
 
 fn permission(input: &Value) -> Option<ToolPermissionDescriptor> {
@@ -36,11 +30,6 @@ pub fn tool() -> Tool {
             "required": ["command"]
         }),
     }
-}
-
-// execute_with_app 优先；此路径仅在脱离 AppHandle 的同步调用链中触发。
-pub fn execute_sync_stub(_input: Value) -> String {
-    json!({ "ok": false, "error": "BashTool requires async execution context" }).to_string()
 }
 
 fn execute_with_app_boxed(

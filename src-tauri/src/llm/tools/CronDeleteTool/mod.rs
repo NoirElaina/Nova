@@ -16,7 +16,7 @@ fn execute_with_app_boxed(
 // 返回 CronDelete 的注册信息。
 // `read_only=false`，因为它会删除已有的计划任务。
 pub(crate) fn registration() -> ToolRegistration {
-    app_tool(tool, execute, execute_with_app_boxed, false, None)
+    app_tool(tool, execute_with_app_boxed, false, None)
 }
 
 // 返回 CronDelete 暴露给模型的元数据。
@@ -32,15 +32,6 @@ pub fn tool() -> Tool {
             "required": ["id"]
         }),
     }
-}
-
-// 同步入口只返回提示，要求调用方改走带 AppHandle 的删除逻辑。
-pub fn execute(_input: Value) -> String {
-    json!({
-        "ok": false,
-        "message": "CronDelete requires AppHandle-aware execution and should be routed via execute_tool_with_app."
-    })
-    .to_string()
 }
 
 // 按 `id` 删除一个计划任务。

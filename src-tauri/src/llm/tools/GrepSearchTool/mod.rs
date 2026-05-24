@@ -7,7 +7,7 @@ use tauri::AppHandle;
 const MAX_OUTPUT_CHARS: usize = 10_000;
 
 pub(crate) fn registration() -> ToolRegistration {
-    app_tool(tool, execute_sync_stub, execute_with_app_boxed, true, None)
+    app_tool(tool, execute_with_app_boxed, true, None)
 }
 
 pub fn tool() -> Tool {
@@ -36,14 +36,6 @@ pub fn tool() -> Tool {
             "required": ["pattern"]
         }),
     }
-}
-
-pub fn execute_sync_stub(_input: Value) -> String {
-    json!({
-        "ok": false,
-        "error": "grep_search requires AppHandle-aware execution inside a conversation WorkspaceRoot."
-    })
-    .to_string()
 }
 
 fn execute_with_app_boxed(

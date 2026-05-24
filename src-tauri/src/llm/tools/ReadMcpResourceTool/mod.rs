@@ -15,7 +15,7 @@ fn execute_with_app_boxed(
 // 返回 read_mcp_resource 的注册信息。
 // 这是只读操作，只读取 MCP 暴露的资源内容。
 pub(crate) fn registration() -> ToolRegistration {
-    app_tool(tool, execute, execute_with_app_boxed, true, None)
+    app_tool(tool, execute_with_app_boxed, true, None)
 }
 
 // 返回模型可见的 read_mcp_resource 元数据。
@@ -33,19 +33,6 @@ pub fn tool() -> Tool {
             "required": ["server", "uri"]
         }),
     }
-}
-
-// 同步入口只返回提示，要求调用方改走带 AppHandle 的 MCP 读取逻辑。
-pub fn execute(input: Value) -> String {
-    let server = input.get("server").and_then(|v| v.as_str()).unwrap_or("");
-    let uri = input.get("uri").and_then(|v| v.as_str()).unwrap_or("");
-    json!({
-        "ok": false,
-        "server": server,
-        "uri": uri,
-        "message": "read_mcp_resource requires AppHandle-aware execution and should be routed via execute_tool_with_app."
-    })
-    .to_string()
 }
 
 // 从指定 MCP server 读取一个资源。

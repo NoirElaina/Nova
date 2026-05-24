@@ -4,9 +4,9 @@ use crate::llm::types::Tool;
 use serde_json::{json, Value};
 use tauri::AppHandle;
 
-// 注册 TaskGet，声明它是只读同步工具，用于按 id 读取当前会话任务。
+// 注册 TaskGet，声明它是只读会话工具，用于按 id 读取当前会话任务。
 pub(crate) fn registration() -> ToolRegistration {
-    app_tool(tool, execute, execute_with_app_boxed, true, None)
+    app_tool(tool, execute_with_app_boxed, true, None)
 }
 
 // 返回暴露给模型的工具元数据。
@@ -36,11 +36,6 @@ fn parse_task_id(input: &Value) -> Option<u64> {
         }
     }
     None
-}
-
-// 根据解析出的 task_id 读取任务，并把任务对象原样放进 JSON 结果里。
-pub fn execute(_input: Value) -> String {
-    json!({ "ok": false, "error": "TaskGet requires conversation-aware execution" }).to_string()
 }
 
 fn execute_with_app_boxed(

@@ -19,7 +19,7 @@ fn execute_with_app_boxed(
 // 返回 Skill 工具的注册信息。
 // 它只读本地 skill 文件，不直接改写状态，所以标成只读工具。
 pub(crate) fn registration() -> ToolRegistration {
-    app_tool(tool, execute, execute_with_app_boxed, true, None)
+    app_tool(tool, execute_with_app_boxed, true, None)
 }
 
 #[derive(Debug, Clone)]
@@ -346,15 +346,6 @@ fn run_skill(skills: &[SkillEntry], skill_name: &str, args: Option<&str>) -> Str
     json!({
         "ok": true,
         "content": out
-    })
-    .to_string()
-}
-
-// 同步入口只返回提示，要求调用方改走带 AppHandle 的执行路径。
-pub fn execute(_input: Value) -> String {
-    json!({
-        "ok": false,
-        "message": "skill requires AppHandle-aware execution and should be routed via execute_tool_with_app."
     })
     .to_string()
 }

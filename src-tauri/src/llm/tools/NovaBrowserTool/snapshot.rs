@@ -4,13 +4,7 @@ use serde_json::{json, Value};
 use tauri::AppHandle;
 
 pub(crate) fn registration() -> ToolRegistration {
-    app_tool(
-        tool,
-        crate::llm::tools::shared::browser_automation::execute_sync_stub,
-        execute_with_app_boxed,
-        true,
-        None,
-    )
+    app_tool(tool, execute_with_app_boxed, true, None)
 }
 
 pub fn tool() -> Tool {

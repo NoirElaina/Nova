@@ -4,9 +4,9 @@ use crate::llm::types::Tool;
 use serde_json::{json, Value};
 use tauri::AppHandle;
 
-// 注册 task_update，声明它是写类同步工具，用于更新已有任务。
+// 注册 task_update，声明它是写类会话工具，用于更新已有任务。
 pub(crate) fn registration() -> ToolRegistration {
-    app_tool(tool, execute, execute_with_app_boxed, false, None)
+    app_tool(tool, execute_with_app_boxed, false, None)
 }
 
 // 返回暴露给模型的工具元数据，要求提供 id，其他字段按需更新。
@@ -25,12 +25,6 @@ pub fn tool() -> Tool {
             "required": ["id"]
         }),
     }
-}
-
-// 读取要更新的 id，以及可选的 title/status/notes，再写回内存任务表。
-pub fn execute(_input: Value) -> String {
-    json!({ "ok": false, "error": "task_update requires conversation-aware execution" })
-        .to_string()
 }
 
 fn execute_with_app_boxed(

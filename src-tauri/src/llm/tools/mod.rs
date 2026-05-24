@@ -99,10 +99,8 @@ pub(crate) struct ToolPermissionDescriptor {
 pub(crate) struct ToolRegistration {
     // tool: 暴露给模型看的静态定义（name/description/schema）。
     tool: fn() -> Tool,
-    // execute: 不依赖 AppHandle 的同步执行入口。
-    execute: fn(Value) -> String,
-    // execute_with_app: 需要 AppHandle / async / 会话上下文时使用。
-    execute_with_app: Option<AppExecuteFn>,
+    // execute_with_app: 唯一执行入口，始终携带 AppHandle / conversation_id / WorkspaceRoot 能力。
+    execute_with_app: AppExecuteFn,
     // postprocess: 执行完成后补充 side-channel 消息或清洗输出。
     postprocess: Option<PostprocessFn>,
     // permission: 工具自己的权限描述函数；内置工具不再走按名字兜底。
@@ -111,35 +109,15 @@ pub(crate) struct ToolRegistration {
     read_only: bool,
 }
 
-pub(crate) const fn sync_tool(
-    tool: fn() -> Tool,
-    execute: fn(Value) -> String,
-    read_only: bool,
-    permission: Option<PermissionFn>,
-) -> ToolRegistration {
-    // sync_tool: 适合同步工具；权限策略也必须在这里显式声明。
-    ToolRegistration {
-        tool,
-        execute,
-        execute_with_app: None,
-        postprocess: None,
-        permission,
-        read_only,
-    }
-}
-
 pub(crate) const fn app_tool(
     tool: fn() -> Tool,
-    execute: fn(Value) -> String,
     execute_with_app: AppExecuteFn,
     read_only: bool,
     permission: Option<PermissionFn>,
 ) -> ToolRegistration {
-    // app_tool: 适合异步或依赖 AppHandle 的工具；权限策略同样显式声明。
     ToolRegistration {
         tool,
-        execute,
-        execute_with_app: Some(execute_with_app),
+        execute_with_app,
         postprocess: None,
         permission,
         read_only,
@@ -148,17 +126,14 @@ pub(crate) const fn app_tool(
 
 pub(crate) const fn app_tool_with_extras(
     tool: fn() -> Tool,
-    execute: fn(Value) -> String,
     execute_with_app: AppExecuteFn,
     read_only: bool,
     permission: Option<PermissionFn>,
     postprocess: Option<PostprocessFn>,
 ) -> ToolRegistration {
-    // app_tool_with_extras: 在 app_tool 基础上再挂权限和后处理扩展点。
     ToolRegistration {
         tool,
-        execute,
-        execute_with_app: Some(execute_with_app),
+        execute_with_app,
         postprocess,
         permission,
         read_only,
@@ -617,15 +592,6 @@ pub fn get_available_tools() -> Vec<Tool> {
         .collect()
 }
 
-// 在后端直接执行工具，输入来自模型返回的 tool call 名称和参数，只在同步模式下使用。
-pub fn execute_tool(name: &str, input: Value) -> String {
-    if let Some(entry) = find_registered_tool(name) {
-        return (entry.execute)(input);
-    }
-
-    json!({ "ok": false, "error": format!("Unknown tool: {}", name) }).to_string()
-}
-
 // 在带 AppHandle 的环境中执行工具，附带权限校验和 MCP 代理能力。
 // 若权限拒绝返回特殊 JSON payload；允许则执行工具。
 pub async fn execute_tool_with_app(
@@ -670,10 +636,8 @@ pub async fn execute_tool_with_app(
     }
 
     if let Some(entry) = find_registered_tool(name) {
-        if let Some(execute_with_app) = entry.execute_with_app {
-            return execute_with_app(app.clone(), conversation_id.map(str::to_string), input).await;
-        }
-        return (entry.execute)(input);
+        return (entry.execute_with_app)(app.clone(), conversation_id.map(str::to_string), input)
+            .await;
     }
 
     json!({ "ok": false, "error": format!("Unknown tool: {}", name) }).to_string()

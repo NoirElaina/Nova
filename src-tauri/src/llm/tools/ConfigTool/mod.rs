@@ -12,7 +12,7 @@ fn execute_with_app_boxed(
 }
 
 pub(crate) fn registration() -> ToolRegistration {
-    app_tool(tool, execute, execute_with_app_boxed, true, None)
+    app_tool(tool, execute_with_app_boxed, true, None)
 }
 
 pub fn tool() -> Tool {
@@ -51,14 +51,6 @@ fn base_url_summary(raw: &str) -> Option<String> {
         summary.push_str(&port.to_string());
     }
     Some(summary)
-}
-
-pub fn execute(_input: Value) -> String {
-    json!({
-        "ok": false,
-        "error": "config_tool requires AppHandle-aware execution."
-    })
-    .to_string()
 }
 
 pub async fn execute_with_app(app: &AppHandle, input: Value) -> String {

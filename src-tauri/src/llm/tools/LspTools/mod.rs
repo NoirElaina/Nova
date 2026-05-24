@@ -5,21 +5,13 @@ use tauri::AppHandle;
 
 pub(crate) fn registrations() -> Vec<ToolRegistration> {
     vec![
-        app_tool(status_tool, execute, status_with_app, true, None),
-        app_tool(diagnostics_tool, execute, diagnostics_with_app, true, None),
-        app_tool(definition_tool, execute, definition_with_app, true, None),
-        app_tool(references_tool, execute, references_with_app, true, None),
-        app_tool(symbols_tool, execute, symbols_with_app, true, None),
-        app_tool(hover_tool, execute, hover_with_app, true, None),
+        app_tool(status_tool, status_with_app, true, None),
+        app_tool(diagnostics_tool, diagnostics_with_app, true, None),
+        app_tool(definition_tool, definition_with_app, true, None),
+        app_tool(references_tool, references_with_app, true, None),
+        app_tool(symbols_tool, symbols_with_app, true, None),
+        app_tool(hover_tool, hover_with_app, true, None),
     ]
-}
-
-fn execute(_input: Value) -> String {
-    json!({
-        "ok": false,
-        "message": "LSP tools require AppHandle-aware execution."
-    })
-    .to_string()
 }
 
 fn string_arg(input: &Value, key: &str) -> Option<String> {

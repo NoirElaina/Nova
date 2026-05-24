@@ -4,13 +4,7 @@ use serde_json::{json, Value};
 use tauri::AppHandle;
 
 pub(crate) fn registration() -> ToolRegistration {
-    app_tool(
-        tool,
-        execute_sync_stub,
-        execute_with_app_boxed,
-        false,
-        Some(permission),
-    )
+    app_tool(tool, execute_with_app_boxed, false, Some(permission))
 }
 
 fn permission(input: &Value) -> Option<ToolPermissionDescriptor> {
@@ -36,10 +30,6 @@ pub fn tool() -> Tool {
             "required": ["command"]
         }),
     }
-}
-
-pub fn execute_sync_stub(_input: Value) -> String {
-    json!({ "ok": false, "error": "PowerShellTool requires async execution context" }).to_string()
 }
 
 fn execute_with_app_boxed(

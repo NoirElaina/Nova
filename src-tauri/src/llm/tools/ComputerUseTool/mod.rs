@@ -54,7 +54,6 @@ fn permission(input: &Value) -> Option<ToolPermissionDescriptor> {
 pub(crate) fn registration() -> ToolRegistration {
     app_tool_with_extras(
         tool,
-        execute,
         execute_with_app_boxed,
         false,
         Some(permission),
@@ -129,17 +128,6 @@ pub fn tool() -> Tool {
             "required": ["action"]
         }),
     }
-}
-
-// 同步调用路径只返回提示，真正执行必须走带 AppHandle 的 execute_with_app。
-pub fn execute(input: Value) -> String {
-    let action = input.get("action").and_then(|v| v.as_str()).unwrap_or("unknown");
-    json!({
-        "ok": false,
-        "action": action,
-        "message": "computer_use requires AppHandle-aware execution and should be routed via execute_tool_with_app."
-    })
-    .to_string()
 }
 
 // 从 input 里读取 key 对应的整数，并转成 i32，供鼠标坐标等参数使用。

@@ -5,7 +5,7 @@ use std::fs;
 use tauri::AppHandle;
 
 pub(crate) fn registration() -> ToolRegistration {
-    app_tool(tool, execute_sync_stub, execute_with_app_boxed, true, None)
+    app_tool(tool, execute_with_app_boxed, true, None)
 }
 
 pub fn tool() -> Tool {
@@ -20,14 +20,6 @@ pub fn tool() -> Tool {
             "required": ["path"]
         }),
     }
-}
-
-pub fn execute_sync_stub(_input: Value) -> String {
-    json!({
-        "ok": false,
-        "error": "read_file requires AppHandle-aware execution inside a conversation WorkspaceRoot."
-    })
-    .to_string()
 }
 
 fn execute_with_app_boxed(

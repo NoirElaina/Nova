@@ -1,11 +1,12 @@
-use crate::llm::tools::{sync_tool, ToolRegistration};
+use crate::llm::tools::{app_tool, AppExecuteFuture, ToolRegistration};
 use crate::llm::types::Tool;
 use serde_json::{json, Value};
+use tauri::AppHandle;
 
 // 返回 ask_user_question 的注册信息。
 // 这个工具会中断当前执行流并等待用户回答，所以不是只读工具。
 pub(crate) fn registration() -> ToolRegistration {
-    sync_tool(tool, execute, false, None)
+    app_tool(tool, execute_with_app_boxed, false, None)
 }
 
 // 返回 ask_user_question 暴露给模型的元数据。
@@ -147,7 +148,7 @@ fn normalize_question(question: &Value) -> Option<Value> {
 
 // 把模型传来的提问参数整理成统一的 `needs_user_input` payload。
 // `context` 是为什么要提问，`questions` 是最终展示给用户的问题数组。
-pub fn execute(input: Value) -> String {
+fn execute_local(input: Value) -> String {
     let context = input
         .get("context")
         .and_then(|v| v.as_str())
@@ -180,4 +181,12 @@ pub fn execute(input: Value) -> String {
         "instruction": "Stop tool execution and ask the user this question before continuing."
     })
     .to_string()
+}
+
+fn execute_with_app_boxed(
+    _app: AppHandle,
+    _conversation_id: Option<String>,
+    input: Value,
+) -> AppExecuteFuture {
+    Box::pin(async move { execute_local(input) })
 }

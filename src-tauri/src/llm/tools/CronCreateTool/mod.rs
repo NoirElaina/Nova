@@ -17,7 +17,7 @@ fn execute_with_app_boxed(
 // 返回 CronCreate 的注册信息。
 // 这里声明 `read_only=false`，因为它会创建新的计划任务记录。
 pub(crate) fn registration() -> ToolRegistration {
-    app_tool(tool, execute, execute_with_app_boxed, false, None)
+    app_tool(tool, execute_with_app_boxed, false, None)
 }
 
 // 返回暴露给模型的 CronCreate 元数据。
@@ -37,15 +37,6 @@ pub fn tool() -> Tool {
             "required": ["cron", "prompt"]
         }),
     }
-}
-
-// 同步入口只给出固定错误，避免在没有 AppHandle 的上下文里误调用。
-pub fn execute(_input: Value) -> String {
-    json!({
-        "ok": false,
-        "message": "CronCreate requires AppHandle-aware execution and should be routed via execute_tool_with_app."
-    })
-    .to_string()
 }
 
 // 读取 input[key] 并把布尔语义统一成 true/false。

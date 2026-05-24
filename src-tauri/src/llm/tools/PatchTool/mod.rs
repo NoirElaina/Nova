@@ -11,24 +11,17 @@ pub(crate) fn registrations() -> Vec<ToolRegistration> {
     vec![
         app_tool(
             apply_patch_tool,
-            execute_sync_stub,
             apply_patch_with_app,
             false,
             Some(apply_patch_permission),
         ),
         app_tool(
             multi_edit_tool,
-            execute_sync_stub,
             multi_edit_with_app,
             false,
             Some(multi_edit_permission),
         ),
     ]
-}
-
-fn execute_sync_stub(_input: Value) -> String {
-    json!({ "ok": false, "error": "File patch tools require AppHandle-aware execution." })
-        .to_string()
 }
 
 fn apply_patch_tool() -> Tool {

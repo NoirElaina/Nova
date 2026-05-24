@@ -16,7 +16,7 @@ fn execute_with_app_boxed(
 // 返回 rag_tool 的注册信息。
 // RAG 只做本地知识库读取，因此标成只读工具。
 pub(crate) fn registration() -> ToolRegistration {
-    app_tool(tool, execute, execute_with_app_boxed, true, None)
+    app_tool(tool, execute_with_app_boxed, true, None)
 }
 
 // 返回模型可见的 rag_tool 元数据。
@@ -40,15 +40,6 @@ pub fn tool() -> Tool {
             "required": ["action"]
         }),
     }
-}
-
-// 同步入口只返回提示，要求调用方改走带 AppHandle 的 RAG 执行路径。
-pub fn execute(_input: Value) -> String {
-    json!({
-        "ok": false,
-        "message": "rag_tool requires AppHandle-aware execution and should be routed via execute_tool_with_app."
-    })
-    .to_string()
 }
 
 // 根据 `action` 访问本地 RAG 数据库。

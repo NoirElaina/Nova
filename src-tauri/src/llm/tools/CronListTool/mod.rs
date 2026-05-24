@@ -16,7 +16,7 @@ fn execute_with_app_boxed(
 // 返回 CronList 的注册信息。
 // `read_only=true`，因为它只读取任务列表，不改动任何状态。
 pub(crate) fn registration() -> ToolRegistration {
-    app_tool(tool, execute, execute_with_app_boxed, true, None)
+    app_tool(tool, execute_with_app_boxed, true, None)
 }
 
 // 返回 CronList 暴露给模型的元数据。
@@ -29,15 +29,6 @@ pub fn tool() -> Tool {
             "properties": {}
         }),
     }
-}
-
-// 同步入口只返回提示，要求调用方改走带 AppHandle 的执行路径。
-pub fn execute(_input: Value) -> String {
-    json!({
-        "ok": false,
-        "message": "CronList requires AppHandle-aware execution and should be routed via execute_tool_with_app."
-    })
-    .to_string()
 }
 
 // 读取当前会话和持久化存储里的所有计划任务。

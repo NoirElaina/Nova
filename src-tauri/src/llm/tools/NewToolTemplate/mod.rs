@@ -26,15 +26,6 @@ pub fn tool() -> Tool {
     }
 }
 
-pub fn execute(input: Value) -> String {
-    json!({
-        "ok": false,
-        "message": "new_tool requires AppHandle-aware execution and should be routed via execute_tool_with_app.",
-        "input": input
-    })
-    .to_string()
-}
-
 pub async fn execute_with_app(
     _app: &AppHandle,
     _conversation_id: Option<&str>,
@@ -85,7 +76,6 @@ fn permission(input: &Value) -> Option<ToolPermissionDescriptor> {
 pub(crate) fn registration() -> ToolRegistration {
     app_tool_with_extras(
         tool,
-        execute,
         execute_with_app_boxed,
         false,
         Some(permission),

@@ -1,12 +1,13 @@
-use crate::llm::tools::{sync_tool, ToolRegistration};
+use crate::llm::tools::{app_tool, AppExecuteFuture, ToolRegistration};
 use crate::llm::types::Tool;
 use serde_json::{json, Value};
+use tauri::AppHandle;
 use url::Url;
 
 // 返回 web_search 的注册信息。
 // 这个工具只生成搜索链接，所以可以作为只读工具并发执行。
 pub(crate) fn registration() -> ToolRegistration {
-    sync_tool(tool, execute, true, None)
+    app_tool(tool, execute_with_app_boxed, true, None)
 }
 
 // 返回模型可见的 web_search 元数据。
@@ -33,7 +34,7 @@ fn search_url(base: &str, query: &str) -> Result<String, String> {
 
 // 根据 `query` 生成搜索引擎 URL，供后续 `web_fetch` 继续抓取。
 // URL 编码交给 `url` crate，避免中文、特殊字符或空格被错误拼接。
-pub fn execute(input: Value) -> String {
+fn execute_local(input: Value) -> String {
     let query = match input.get("query").and_then(|v| v.as_str()) {
         Some(v) if !v.trim().is_empty() => v.trim(),
         _ => return json!({ "ok": false, "error": "Missing 'query' argument" }).to_string(),
@@ -58,4 +59,12 @@ pub fn execute(input: Value) -> String {
         "note": "Use web_fetch with one of these URLs to inspect result pages."
     })
     .to_string()
+}
+
+fn execute_with_app_boxed(
+    _app: AppHandle,
+    _conversation_id: Option<String>,
+    input: Value,
+) -> AppExecuteFuture {
+    Box::pin(async move { execute_local(input) })
 }

@@ -4,9 +4,9 @@ use crate::llm::types::Tool;
 use serde_json::{json, Value};
 use tauri::AppHandle;
 
-// 注册 task_create，声明它是写类同步工具，用于创建当前会话任务。
+// 注册 task_create，声明它是写类会话工具，用于创建当前会话任务。
 pub(crate) fn registration() -> ToolRegistration {
-    app_tool(tool, execute, execute_with_app_boxed, false, None)
+    app_tool(tool, execute_with_app_boxed, false, None)
 }
 
 // 返回暴露给模型的工具元数据，要求至少提供 title。
@@ -24,12 +24,6 @@ pub fn tool() -> Tool {
             "required": ["title"]
         }),
     }
-}
-
-// 从输入里提取 title/status/notes，并在内存任务表里创建一条新任务。
-pub fn execute(_input: Value) -> String {
-    json!({ "ok": false, "error": "task_create requires conversation-aware execution" })
-        .to_string()
 }
 
 fn execute_with_app_boxed(

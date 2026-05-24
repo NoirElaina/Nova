@@ -1,11 +1,12 @@
-use crate::llm::tools::{sync_tool, ToolRegistration};
+use crate::llm::tools::{app_tool, AppExecuteFuture, ToolRegistration};
 use crate::llm::types::Tool;
 use serde_json::{json, Value};
+use tauri::AppHandle;
 
 // 返回 plan_for_approval 的注册信息。
 // 这个工具会暂停执行并等待用户审批计划，因此不是只读工具。
 pub(crate) fn registration() -> ToolRegistration {
-    sync_tool(tool, execute, false, None)
+    app_tool(tool, execute_with_app_boxed, false, None)
 }
 
 // 从 input[key] 里读取一个非空字符串。
@@ -84,7 +85,7 @@ pub fn tool() -> Tool {
 
 // 把计划摘要、步骤和风险整理成 `needs_user_input` payload，请用户明确审批。
 // `summary` 是高层概述，`steps` 是具体实施步骤，`risks` 是可选风险提醒。
-pub fn execute(input: Value) -> String {
+fn execute_local(input: Value) -> String {
     let summary = match normalized_non_empty_string(&input, "summary") {
         Some(v) => v,
         None => {
@@ -153,4 +154,12 @@ pub fn execute(input: Value) -> String {
         "instruction": "Stop execution and wait for user decision before implementation."
     })
     .to_string()
+}
+
+fn execute_with_app_boxed(
+    _app: AppHandle,
+    _conversation_id: Option<String>,
+    input: Value,
+) -> AppExecuteFuture {
+    Box::pin(async move { execute_local(input) })
 }

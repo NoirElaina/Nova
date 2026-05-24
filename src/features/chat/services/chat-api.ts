@@ -84,6 +84,8 @@ export type FileChangeEntry = {
   path: string;
   absolutePath: string;
   changeType: "added" | "deleted" | "modified";
+  before?: string | null;
+  after?: string | null;
   diff: FileDiffLine[];
 };
 

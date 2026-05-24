@@ -135,7 +135,28 @@ pub fn workspace_root_string_for_conversation(
     app: &AppHandle,
     conversation_id: Option<&str>,
 ) -> Result<String, String> {
-    workspace_root_for_conversation(app, conversation_id).map(|path| path.display().to_string())
+    workspace_root_for_conversation(app, conversation_id).map(|path| display_path_string(&path))
+}
+
+pub fn display_path_text(path: &str) -> String {
+    #[cfg(target_os = "windows")]
+    {
+        const VERBATIM_UNC_PREFIX: &str = r"\\?\UNC\";
+        const VERBATIM_PREFIX: &str = r"\\?\";
+
+        if let Some(rest) = path.strip_prefix(VERBATIM_UNC_PREFIX) {
+            return format!(r"\\{}", rest);
+        }
+        if let Some(rest) = path.strip_prefix(VERBATIM_PREFIX) {
+            return rest.to_string();
+        }
+    }
+
+    path.to_string()
+}
+
+pub fn display_path_string(path: &Path) -> String {
+    display_path_text(&path.display().to_string())
 }
 
 pub fn remove_conversation_workspace(app: &AppHandle, conversation_id: &str) -> Result<(), String> {
@@ -173,7 +194,7 @@ fn set_workspace_root_for_conversation(
     let mut store = read_workspace_store(app)?;
     store
         .roots
-        .insert(conversation_id, root.display().to_string());
+        .insert(conversation_id, display_path_string(&root));
     write_workspace_store(app, &store)?;
 
     Ok(root)
@@ -276,7 +297,7 @@ fn entry_from_path(root: &Path, path: PathBuf) -> Option<WorkspaceEntry> {
 
     Some(WorkspaceEntry {
         name,
-        path: path.display().to_string(),
+        path: display_path_string(&path),
         relative_path: relative,
         kind,
         extension,
@@ -319,8 +340,8 @@ fn list_directory_for_root(
     });
 
     Ok(WorkspaceDirectoryListing {
-        root: root.display().to_string(),
-        path: target.display().to_string(),
+        root: display_path_string(&root),
+        path: display_path_string(&target),
         relative_path,
         entries,
     })
@@ -359,7 +380,7 @@ pub fn workspace_read_text_file(
         String::from_utf8(bytes).map_err(|_| "文件不是 UTF-8 文本，暂不支持预览".to_string())?;
 
     Ok(WorkspaceFileContent {
-        path: target.display().to_string(),
+        path: display_path_string(&target),
         relative_path,
         content,
         size: metadata.len(),

@@ -104,7 +104,7 @@ fn parse_marker_line(line: &str) -> Option<CommandMarker> {
     let cwd_b64 = parts.next()?;
     let timed_out = parts.next()?.eq_ignore_ascii_case("1");
     let cwd_bytes = BASE64.decode(cwd_b64).ok()?;
-    let cwd = String::from_utf8(cwd_bytes).ok()?;
+    let cwd = crate::command::workspace::display_path_text(&String::from_utf8(cwd_bytes).ok()?);
     Some(CommandMarker {
         command_id,
         exit_code,
@@ -115,6 +115,10 @@ fn parse_marker_line(line: &str) -> Option<CommandMarker> {
 
 fn encode_utf8_base64(text: &str) -> String {
     BASE64.encode(text.as_bytes())
+}
+
+fn display_cwd_opt(value: Option<String>) -> Option<String> {
+    value.map(|text| crate::command::workspace::display_path_text(&text))
 }
 
 #[cfg(target_os = "windows")]
@@ -327,11 +331,13 @@ async fn spawn_session(initial_cwd: Option<&str>) -> Result<ShellSession, String
             .map_err(|error| format!("Failed to flush shell bootstrap: {}", error))?;
     }
 
-    session.last_known_cwd = initial_cwd.map(|value| value.to_string()).or_else(|| {
-        std::env::current_dir()
-            .ok()
-            .map(|path| path.display().to_string())
-    });
+    session.last_known_cwd = initial_cwd
+        .map(crate::command::workspace::display_path_text)
+        .or_else(|| {
+            std::env::current_dir()
+                .ok()
+                .map(|path| crate::command::workspace::display_path_string(&path))
+        });
 
     Ok(session)
 }
@@ -421,7 +427,7 @@ async fn execute_wrapped_command(
                 stdout: trim_trailing_newline(stdout),
                 stderr: trim_trailing_newline(stderr),
                 exit_code: None,
-                cwd: session.last_known_cwd.clone(),
+                cwd: display_cwd_opt(session.last_known_cwd.clone()),
                 timed_out: false,
                 cancelled: true,
                 background: false,
@@ -438,7 +444,7 @@ async fn execute_wrapped_command(
                 stdout: trim_trailing_newline(stdout),
                 stderr: trim_trailing_newline(stderr),
                 exit_code: None,
-                cwd: session.last_known_cwd.clone(),
+                cwd: display_cwd_opt(session.last_known_cwd.clone()),
                 timed_out: true,
                 cancelled: false,
                 background: false,
@@ -599,6 +605,7 @@ pub async fn run_background(
         .and_then(|value| value.as_str())
         .unwrap_or_default()
         .to_string();
+    let cwd = crate::command::workspace::display_path_text(&cwd);
     if !cwd.trim().is_empty() {
         session.last_known_cwd = Some(cwd.clone());
     }
@@ -656,7 +663,7 @@ pub async fn session_status(conversation_id: Option<&str>) -> ShellSessionStatus
         exists: true,
         alive,
         busy: false,
-        cwd: session.last_known_cwd.clone(),
+        cwd: display_cwd_opt(session.last_known_cwd.clone()),
         background_count: background_pids.len(),
         background_pids,
     }

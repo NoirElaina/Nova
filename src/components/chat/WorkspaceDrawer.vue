@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, watch } from 'vue';
+import { defineAsyncComponent, ref, watch } from 'vue';
 import { Button } from '@/components/ui/button';
 import type { ChatMessage, ToolExecutionEntry, TurnCost } from '../../lib/chat-types';
 import type { RagDocumentMeta } from '../../features/chat/services/chat-api';
@@ -7,8 +7,9 @@ import CodeDiffTab from './workspace/CodeDiffTab.vue';
 import FilesTab from './workspace/FilesTab.vue';
 import UsageTab from './workspace/UsageTab.vue';
 import BrowserTab from './workspace/BrowserTab.vue';
-import TerminalTab from './workspace/TerminalTab.vue';
 import WorkspaceOverviewTab from './workspace/WorkspaceOverviewTab.vue';
+
+const TerminalTab = defineAsyncComponent(() => import('./workspace/TerminalTab.vue'));
 
 const emit = defineEmits<{
   (e: 'close'): void;
@@ -118,8 +119,9 @@ watch(
           />
 
           <TerminalTab
-            v-else-if="activeTab === 'terminal'"
+            v-show="activeTab === 'terminal'"
             :conversationId="conversationId ?? null"
+            :visible="open && activeTab === 'terminal'"
             :entries="entries"
             :currentTurnToolEntries="currentTurnToolEntries"
           />

@@ -73,6 +73,21 @@ export type ShellCommandResult = {
   pid?: number | null;
 };
 
+export type UserTerminalInfo = {
+  conversationId?: string | null;
+  sessionId: string;
+  cwd: string;
+};
+
+export type UserTerminalOutputEvent = {
+  conversationId?: string | null;
+  sessionId: string;
+  kind: "output" | "error" | "exit";
+  data?: string | null;
+  exitCode?: number | null;
+  error?: string | null;
+};
+
 export type LiveChatTurnStatus = {
   conversationId: string;
   state: "running" | "completed" | "needs_user_input" | "cancelled" | "stop_hook_prevented" | "error";
@@ -243,6 +258,44 @@ export async function executeShellCommandForConversation(
     command,
     timeoutMs: options?.timeoutMs,
     background: options?.background,
+  });
+}
+
+export async function startUserTerminal(
+  conversationId: string | null,
+  size: { rows?: number; cols?: number } = {},
+): Promise<UserTerminalInfo> {
+  return invoke<UserTerminalInfo>("user_terminal_start", {
+    conversationId,
+    rows: size.rows,
+    cols: size.cols,
+  });
+}
+
+export async function writeUserTerminal(
+  conversationId: string | null,
+  data: string,
+): Promise<void> {
+  await invoke("user_terminal_write", {
+    conversationId,
+    data,
+  });
+}
+
+export async function resizeUserTerminal(
+  conversationId: string | null,
+  size: { rows?: number; cols?: number },
+): Promise<void> {
+  await invoke("user_terminal_resize", {
+    conversationId,
+    rows: size.rows,
+    cols: size.cols,
+  });
+}
+
+export async function stopUserTerminal(conversationId: string | null): Promise<void> {
+  await invoke("user_terminal_stop", {
+    conversationId,
   });
 }
 

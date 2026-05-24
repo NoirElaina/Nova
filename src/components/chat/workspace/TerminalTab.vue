@@ -1,50 +1,53 @@
 <script setup lang="ts">
-import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
+import { computed, nextTick, onBeforeUnmount, ref, watch } from "vue";
+import { listen, type UnlistenFn } from "@tauri-apps/api/event";
+import { FitAddon } from "@xterm/addon-fit";
+import { Terminal } from "@xterm/xterm";
+import "@xterm/xterm/css/xterm.css";
 import { Button } from "@/components/ui/button";
-import type { ToolExecutionEntry } from "../../../lib/chat-types";
 import {
-  executeShellCommandForConversation,
-  getShellSessionStatus,
-  resetShellSessionForConversation,
-  type ShellCommandResult,
-  type ShellSessionStatus,
+  resizeUserTerminal,
+  startUserTerminal,
+  stopUserTerminal,
+  writeUserTerminal,
+  type UserTerminalOutputEvent,
 } from "../../../features/chat/services/chat-api";
+import type { ToolExecutionEntry } from "../../../lib/chat-types";
 import { emitToast } from "../../../lib/toast";
+
+const USER_TERMINAL_EVENT = "user-terminal-output";
 
 const props = defineProps<{
   conversationId: string | null;
+  visible: boolean;
   entries: ToolExecutionEntry[];
   currentTurnToolEntries?: ToolExecutionEntry[];
 }>();
 
-type TerminalSource = "agent" | "user";
-type TerminalStatus = "running" | "completed" | "error" | "cancelled";
+type TerminalPane = "user" | "agent";
 
-type TerminalEntry = {
-  id: string;
-  source: TerminalSource;
-  command: string;
-  result: string;
-  stderr?: string;
-  status: TerminalStatus;
-  startedAt: number;
-  finishedAt?: number;
-  cwd?: string | null;
-  exitCode?: number | null;
-};
+const terminalHostRef = ref<HTMLDivElement | null>(null);
+const sessionId = ref<string | null>(null);
+const cwd = ref("workspace");
+const isStarting = ref(false);
+const error = ref("");
+const activeConversationKey = ref<string | null>(null);
+const activePane = ref<TerminalPane>("user");
 
-const commandText = ref("");
-const isLoading = ref(false);
-const isExecutingUserCommand = ref(false);
-const status = ref<ShellSessionStatus | null>(null);
-const localEntries = ref<TerminalEntry[]>([]);
-const terminalBodyRef = ref<HTMLElement | null>(null);
-const commandInputRef = ref<HTMLInputElement | null>(null);
-const clearedAt = ref(0);
-let refreshTimer: ReturnType<typeof setInterval> | undefined;
+let terminal: Terminal | null = null;
+let fitAddon: FitAddon | null = null;
+let unlistenTerminal: UnlistenFn | null = null;
+let resizeObserver: ResizeObserver | null = null;
+let inputDisposable: { dispose: () => void } | null = null;
+let resizeTimer: number | null = null;
 
-const isClearCommand = (command: string) =>
-  ["cls", "clear", "clear-host"].includes(command.trim().toLowerCase());
+const tabTitle = computed(() => {
+  const parts = cwd.value.split(/[\\/]/).filter(Boolean);
+  const tail = parts.length ? parts[parts.length - 1] : "";
+  return tail || cwd.value || "workspace";
+});
+
+const normalizedConversationId = () => props.conversationId?.trim() || null;
 
 const isShellToolName = (toolName: string) => {
   const normalized = toolName.trim().toLowerCase();
@@ -61,9 +64,7 @@ const extractShellCommand = (entry: ToolExecutionEntry) => {
   }
 
   const input = entry.input.trim();
-  if (!input) {
-    return entry.toolName;
-  }
+  if (!input) return entry.toolName;
 
   try {
     const parsed = JSON.parse(input) as { command?: unknown; cmd?: unknown; script?: unknown };
@@ -78,243 +79,264 @@ const extractShellCommand = (entry: ToolExecutionEntry) => {
   return input;
 };
 
-const combinedAgentEntries = computed(() => {
+const formatShellResult = (entry: ToolExecutionEntry) => {
+  if (entry.status === "running") return "running...";
+  if (entry.status === "cancelled") return "cancelled";
+
+  const raw = entry.result.trim();
+  if (!raw) return "";
+
+  try {
+    const parsed = JSON.parse(raw) as {
+      stdout?: unknown;
+      stderr?: unknown;
+      output?: unknown;
+      error?: unknown;
+    };
+    const stderr = typeof parsed.stderr === "string" ? parsed.stderr.trim() : "";
+    const stdout =
+      typeof parsed.stdout === "string"
+        ? parsed.stdout.trim()
+        : typeof parsed.output === "string"
+          ? parsed.output.trim()
+          : "";
+    const error = typeof parsed.error === "string" ? parsed.error.trim() : "";
+    return [stderr, stdout, error].filter(Boolean).join("\n");
+  } catch {
+    return raw;
+  }
+};
+
+const aiTerminalEntries = computed(() => {
   const byId = new Map<string, ToolExecutionEntry>();
   for (const entry of props.entries) {
-    if (isShellToolName(entry.toolName)) {
-      byId.set(entry.id, entry);
-    }
+    if (isShellToolName(entry.toolName)) byId.set(entry.id, entry);
   }
   for (const entry of props.currentTurnToolEntries ?? []) {
-    if (isShellToolName(entry.toolName)) {
-      byId.set(entry.id, entry);
-    }
+    if (isShellToolName(entry.toolName)) byId.set(entry.id, entry);
   }
   return Array.from(byId.values()).sort((a, b) => a.startedAt - b.startedAt);
 });
 
-const agentTerminalEntries = computed<TerminalEntry[]>(() =>
-  combinedAgentEntries.value.map((entry) => ({
-    id: `agent-${entry.id}`,
-    source: "agent",
-    command: extractShellCommand(entry),
-    result: entry.result,
-    status: entry.status,
-    startedAt: entry.startedAt,
-    finishedAt: entry.finishedAt,
-  })),
-);
+const aiTerminalCount = computed(() => aiTerminalEntries.value.length);
 
-const rawTerminalEntries = computed(() =>
-  [...agentTerminalEntries.value, ...localEntries.value].sort((a, b) => a.startedAt - b.startedAt),
-);
-
-const terminalEntries = computed(() => {
-  const latestClearAt = rawTerminalEntries.value.reduce(
-    (latest, entry) => (isClearCommand(entry.command) ? Math.max(latest, entry.startedAt) : latest),
-    clearedAt.value,
-  );
-  return rawTerminalEntries.value.filter(
-    (entry) => entry.startedAt > latestClearAt && !isClearCommand(entry.command),
-  );
-});
-
-const hasRunningEntry = computed(() =>
-  terminalEntries.value.some((entry) => entry.status === "running"),
-);
-
-const currentCwd = computed(() => {
-  const latestWithCwd = [...terminalEntries.value].reverse().find((entry) => entry.cwd);
-  return latestWithCwd?.cwd || status.value?.cwd || "Nova";
-});
-
-const shellName = computed(() => {
-  if (navigator.userAgent.toLowerCase().includes("windows")) {
-    return "PowerShell";
-  }
-  return "Shell";
-});
-
-const tabTitle = computed(() => {
-  const cwd = currentCwd.value;
-  if (!cwd) return shellName.value;
-  return cwd;
-});
-
-const terminalBanner = computed(() => {
-  if (navigator.userAgent.toLowerCase().includes("windows")) {
-    return ["PowerShell 7", "Copyright (c) Microsoft Corporation. 保留所有权利。"];
-  }
-  return ["Nova shell session"];
-});
-
-const formatPrompt = (cwd?: string | null) => `${cwd || currentCwd.value}>`;
-
-const formatResult = (entry: TerminalEntry) => {
-  if (entry.status === "running") {
-    return "running...";
-  }
-  if (entry.status === "cancelled") {
-    return "cancelled";
-  }
-  const result = entry.result.trim();
-  const stderr = entry.stderr?.trim() ?? "";
-  if (stderr && result) {
-    return `${stderr}\n${result}`;
-  }
-  if (stderr) {
-    return stderr;
-  }
-  if (result) {
-    return result;
-  }
-  return "";
-};
-
-const scrollToBottom = async () => {
-  await nextTick();
-  const target = terminalBodyRef.value;
-  if (target) {
-    target.scrollTop = target.scrollHeight;
+const switchPane = (pane: TerminalPane) => {
+  activePane.value = pane;
+  if (pane === "user") {
+    void startOrAttach();
+    void nextTick(() => {
+      scheduleResize();
+      terminal?.focus();
+    });
   }
 };
 
-const loadStatus = async () => {
-  isLoading.value = true;
-  try {
-    status.value = await getShellSessionStatus(props.conversationId);
-  } catch (error) {
-    console.error("Failed to load shell session status:", error);
-  } finally {
-    isLoading.value = false;
-  }
-};
+const createTerminal = async () => {
+  if (terminal || !terminalHostRef.value) return;
 
-const applyCommandResult = (entryId: string, result: ShellCommandResult) => {
-  const entry = localEntries.value.find((item) => item.id === entryId);
-  if (!entry) {
-    return;
-  }
-
-  entry.result = result.stdout;
-  entry.stderr = result.stderr;
-  entry.cwd = result.cwd;
-  entry.exitCode = result.exitCode;
-  entry.finishedAt = Date.now();
-
-  if (result.cancelled) {
-    entry.status = "cancelled";
-  } else if (result.timedOut || (typeof result.exitCode === "number" && result.exitCode !== 0)) {
-    entry.status = "error";
-  } else {
-    entry.status = "completed";
-  }
-};
-
-const submitCommand = async () => {
-  const command = commandText.value.trim();
-  if (!command || isExecutingUserCommand.value) {
-    return;
-  }
-
-  commandText.value = "";
-  if (isClearCommand(command)) {
-    clearedAt.value = Date.now();
-    localEntries.value = [];
-    await loadStatus();
-    await scrollToBottom();
-    commandInputRef.value?.focus();
-    return;
-  }
-
-  const entryId = `user-${Date.now()}-${Math.random().toString(36).slice(2)}`;
-  localEntries.value.push({
-    id: entryId,
-    source: "user",
-    command,
-    result: "",
-    status: "running",
-    startedAt: Date.now(),
-    cwd: currentCwd.value,
+  terminal = new Terminal({
+    cursorBlink: true,
+    fontFamily: '"Cascadia Mono", "JetBrains Mono", Consolas, monospace',
+    fontSize: 13,
+    lineHeight: 1.18,
+    scrollback: 6000,
+    convertEol: false,
+    theme: {
+      background: "#ffffff",
+      foreground: "#111827",
+      cursor: "#111827",
+      selectionBackground: "#dbeafe",
+      black: "#111827",
+      blue: "#2563eb",
+      cyan: "#0891b2",
+      green: "#059669",
+      magenta: "#7c3aed",
+      red: "#dc2626",
+      white: "#e5e7eb",
+      yellow: "#92400e",
+      brightBlack: "#64748b",
+      brightBlue: "#1d4ed8",
+      brightCyan: "#0e7490",
+      brightGreen: "#047857",
+      brightMagenta: "#6d28d9",
+      brightRed: "#b91c1c",
+      brightWhite: "#111827",
+      brightYellow: "#78350f",
+    },
   });
 
-  isExecutingUserCommand.value = true;
-  await scrollToBottom();
+  fitAddon = new FitAddon();
+  terminal.loadAddon(fitAddon);
+  terminal.open(terminalHostRef.value);
 
-  try {
-    const result = await executeShellCommandForConversation(props.conversationId, command, {
-      timeoutMs: 300_000,
+  inputDisposable = terminal.onData((data) => {
+    if (!sessionId.value) return;
+    void writeUserTerminal(normalizedConversationId(), data).catch((err) => {
+      error.value = String(err);
     });
-    applyCommandResult(entryId, result);
-    await loadStatus();
-  } catch (error) {
-    const entry = localEntries.value.find((item) => item.id === entryId);
-    if (entry) {
-      entry.status = "error";
-      entry.result = String(error);
-      entry.finishedAt = Date.now();
-    }
-    emitToast({ variant: "error", source: "terminal-tab", message: "命令执行失败。" });
-  } finally {
-    isExecutingUserCommand.value = false;
-    await scrollToBottom();
-    commandInputRef.value?.focus();
+  });
+
+  resizeObserver = new ResizeObserver(() => scheduleResize());
+  resizeObserver.observe(terminalHostRef.value);
+  await nextTick();
+  scheduleResize();
+};
+
+const terminalSize = () => ({
+  rows: terminal?.rows ?? 24,
+  cols: terminal?.cols ?? 80,
+});
+
+const fitTerminal = () => {
+  if (!terminal || !fitAddon || !terminalHostRef.value || !props.visible || activePane.value !== "user") return;
+  try {
+    fitAddon.fit();
+    terminal.scrollToBottom();
+  } catch (err) {
+    console.warn("Failed to fit terminal:", err);
   }
 };
 
-const resetSession = async () => {
-  if (isExecutingUserCommand.value) {
+const scheduleResize = () => {
+  if (resizeTimer !== null) {
+    window.clearTimeout(resizeTimer);
+  }
+  resizeTimer = window.setTimeout(() => {
+    resizeTimer = null;
+    fitTerminal();
+    if (sessionId.value) {
+      void resizeUserTerminal(normalizedConversationId(), terminalSize()).catch((err) => {
+        console.warn("Failed to resize terminal:", err);
+      });
+    }
+  }, 80);
+};
+
+const handleTerminalEvent = (payload: UserTerminalOutputEvent) => {
+  if (!terminal) return;
+  const sameConversation = (payload.conversationId?.trim() || null) === normalizedConversationId();
+  if (payload.sessionId !== sessionId.value) {
+    if (!sessionId.value && sameConversation) {
+      sessionId.value = payload.sessionId;
+    } else {
+      return;
+    }
+  }
+
+  if (payload.kind === "output") {
+    terminal.write(payload.data ?? "");
+    terminal.scrollToBottom();
     return;
   }
 
+  if (payload.kind === "error") {
+    terminal.writeln(`\r\n[terminal error] ${payload.error ?? "unknown error"}`);
+    terminal.scrollToBottom();
+    return;
+  }
+
+  if (payload.kind === "exit") {
+    terminal.writeln("\r\n[terminal exited]");
+    terminal.scrollToBottom();
+    sessionId.value = null;
+  }
+};
+
+const ensureEventListener = async () => {
+  if (unlistenTerminal) return;
+  unlistenTerminal = await listen<UserTerminalOutputEvent>(USER_TERMINAL_EVENT, (event) => {
+    handleTerminalEvent(event.payload);
+  });
+};
+
+const startOrAttach = async () => {
+  if (!props.visible || activePane.value !== "user" || isStarting.value) return;
+  isStarting.value = true;
+  error.value = "";
+
   try {
-    await resetShellSessionForConversation(props.conversationId);
-    localEntries.value.push({
-      id: `system-${Date.now()}`,
-      source: "user",
-      command: "reset_shell_session",
-      result: "session reset",
-      status: "completed",
-      startedAt: Date.now(),
-      finishedAt: Date.now(),
-    });
-    await loadStatus();
-    await scrollToBottom();
-  } catch (error) {
-    console.error("Failed to reset shell session:", error);
-    emitToast({ variant: "error", source: "terminal-tab", message: "重置终端会话失败。" });
+    await nextTick();
+    if (!terminalHostRef.value) return;
+    await createTerminal();
+    await ensureEventListener();
+    fitTerminal();
+    const info = await startUserTerminal(normalizedConversationId(), terminalSize());
+    sessionId.value = info.sessionId;
+    cwd.value = info.cwd;
+    await nextTick();
+    scheduleResize();
+    terminal?.scrollToBottom();
+    terminal?.focus();
+  } catch (err) {
+    error.value = String(err);
+    emitToast({ variant: "error", source: "terminal-tab", message: "启动终端失败。" });
+  } finally {
+    isStarting.value = false;
+  }
+};
+
+const restartTerminal = async () => {
+  if (isStarting.value) return;
+  try {
+    await stopUserTerminal(normalizedConversationId());
+    sessionId.value = null;
+    terminal?.clear();
+    terminal?.reset();
+    await startOrAttach();
+  } catch (err) {
+    error.value = String(err);
+    emitToast({ variant: "error", source: "terminal-tab", message: "重置终端失败。" });
   }
 };
 
 watch(
-  () => props.conversationId,
-  () => {
-    localEntries.value = [];
-    clearedAt.value = 0;
-    void loadStatus();
+  () => [props.visible, props.conversationId] as const,
+  async ([visible]) => {
+    if (!visible) return;
+
+    const nextConversationKey = normalizedConversationId();
+    if (activeConversationKey.value !== nextConversationKey) {
+      terminal?.clear();
+      terminal?.reset();
+      sessionId.value = null;
+      activeConversationKey.value = nextConversationKey;
+    }
+
+    await startOrAttach();
   },
   { immediate: true },
 );
 
 watch(
-  () => terminalEntries.value.map((entry) => `${entry.id}:${entry.status}:${entry.result}`).join("|"),
-  () => {
-    void scrollToBottom();
+  () => props.visible,
+  async (visible) => {
+    if (!visible || activePane.value !== "user") return;
+    await nextTick();
+    scheduleResize();
+    terminal?.scrollToBottom();
+    terminal?.focus();
   },
 );
 
-onMounted(() => {
-  refreshTimer = setInterval(() => {
-    if (hasRunningEntry.value || status.value?.busy) {
-      void loadStatus();
-    }
-  }, 1500);
-  void scrollToBottom();
+watch(activePane, async (pane) => {
+  if (pane !== "user" || !props.visible) return;
+  await nextTick();
+  await startOrAttach();
+  scheduleResize();
+  terminal?.scrollToBottom();
 });
 
 onBeforeUnmount(() => {
-  if (refreshTimer) {
-    clearInterval(refreshTimer);
+  if (resizeTimer !== null) {
+    window.clearTimeout(resizeTimer);
+  }
+  resizeObserver?.disconnect();
+  inputDisposable?.dispose();
+  terminal?.dispose();
+  if (unlistenTerminal) {
+    void Promise.resolve(unlistenTerminal()).catch((err) => {
+      console.warn("Failed to remove terminal listener:", err);
+    });
   }
 });
 </script>
@@ -323,53 +345,77 @@ onBeforeUnmount(() => {
   <div class="flex h-full min-h-0 flex-col bg-white text-black dark:bg-[#1e1e1e] dark:text-[#f3f3f3]">
     <div class="flex h-12 shrink-0 items-center justify-between border-b border-[#e5e7eb] px-3 dark:border-[#333]">
       <div class="flex min-w-0 items-center gap-2">
-        <div class="flex h-8 max-w-[220px] items-center gap-2 rounded-lg bg-[#f4f5f7] px-2.5 text-[13px] text-black dark:bg-[#2a2a2a] dark:text-[#f3f3f3]">
+        <button
+          type="button"
+          class="flex h-8 max-w-[220px] items-center gap-2 rounded-lg px-2.5 text-[13px] transition-colors"
+          :class="activePane === 'user'
+            ? 'bg-[#f4f5f7] text-black dark:bg-[#2a2a2a] dark:text-[#f3f3f3]'
+            : 'text-[#64748b] hover:bg-[#f8f9fa] dark:text-[#94a3b8] dark:hover:bg-[#2a2a2a]'"
+          @click="switchPane('user')"
+        >
           <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
             <path d="M4 5h16a1 1 0 0 1 1 1v12a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V6a1 1 0 0 1 1-1Z" />
             <path d="m7 9 3 3-3 3" />
             <path d="M12 15h5" />
           </svg>
           <span class="truncate">{{ tabTitle }}</span>
-        </div>
+        </button>
+        <button
+          type="button"
+          class="flex h-8 items-center gap-2 rounded-lg px-2.5 text-[13px] transition-colors"
+          :class="activePane === 'agent'
+            ? 'bg-[#f4f5f7] text-black dark:bg-[#2a2a2a] dark:text-[#f3f3f3]'
+            : 'text-[#64748b] hover:bg-[#f8f9fa] dark:text-[#94a3b8] dark:hover:bg-[#2a2a2a]'"
+          @click="switchPane('agent')"
+        >
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M7 8h10" />
+            <path d="M7 12h6" />
+            <path d="M5 4h14a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2H8l-4 3v-3H5a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2Z" />
+          </svg>
+          <span>AI 终端</span>
+          <span class="rounded-full bg-black/5 px-1.5 py-0.5 text-[11px] text-[#64748b] dark:bg-white/10 dark:text-[#cbd5e1]">{{ aiTerminalCount }}</span>
+        </button>
         <Button
+          v-if="activePane === 'user'"
           type="button"
           variant="ghost"
           size="icon-sm"
           class="h-7 w-7 rounded-md text-[#64748b] hover:bg-[#f4f5f7] dark:hover:bg-[#2a2a2a]"
-          title="重置终端会话"
-          @click="resetSession"
+          title="重启终端"
+          :disabled="isStarting"
+          @click="restartTerminal"
         >
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
             <path d="M12 5v14" />
             <path d="M5 12h14" />
           </svg>
         </Button>
+        <Button
+          v-if="activePane === 'user'"
+          type="button"
+          variant="ghost"
+          size="icon-sm"
+          class="h-7 w-7 rounded-md text-[#64748b] hover:bg-[#f4f5f7] dark:hover:bg-[#2a2a2a]"
+          title="滚动到底部"
+          @click="terminal?.scrollToBottom()"
+        >
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M12 5v14" />
+            <path d="m19 12-7 7-7-7" />
+          </svg>
+        </Button>
       </div>
 
       <div class="flex items-center gap-1">
         <Button
+          v-if="activePane === 'user'"
           type="button"
           variant="ghost"
           size="icon-sm"
           class="h-7 w-7 rounded-md text-[#64748b] hover:bg-[#f4f5f7] dark:hover:bg-[#2a2a2a]"
-          title="刷新状态"
-          :disabled="isLoading"
-          @click="loadStatus"
-        >
-          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
-            <path d="M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16" />
-            <path d="M3 21v-5h5" />
-            <path d="M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8" />
-            <path d="M16 8h5V3" />
-          </svg>
-        </Button>
-        <Button
-          type="button"
-          variant="ghost"
-          size="icon-sm"
-          class="h-7 w-7 rounded-md text-[#64748b] hover:bg-[#f4f5f7] dark:hover:bg-[#2a2a2a]"
-          title="聚焦输入"
-          @click="commandInputRef?.focus()"
+          title="适配尺寸"
+          @click="scheduleResize"
         >
           <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
             <path d="M8 3H5a2 2 0 0 0-2 2v3" />
@@ -381,44 +427,47 @@ onBeforeUnmount(() => {
       </div>
     </div>
 
+    <div v-if="error" class="border-b border-rose-100 bg-rose-50 px-3 py-2 text-xs text-rose-700 dark:border-rose-950/50 dark:bg-rose-950/30 dark:text-rose-200">
+      {{ error }}
+    </div>
+
     <div
-      ref="terminalBodyRef"
-      class="min-h-0 flex-1 overflow-y-auto px-4 py-2 font-mono text-[13px] leading-[1.45] text-black dark:text-[#f3f3f3]"
-      @click="commandInputRef?.focus()"
+      ref="terminalHostRef"
+      v-show="activePane === 'user'"
+      class="min-h-0 flex-1 overflow-hidden px-2 py-1"
+      @click="terminal?.focus()"
+    />
+
+    <div
+      v-show="activePane === 'agent'"
+      class="min-h-0 flex-1 overflow-y-auto bg-white px-4 py-3 font-mono text-[13px] leading-[1.5] text-[#111827] dark:bg-[#1e1e1e] dark:text-[#f3f3f3]"
     >
-      <div class="mb-5 whitespace-pre-wrap">
-        <div v-for="line in terminalBanner" :key="line">{{ line }}</div>
+      <div v-if="aiTerminalEntries.length === 0" class="flex h-full items-center justify-center text-center font-sans text-sm text-[#64748b] dark:text-[#94a3b8]">
+        AI 还没有执行终端命令。
       </div>
-
-      <div v-for="entry in terminalEntries" :key="entry.id" class="mb-5 whitespace-pre-wrap break-words">
-        <div class="whitespace-pre-wrap break-words text-black dark:text-[#f3f3f3]">
-          <span class="text-[#6b7280] dark:text-[#9ca3af]">{{ formatPrompt(entry.cwd) }}</span>{{ entry.command }}
-        </div>
-        <div
-          v-if="formatResult(entry)"
-          class="mt-1 whitespace-pre-wrap break-words pl-0"
-          :class="entry.status === 'error' ? 'text-[#b91c1c] dark:text-[#fca5a5]' : 'text-black dark:text-[#f3f3f3]'"
+      <div v-else class="space-y-5">
+        <section
+          v-for="entry in aiTerminalEntries"
+          :key="entry.id"
+          class="whitespace-pre-wrap break-words"
         >
-          {{ formatResult(entry) }}
-        </div>
+          <div class="flex items-center gap-2 font-sans text-xs text-[#64748b] dark:text-[#94a3b8]">
+            <span class="rounded-md bg-[#f4f5f7] px-1.5 py-0.5 dark:bg-[#2a2a2a]">{{ entry.toolName }}</span>
+            <span>{{ entry.status === 'running' ? '执行中' : entry.status === 'completed' ? '已完成' : entry.status === 'cancelled' ? '已取消' : '失败' }}</span>
+          </div>
+          <div class="mt-1">
+            <span class="text-[#64748b] dark:text-[#9ca3af]">AI&gt;</span>
+            <span>{{ extractShellCommand(entry) }}</span>
+          </div>
+          <div
+            v-if="formatShellResult(entry)"
+            class="mt-1 border-l border-[#e5e7eb] pl-3 dark:border-[#333]"
+            :class="entry.status === 'error' ? 'text-[#b91c1c] dark:text-[#fca5a5]' : 'text-[#111827] dark:text-[#f3f3f3]'"
+          >
+            {{ formatShellResult(entry) }}
+          </div>
+        </section>
       </div>
-
-      <form
-        class="mt-1 flex min-w-0 items-center gap-0"
-        @submit.prevent="submitCommand"
-        @click.stop
-      >
-        <span class="shrink-0 text-[#6b7280] dark:text-[#9ca3af]">{{ formatPrompt(currentCwd) }}</span>
-        <input
-          ref="commandInputRef"
-          v-model="commandText"
-          class="min-w-0 flex-1 bg-transparent pl-0.5 text-black outline-none dark:text-[#f3f3f3]"
-          :disabled="isExecutingUserCommand"
-          placeholder=""
-          spellcheck="false"
-        />
-        <span v-if="isExecutingUserCommand" class="shrink-0 font-sans text-[12px] text-[#64748b] dark:text-[#aaa]">执行中</span>
-      </form>
     </div>
   </div>
 </template>

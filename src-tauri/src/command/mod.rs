@@ -16,6 +16,8 @@ pub mod skill;
 pub mod rag;
 // 持久终端会话状态命令入口。
 pub mod shell;
+// 用户可交互真 PTY 终端命令入口。
+pub mod user_terminal;
 // AGENTS.md 配置读写命令入口。
 pub mod agent_config;
 // 定时任务（Cron）相关命令入口。

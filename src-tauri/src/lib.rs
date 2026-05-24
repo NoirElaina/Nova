@@ -112,6 +112,10 @@ pub fn run() {
             command::shell::get_shell_session_status,
             command::shell::reset_shell_session_for_conversation,
             command::shell::execute_shell_command_for_conversation,
+            command::user_terminal::user_terminal_start,
+            command::user_terminal::user_terminal_write,
+            command::user_terminal::user_terminal_resize,
+            command::user_terminal::user_terminal_stop,
             command::skill::list_skills,
             command::skill::delete_skill,
             command::cron::list_scheduled_tasks,
@@ -153,6 +157,7 @@ pub fn run() {
                 tauri::async_runtime::block_on(
                     crate::llm::services::shell_sessions::close_all_sessions(),
                 );
+                crate::llm::services::user_terminal::close_all_sessions();
             }
         }
     });

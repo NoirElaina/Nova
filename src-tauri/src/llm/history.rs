@@ -1009,6 +1009,7 @@ pub async fn clear_history(app: &AppHandle, conversation_id: Option<String>) -> 
         crate::command::rag::rag_remove_conversation_documents(app, &id)?;
         crate::command::workspace::remove_conversation_workspace(app, &id)?;
         crate::llm::services::shell_sessions::close_session(Some(&id)).await;
+        let _ = crate::llm::services::user_terminal::stop_session(Some(&id));
     } else {
         sqlx::query("DELETE FROM conversation_messages")
             .execute(&mut *tx)
@@ -1043,6 +1044,7 @@ pub async fn clear_history(app: &AppHandle, conversation_id: Option<String>) -> 
         crate::command::rag::rag_remove_all_conversation_documents(app)?;
         crate::command::workspace::clear_conversation_workspaces(app)?;
         crate::llm::services::shell_sessions::close_all_sessions().await;
+        crate::llm::services::user_terminal::close_all_sessions();
     }
 
     Ok(())
@@ -1092,6 +1094,7 @@ pub async fn delete_conversation(app: &AppHandle, conversation_id: &str) -> Resu
     crate::command::rag::rag_remove_conversation_documents(app, conversation_id)?;
     crate::command::workspace::remove_conversation_workspace(app, conversation_id)?;
     crate::llm::services::shell_sessions::close_session(Some(conversation_id)).await;
+    let _ = crate::llm::services::user_terminal::stop_session(Some(conversation_id));
 
     Ok(())
 }

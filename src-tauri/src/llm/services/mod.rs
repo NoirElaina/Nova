@@ -7,5 +7,6 @@ pub mod lsp;
 pub mod mcp;
 pub mod mcp_tools;
 pub mod memory_dir;
+pub mod search;
 pub mod shell_sessions;
 pub mod tools;

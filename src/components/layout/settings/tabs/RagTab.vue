@@ -16,9 +16,6 @@ import { emitToast } from '@/lib/toast'
 
 type RagSettings = {
   embeddingModel: string
-  chunkSize: number
-  chunkOverlap: number
-  maxFileSizeKb: number
 }
 
 type AppSettings = {
@@ -57,22 +54,12 @@ type RagUpsertResult = {
   totalChars: number
 }
 
-const DEFAULT_RAG_SETTINGS: RagSettings = {
-  embeddingModel: '',
-  chunkSize: 900,
-  chunkOverlap: 120,
-  maxFileSizeKb: 2048,
-}
-
 const MAX_FILES_PER_BATCH = 20
 const SUPPORTED_EXTENSIONS_TEXT = describeSupportedDocumentExtensions()
 const FILE_INPUT_ACCEPT = buildDocumentAcceptAttribute()
 
 const textInput = ref('')
 const embeddingModel = ref('')
-const chunkSizeInput = ref(String(DEFAULT_RAG_SETTINGS.chunkSize))
-const chunkOverlapInput = ref(String(DEFAULT_RAG_SETTINGS.chunkOverlap))
-const maxFileSizeKbInput = ref(String(DEFAULT_RAG_SETTINGS.maxFileSizeKb))
 
 const documents = ref<RagDocumentMeta[]>([])
 const stats = ref<RagStats>({
@@ -100,29 +87,12 @@ const setStatus = (message: string, type: typeof statusType.value = 'muted') => 
   statusType.value = type
 }
 
-const parsePositiveInt = (raw: string, fallback: number) => {
-  const parsed = Number.parseInt(raw, 10)
-  if (!Number.isFinite(parsed) || parsed <= 0) {
-    return fallback
-  }
-  return parsed
-}
-
 const normalizeRagSettings = (rag: Partial<RagSettings> | undefined): RagSettings => {
-  const chunkSize = parsePositiveInt(String(rag?.chunkSize ?? ''), DEFAULT_RAG_SETTINGS.chunkSize)
-  const chunkOverlap = parsePositiveInt(String(rag?.chunkOverlap ?? ''), DEFAULT_RAG_SETTINGS.chunkOverlap)
-  const maxFileSizeKb = parsePositiveInt(String(rag?.maxFileSizeKb ?? ''), DEFAULT_RAG_SETTINGS.maxFileSizeKb)
-
   return {
     embeddingModel: String(rag?.embeddingModel ?? '').trim(),
-    chunkSize,
-    chunkOverlap: chunkOverlap >= chunkSize ? Math.max(chunkSize - 1, 1) : chunkOverlap,
-    maxFileSizeKb,
   }
 }
 
-const maxFileSizeKb = computed(() => parsePositiveInt(maxFileSizeKbInput.value, DEFAULT_RAG_SETTINGS.maxFileSizeKb))
-const maxFileSizeBytes = computed(() => maxFileSizeKb.value * 1024)
 const isEmbeddingModelMissing = computed(() => embeddingModel.value.trim().length === 0)
 const lastUpdatedText = computed(() => {
   if (!stats.value.lastUpdatedAt) {
@@ -150,22 +120,6 @@ const ensureEmbeddingReady = () => {
 const validateRagInputs = (): { ok: true; value: RagSettings } | { ok: false } => {
   const normalized: RagSettings = {
     embeddingModel: embeddingModel.value.trim(),
-    chunkSize: parsePositiveInt(chunkSizeInput.value, DEFAULT_RAG_SETTINGS.chunkSize),
-    chunkOverlap: parsePositiveInt(chunkOverlapInput.value, DEFAULT_RAG_SETTINGS.chunkOverlap),
-    maxFileSizeKb: parsePositiveInt(maxFileSizeKbInput.value, DEFAULT_RAG_SETTINGS.maxFileSizeKb),
-  }
-
-  if (normalized.chunkSize < 100 || normalized.chunkSize > 8000) {
-    setStatus('Chunk Size 需在 100 到 8000 之间。', 'error')
-    return { ok: false }
-  }
-  if (normalized.chunkOverlap >= normalized.chunkSize) {
-    setStatus('Chunk Overlap 必须小于 Chunk Size。', 'error')
-    return { ok: false }
-  }
-  if (normalized.maxFileSizeKb < 64 || normalized.maxFileSizeKb > 10240) {
-    setStatus('单文件大小上限需在 64KB 到 10240KB 之间。', 'error')
-    return { ok: false }
   }
 
   return { ok: true, value: normalized }
@@ -175,9 +129,6 @@ const loadSettings = async () => {
   const settings = await invoke<AppSettings>('get_settings')
   const rag = normalizeRagSettings(settings.rag)
   embeddingModel.value = rag.embeddingModel
-  chunkSizeInput.value = String(rag.chunkSize)
-  chunkOverlapInput.value = String(rag.chunkOverlap)
-  maxFileSizeKbInput.value = String(rag.maxFileSizeKb)
 }
 
 const loadKnowledgeBase = async () => {
@@ -314,14 +265,6 @@ const importFiles = async () => {
     const payload: Array<{ sourceName: string; sourceType: string; mimeType?: string; content: string }> = []
 
     for (const file of selectedFiles.value) {
-      if (file.size > maxFileSizeBytes.value) {
-        frontendRejected.push({
-          sourceName: file.name,
-          reason: `文件超过大小限制 ${maxFileSizeKb.value}KB`,
-        })
-        continue
-      }
-
       let parsed
       try {
         parsed = await parseDocumentUploadFile(file)
@@ -342,7 +285,8 @@ const importFiles = async () => {
     }
 
     if (payload.length === 0) {
-      setStatus('没有可导入的文件，请检查类型、大小和内容。', 'error')
+      const reason = frontendRejected[0]?.reason
+      setStatus(reason ? `没有可导入的文件：${reason}` : '没有可导入的文件，请检查类型和内容。', 'error')
       return
     }
 
@@ -432,7 +376,7 @@ defineExpose({ refresh })
     <Card class="border-[#ebe9e3] dark:border-[#3b3a37] py-5 gap-4">
       <CardHeader class="pb-2">
         <CardTitle class="text-[15px] text-[#2a2820] dark:text-[#e8e3db]">RAG 参数设置</CardTitle>
-        <CardDescription>Embedding 模型为空时将无法导入文档。</CardDescription>
+        <CardDescription>只需要指定 Embedding 模型；分块、重叠和文件大小上限由后端策略统一管理。</CardDescription>
       </CardHeader>
       <CardContent class="space-y-3">
         <div class="space-y-1.5">
@@ -443,19 +387,8 @@ defineExpose({ refresh })
             class="h-9 border-[#ddd9d0] dark:border-[#44423f]"
           />
         </div>
-        <div class="grid grid-cols-1 md:grid-cols-3 gap-3">
-          <div class="space-y-1.5">
-            <Label class="text-[12px] text-[#6b6456] dark:text-[#a09e99]">Chunk Size</Label>
-            <Input v-model="chunkSizeInput" type="number" min="100" max="8000" class="h-9" />
-          </div>
-          <div class="space-y-1.5">
-            <Label class="text-[12px] text-[#6b6456] dark:text-[#a09e99]">Chunk Overlap</Label>
-            <Input v-model="chunkOverlapInput" type="number" min="1" max="7999" class="h-9" />
-          </div>
-          <div class="space-y-1.5">
-            <Label class="text-[12px] text-[#6b6456] dark:text-[#a09e99]">文件大小上限 (KB)</Label>
-            <Input v-model="maxFileSizeKbInput" type="number" min="64" max="10240" class="h-9" />
-          </div>
+        <div class="rounded-md border border-[#e5e7eb] bg-[#f8fafc] px-3 py-2 text-[12px] leading-5 text-[#64748b] dark:border-[#333] dark:bg-[#252525] dark:text-[#aaa]">
+          Nova 会自动把文档写入 SQLite，建立 FTS5 全文索引和 sqlite-vec 向量索引；前端不再暴露 chunkSize / chunkOverlap / maxFileSizeKb。
         </div>
         <div
           v-if="isEmbeddingModelMissing"
@@ -515,7 +448,7 @@ defineExpose({ refresh })
         </div>
 
         <div class="text-[12px] text-[#8a8478] dark:text-[#a09e99]">
-          单次最多 {{ MAX_FILES_PER_BATCH }} 个文件，单文件上限 {{ maxFileSizeKb }}KB，支持扩展名：{{ SUPPORTED_EXTENSIONS_TEXT }}
+          单次最多 {{ MAX_FILES_PER_BATCH }} 个文件，大小限制由后端统一校验，支持扩展名：{{ SUPPORTED_EXTENSIONS_TEXT }}
         </div>
 
         <div v-if="selectedFiles.length > 0" class="rounded-lg border border-[#ebe9e3] dark:border-[#3b3a37] p-2.5 space-y-1.5">

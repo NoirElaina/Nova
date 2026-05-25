@@ -101,9 +101,9 @@ pub async fn execute_with_app(app: &AppHandle, input: Value) -> String {
         },
         "rag": {
             "embeddingModelConfigured": !settings.rag.embedding_model.trim().is_empty(),
-            "chunkSize": settings.rag.chunk_size,
-            "chunkOverlap": settings.rag.chunk_overlap,
-            "maxFileSizeKb": settings.rag.max_file_size_kb
+            "storage": "sqlite",
+            "textRetrieval": "sqlite_fts5",
+            "vectorRetrieval": "sqlite_vec"
         },
         "ui": {
             "language": settings.ui_language,

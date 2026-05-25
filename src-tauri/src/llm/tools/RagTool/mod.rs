@@ -58,7 +58,7 @@ pub async fn execute_with_app(
         .to_ascii_lowercase();
 
     match action.as_str() {
-        "stats" => match crate::command::rag::rag_get_stats(app.clone()) {
+        "stats" => match crate::command::rag::rag_get_stats(app.clone()).await {
             Ok(stats) => json!({
                 "ok": true,
                 "action": "stats",
@@ -98,8 +98,10 @@ pub async fn execute_with_app(
                     query.to_string(),
                     limit,
                 )
+                .await
             } else {
                 crate::command::rag::rag_search_documents(app.clone(), query.to_string(), limit)
+                    .await
             };
 
             match result {
@@ -128,7 +130,13 @@ pub async fn execute_with_app(
                 .to_string();
             };
 
-            match crate::command::rag::rag_read_document(app.clone(), document_id.to_string()) {
+            match crate::command::rag::rag_read_document(
+                app.clone(),
+                document_id.to_string(),
+                conversation_id.clone(),
+            )
+            .await
+            {
                 Ok(Some(document)) => json!({
                     "ok": true,
                     "action": "read",
@@ -168,8 +176,10 @@ pub async fn execute_with_app(
                     app.clone(),
                     scope_id.to_string(),
                 )
+                .await
             } else {
                 crate::command::rag::rag_list_documents(app.clone())
+                    .await
             };
 
             let docs = match docs {
@@ -187,7 +197,13 @@ pub async fn execute_with_app(
                 .to_string();
             };
 
-            match crate::command::rag::rag_read_document(app.clone(), meta.id.clone()) {
+            match crate::command::rag::rag_read_document(
+                app.clone(),
+                meta.id.clone(),
+                conversation_id.clone(),
+            )
+            .await
+            {
                 Ok(Some(document)) => json!({
                     "ok": true,
                     "action": "fetch",

@@ -1,580 +1,60 @@
-use chrono::Utc;
-use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
-use std::path::PathBuf;
-use tauri::{AppHandle, Manager};
-use uuid::Uuid;
+pub use crate::llm::services::rag::types::{
+    RagDocumentContent, RagDocumentInput, RagDocumentMeta, RagRejectedItem, RagSearchHit, RagStats,
+    RagUpsertResult,
+};
+
+use tauri::AppHandle;
 
 use crate::llm::utils::error_event::report_backend_result;
 
-const RAG_STORE_VERSION: u32 = 2;
-const MAX_DOCUMENT_CHARS: usize = usize::MAX;
-const MAX_BATCH_SIZE: usize = 200;
-const CHUNK_SIZE: usize = 800;
-
-fn default_store_version() -> u32 {
-    RAG_STORE_VERSION
-}
-
-#[derive(Debug, Serialize, Deserialize, Clone)]
-#[serde(rename_all = "camelCase")]
-pub struct RagDocumentInput {
-    pub source_name: String,
-    pub source_type: String,
-    pub mime_type: Option<String>,
-    pub content: String,
-    pub conversation_id: Option<String>,
-}
-
-#[derive(Debug, Serialize, Deserialize, Clone)]
-#[serde(rename_all = "camelCase")]
-struct RagDocument {
-    pub id: String,
-    pub source_name: String,
-    pub source_type: String,
-    pub mime_type: Option<String>,
-    pub conversation_id: Option<String>,
-    pub content: String,
-    pub content_chars: usize,
-    pub checksum: String,
-    pub created_at: i64,
-    pub updated_at: i64,
-    /// All chunks from the same source document share this value (= fnv1a_64 of full content).
-    /// Pre-v2 records: set to id in load_store fixup.
-    #[serde(default)]
-    pub group_id: String,
-    /// 0-based position of this chunk within its group.
-    #[serde(default)]
-    pub chunk_index: u32,
-}
-
-#[derive(Debug, Serialize, Deserialize, Clone)]
-#[serde(rename_all = "camelCase")]
-struct RagStore {
-    #[serde(default = "default_store_version")]
-    pub version: u32,
-    #[serde(default)]
-    pub documents: Vec<RagDocument>,
-}
-
-impl Default for RagStore {
-    fn default() -> Self {
-        Self {
-            version: RAG_STORE_VERSION,
-            documents: Vec::new(),
-        }
-    }
-}
-
-#[derive(Debug, Serialize, Deserialize, Clone)]
-#[serde(rename_all = "camelCase")]
-pub struct RagDocumentMeta {
-    pub id: String,
-    pub source_name: String,
-    pub source_type: String,
-    pub mime_type: Option<String>,
-    pub content_chars: usize,
-    pub preview: String,
-    pub checksum: String,
-    pub created_at: i64,
-    pub updated_at: i64,
-}
-
-#[derive(Debug, Serialize, Deserialize, Clone)]
-#[serde(rename_all = "camelCase")]
-pub struct RagStats {
-    pub document_count: usize,
-    pub total_chars: usize,
-    pub last_updated_at: Option<i64>,
-}
-
-#[derive(Debug, Serialize, Deserialize, Clone)]
-#[serde(rename_all = "camelCase")]
-pub struct RagRejectedItem {
-    pub source_name: String,
-    pub reason: String,
-}
-
-#[derive(Debug, Serialize, Deserialize, Clone)]
-#[serde(rename_all = "camelCase")]
-pub struct RagUpsertResult {
-    pub added: u32,
-    pub updated: u32,
-    pub rejected: Vec<RagRejectedItem>,
-    pub total_documents: usize,
-    pub total_chars: usize,
-}
-
-#[derive(Debug, Serialize, Deserialize, Clone)]
-#[serde(rename_all = "camelCase")]
-pub struct RagSearchHit {
-    pub id: String,
-    pub source_name: String,
-    pub source_type: String,
-    pub mime_type: Option<String>,
-    pub score: u32,
-    pub snippet: String,
-    pub content_chars: usize,
-    pub updated_at: i64,
-}
-
-#[derive(Debug, Serialize, Deserialize, Clone)]
-#[serde(rename_all = "camelCase")]
-pub struct RagDocumentContent {
-    pub id: String,
-    pub source_name: String,
-    pub source_type: String,
-    pub mime_type: Option<String>,
-    pub content: String,
-    pub content_chars: usize,
-    pub checksum: String,
-    pub created_at: i64,
-    pub updated_at: i64,
-}
-
-fn rag_store_path(app: &AppHandle) -> Result<PathBuf, String> {
-    // RAG 数据文件只使用 app_data_dir，不做候选回退路径。
-    app.path()
-        .app_data_dir()
-        .map(|dir| dir.join("rag").join("documents.json"))
-        .map_err(|e| format!("Failed to resolve app_data_dir for RAG store: {}", e))
-}
-
-fn load_store(app: &AppHandle) -> Result<RagStore, String> {
-    let path = rag_store_path(app)?;
-    if !path.exists() {
-        return Ok(RagStore::default());
-    }
-
-    let content = std::fs::read_to_string(&path).map_err(|e| e.to_string())?;
-    if content.trim().is_empty() {
-        return Ok(RagStore::default());
-    }
-
-    let mut store = serde_json::from_str::<RagStore>(&content)
-        .map_err(|e| format!("Failed to parse RAG store: {}", e))?;
-    if store.version == 0 {
-        store.version = RAG_STORE_VERSION;
-    }
-    // Migrate pre-v2 records: set group_id = id if empty (legacy single-chunk documents)
-    for doc in &mut store.documents {
-        if doc.group_id.is_empty() {
-            doc.group_id = doc.id.clone();
-        }
-    }
-    Ok(store)
-}
-
-fn save_store(app: &AppHandle, store: &RagStore) -> Result<(), String> {
-    let path = rag_store_path(app)?;
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
-    }
-
-    let content = serde_json::to_string_pretty(store).map_err(|e| e.to_string())?;
-    std::fs::write(path, content).map_err(|e| e.to_string())
-}
-
-fn normalize_content(raw: &str) -> String {
-    raw.replace("\r\n", "\n").trim().to_string()
-}
-
-fn normalize_source_type(raw: &str) -> String {
-    let key = raw.trim().to_ascii_lowercase();
-    if key.is_empty() {
-        "text".to_string()
-    } else {
-        key
-    }
-}
-
-fn normalize_optional_string(value: Option<String>) -> Option<String> {
-    value.and_then(|v| {
-        let trimmed = v.trim().to_string();
-        if trimmed.is_empty() {
-            None
-        } else {
-            Some(trimmed)
-        }
-    })
-}
-
-fn normalize_optional_conversation_id(value: Option<String>) -> Option<String> {
-    normalize_optional_string(value)
-}
-
-fn normalize_source_name(raw: &str, fallback_index: usize) -> String {
-    let trimmed = raw.trim();
-    if trimmed.is_empty() {
-        format!("document-{}", fallback_index + 1)
-    } else {
-        trimmed.to_string()
-    }
-}
-
-fn preview_text(content: &str) -> String {
-    let compact = content.split_whitespace().collect::<Vec<_>>().join(" ");
-
-    let mut chars = compact.chars();
-    let preview: String = chars.by_ref().take(160).collect();
-    if chars.next().is_some() {
-        format!("{}...", preview)
-    } else {
-        preview
-    }
-}
-
-fn fnv1a_64_hex(input: &str) -> String {
-    const OFFSET_BASIS: u64 = 0xcbf29ce484222325;
-    const PRIME: u64 = 0x100000001b3;
-
-    let mut hash = OFFSET_BASIS;
-    for byte in input.as_bytes() {
-        hash ^= *byte as u64;
-        hash = hash.wrapping_mul(PRIME);
-    }
-    format!("{:016x}", hash)
-}
-
-fn split_into_chunks(content: &str) -> Vec<String> {
-    let chars: Vec<char> = content.chars().collect();
-    let total = chars.len();
-    if total <= CHUNK_SIZE {
-        return vec![content.to_string()];
-    }
-
-    let mut chunks = Vec::new();
-    let mut start = 0usize;
-    while start < total {
-        let end = (start + CHUNK_SIZE).min(total);
-        let break_at = if end < total {
-            let mut bp = end;
-            while bp > start && !chars[bp - 1].is_whitespace() {
-                bp -= 1;
-            }
-            if bp > start {
-                bp
-            } else {
-                end
-            }
-        } else {
-            end
-        };
-        let chunk: String = chars[start..break_at].iter().collect();
-        let trimmed = chunk.trim().to_string();
-        if !trimmed.is_empty() {
-            chunks.push(trimmed);
-        }
-        start = break_at;
-        while start < total && chars[start].is_whitespace() {
-            start += 1;
-        }
-    }
-    if chunks.is_empty() {
-        chunks.push(content.to_string());
-    }
-    chunks
-}
-
-fn group_chunks_by_source(docs: &[RagDocument]) -> Vec<RagDocumentMeta> {
-    let mut by_group: HashMap<&str, Vec<&RagDocument>> = HashMap::new();
-    for doc in docs {
-        by_group.entry(doc.group_id.as_str()).or_default().push(doc);
-    }
-    let mut metas = Vec::with_capacity(by_group.len());
-    for (group_id, mut chunks) in by_group {
-        chunks.sort_by_key(|c| c.chunk_index);
-        let first = chunks[0];
-        let total_chars: usize = chunks.iter().map(|c| c.content_chars).sum();
-        let created_at = chunks.iter().map(|c| c.created_at).min().unwrap_or(0);
-        let updated_at = chunks.iter().map(|c| c.updated_at).max().unwrap_or(0);
-        metas.push(RagDocumentMeta {
-            id: group_id.to_string(),
-            source_name: first.source_name.clone(),
-            source_type: first.source_type.clone(),
-            mime_type: first.mime_type.clone(),
-            content_chars: total_chars,
-            preview: preview_text(&first.content),
-            checksum: first.checksum.clone(),
-            created_at,
-            updated_at,
-        });
-    }
-    metas
-}
-
-fn calculate_stats(docs: &[RagDocument]) -> RagStats {
-    let total_chars = docs.iter().map(|d| d.content_chars).sum::<usize>();
-    let last_updated_at = docs.iter().map(|d| d.updated_at).max();
-    let document_count = {
-        let mut seen = std::collections::HashSet::new();
-        for doc in docs {
-            seen.insert(doc.group_id.as_str());
-        }
-        seen.len()
-    };
-    RagStats {
-        document_count,
-        total_chars,
-        last_updated_at,
-    }
-}
-
-fn split_query_terms(query: &str) -> Vec<String> {
-    query
-        .split_whitespace()
-        .map(|part| part.trim().to_lowercase())
-        .filter(|part| !part.is_empty())
-        .collect::<Vec<_>>()
-}
-
-fn rag_document_matches_scope(doc: &RagDocument, conversation_id: Option<&str>) -> bool {
-    match conversation_id {
-        Some(scope_id) => doc.conversation_id.as_deref() == Some(scope_id),
-        None => doc.conversation_id.is_none(),
-    }
-}
-
-fn rag_search_documents_with_scope(
-    app: AppHandle,
-    query: String,
-    limit: Option<usize>,
-    conversation_id: Option<String>,
-) -> Result<Vec<RagSearchHit>, String> {
-    let query_text = query.trim();
-    if query_text.is_empty() {
-        return Err("query is required".to_string());
-    }
-
-    let terms = split_query_terms(query_text);
-    if terms.is_empty() {
-        return Ok(Vec::new());
-    }
-
-    let scope = normalize_optional_conversation_id(conversation_id);
-    let max_hits = limit.unwrap_or(5).clamp(1, 50);
-    let store = load_store(&app)?;
-
-    // Collect all in-scope chunks
-    let candidates: Vec<&RagDocument> = store
-        .documents
-        .iter()
-        .filter(|doc| rag_document_matches_scope(doc, scope.as_deref()))
-        .collect();
-
-    if candidates.is_empty() {
-        return Ok(Vec::new());
-    }
-
-    let corpus_size = candidates.len();
-
-    // Tokenize each chunk into lowercase words (reused for TF and DF)
-    let tokenized: Vec<Vec<String>> = candidates
-        .iter()
-        .map(|doc| {
-            doc.content
-                .split_whitespace()
-                .map(|w| w.to_lowercase())
-                .collect()
-        })
-        .collect();
-
-    // Average chunk length in terms
-    let avg_doc_terms =
-        tokenized.iter().map(|t| t.len()).sum::<usize>() as f64 / corpus_size as f64;
-
-    // Document frequency per query term (number of chunks containing the term)
-    let mut doc_freq: HashMap<String, usize> = HashMap::new();
-    for term in &terms {
-        let df = tokenized
-            .iter()
-            .filter(|words| words.iter().any(|w| w.contains(term.as_str())))
-            .count();
-        doc_freq.insert(term.clone(), df.max(1));
-    }
-
-    // BM25 parameters
-    const K1: f64 = 1.5;
-    const B: f64 = 0.75;
-
-    let mut scored: Vec<(f64, &RagDocument)> = candidates
-        .iter()
-        .zip(tokenized.iter())
-        .filter_map(|(doc, doc_words)| {
-            let doc_len = doc_words.len() as f64;
-            let source_lower = doc.source_name.to_lowercase();
-            let mut score = 0.0f64;
-
-            for term in &terms {
-                if source_lower.contains(term.as_str()) {
-                    score += 3.0;
-                }
-                let tf = doc_words
-                    .iter()
-                    .filter(|w| w.contains(term.as_str()))
-                    .count() as f64;
-                if tf == 0.0 {
-                    continue;
-                }
-                let df = *doc_freq.get(term).unwrap_or(&1) as f64;
-                let idf = ((corpus_size as f64 - df + 0.5) / (df + 0.5) + 1.0)
-                    .ln()
-                    .max(0.0);
-                let norm_len = if avg_doc_terms > 0.0 {
-                    doc_len / avg_doc_terms
-                } else {
-                    1.0
-                };
-                let norm_tf = tf * (K1 + 1.0) / (tf + K1 * (1.0 - B + B * norm_len));
-                score += idf * norm_tf;
-            }
-
-            if score <= 0.0 {
-                return None;
-            }
-
-            Some((score, *doc))
-        })
-        .collect();
-
-    scored.sort_by(|a, b| {
-        b.0.partial_cmp(&a.0)
-            .unwrap_or(std::cmp::Ordering::Equal)
-            .then_with(|| b.1.updated_at.cmp(&a.1.updated_at))
-    });
-    scored.truncate(max_hits);
-
-    Ok(scored
-        .into_iter()
-        .map(|(score, doc)| RagSearchHit {
-            id: doc.group_id.clone(),
-            source_name: doc.source_name.clone(),
-            source_type: doc.source_type.clone(),
-            mime_type: doc.mime_type.clone(),
-            score: (score * 1000.0).min(u32::MAX as f64) as u32,
-            snippet: doc.content.clone(),
-            content_chars: doc.content_chars,
-            updated_at: doc.updated_at,
-        })
-        .collect())
-}
-
-pub fn rag_search_documents(
+pub async fn rag_search_documents(
     app: AppHandle,
     query: String,
     limit: Option<usize>,
 ) -> Result<Vec<RagSearchHit>, String> {
-    rag_search_documents_with_scope(app, query, limit, None)
+    crate::llm::services::rag::search_documents(app, query, limit).await
 }
 
-pub fn rag_search_conversation_documents(
+pub async fn rag_search_conversation_documents(
     app: AppHandle,
     conversation_id: String,
     query: String,
     limit: Option<usize>,
 ) -> Result<Vec<RagSearchHit>, String> {
-    let normalized_conversation_id = normalize_optional_conversation_id(Some(conversation_id))
-        .ok_or_else(|| "conversation_id is required".to_string())?;
-    rag_search_documents_with_scope(app, query, limit, Some(normalized_conversation_id))
+    crate::llm::services::rag::search_conversation_documents(app, conversation_id, query, limit)
+        .await
 }
 
 #[tauri::command]
-pub fn rag_read_document(
+pub async fn rag_read_document(
     app: AppHandle,
     document_id: String,
+    conversation_id: Option<String>,
 ) -> Result<Option<RagDocumentContent>, String> {
-    let result = (|| {
-        let id = document_id.trim();
-        if id.is_empty() {
-            return Err("document_id is required".to_string());
-        }
-
-        let store = load_store(&app)?;
-        let mut chunks: Vec<RagDocument> = store
-            .documents
-            .into_iter()
-            .filter(|doc| doc.group_id == id)
-            .collect();
-
-        if chunks.is_empty() {
-            return Ok(None);
-        }
-
-        chunks.sort_by_key(|c| c.chunk_index);
-        let first = &chunks[0];
-        let full_content = chunks
-            .iter()
-            .map(|c| c.content.as_str())
-            .collect::<Vec<_>>()
-            .join("\n\n");
-        let total_chars: usize = chunks.iter().map(|c| c.content_chars).sum();
-        let created_at = chunks.iter().map(|c| c.created_at).min().unwrap_or(0);
-        let updated_at = chunks.iter().map(|c| c.updated_at).max().unwrap_or(0);
-
-        Ok(Some(RagDocumentContent {
-            id: id.to_string(),
-            source_name: first.source_name.clone(),
-            source_type: first.source_type.clone(),
-            mime_type: first.mime_type.clone(),
-            content: full_content,
-            content_chars: total_chars,
-            checksum: first.checksum.clone(),
-            created_at,
-            updated_at,
-        }))
-    })();
+    let result =
+        crate::llm::services::rag::read_document(app.clone(), document_id, conversation_id).await;
     report_backend_result(&app, "command.rag.rag_read_document", result, None)
 }
 
 #[tauri::command]
-pub fn rag_get_stats(app: AppHandle) -> Result<RagStats, String> {
-    let result = (|| {
-        let store = load_store(&app)?;
-        let global_documents = store
-            .documents
-            .into_iter()
-            .filter(|doc| doc.conversation_id.is_none())
-            .collect::<Vec<_>>();
-        Ok(calculate_stats(&global_documents))
-    })();
+pub async fn rag_get_stats(app: AppHandle) -> Result<RagStats, String> {
+    let result = crate::llm::services::rag::get_stats(app.clone()).await;
     report_backend_result(&app, "command.rag.rag_get_stats", result, None)
 }
 
 #[tauri::command]
-pub fn rag_list_documents(app: AppHandle) -> Result<Vec<RagDocumentMeta>, String> {
-    let result = (|| {
-        let store = load_store(&app)?;
-        let global_docs: Vec<RagDocument> = store
-            .documents
-            .into_iter()
-            .filter(|doc| doc.conversation_id.is_none())
-            .collect();
-        let mut items = group_chunks_by_source(&global_docs);
-        items.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
-        Ok(items)
-    })();
+pub async fn rag_list_documents(app: AppHandle) -> Result<Vec<RagDocumentMeta>, String> {
+    let result = crate::llm::services::rag::list_documents(app.clone()).await;
     report_backend_result(&app, "command.rag.rag_list_documents", result, None)
 }
 
 #[tauri::command]
-pub fn rag_list_conversation_documents(
+pub async fn rag_list_conversation_documents(
     app: AppHandle,
     conversation_id: String,
 ) -> Result<Vec<RagDocumentMeta>, String> {
-    let result = (|| {
-        let scope_id = normalize_optional_conversation_id(Some(conversation_id))
-            .ok_or_else(|| "conversation_id is required".to_string())?;
-
-        let store = load_store(&app)?;
-        let scoped_docs: Vec<RagDocument> = store
-            .documents
-            .into_iter()
-            .filter(|doc| doc.conversation_id.as_deref() == Some(scope_id.as_str()))
-            .collect();
-        let mut items = group_chunks_by_source(&scoped_docs);
-        items.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
-        Ok(items)
-    })();
+    let result =
+        crate::llm::services::rag::list_conversation_documents(app.clone(), conversation_id).await;
     report_backend_result(
         &app,
         "command.rag.rag_list_conversation_documents",
@@ -584,230 +64,53 @@ pub fn rag_list_conversation_documents(
 }
 
 #[tauri::command]
-pub fn rag_upsert_documents(
+pub async fn rag_upsert_documents(
     app: AppHandle,
     documents: Vec<RagDocumentInput>,
 ) -> Result<RagUpsertResult, String> {
-    let result = (|| {
-        if documents.is_empty() {
-            return Err("No documents provided".to_string());
-        }
-        if documents.len() > MAX_BATCH_SIZE {
-            return Err(format!(
-                "Batch size exceeded: max {} documents per request",
-                MAX_BATCH_SIZE
-            ));
-        }
-
-        let mut store = load_store(&app)?;
-        let now = Utc::now().timestamp();
-
-        let mut added = 0u32;
-        let mut updated = 0u32;
-        let mut rejected: Vec<RagRejectedItem> = Vec::new();
-
-        for (index, item) in documents.into_iter().enumerate() {
-            let source_name = normalize_source_name(&item.source_name, index);
-            let content = normalize_content(&item.content);
-            let conversation_id = normalize_optional_conversation_id(item.conversation_id);
-
-            if content.is_empty() {
-                rejected.push(RagRejectedItem {
-                    source_name,
-                    reason: "内容为空".to_string(),
-                });
-                continue;
-            }
-
-            let content_chars = content.chars().count();
-            if content_chars > MAX_DOCUMENT_CHARS {
-                rejected.push(RagRejectedItem {
-                    source_name,
-                    reason: format!("内容过长，最大允许 {} 字符", MAX_DOCUMENT_CHARS),
-                });
-                continue;
-            }
-
-            let group_id = fnv1a_64_hex(&content);
-            let source_type = normalize_source_type(&item.source_type);
-            let mime_type = normalize_optional_string(item.mime_type);
-            let scope_key = conversation_id.clone();
-
-            if store
-                .documents
-                .iter()
-                .any(|d| d.group_id == group_id && d.conversation_id == scope_key)
-            {
-                for doc in store.documents.iter_mut() {
-                    if doc.group_id == group_id && doc.conversation_id == scope_key {
-                        doc.source_name = source_name.clone();
-                        doc.source_type = source_type.clone();
-                        doc.mime_type = mime_type.clone();
-                        doc.updated_at = now;
-                    }
-                }
-                updated += 1;
-                continue;
-            }
-
-            let had_previous = store
-                .documents
-                .iter()
-                .any(|d| d.source_name == source_name && d.conversation_id == scope_key);
-
-            store
-                .documents
-                .retain(|d| !(d.source_name == source_name && d.conversation_id == scope_key));
-
-            for (chunk_index, chunk_content) in split_into_chunks(&content).into_iter().enumerate()
-            {
-                let chunk_chars = chunk_content.chars().count();
-                store.documents.push(RagDocument {
-                    id: Uuid::new_v4().to_string(),
-                    source_name: source_name.clone(),
-                    source_type: source_type.clone(),
-                    mime_type: mime_type.clone(),
-                    conversation_id: conversation_id.clone(),
-                    content: chunk_content,
-                    content_chars: chunk_chars,
-                    checksum: group_id.clone(),
-                    created_at: now,
-                    updated_at: now,
-                    group_id: group_id.clone(),
-                    chunk_index: chunk_index as u32,
-                });
-            }
-
-            if had_previous {
-                updated += 1;
-            } else {
-                added += 1;
-            }
-        }
-
-        if added > 0 || updated > 0 {
-            save_store(&app, &store)?;
-        }
-
-        let stats = calculate_stats(&store.documents);
-        Ok(RagUpsertResult {
-            added,
-            updated,
-            rejected,
-            total_documents: stats.document_count,
-            total_chars: stats.total_chars,
-        })
-    })();
+    let result = crate::llm::services::rag::upsert_documents(app.clone(), documents).await;
     report_backend_result(&app, "command.rag.rag_upsert_documents", result, None)
 }
 
 #[tauri::command]
-pub fn rag_upsert_conversation_documents(
+pub async fn rag_upsert_conversation_documents(
     app: AppHandle,
     conversation_id: String,
     documents: Vec<RagDocumentInput>,
 ) -> Result<RagUpsertResult, String> {
-    let normalized_conversation_id = match normalize_optional_conversation_id(Some(conversation_id))
-    {
-        Some(value) => value,
-        None => {
-            return report_backend_result(
-                &app,
-                "command.rag.rag_upsert_conversation_documents",
-                Err("conversation_id is required".to_string()),
-                None,
-            );
-        }
-    };
-
-    let scoped_documents = documents
-        .into_iter()
-        .map(|mut doc| {
-            doc.conversation_id = Some(normalized_conversation_id.clone());
-            doc
-        })
-        .collect::<Vec<_>>();
-
-    let app_handle = app.clone();
-    let result = rag_upsert_documents(app, scoped_documents);
+    let result = crate::llm::services::rag::upsert_conversation_documents(
+        app.clone(),
+        conversation_id,
+        documents,
+    )
+    .await;
     report_backend_result(
-        &app_handle,
+        &app,
         "command.rag.rag_upsert_conversation_documents",
         result,
         None,
     )
 }
 
-pub fn rag_remove_conversation_documents(
+pub async fn rag_remove_conversation_documents(
     app: &AppHandle,
     conversation_id: &str,
 ) -> Result<usize, String> {
-    let normalized_conversation_id =
-        normalize_optional_conversation_id(Some(conversation_id.to_string()));
-    let Some(scope_id) = normalized_conversation_id else {
-        return Ok(0);
-    };
-
-    let mut store = load_store(app)?;
-    let before = store.documents.len();
-    store
-        .documents
-        .retain(|doc| doc.conversation_id.as_deref() != Some(scope_id.as_str()));
-    let removed = before.saturating_sub(store.documents.len());
-
-    if removed > 0 {
-        save_store(app, &store)?;
-    }
-
-    Ok(removed)
+    crate::llm::services::rag::remove_conversation_documents(app, conversation_id).await
 }
 
-pub fn rag_remove_all_conversation_documents(app: &AppHandle) -> Result<usize, String> {
-    let mut store = load_store(app)?;
-    let before = store.documents.len();
-    store.documents.retain(|doc| doc.conversation_id.is_none());
-    let removed = before.saturating_sub(store.documents.len());
-
-    if removed > 0 {
-        save_store(app, &store)?;
-    }
-
-    Ok(removed)
+pub async fn rag_remove_all_conversation_documents(app: &AppHandle) -> Result<usize, String> {
+    crate::llm::services::rag::remove_all_conversation_documents(app).await
 }
 
 #[tauri::command]
-pub fn rag_remove_document(app: AppHandle, document_id: String) -> Result<bool, String> {
-    let result = (|| {
-        let id = document_id.trim();
-        if id.is_empty() {
-            return Err("document_id is required".to_string());
-        }
-
-        let mut store = load_store(&app)?;
-        let before = store.documents.len();
-        store.documents.retain(|doc| doc.group_id != id);
-        let removed = before != store.documents.len();
-
-        if removed {
-            save_store(&app, &store)?;
-        }
-
-        Ok(removed)
-    })();
+pub async fn rag_remove_document(app: AppHandle, document_id: String) -> Result<bool, String> {
+    let result = crate::llm::services::rag::remove_document(app.clone(), document_id).await;
     report_backend_result(&app, "command.rag.rag_remove_document", result, None)
 }
 
 #[tauri::command]
-pub fn rag_clear_documents(app: AppHandle) -> Result<(), String> {
-    let result = (|| {
-        let mut store = load_store(&app)?;
-        let before = store.documents.len();
-        store.documents.retain(|doc| doc.conversation_id.is_some());
-        if store.documents.len() == before {
-            return Ok(());
-        }
-
-        save_store(&app, &store)
-    })();
+pub async fn rag_clear_documents(app: AppHandle) -> Result<(), String> {
+    let result = crate::llm::services::rag::clear_documents(app.clone()).await;
     report_backend_result(&app, "command.rag.rag_clear_documents", result, None)
 }

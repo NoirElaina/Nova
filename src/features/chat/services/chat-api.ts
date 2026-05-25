@@ -363,9 +363,13 @@ export async function listConversationRagDocuments(
   });
 }
 
-export async function readRagDocument(documentId: string): Promise<RagDocumentContent | null> {
+export async function readRagDocument(
+  documentId: string,
+  conversationId?: string | null,
+): Promise<RagDocumentContent | null> {
   return invoke<RagDocumentContent | null>("rag_read_document", {
     documentId,
+    conversationId,
   });
 }
 

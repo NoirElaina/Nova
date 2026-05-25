@@ -183,7 +183,7 @@ fn latest_user_query_text(messages: &[Message]) -> Option<String> {
 
         let text = text_from_content(&message.content);
         // Strip the RAG notice lines appended by the frontend so they don't
-        // pollute BM25 query terms. The notice starts with the marker line and
+        // pollute hybrid retrieval query terms. The notice starts with the marker line and
         // continues to the end of the text.
         let clean = text
             .lines()
@@ -242,7 +242,7 @@ fn extract_uploaded_document_names(query: &str) -> Vec<String> {
         .unwrap_or_default()
 }
 
-fn build_direct_attachment_context(
+async fn build_direct_attachment_context(
     app: &AppHandle,
     conversation_id: &str,
     source_names: &[String],
@@ -254,7 +254,8 @@ fn build_direct_attachment_context(
     let documents = crate::command::rag::rag_list_conversation_documents(
         app.clone(),
         conversation_id.to_string(),
-    )?;
+    )
+    .await?;
 
     let mut lines = Vec::new();
 
@@ -263,7 +264,12 @@ fn build_direct_attachment_context(
             continue;
         };
 
-        let Some(content) = crate::command::rag::rag_read_document(app.clone(), doc.id.clone())?
+        let Some(content) = crate::command::rag::rag_read_document(
+            app.clone(),
+            doc.id.clone(),
+            Some(conversation_id.to_string()),
+        )
+        .await?
         else {
             continue;
         };
@@ -278,7 +284,7 @@ fn build_direct_attachment_context(
     Ok(lines)
 }
 
-fn build_session_rag_context_message(
+async fn build_session_rag_context_message(
     app: &AppHandle,
     conversation_id: Option<&str>,
     query: &str,
@@ -296,17 +302,18 @@ fn build_session_rag_context_message(
         return Ok(None);
     }
 
-    // 用原始文本（含文件名行）提取附件名，用清洁 query 做 BM25 检索。
+    // 用原始文本（含文件名行）提取附件名，用清洁 query 做混合 RAG 检索。
     let attached_source_names = extract_uploaded_document_names(raw_text);
     let direct_attachment_lines =
-        build_direct_attachment_context(app, scope_id, &attached_source_names)?;
+        build_direct_attachment_context(app, scope_id, &attached_source_names).await?;
 
     let hits = crate::command::rag::rag_search_conversation_documents(
         app.clone(),
         scope_id.to_string(),
         query_text.to_string(),
         Some(SESSION_RAG_SEARCH_LIMIT),
-    )?;
+    )
+    .await?;
 
     if hits.is_empty() {
         if direct_attachment_lines.is_empty() {
@@ -610,7 +617,9 @@ pub async fn send_chat_message(
             conversation_id.as_deref(),
             query_text,
             raw_text,
-        ) {
+        )
+        .await
+        {
             Ok(Some(rag_context)) => current_messages.push(rag_context),
             Ok(None) => {}
             Err(e) => {

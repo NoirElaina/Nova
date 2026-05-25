@@ -5,6 +5,7 @@ import { readRagDocument, type RagDocumentContent, type RagDocumentMeta } from '
 const props = defineProps<{
   files: RagDocumentMeta[];
   selectedFileId?: string | null;
+  conversationId?: string | null;
 }>();
 
 const selectedId = ref<string | null>(null);
@@ -42,7 +43,7 @@ const selectFile = async (file: RagDocumentMeta) => {
   loadingId.value = file.id;
 
   try {
-    const document = await readRagDocument(file.id);
+    const document = await readRagDocument(file.id, props.conversationId ?? null);
     if (selectedId.value !== file.id) {
       return;
     }

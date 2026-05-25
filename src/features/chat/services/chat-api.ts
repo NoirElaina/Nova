@@ -123,6 +123,13 @@ export type FileChangeBatch = {
   files: FileChangeEntry[];
 };
 
+export type FileChangeBatchSummary = Omit<FileChangeBatch, "files"> & {
+  fileCount: number;
+  additions: number;
+  deletions: number;
+  paths: string[];
+};
+
 export async function listConversations(): Promise<ConversationMeta[]> {
   const items = await invoke<ConversationMeta[]>("list_conversations");
   return items || [];
@@ -301,9 +308,19 @@ export async function stopUserTerminal(conversationId: string | null): Promise<v
 
 export async function listFileChanges(
   conversationId: string | null,
-): Promise<FileChangeBatch[]> {
-  return invoke<FileChangeBatch[]>("list_file_changes", {
+): Promise<FileChangeBatchSummary[]> {
+  return invoke<FileChangeBatchSummary[]>("list_file_changes", {
     conversationId,
+  });
+}
+
+export async function getFileChange(
+  conversationId: string | null,
+  batchId: string,
+): Promise<FileChangeBatch> {
+  return invoke<FileChangeBatch>("get_file_change", {
+    conversationId,
+    batchId,
   });
 }
 

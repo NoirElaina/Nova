@@ -60,7 +60,9 @@ async fn execute_async(app: &AppHandle, conversation_id: Option<&str>, input: Va
         &root,
         path,
         content,
-    ) {
+    )
+    .await
+    {
         Ok(result) => {
             let changed_files = result.files.len();
             json!({

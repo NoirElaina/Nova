@@ -2,9 +2,11 @@
 import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { Button } from "@/components/ui/button";
 import {
+  getFileChange,
   listFileChanges,
   revertFileChange,
   type FileChangeBatch,
+  type FileChangeBatchSummary,
   type FileChangeEntry,
   type FileDiffLine,
 } from "@/features/chat/services/chat-api";
@@ -14,7 +16,10 @@ const props = defineProps<{
   conversationId?: string | null;
 }>();
 
-const batches = ref<FileChangeBatch[]>([]);
+const batches = ref<FileChangeBatchSummary[]>([]);
+const batchDetails = ref<Record<string, FileChangeBatch>>({});
+const loadingDetailIds = ref<Set<string>>(new Set());
+const detailErrors = ref<Record<string, string>>({});
 const loading = ref(false);
 const revertingId = ref<string | null>(null);
 const error = ref("");
@@ -26,7 +31,7 @@ const activeBatches = computed(() => batches.value.filter((batch) => !batch.reve
 const hasChanges = computed(() => batches.value.length > 0);
 const hasCurrentChanges = computed(() => activeBatches.value.length > 0);
 const activeFileCount = computed(() =>
-  activeBatches.value.reduce((total, batch) => total + batch.files.length, 0),
+  activeBatches.value.reduce((total, batch) => total + batch.fileCount, 0),
 );
 
 const loadChanges = async () => {
@@ -62,18 +67,10 @@ const fileStats = (file: Pick<FileChangeEntry, "diff">) => {
   return { added, removed };
 };
 
-const batchStats = (batch: FileChangeBatch) => {
-  return batch.files.reduce(
-    (total, file) => {
-      const stats = fileStats(file);
-      return {
-        added: total.added + stats.added,
-        removed: total.removed + stats.removed,
-      };
-    },
-    { added: 0, removed: 0 },
-  );
-};
+const batchStats = (batch: FileChangeBatchSummary) => ({
+  added: batch.additions,
+  removed: batch.deletions,
+});
 
 const lineClass = (line: FileDiffLine) => {
   if (line.kind === "add") return "bg-emerald-50 text-emerald-950 dark:bg-emerald-950/30 dark:text-emerald-100";
@@ -93,7 +90,35 @@ const lineNumber = (line: FileDiffLine) => {
 
 const isBatchExpanded = (batchId: string) => expandedBatchIds.value.has(batchId);
 
-const toggleBatch = (batchId: string) => {
+const isDetailLoading = (batchId: string) => loadingDetailIds.value.has(batchId);
+
+const batchDetail = (batchId: string) => batchDetails.value[batchId];
+
+const setDetailLoading = (batchId: string, loading: boolean) => {
+  const next = new Set(loadingDetailIds.value);
+  if (loading) {
+    next.add(batchId);
+  } else {
+    next.delete(batchId);
+  }
+  loadingDetailIds.value = next;
+};
+
+const loadBatchDetail = async (batchId: string) => {
+  if (batchDetails.value[batchId] || isDetailLoading(batchId)) return;
+  setDetailLoading(batchId, true);
+  detailErrors.value = { ...detailErrors.value, [batchId]: "" };
+  try {
+    const detail = await getFileChange(props.conversationId ?? null, batchId);
+    batchDetails.value = { ...batchDetails.value, [batchId]: detail };
+  } catch (err) {
+    detailErrors.value = { ...detailErrors.value, [batchId]: String(err) };
+  } finally {
+    setDetailLoading(batchId, false);
+  }
+};
+
+const toggleBatch = async (batchId: string) => {
   const next = new Set(expandedBatchIds.value);
   if (next.has(batchId)) {
     next.delete(batchId);
@@ -101,9 +126,12 @@ const toggleBatch = (batchId: string) => {
     next.add(batchId);
   }
   expandedBatchIds.value = next;
+  if (next.has(batchId)) {
+    await loadBatchDetail(batchId);
+  }
 };
 
-const fileId = (batch: FileChangeBatch, file: FileChangeEntry) =>
+const fileId = (batch: Pick<FileChangeBatch, "id">, file: FileChangeEntry) =>
   `${batch.id}:${file.absolutePath || file.path}`;
 
 const isFileExpanded = (id: string) => expandedFileIds.value.has(id);
@@ -118,12 +146,15 @@ const toggleFile = (id: string) => {
   expandedFileIds.value = next;
 };
 
-const handleRevert = async (batch: FileChangeBatch) => {
+const handleRevert = async (batch: FileChangeBatchSummary) => {
   if (batch.reverted || revertingId.value) return;
   revertingId.value = batch.id;
   error.value = "";
   try {
     await revertFileChange(props.conversationId ?? null, batch.id);
+    const nextDetails = { ...batchDetails.value };
+    delete nextDetails[batch.id];
+    batchDetails.value = nextDetails;
     await loadChanges();
     emitToast({
       variant: "success",
@@ -148,6 +179,8 @@ watch(
   () => {
     expandedBatchIds.value = new Set();
     expandedFileIds.value = new Set();
+    batchDetails.value = {};
+    detailErrors.value = {};
     void loadChanges();
   },
   { immediate: true },
@@ -212,7 +245,7 @@ onBeforeUnmount(() => {
         >
           <header
             class="flex cursor-pointer items-center justify-between gap-3 border-b border-[#eef0f3] px-3 py-2 transition-colors hover:bg-[#fafafa] dark:border-[#333] dark:hover:bg-[#262626]"
-            @click="toggleBatch(batch.id)"
+            @click="void toggleBatch(batch.id)"
           >
             <div class="min-w-0">
               <div class="flex min-w-0 items-center gap-2">
@@ -235,7 +268,7 @@ onBeforeUnmount(() => {
                 <span class="text-[11px] text-[#94a3b8]">{{ formatTime(batch.createdAt) }}</span>
               </div>
               <div class="mt-1 flex min-w-0 items-center gap-2 text-xs text-[#64748b] dark:text-[#94a3b8]">
-                <span>{{ batch.files.length }} 个文件</span>
+                <span>{{ batch.fileCount }} 个文件</span>
                 <span>·</span>
                 <span class="text-emerald-600">+{{ batchStats(batch).added }}</span>
                 <span class="text-rose-600">-{{ batchStats(batch).removed }}</span>
@@ -246,7 +279,7 @@ onBeforeUnmount(() => {
                 variant="ghost"
                 size="sm"
                 class="h-7 px-2 text-xs text-[#64748b]"
-                @click.stop="toggleBatch(batch.id)"
+                @click.stop="void toggleBatch(batch.id)"
               >
                 {{ isBatchExpanded(batch.id) ? "收起" : "展开" }}
               </Button>
@@ -263,8 +296,14 @@ onBeforeUnmount(() => {
           </header>
 
           <div v-if="isBatchExpanded(batch.id)" class="divide-y divide-[#eef0f3] bg-[#fcfcfd] dark:divide-[#333] dark:bg-[#1c1c1c]">
+            <div v-if="isDetailLoading(batch.id)" class="px-3 py-4 text-xs text-[#64748b] dark:text-[#94a3b8]">
+              正在加载 diff 详情...
+            </div>
+            <div v-else-if="detailErrors[batch.id]" class="px-3 py-4 text-xs text-rose-600 dark:text-rose-300">
+              {{ detailErrors[batch.id] }}
+            </div>
             <article
-              v-for="file in batch.files"
+              v-for="file in batchDetail(batch.id)?.files || []"
               :key="fileId(batch, file)"
               class="bg-white dark:bg-[#202020]"
             >

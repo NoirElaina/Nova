@@ -1,17 +1,31 @@
 use tauri::AppHandle;
 
-pub use crate::llm::services::file_changes::FileChangeBatch;
+pub use crate::llm::services::file_changes::{FileChangeBatch, FileChangeBatchSummary};
 
 #[tauri::command]
-pub fn list_file_changes(
+pub async fn list_file_changes(
     app: AppHandle,
     conversation_id: Option<String>,
-) -> Result<Vec<FileChangeBatch>, String> {
-    crate::llm::services::file_changes::list_change_batches(&app, conversation_id.as_deref())
+) -> Result<Vec<FileChangeBatchSummary>, String> {
+    crate::llm::services::file_changes::list_change_batches(&app, conversation_id.as_deref()).await
 }
 
 #[tauri::command]
-pub fn revert_file_change(
+pub async fn get_file_change(
+    app: AppHandle,
+    conversation_id: Option<String>,
+    batch_id: String,
+) -> Result<FileChangeBatch, String> {
+    crate::llm::services::file_changes::get_change_batch(
+        &app,
+        conversation_id.as_deref(),
+        &batch_id,
+    )
+    .await
+}
+
+#[tauri::command]
+pub async fn revert_file_change(
     app: AppHandle,
     conversation_id: Option<String>,
     batch_id: String,
@@ -26,4 +40,5 @@ pub fn revert_file_change(
         &root,
         &batch_id,
     )
+    .await
 }

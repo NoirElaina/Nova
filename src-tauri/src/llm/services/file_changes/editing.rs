@@ -18,7 +18,7 @@ pub struct FileEditResult {
     pub change_batch_id: Option<String>,
 }
 
-pub fn write_file_change(
+pub async fn write_file_change(
     app: &AppHandle,
     conversation_id: Option<&str>,
     root: &Path,
@@ -46,9 +46,10 @@ pub fn write_file_change(
             after: Some(content.to_string()),
         }],
     )
+    .await
 }
 
-pub fn multi_edit_change(
+pub async fn multi_edit_change(
     app: &AppHandle,
     conversation_id: Option<&str>,
     root: &Path,
@@ -104,10 +105,10 @@ pub fn multi_edit_change(
         })
         .collect::<Vec<_>>();
 
-    commit_drafts(app, conversation_id, root, "multi_edit", drafts)
+    commit_drafts(app, conversation_id, root, "multi_edit", drafts).await
 }
 
-pub(super) fn commit_drafts(
+pub(super) async fn commit_drafts(
     app: &AppHandle,
     conversation_id: Option<&str>,
     root: &Path,
@@ -119,7 +120,8 @@ pub(super) fn commit_drafts(
         .filter(|draft| draft.before != draft.after)
         .map(|draft| path_for_display(root, &draft.path))
         .collect::<Vec<_>>();
-    let change_batch_id = commit_change_batch(app, conversation_id, root, tool_name, drafts)?;
+    let change_batch_id =
+        commit_change_batch(app, conversation_id, root, tool_name, drafts).await?;
     let files = if change_batch_id.is_some() {
         files
     } else {

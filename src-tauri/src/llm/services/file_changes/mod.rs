@@ -1,12 +1,14 @@
 use serde::{Deserialize, Serialize};
 use similar::{ChangeTag, TextDiff};
+use sqlx::{Row, SqlitePool};
 use std::collections::BTreeSet;
 use std::ffi::OsString;
 use std::fs;
 use std::path::{Component, Path, PathBuf};
-use std::sync::{Mutex, OnceLock};
+use std::sync::OnceLock;
 use std::time::{SystemTime, UNIX_EPOCH};
-use tauri::{AppHandle, Manager};
+use tauri::AppHandle;
+use tokio::sync::Mutex;
 
 mod editing;
 mod patch;
@@ -15,7 +17,7 @@ pub use editing::{multi_edit_change, write_file_change, FileEditResult, MultiEdi
 pub use patch::{apply_patch_change, patch_paths};
 
 #[derive(Debug, Clone)]
-struct FileChangeDraft {
+pub(super) struct FileChangeDraft {
     pub path: PathBuf,
     pub before: Option<String>,
     pub after: Option<String>,
@@ -53,10 +55,19 @@ pub struct FileChangeBatch {
     pub files: Vec<FileChangeEntry>,
 }
 
-#[derive(Debug, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-struct FileChangeStore {
-    batches: Vec<FileChangeBatch>,
+pub struct FileChangeBatchSummary {
+    pub id: String,
+    pub conversation_id: String,
+    pub tool_name: String,
+    pub created_at: u64,
+    pub reverted: bool,
+    pub reverted_at: Option<u64>,
+    pub file_count: usize,
+    pub additions: usize,
+    pub deletions: usize,
+    pub paths: Vec<String>,
 }
 
 static FILE_CHANGE_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
@@ -73,57 +84,12 @@ fn now_millis() -> u64 {
         .unwrap_or(0)
 }
 
-fn normalize_conversation_id(conversation_id: Option<&str>) -> String {
+fn normalize_conversation_id(conversation_id: Option<&str>) -> Result<String, String> {
     conversation_id
         .map(str::trim)
         .filter(|value| !value.is_empty())
-        .unwrap_or("__default__")
-        .to_string()
-}
-
-fn safe_conversation_file_name(conversation_id: &str) -> String {
-    conversation_id
-        .chars()
-        .map(|ch| {
-            if ch.is_ascii_alphanumeric() || ch == '-' || ch == '_' {
-                ch
-            } else {
-                '_'
-            }
-        })
-        .collect()
-}
-
-fn store_path(app: &AppHandle, conversation_id: &str) -> Result<PathBuf, String> {
-    app.path()
-        .app_data_dir()
-        .map(|path| {
-            path.join("file_changes").join(format!(
-                "{}.json",
-                safe_conversation_file_name(conversation_id)
-            ))
-        })
-        .map_err(|error| format!("无法读取应用数据目录: {}", error))
-}
-
-fn read_store(path: &Path) -> Result<FileChangeStore, String> {
-    if !path.exists() {
-        return Ok(FileChangeStore::default());
-    }
-    let text = fs::read_to_string(path).map_err(|error| format!("读取审查记录失败: {}", error))?;
-    if text.trim().is_empty() {
-        return Ok(FileChangeStore::default());
-    }
-    serde_json::from_str(&text).map_err(|error| format!("解析审查记录失败: {}", error))
-}
-
-fn write_store(path: &Path, store: &FileChangeStore) -> Result<(), String> {
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent).map_err(|error| format!("创建审查记录目录失败: {}", error))?;
-    }
-    let text = serde_json::to_string_pretty(store)
-        .map_err(|error| format!("序列化审查记录失败: {}", error))?;
-    fs::write(path, text).map_err(|error| format!("保存审查记录失败: {}", error))
+        .map(str::to_string)
+        .ok_or_else(|| "conversation_id is required for file change review".to_string())
 }
 
 pub fn resolve_tool_path(root: &Path, raw_path: &str) -> Result<PathBuf, String> {
@@ -263,72 +229,285 @@ fn build_batch(
     })
 }
 
-fn commit_change_batch(
+pub(super) async fn commit_change_batch(
     app: &AppHandle,
     conversation_id: Option<&str>,
     root: &Path,
     tool_name: &str,
     drafts: Vec<FileChangeDraft>,
 ) -> Result<Option<String>, String> {
-    let conversation_id = normalize_conversation_id(conversation_id);
+    let conversation_id = normalize_conversation_id(conversation_id)?;
     let Some(batch) = build_batch(root, &conversation_id, tool_name, drafts) else {
         return Ok(None);
     };
     let batch_id = batch.id.clone();
-    let path = store_path(app, &conversation_id)?;
-    let _guard = file_change_lock()
-        .lock()
-        .map_err(|_| "审查记录锁已损坏".to_string())?;
-    let mut store = read_store(&path)?;
+    let _guard = file_change_lock().lock().await;
+    let pool = crate::llm::history::get_pool_with_schema(app).await?;
     validate_batch_current_state(root, &batch)?;
     apply_batch_after(root, &batch)?;
-    store.batches.push(batch);
-    if store.batches.len() > MAX_STORED_BATCHES {
-        let drain_count = store.batches.len() - MAX_STORED_BATCHES;
-        store.batches.drain(0..drain_count);
-    }
-    if let Err(error) = write_store(&path, &store) {
-        rollback_batch_after(root, store.batches.last().expect("batch was just pushed"))?;
+    if let Err(error) = persist_batch(&pool, &batch).await {
+        rollback_batch_after(root, &batch)?;
         return Err(error);
     }
     Ok(Some(batch_id))
 }
 
-pub fn list_change_batches(
-    app: &AppHandle,
-    conversation_id: Option<&str>,
-) -> Result<Vec<FileChangeBatch>, String> {
-    let conversation_id = normalize_conversation_id(conversation_id);
-    let path = store_path(app, &conversation_id)?;
-    let _guard = file_change_lock()
-        .lock()
-        .map_err(|_| "审查记录锁已损坏".to_string())?;
-    let mut batches = read_store(&path)?.batches;
-    batches.reverse();
-    Ok(batches)
+async fn persist_batch(pool: &SqlitePool, batch: &FileChangeBatch) -> Result<(), String> {
+    let mut tx = pool.begin().await.map_err(|error| error.to_string())?;
+    sqlx::query(
+        r#"
+        INSERT INTO file_change_batches (
+            id,
+            conversation_id,
+            tool_name,
+            created_at,
+            reverted,
+            reverted_at
+        ) VALUES (?, ?, ?, ?, ?, ?)
+        "#,
+    )
+    .bind(&batch.id)
+    .bind(&batch.conversation_id)
+    .bind(&batch.tool_name)
+    .bind(batch.created_at as i64)
+    .bind(if batch.reverted { 1_i64 } else { 0_i64 })
+    .bind(batch.reverted_at.map(|value| value as i64))
+    .execute(&mut *tx)
+    .await
+    .map_err(|error| error.to_string())?;
+
+    for (index, file) in batch.files.iter().enumerate() {
+        let diff_json = serde_json::to_string(&file.diff)
+            .map_err(|error| format!("序列化文件 diff 失败: {}", error))?;
+        let (additions, deletions) = diff_counts(&file.diff);
+        sqlx::query(
+            r#"
+            INSERT INTO file_change_files (
+                batch_id,
+                file_order,
+                path,
+                absolute_path,
+                change_type,
+                before_text,
+                after_text,
+                diff_json,
+                additions,
+                deletions
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            "#,
+        )
+        .bind(&batch.id)
+        .bind(index as i64)
+        .bind(&file.path)
+        .bind(&file.absolute_path)
+        .bind(&file.change_type)
+        .bind(&file.before)
+        .bind(&file.after)
+        .bind(diff_json)
+        .bind(additions as i64)
+        .bind(deletions as i64)
+        .execute(&mut *tx)
+        .await
+        .map_err(|error| error.to_string())?;
+    }
+
+    trim_old_batches(&mut tx, &batch.conversation_id).await?;
+    tx.commit().await.map_err(|error| error.to_string())?;
+    Ok(())
 }
 
-pub fn revert_change_batch(
+async fn trim_old_batches(
+    tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+    conversation_id: &str,
+) -> Result<(), String> {
+    let stale_ids = sqlx::query_scalar::<_, String>(
+        r#"
+        SELECT id
+        FROM file_change_batches
+        WHERE conversation_id = ?
+        ORDER BY created_at DESC, id DESC
+        LIMIT -1 OFFSET ?
+        "#,
+    )
+    .bind(conversation_id)
+    .bind(MAX_STORED_BATCHES as i64)
+    .fetch_all(&mut **tx)
+    .await
+    .map_err(|error| error.to_string())?;
+
+    for id in stale_ids {
+        sqlx::query("DELETE FROM file_change_files WHERE batch_id = ?")
+            .bind(&id)
+            .execute(&mut **tx)
+            .await
+            .map_err(|error| error.to_string())?;
+        sqlx::query("DELETE FROM file_change_batches WHERE id = ?")
+            .bind(&id)
+            .execute(&mut **tx)
+            .await
+            .map_err(|error| error.to_string())?;
+    }
+
+    Ok(())
+}
+
+pub async fn list_change_batches(
+    app: &AppHandle,
+    conversation_id: Option<&str>,
+) -> Result<Vec<FileChangeBatchSummary>, String> {
+    let Some(conversation_id) = conversation_id
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+    else {
+        return Ok(Vec::new());
+    };
+    let pool = crate::llm::history::get_pool_with_schema(app).await?;
+    let rows = sqlx::query(
+        r#"
+        SELECT
+            b.id,
+            b.conversation_id,
+            b.tool_name,
+            b.created_at,
+            b.reverted,
+            b.reverted_at,
+            COUNT(f.id) AS file_count,
+            COALESCE(SUM(f.additions), 0) AS additions,
+            COALESCE(SUM(f.deletions), 0) AS deletions
+        FROM file_change_batches b
+        LEFT JOIN file_change_files f ON f.batch_id = b.id
+        WHERE b.conversation_id = ?
+        GROUP BY b.id
+        ORDER BY b.created_at DESC, b.id DESC
+        "#,
+    )
+    .bind(&conversation_id)
+    .fetch_all(&pool)
+    .await
+    .map_err(|error| error.to_string())?;
+
+    let mut summaries = Vec::with_capacity(rows.len());
+    for row in rows {
+        let id = row.get::<String, _>("id");
+        summaries.push(FileChangeBatchSummary {
+            paths: load_batch_paths(&pool, &id).await?,
+            id,
+            conversation_id: row.get::<String, _>("conversation_id"),
+            tool_name: row.get::<String, _>("tool_name"),
+            created_at: row.get::<i64, _>("created_at").max(0) as u64,
+            reverted: row.get::<i64, _>("reverted") != 0,
+            reverted_at: row
+                .get::<Option<i64>, _>("reverted_at")
+                .map(|value| value.max(0) as u64),
+            file_count: row.get::<i64, _>("file_count").max(0) as usize,
+            additions: row.get::<i64, _>("additions").max(0) as usize,
+            deletions: row.get::<i64, _>("deletions").max(0) as usize,
+        });
+    }
+
+    Ok(summaries)
+}
+
+async fn load_batch_paths(pool: &SqlitePool, batch_id: &str) -> Result<Vec<String>, String> {
+    sqlx::query_scalar::<_, String>(
+        "SELECT path FROM file_change_files WHERE batch_id = ? ORDER BY file_order ASC",
+    )
+    .bind(batch_id)
+    .fetch_all(pool)
+    .await
+    .map_err(|error| error.to_string())
+}
+
+pub async fn get_change_batch(
+    app: &AppHandle,
+    conversation_id: Option<&str>,
+    batch_id: &str,
+) -> Result<FileChangeBatch, String> {
+    let conversation_id = normalize_conversation_id(conversation_id)?;
+    let pool = crate::llm::history::get_pool_with_schema(app).await?;
+    load_change_batch(&pool, &conversation_id, batch_id).await
+}
+
+async fn load_change_batch(
+    pool: &SqlitePool,
+    conversation_id: &str,
+    batch_id: &str,
+) -> Result<FileChangeBatch, String> {
+    let batch_row = sqlx::query(
+        r#"
+        SELECT id, conversation_id, tool_name, created_at, reverted, reverted_at
+        FROM file_change_batches
+        WHERE conversation_id = ? AND id = ?
+        "#,
+    )
+    .bind(conversation_id)
+    .bind(batch_id)
+    .fetch_optional(pool)
+    .await
+    .map_err(|error| error.to_string())?
+    .ok_or_else(|| "找不到审查记录".to_string())?;
+
+    let file_rows = sqlx::query(
+        r#"
+        SELECT path, absolute_path, change_type, before_text, after_text, diff_json
+        FROM file_change_files
+        WHERE batch_id = ?
+        ORDER BY file_order ASC
+        "#,
+    )
+    .bind(batch_id)
+    .fetch_all(pool)
+    .await
+    .map_err(|error| error.to_string())?;
+
+    let mut files = Vec::with_capacity(file_rows.len());
+    for row in file_rows {
+        let diff_json = row.get::<String, _>("diff_json");
+        let diff = serde_json::from_str::<Vec<FileDiffLine>>(&diff_json)
+            .map_err(|error| format!("解析文件 diff 失败: {}", error))?;
+        files.push(FileChangeEntry {
+            path: row.get::<String, _>("path"),
+            absolute_path: row.get::<String, _>("absolute_path"),
+            change_type: row.get::<String, _>("change_type"),
+            before: row.get::<Option<String>, _>("before_text"),
+            after: row.get::<Option<String>, _>("after_text"),
+            diff,
+        });
+    }
+
+    Ok(FileChangeBatch {
+        id: batch_row.get::<String, _>("id"),
+        conversation_id: batch_row.get::<String, _>("conversation_id"),
+        tool_name: batch_row.get::<String, _>("tool_name"),
+        created_at: batch_row.get::<i64, _>("created_at").max(0) as u64,
+        reverted: batch_row.get::<i64, _>("reverted") != 0,
+        reverted_at: batch_row
+            .get::<Option<i64>, _>("reverted_at")
+            .map(|value| value.max(0) as u64),
+        files,
+    })
+}
+
+pub async fn revert_change_batch(
     app: &AppHandle,
     conversation_id: Option<&str>,
     root: &Path,
     batch_id: &str,
 ) -> Result<FileChangeBatch, String> {
-    let conversation_id = normalize_conversation_id(conversation_id);
-    let path = store_path(app, &conversation_id)?;
-    let _guard = file_change_lock()
-        .lock()
-        .map_err(|_| "审查记录锁已损坏".to_string())?;
-    let mut store = read_store(&path)?;
-    let batch = store
-        .batches
-        .iter_mut()
-        .find(|batch| batch.id == batch_id)
-        .ok_or_else(|| "找不到审查记录".to_string())?;
-    apply_revert(root, batch)?;
-    let result = batch.clone();
-    write_store(&path, &store)?;
-    Ok(result)
+    let conversation_id = normalize_conversation_id(conversation_id)?;
+    let _guard = file_change_lock().lock().await;
+    let pool = crate::llm::history::get_pool_with_schema(app).await?;
+    let mut batch = load_change_batch(&pool, &conversation_id, batch_id).await?;
+    apply_revert(root, &mut batch)?;
+    sqlx::query("UPDATE file_change_batches SET reverted = 1, reverted_at = ? WHERE conversation_id = ? AND id = ?")
+        .bind(batch.reverted_at.map(|value| value as i64))
+        .bind(&conversation_id)
+        .bind(batch_id)
+        .execute(&pool)
+        .await
+        .map_err(|error| error.to_string())?;
+    Ok(batch)
 }
 
 fn apply_revert(root: &Path, batch: &mut FileChangeBatch) -> Result<(), String> {
@@ -480,4 +659,16 @@ fn diff_lines(before: Option<&str>, after: Option<&str>) -> Vec<FileDiffLine> {
                 .to_string(),
         })
         .collect()
+}
+
+fn diff_counts(diff: &[FileDiffLine]) -> (usize, usize) {
+    diff.iter().fold((0, 0), |(additions, deletions), line| {
+        if line.kind == "add" {
+            (additions + 1, deletions)
+        } else if line.kind == "remove" {
+            (additions, deletions + 1)
+        } else {
+            (additions, deletions)
+        }
+    })
 }

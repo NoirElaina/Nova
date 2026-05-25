@@ -92,7 +92,7 @@ fn apply_patch_with_app(
             Err(error) => return json!({ "ok": false, "error": error }).to_string(),
         };
 
-        match apply_patch_change(&app, conversation_id.as_deref(), &root, patch) {
+        match apply_patch_change(&app, conversation_id.as_deref(), &root, patch).await {
             Ok(result) => result_json(result),
             Err(error) => json!({ "ok": false, "error": error }).to_string(),
         }
@@ -117,7 +117,7 @@ fn multi_edit_with_app(
             Err(error) => return json!({ "ok": false, "error": error }).to_string(),
         };
 
-        match multi_edit_change(&app, conversation_id.as_deref(), &root, edits) {
+        match multi_edit_change(&app, conversation_id.as_deref(), &root, edits).await {
             Ok(result) => result_json(result),
             Err(error) => json!({ "ok": false, "error": error }).to_string(),
         }

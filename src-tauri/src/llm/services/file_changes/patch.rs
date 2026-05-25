@@ -36,14 +36,14 @@ pub fn patch_paths(patch: &str) -> Result<Vec<String>, String> {
     })
 }
 
-pub fn apply_patch_change(
+pub async fn apply_patch_change(
     app: &AppHandle,
     conversation_id: Option<&str>,
     root: &Path,
     patch: &str,
 ) -> Result<FileEditResult, String> {
     let drafts = patch_to_drafts(root, patch)?;
-    commit_drafts(app, conversation_id, root, "apply_patch", drafts)
+    commit_drafts(app, conversation_id, root, "apply_patch", drafts).await
 }
 
 fn patch_to_drafts(root: &Path, patch: &str) -> Result<Vec<FileChangeDraft>, String> {

@@ -8,8 +8,14 @@ use std::sync::{Mutex, OnceLock};
 use std::time::{SystemTime, UNIX_EPOCH};
 use tauri::{AppHandle, Manager};
 
+mod editing;
+mod patch;
+
+pub use editing::{multi_edit_change, write_file_change, FileEditResult, MultiEditRequest};
+pub use patch::{apply_patch_change, patch_paths};
+
 #[derive(Debug, Clone)]
-pub struct FileChangeDraft {
+struct FileChangeDraft {
     pub path: PathBuf,
     pub before: Option<String>,
     pub after: Option<String>,
@@ -228,7 +234,7 @@ fn build_entry(root: &Path, draft: FileChangeDraft) -> FileChangeEntry {
     }
 }
 
-pub fn build_batch(
+fn build_batch(
     root: &Path,
     conversation_id: &str,
     tool_name: &str,
@@ -257,7 +263,7 @@ pub fn build_batch(
     })
 }
 
-pub fn commit_change_batch(
+fn commit_change_batch(
     app: &AppHandle,
     conversation_id: Option<&str>,
     root: &Path,

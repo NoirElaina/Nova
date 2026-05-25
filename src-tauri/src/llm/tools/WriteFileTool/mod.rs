@@ -1,8 +1,6 @@
-use crate::llm::services::file_changes::FileChangeDraft;
 use crate::llm::tools::{app_tool, AppExecuteFuture, ToolPermissionDescriptor, ToolRegistration};
 use crate::llm::types::Tool;
 use serde_json::{json, Value};
-use std::fs;
 use tauri::AppHandle;
 
 pub(crate) fn registration() -> ToolRegistration {
@@ -56,59 +54,24 @@ async fn execute_async(app: &AppHandle, conversation_id: Option<&str>, input: Va
             Ok(root) => root,
             Err(error) => return json!({ "ok": false, "error": error }).to_string(),
         };
-    let target = match crate::llm::services::file_changes::resolve_tool_path(&root, path) {
-        Ok(path) => path,
-        Err(error) => return json!({ "ok": false, "error": error }).to_string(),
-    };
-    let before = if target.exists() {
-        match fs::read_to_string(&target) {
-            Ok(content) => Some(content),
-            Err(error) => {
-                return json!({
-                    "ok": false,
-                    "error": format!("Cannot safely capture existing file before write_file: {}", error)
-                })
-                .to_string()
-            }
-        }
-    } else {
-        None
-    };
-
-    let change_batch_id = match crate::llm::services::file_changes::commit_change_batch(
+    match crate::llm::services::file_changes::write_file_change(
         app,
         conversation_id,
         &root,
-        "write_file",
-        vec![FileChangeDraft {
-            path: target.clone(),
-            before,
-            after: Some(content.to_string()),
-        }],
-        ) {
-        Ok(batch_id) => batch_id,
-        Err(error) => {
-            return json!({
-                "ok": false,
-                "error": error
+        path,
+        content,
+    ) {
+        Ok(result) => {
+            let changed_files = result.files.len();
+            json!({
+                "ok": true,
+                "message": if result.change_batch_id.is_some() { "Successfully wrote to file" } else { "No file changes" },
+                "files": result.files,
+                "changed_files": changed_files,
+                "change_batch_id": result.change_batch_id
             })
             .to_string()
         }
-    };
-
-    let changed_files = usize::from(change_batch_id.is_some());
-    let files = if change_batch_id.is_some() {
-        vec![path]
-    } else {
-        Vec::new()
-    };
-
-    json!({
-        "ok": true,
-        "message": if change_batch_id.is_some() { "Successfully wrote to file" } else { "No file changes" },
-        "files": files,
-        "changed_files": changed_files,
-        "change_batch_id": change_batch_id
-    })
-    .to_string()
+        Err(error) => json!({ "ok": false, "error": error }).to_string(),
+    }
 }

@@ -12,7 +12,9 @@ use crate::llm::types::{AgentMode, Message};
 use crate::llm::utils::error_event::emit_backend_error;
 
 use super::sse_utils::truncate_for_log;
-use types::{ResponsesOutputItem, ResponsesResponse, ResponsesStreamEvent};
+use types::{
+    ResponsesOutputItem, ResponsesReasoningSummaryPart, ResponsesResponse, ResponsesStreamEvent,
+};
 
 pub struct ResponsesProvider;
 
@@ -23,31 +25,47 @@ struct PendingFunctionCall {
     arguments: String,
 }
 
+#[derive(Debug, Default)]
+struct PendingReasoning {
+    summary: String,
+}
+
 struct ResponsesStreamParser {
     pending_fn_calls: BTreeMap<usize, PendingFunctionCall>,
+    pending_reasoning: BTreeMap<usize, PendingReasoning>,
 }
 
 impl ResponsesStreamParser {
     fn new() -> Self {
         Self {
             pending_fn_calls: BTreeMap::new(),
+            pending_reasoning: BTreeMap::new(),
         }
     }
 }
 
 fn response_error_message(prefix: &str, response: ResponsesResponse) -> String {
+    let response_id = response.id.unwrap_or_else(|| "unknown".to_string());
+    let status = response.status.unwrap_or_else(|| "unknown".to_string());
+
     if let Some(error) = response.error {
         let code = error.code.unwrap_or_else(|| "unknown".to_string());
         let message = error.message.unwrap_or_else(|| "unknown error".to_string());
-        return format!("{}: code={}, message={}", prefix, code, message);
+        return format!(
+            "{}: id={}, status={}, code={}, message={}",
+            prefix, response_id, status, code, message
+        );
     }
 
     if let Some(details) = response.incomplete_details {
         let reason = details.reason.unwrap_or_else(|| "unknown".to_string());
-        return format!("{}: reason={}", prefix, reason);
+        return format!(
+            "{}: id={}, status={}, reason={}",
+            prefix, response_id, status, reason
+        );
     }
 
-    prefix.to_string()
+    format!("{}: id={}, status={}", prefix, response_id, status)
 }
 
 fn ready_tool_call(
@@ -98,6 +116,23 @@ fn ready_tool_call(
     }))
 }
 
+fn reasoning_summary_to_text(summary: Option<Vec<ResponsesReasoningSummaryPart>>) -> String {
+    summary
+        .unwrap_or_default()
+        .into_iter()
+        .map(|part| match part {
+            ResponsesReasoningSummaryPart::SummaryText { text } => text,
+        })
+        .filter(|text| !text.trim().is_empty())
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+fn completed_stop_reason(response: ResponsesResponse) -> (Option<types::ResponsesUsage>, String) {
+    let status = response.status.unwrap_or_else(|| "completed".to_string());
+    (response.usage, format!("responses.{}", status))
+}
+
 impl StreamParser for ResponsesStreamParser {
     fn provider_name(&self) -> &'static str {
         "responses"
@@ -119,6 +154,10 @@ impl StreamParser for ResponsesStreamParser {
         let mut deltas: Vec<Delta> = Vec::new();
 
         match event {
+            ResponsesStreamEvent::Created { .. }
+            | ResponsesStreamEvent::Queued { .. }
+            | ResponsesStreamEvent::InProgress { .. } => {}
+
             ResponsesStreamEvent::OutputItemAdded { output_index, item } => {
                 if item.item_type == "function_call" {
                     let entry = self.pending_fn_calls.entry(output_index).or_default();
@@ -130,16 +169,66 @@ impl StreamParser for ResponsesStreamParser {
                             name,
                         });
                     }
+                } else if item.item_type == "reasoning" {
+                    let entry = self.pending_reasoning.entry(output_index).or_default();
+                    let text = reasoning_summary_to_text(item.summary);
+                    if !text.is_empty() {
+                        entry.summary.push_str(&text);
+                    }
                 }
             }
+
+            ResponsesStreamEvent::ContentPartAdded { .. }
+            | ResponsesStreamEvent::ContentPartDone { .. }
+            | ResponsesStreamEvent::OutputTextDone { .. } => {}
 
             ResponsesStreamEvent::OutputTextDelta { delta } => {
                 deltas.push(Delta::Text(delta));
             }
 
-            ResponsesStreamEvent::ReasoningSummaryTextDelta { delta } => {
+            ResponsesStreamEvent::RefusalDelta { delta } => {
+                deltas.push(Delta::Text(delta));
+            }
+
+            ResponsesStreamEvent::RefusalDone { .. } => {}
+
+            ResponsesStreamEvent::ReasoningSummaryPartAdded { output_index, .. } => {
+                self.pending_reasoning.entry(output_index).or_default();
+            }
+
+            ResponsesStreamEvent::ReasoningSummaryPartDone {
+                output_index, part, ..
+            } => {
+                let text = reasoning_summary_to_text(part.map(|part| vec![part]));
+                if !text.is_empty() {
+                    let entry = self.pending_reasoning.entry(output_index).or_default();
+                    if entry.summary.is_empty() {
+                        entry.summary = text;
+                    }
+                }
+            }
+
+            ResponsesStreamEvent::ReasoningSummaryTextDelta {
+                output_index,
+                delta,
+                ..
+            } => {
                 if !delta.is_empty() {
+                    let entry = self.pending_reasoning.entry(output_index).or_default();
+                    entry.summary.push_str(&delta);
                     deltas.push(Delta::Reasoning(delta));
+                }
+            }
+
+            ResponsesStreamEvent::ReasoningSummaryTextDone {
+                output_index, text, ..
+            } => {
+                if !text.is_empty() {
+                    let entry = self.pending_reasoning.entry(output_index).or_default();
+                    if entry.summary.is_empty() {
+                        entry.summary = text.clone();
+                        deltas.push(Delta::Reasoning(text));
+                    }
                 }
             }
 
@@ -164,6 +253,21 @@ impl StreamParser for ResponsesStreamParser {
             }
 
             ResponsesStreamEvent::OutputItemDone { output_index, item } => {
+                if item.item_type == "reasoning" {
+                    let pending = self.pending_reasoning.remove(&output_index);
+                    let mut thinking = pending.map(|entry| entry.summary).unwrap_or_default();
+                    if thinking.trim().is_empty() {
+                        thinking = reasoning_summary_to_text(item.summary);
+                    }
+                    if !thinking.trim().is_empty() {
+                        deltas.push(Delta::ThinkingBlock {
+                            thinking,
+                            signature: String::new(),
+                        });
+                    }
+                    return Ok(deltas);
+                }
+
                 let pending = self.pending_fn_calls.remove(&output_index);
                 if let Some(ready) = ready_tool_call(output_index, item, pending)? {
                     deltas.push(Delta::ToolsReady(vec![ready]));
@@ -171,14 +275,15 @@ impl StreamParser for ResponsesStreamParser {
             }
 
             ResponsesStreamEvent::Completed { response } => {
-                if let Some(usage) = response.usage {
+                let (usage, status) = completed_stop_reason(response);
+                if let Some(usage) = usage {
                     deltas.push(Delta::Usage {
                         input: usage.input_tokens,
                         output: usage.output_tokens,
                     });
                 }
                 deltas.push(Delta::Stop {
-                    reason: Some("end_turn".to_string()),
+                    reason: Some(status),
                 });
             }
 
@@ -213,8 +318,6 @@ impl StreamParser for ResponsesStreamParser {
                     message.unwrap_or_else(|| "unknown error".to_string())
                 ));
             }
-
-            ResponsesStreamEvent::Other => {}
         }
 
         Ok(deltas)

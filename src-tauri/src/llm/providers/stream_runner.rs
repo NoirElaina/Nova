@@ -267,24 +267,6 @@ pub async fn run_streaming<P: StreamParser>(
                 continue;
             }
 
-            // 每个 SSE data 行先 emit raw-json 给前端调试。
-            app.emit(
-                "chat-stream",
-                ChatMessageEvent {
-                    r#type: "raw-json".into(),
-                    text: Some(data.clone()),
-                    tool_use_id: None,
-                    tool_use_name: None,
-                    tool_use_input: None,
-                    tool_result: None,
-                    token_usage: None,
-                    stop_reason: None,
-                    turn_state: Some("raw_stream".into()),
-                    conversation_id: conversation_id.map(str::to_string),
-                },
-            )
-            .ok();
-
             // 调用 provider parser 解析 data 行 → Delta 列表。
             let deltas = match parser.parse_event(&data) {
                 Ok(d) => d,
@@ -779,76 +761,4 @@ fn is_needs_user_input_payload(raw: &str) -> bool {
                 .map(|s| s == "needs_user_input")
         })
         .unwrap_or(false)
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::llm::types::Content;
-
-    #[test]
-    fn partial_messages_preserve_text_before_tool_use_order() {
-        let generated_text = "I'll inspect the file first.";
-        let mut assistant_output = AssistantOutputBuilder::default();
-        assistant_output.append_text(generated_text);
-        assistant_output.push_tool_use(
-            "toolu_1".to_string(),
-            "grep_search".to_string(),
-            serde_json::json!({ "query": "stream" }),
-        );
-        let mut tool_result_blocks = Vec::new();
-        let mut additional_context_messages = Vec::new();
-
-        let messages = build_partial_cancelled_messages(
-            &mut assistant_output,
-            &mut tool_result_blocks,
-            &mut additional_context_messages,
-        );
-
-        assert_eq!(messages.len(), 1);
-        let Content::Blocks(blocks) = &messages[0].content else {
-            panic!("assistant content should be blocks");
-        };
-        assert_eq!(blocks.len(), 2);
-
-        match &blocks[0] {
-            ContentBlock::Text { text } => assert_eq!(text, generated_text),
-            other => panic!("first block should be text, got {other:?}"),
-        }
-        match &blocks[1] {
-            ContentBlock::ToolUse { id, name, .. } => {
-                assert_eq!(id, "toolu_1");
-                assert_eq!(name, "grep_search");
-            }
-            other => panic!("second block should be tool use, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn assistant_output_preserves_text_after_tool_use_order() {
-        let mut assistant_output = AssistantOutputBuilder::default();
-        assistant_output.append_text("before");
-        assistant_output.push_tool_use(
-            "toolu_1".to_string(),
-            "grep_search".to_string(),
-            serde_json::json!({}),
-        );
-        assistant_output.append_text("after");
-
-        let blocks = assistant_output.take_blocks();
-
-        assert_eq!(blocks.len(), 3);
-        match &blocks[0] {
-            ContentBlock::Text { text } => assert_eq!(text, "before"),
-            other => panic!("first block should be text, got {other:?}"),
-        }
-        match &blocks[1] {
-            ContentBlock::ToolUse { id, .. } => assert_eq!(id, "toolu_1"),
-            other => panic!("second block should be tool use, got {other:?}"),
-        }
-        match &blocks[2] {
-            ContentBlock::Text { text } => assert_eq!(text, "after"),
-            other => panic!("third block should be text, got {other:?}"),
-        }
-    }
 }

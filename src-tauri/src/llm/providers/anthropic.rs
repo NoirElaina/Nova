@@ -238,7 +238,6 @@ impl AnthropicProvider {
         let resp = tokio::select! {
             res = client
                 .post(&url)
-                .header("Authorization", format!("Bearer {}", api_key))
                 .header("x-api-key", &api_key)
                 .header("anthropic-version", "2023-06-01")
                 .header("content-type", "application/json")

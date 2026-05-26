@@ -1,7 +1,7 @@
 use reqwest::Client;
 use serde::Deserialize;
 use serde_json::Value;
-use std::collections::{BTreeMap, HashMap, VecDeque};
+use std::collections::{BTreeMap, HashMap};
 use tauri::AppHandle;
 
 use crate::llm::providers::stream_runner::{run_streaming, Delta, ReadyToolCall, StreamParser};
@@ -16,9 +16,6 @@ use super::sse_utils::truncate_for_log;
 // - 将 internal Message -> OpenAI JSON message
 // - 触发 /v1/chat/completions?stream
 // - 处理流式 SSE Delta 并 emit 到前端
-
-const STREAM_DIAGNOSTIC_EVENT_LIMIT: usize = 20;
-const STREAM_DIAGNOSTIC_PREVIEW_CHARS: usize = 240;
 
 #[derive(Debug, Deserialize)]
 struct OpenAiStreamChunk {
@@ -99,126 +96,6 @@ fn extract_reasoning_text(value: &Value) -> String {
     }
 }
 
-#[derive(Debug, Clone)]
-struct StreamDiagnosticEvent {
-    seq: u64,
-    parse_ok: bool,
-    parse_error: Option<String>,
-    data_preview: String,
-    choices_len: Option<usize>,
-    finish_reasons: Vec<String>,
-    tool_delta_count: usize,
-    tool_delta_summaries: Vec<String>,
-}
-
-fn summarize_tool_delta(tool_call: &OpenAiToolCall) -> String {
-    let name = tool_call
-        .function
-        .as_ref()
-        .and_then(|function| function.name.as_deref())
-        .unwrap_or("-");
-    let arguments_len = tool_call
-        .function
-        .as_ref()
-        .and_then(|function| function.arguments.as_ref())
-        .map(|arguments| arguments.len())
-        .unwrap_or(0);
-    format!(
-        "index={} has_id={} name={} arguments_len={}",
-        tool_call.index,
-        tool_call.id.is_some(),
-        name,
-        arguments_len
-    )
-}
-
-fn build_stream_diagnostic_event(
-    seq: u64,
-    data: &str,
-    parsed: Result<&OpenAiStreamChunk, String>,
-) -> StreamDiagnosticEvent {
-    match parsed {
-        Ok(chunk) => {
-            let finish_reasons = chunk
-                .choices
-                .iter()
-                .filter_map(|choice| choice.finish_reason.clone())
-                .collect::<Vec<_>>();
-            let tool_delta_summaries = chunk
-                .choices
-                .iter()
-                .filter_map(|choice| choice.delta.tool_calls.as_ref())
-                .flat_map(|tool_calls| tool_calls.iter().map(summarize_tool_delta))
-                .collect::<Vec<_>>();
-            StreamDiagnosticEvent {
-                seq,
-                parse_ok: true,
-                parse_error: None,
-                data_preview: truncate_for_log(data, STREAM_DIAGNOSTIC_PREVIEW_CHARS),
-                choices_len: Some(chunk.choices.len()),
-                finish_reasons,
-                tool_delta_count: tool_delta_summaries.len(),
-                tool_delta_summaries,
-            }
-        }
-        Err(error) => StreamDiagnosticEvent {
-            seq,
-            parse_ok: false,
-            parse_error: Some(error),
-            data_preview: truncate_for_log(data, STREAM_DIAGNOSTIC_PREVIEW_CHARS),
-            choices_len: None,
-            finish_reasons: Vec::new(),
-            tool_delta_count: 0,
-            tool_delta_summaries: Vec::new(),
-        },
-    }
-}
-
-fn push_stream_diagnostic_event(
-    recent_events: &mut VecDeque<StreamDiagnosticEvent>,
-    event: StreamDiagnosticEvent,
-) {
-    if recent_events.len() >= STREAM_DIAGNOSTIC_EVENT_LIMIT {
-        recent_events.pop_front();
-    }
-    recent_events.push_back(event);
-}
-
-fn format_stream_diagnostics(
-    recent_events: &VecDeque<StreamDiagnosticEvent>,
-    pending_buffer_bytes: usize,
-) -> String {
-    if recent_events.is_empty() {
-        return format!(
-            "recent_sse_events=[] pending_buffer_bytes={}",
-            pending_buffer_bytes
-        );
-    }
-
-    let events = recent_events
-        .iter()
-        .map(|event| {
-            format!(
-                "#{} ok={} choices={:?} finish={:?} tool_delta_count={} tool_deltas={:?} parse_error={:?} data={}",
-                event.seq,
-                event.parse_ok,
-                event.choices_len,
-                event.finish_reasons,
-                event.tool_delta_count,
-                event.tool_delta_summaries,
-                event.parse_error,
-                event.data_preview
-            )
-        })
-        .collect::<Vec<_>>()
-        .join(" | ");
-
-    format!(
-        "recent_sse_events=[{}] pending_buffer_bytes={}",
-        events, pending_buffer_bytes
-    )
-}
-
 #[derive(Debug, Default)]
 struct PendingToolCall {
     // 累积到的调用 ID。
@@ -235,25 +112,13 @@ struct PendingToolCall {
 
 struct OpenAiStreamParser {
     pending: BTreeMap<usize, PendingToolCall>,
-    recent_events: VecDeque<StreamDiagnosticEvent>,
-    seq: u64,
 }
 
 impl OpenAiStreamParser {
     fn new() -> Self {
         Self {
             pending: BTreeMap::new(),
-            recent_events: VecDeque::with_capacity(STREAM_DIAGNOSTIC_EVENT_LIMIT),
-            seq: 0,
         }
-    }
-
-    fn push_diagnostic(&mut self, event: StreamDiagnosticEvent) {
-        push_stream_diagnostic_event(&mut self.recent_events, event);
-    }
-
-    fn diag_ctx(&self) -> String {
-        format_stream_diagnostics(&self.recent_events, 0)
     }
 }
 
@@ -263,23 +128,13 @@ impl StreamParser for OpenAiStreamParser {
     }
 
     fn parse_event(&mut self, data: &str) -> Result<Vec<Delta>, String> {
-        self.seq += 1;
-
         let chunk: OpenAiStreamChunk = match serde_json::from_str(data) {
-            Ok(c) => {
-                let diag = build_stream_diagnostic_event(self.seq, data, Ok(&c));
-                self.push_diagnostic(diag);
-                c
-            }
+            Ok(c) => c,
             Err(e) => {
-                let err_str = e.to_string();
-                let diag = build_stream_diagnostic_event(self.seq, data, Err(err_str.clone()));
-                self.push_diagnostic(diag);
                 return Err(format!(
-                    "Failed to parse OpenAI SSE event JSON: {}. Data preview: {}. {}",
-                    err_str,
-                    truncate_for_log(data, 800),
-                    self.diag_ctx()
+                    "Failed to parse OpenAI SSE event JSON: {}. Data preview: {}",
+                    e,
+                    truncate_for_log(data, 800)
                 ));
             }
         };
@@ -362,10 +217,10 @@ impl StreamParser for OpenAiStreamParser {
                         std::mem::take(&mut self.pending).into_iter().collect();
 
                     if drained.is_empty() {
-                        return Err(format!(
-                            "OpenAI stream reported finish_reason=tool_calls but no pending tool call deltas were captured. {}",
-                            self.diag_ctx()
-                        ));
+                        return Err(
+                            "OpenAI stream reported finish_reason=tool_calls but no pending tool call deltas were captured."
+                                .to_string(),
+                        );
                     }
 
                     let mut ready: Vec<ReadyToolCall> = Vec::new();
@@ -374,10 +229,9 @@ impl StreamParser for OpenAiStreamParser {
                             (Some(id), Some(name)) => (id, name),
                             (id, name) => {
                                 return Err(format!(
-                                    "OpenAI tool call at index={} incomplete at finish_reason=tool_calls: has_id={:?}, has_name={:?}, args_preview={}. {}",
+                                    "OpenAI tool call at index={} incomplete at finish_reason=tool_calls: has_id={:?}, has_name={:?}, args_preview={}",
                                     index, id, name,
-                                    truncate_for_log(&tc.arguments, 800),
-                                    self.diag_ctx()
+                                    truncate_for_log(&tc.arguments, 800)
                                 ));
                             }
                         };
@@ -385,10 +239,9 @@ impl StreamParser for OpenAiStreamParser {
                             Ok(v) => v,
                             Err(e) => {
                                 return Err(format!(
-                                    "Failed to parse OpenAI tool call arguments for '{}': {}. Args preview: {}. {}",
+                                    "Failed to parse OpenAI tool call arguments for '{}': {}. Args preview: {}",
                                     name, e,
-                                    truncate_for_log(&tc.arguments, 800),
-                                    self.diag_ctx()
+                                    truncate_for_log(&tc.arguments, 800)
                                 ));
                             }
                         };

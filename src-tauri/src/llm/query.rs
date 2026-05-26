@@ -68,6 +68,63 @@ fn emit_token_usage_event(
     .ok();
 }
 
+fn emit_token_debug_event(
+    app: &AppHandle,
+    conversation_id: Option<&str>,
+    estimate_source: &str,
+    estimated_input_tokens: u32,
+    actual_input_tokens: Option<u32>,
+    actual_output_tokens: Option<u32>,
+    tool_count: usize,
+) {
+    let actual_total_tokens = actual_input_tokens
+        .zip(actual_output_tokens)
+        .and_then(|(input, output)| input.checked_add(output));
+    let input_delta =
+        actual_input_tokens.map(|actual| actual as i64 - estimated_input_tokens as i64);
+    let input_delta_percent = actual_input_tokens.and_then(|actual| {
+        if estimated_input_tokens == 0 {
+            None
+        } else {
+            Some(
+                ((actual as f64 - estimated_input_tokens as f64) / estimated_input_tokens as f64)
+                    * 100.0,
+            )
+        }
+    });
+
+    let payload = serde_json::json!({
+        "conversationId": conversation_id,
+        "estimateSource": estimate_source,
+        "estimatedInputTokens": estimated_input_tokens,
+        "actualInputTokens": actual_input_tokens,
+        "actualOutputTokens": actual_output_tokens,
+        "actualTotalTokens": actual_total_tokens,
+        "inputDelta": input_delta,
+        "inputDeltaPercent": input_delta_percent,
+        "toolCount": tool_count,
+    });
+
+    eprintln!("[Nova token compare] {}", payload);
+
+    app.emit(
+        "chat-stream",
+        ChatMessageEvent {
+            r#type: "token-debug".into(),
+            text: Some(payload.to_string()),
+            tool_use_id: None,
+            tool_use_name: None,
+            tool_use_input: None,
+            tool_result: None,
+            token_usage: actual_total_tokens.or(actual_input_tokens),
+            stop_reason: None,
+            turn_state: Some("token_debug".into()),
+            conversation_id: conversation_id.map(str::to_string),
+        },
+    )
+    .ok();
+}
+
 fn emit_context_compact_event(
     app: &AppHandle,
     conversation_id: Option<&str>,
@@ -795,6 +852,15 @@ pub async fn send_chat_message(
             input_tokens,
             provider_result.output_tokens,
             input_token_source,
+        );
+        emit_token_debug_event(
+            &app,
+            conversation_id.as_deref(),
+            prompt_estimate.source,
+            request_input_estimate,
+            provider_result.input_tokens,
+            provider_result.output_tokens,
+            prompt_estimate.tool_count,
         );
 
         // 若 provider 返回了实际 input_tokens，用真实值刷新上下文用量显示。

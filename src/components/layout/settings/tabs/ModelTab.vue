@@ -11,6 +11,9 @@ type ProviderProfile = {
   apiKey: string
   baseUrl: string
   model: string
+  anthropicThinkingEnabled?: boolean
+  anthropicThinkingBudgetTokens?: number | null
+  stopSequences?: string[]
 }
 
 const apiKeyInput = ref('')

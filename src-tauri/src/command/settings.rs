@@ -37,6 +37,10 @@ fn default_enable_app_log() -> bool {
     false
 }
 
+fn default_stop_sequences() -> Vec<String> {
+    Vec::new()
+}
+
 const STOP_HOOK_MAX_ASSISTANT_MESSAGES_KEY: &str = "NOVA_STOP_HOOK_MAX_ASSISTANT_MESSAGES";
 const POST_COMPACT_HOOK_CONTEXT_KEY: &str = "NOVA_POST_COMPACT_HOOK_CONTEXT";
 
@@ -100,6 +104,15 @@ pub struct ProviderProfile {
     #[serde(default)]
     // provider model。
     pub model: String,
+    #[serde(default)]
+    // Anthropic extended thinking 是否启用。
+    pub anthropic_thinking_enabled: bool,
+    #[serde(default)]
+    // Anthropic extended thinking token 预算。
+    pub anthropic_thinking_budget_tokens: Option<u32>,
+    #[serde(default = "default_stop_sequences")]
+    // Anthropic stop_sequences / 其他协议可复用的停止序列。
+    pub stop_sequences: Vec<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -206,6 +219,12 @@ impl AppSettings {
                 profile.protocol = normalize_provider_protocol(&profile.protocol);
             }
             profile.display_name = profile.display_name.trim().to_string();
+            profile.stop_sequences = profile
+                .stop_sequences
+                .iter()
+                .map(|sequence| sequence.trim().to_string())
+                .filter(|sequence| !sequence.is_empty())
+                .collect();
         }
 
         // 规范化 RAG 配置。
@@ -255,6 +274,36 @@ fn validate_rag_settings(settings: &AppSettings) -> Result<(), String> {
 
     if rag.embedding_model.chars().count() > 256 {
         return Err("Invalid rag.embeddingModel: too long".to_string());
+    }
+
+    Ok(())
+}
+
+fn validate_provider_profiles(settings: &AppSettings) -> Result<(), String> {
+    for (profile_key, profile) in &settings.provider_profiles {
+        if let Some(budget) = profile.anthropic_thinking_budget_tokens {
+            if budget < 1024 {
+                return Err(format!(
+                    "Invalid providerProfiles[{}].anthropicThinkingBudgetTokens: must be at least 1024",
+                    profile_key
+                ));
+            }
+        }
+
+        for sequence in &profile.stop_sequences {
+            if sequence.contains('\u{0000}') {
+                return Err(format!(
+                    "Invalid providerProfiles[{}].stopSequences: contains NUL character",
+                    profile_key
+                ));
+            }
+            if sequence.chars().count() > 256 {
+                return Err(format!(
+                    "Invalid providerProfiles[{}].stopSequences: sequence is too long",
+                    profile_key
+                ));
+            }
+        }
     }
 
     Ok(())
@@ -320,6 +369,7 @@ pub fn save_settings(app: AppHandle, settings: AppSettings) -> Result<(), String
         normalized.normalize_for_runtime();
         validate_hook_env(&normalized)?;
         validate_rag_settings(&normalized)?;
+        validate_provider_profiles(&normalized)?;
         crate::command::settings_secrets::encrypt_provider_api_keys(&mut normalized)?;
         // 序列化为美化 JSON。
         let content = serde_json::to_string_pretty(&normalized).map_err(|e| e.to_string())?;

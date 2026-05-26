@@ -3,7 +3,10 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tauri::AppHandle;
 
-use crate::llm::providers::anthropic::types::{AnthropicRequest, AnthropicResponse};
+use crate::llm::providers::anthropic::types::{
+    AnthropicContentBlock, AnthropicMessage, AnthropicMessageContent, AnthropicRequest,
+    AnthropicResponse,
+};
 use crate::llm::types::{Content, ContentBlock, Message, Role};
 
 const SUMMARY_MAX_TOKENS: u32 = 1200;
@@ -209,11 +212,13 @@ async fn summarize_with_anthropic(app: &AppHandle, user_prompt: &str) -> Result<
         model: profile.model.clone(),
         max_tokens: SUMMARY_MAX_TOKENS,
         system: Some(COMPACT_SUMMARY_SYSTEM_PROMPT.to_string()),
-        messages: vec![Message {
-            role: Role::User,
-            content: Content::Text(user_prompt.to_string()),
+        thinking: None,
+        messages: vec![AnthropicMessage {
+            role: "user".to_string(),
+            content: AnthropicMessageContent::Text(user_prompt.to_string()),
         }],
         tools: Vec::new(),
+        stop_sequences: Vec::new(),
         stream: false,
     };
 
@@ -243,7 +248,7 @@ async fn summarize_with_anthropic(app: &AppHandle, user_prompt: &str) -> Result<
         .content
         .iter()
         .filter_map(|block| match block {
-            ContentBlock::Text { text } => Some(text.trim()),
+            AnthropicContentBlock::Text { text } => Some(text.trim()),
             _ => None,
         })
         .filter(|text| !text.is_empty())

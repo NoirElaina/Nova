@@ -23,16 +23,10 @@ struct AnthropicStreamParser {
     current_sig: String,
     pending_tool_calls: Vec<tools::ToolCallRequest>,
     pending_stop_reason: Option<String>,
-    streaming_batch_size: usize,
 }
 
 impl AnthropicStreamParser {
     fn new() -> Self {
-        let streaming_batch_size = std::env::var("NOVA_STREAMING_TOOL_BATCH_SIZE")
-            .ok()
-            .and_then(|v| v.trim().parse::<usize>().ok())
-            .filter(|v| *v > 0)
-            .unwrap_or(2);
         Self {
             current_tool_id: None,
             current_tool_name: None,
@@ -41,7 +35,6 @@ impl AnthropicStreamParser {
             current_sig: String::new(),
             pending_tool_calls: Vec::new(),
             pending_stop_reason: None,
-            streaming_batch_size,
         }
     }
 }
@@ -131,19 +124,6 @@ impl StreamParser for AnthropicStreamParser {
                         name: name.clone(),
                         input: input_value,
                     });
-
-                    if self.pending_tool_calls.len() >= self.streaming_batch_size {
-                        let batch: Vec<ReadyToolCall> =
-                            std::mem::take(&mut self.pending_tool_calls)
-                                .into_iter()
-                                .map(|r| ReadyToolCall {
-                                    id: r.id,
-                                    name: r.name,
-                                    input: r.input,
-                                })
-                                .collect();
-                        deltas.push(Delta::ToolsReady(batch));
-                    }
                 } else if !self.current_thinking.is_empty() {
                     deltas.push(Delta::ThinkingBlock {
                         thinking: std::mem::take(&mut self.current_thinking),

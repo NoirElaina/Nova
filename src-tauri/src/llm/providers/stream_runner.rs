@@ -81,6 +81,61 @@ pub trait StreamParser: Send {
 }
 
 // ─────────────────────────────────────────────
+// AssistantOutputBuilder — 保持 assistant 内容块的流式顺序
+// ─────────────────────────────────────────────
+
+/// 维护流式 assistant 输出的内部顺序。
+///
+/// 文本 delta 先进入 pending buffer；任何结构块入队前都会先 flush pending 文本，
+/// 保证最终 snapshot 与模型实际输出顺序一致。
+#[derive(Debug, Default)]
+struct AssistantOutputBuilder {
+    pending_text: String,
+    full_text: String,
+    blocks: Vec<ContentBlock>,
+}
+
+impl AssistantOutputBuilder {
+    fn append_text(&mut self, text: &str) {
+        self.pending_text.push_str(text);
+        self.full_text.push_str(text);
+    }
+
+    fn push_tool_use(&mut self, id: String, name: String, input: serde_json::Value) {
+        self.push_block(ContentBlock::ToolUse { id, name, input });
+    }
+
+    fn push_thinking(&mut self, thinking: String, signature: String) {
+        self.push_block(ContentBlock::Thinking {
+            thinking,
+            signature,
+        });
+    }
+
+    fn full_text(&self) -> &str {
+        &self.full_text
+    }
+
+    fn take_blocks(&mut self) -> Vec<ContentBlock> {
+        self.flush_pending_text();
+        std::mem::take(&mut self.blocks)
+    }
+
+    fn push_block(&mut self, block: ContentBlock) {
+        self.flush_pending_text();
+        self.blocks.push(block);
+    }
+
+    fn flush_pending_text(&mut self) {
+        if self.pending_text.is_empty() {
+            return;
+        }
+        let text = std::mem::take(&mut self.pending_text);
+        self.blocks.push(ContentBlock::Text { text });
+    }
+}
+
+// ─────────────────────────────────────────────
 // run_streaming — 共享 SSE 循环
 // ─────────────────────────────────────────────
 
@@ -103,10 +158,8 @@ pub async fn run_streaming<P: StreamParser>(
     let mut stream = response.bytes_stream();
     let mut sse_buffer: Vec<u8> = Vec::new();
 
-    // 累积文本输出（最终写入 Text ContentBlock）。
-    let mut generated_text = String::new();
-    // assistant 输出块：Text / ToolUse / Thinking 等。
-    let mut output_blocks: Vec<ContentBlock> = Vec::new();
+    // assistant 输出块构建器：统一维护 Text / ToolUse / Thinking 的流式顺序。
+    let mut assistant_output = AssistantOutputBuilder::default();
     // 工具结果块（下一轮作为 user 消息回灌）。
     let mut tool_result_blocks: Vec<ContentBlock> = Vec::new();
     // hooks 注入的附加上下文消息。
@@ -130,8 +183,7 @@ pub async fn run_streaming<P: StreamParser>(
             // 把已流式输出的部分内容封装成 partial assistant 消息返回，
             // 确保 turn_snapshot 与 UI 历史（conversation_messages）保持一致。
             let partial_messages = build_partial_cancelled_messages(
-                &generated_text,
-                &mut output_blocks,
+                &mut assistant_output,
                 &mut tool_result_blocks,
                 &mut additional_context_messages,
             );
@@ -169,8 +221,7 @@ pub async fn run_streaming<P: StreamParser>(
                 return Err(ProviderTurnError::with_partial(
                     msg,
                     build_partial_cancelled_messages(
-                        &generated_text,
-                        &mut output_blocks,
+                        &mut assistant_output,
                         &mut tool_result_blocks,
                         &mut additional_context_messages,
                     ),
@@ -203,8 +254,7 @@ pub async fn run_streaming<P: StreamParser>(
                     return Err(ProviderTurnError::with_partial(
                         msg,
                         build_partial_cancelled_messages(
-                            &generated_text,
-                            &mut output_blocks,
+                            &mut assistant_output,
                             &mut tool_result_blocks,
                             &mut additional_context_messages,
                         ),
@@ -248,8 +298,7 @@ pub async fn run_streaming<P: StreamParser>(
                     return Err(ProviderTurnError::with_partial(
                         e,
                         build_partial_cancelled_messages(
-                            &generated_text,
-                            &mut output_blocks,
+                            &mut assistant_output,
                             &mut tool_result_blocks,
                             &mut additional_context_messages,
                         ),
@@ -264,8 +313,7 @@ pub async fn run_streaming<P: StreamParser>(
                     app,
                     conversation_id,
                     provider,
-                    &mut generated_text,
-                    &mut output_blocks,
+                    &mut assistant_output,
                     &mut tool_result_blocks,
                     &mut additional_context_messages,
                     &mut prevent_continuation,
@@ -280,8 +328,7 @@ pub async fn run_streaming<P: StreamParser>(
                     return Err(ProviderTurnError::with_partial(
                         e,
                         build_partial_cancelled_messages(
-                            &generated_text,
-                            &mut output_blocks,
+                            &mut assistant_output,
                             &mut tool_result_blocks,
                             &mut additional_context_messages,
                         ),
@@ -299,8 +346,7 @@ pub async fn run_streaming<P: StreamParser>(
             app,
             conversation_id,
             provider,
-            &mut generated_text,
-            &mut output_blocks,
+            &mut assistant_output,
             &mut tool_result_blocks,
             &mut additional_context_messages,
             &mut prevent_continuation,
@@ -315,8 +361,7 @@ pub async fn run_streaming<P: StreamParser>(
             return Err(ProviderTurnError::with_partial(
                 e,
                 build_partial_cancelled_messages(
-                    &generated_text,
-                    &mut output_blocks,
+                    &mut assistant_output,
                     &mut tool_result_blocks,
                     &mut additional_context_messages,
                 ),
@@ -342,20 +387,15 @@ pub async fn run_streaming<P: StreamParser>(
         return Err(ProviderTurnError::with_partial(
             msg,
             build_partial_cancelled_messages(
-                &generated_text,
-                &mut output_blocks,
+                &mut assistant_output,
                 &mut tool_result_blocks,
                 &mut additional_context_messages,
             ),
         ));
     }
 
-    // 将剩余累积文本写入输出块。
-    if !generated_text.is_empty() {
-        output_blocks.push(ContentBlock::Text {
-            text: generated_text.clone(),
-        });
-    }
+    // 将剩余 pending 文本按顺序写入输出块。
+    let output_blocks = assistant_output.take_blocks();
 
     // 若流内未发 stop，这里补发一次。
     if !emitted_stop {
@@ -409,11 +449,11 @@ pub async fn run_streaming<P: StreamParser>(
     };
 
     // @@日志记录 wire_response — 记录 AI 完整回复文本及 token 用量（流结束后写一次）。
-    if !generated_text.is_empty() {
+    if !assistant_output.full_text().is_empty() {
         crate::llm::utils::turn_log::log_wire_response(
             app,
             conversation_id,
-            &generated_text,
+            assistant_output.full_text(),
             current_input_tokens,
             current_output_tokens,
         );
@@ -454,22 +494,17 @@ pub async fn run_streaming<P: StreamParser>(
 ///   否则 ToolResult 会声称 attached_to_context=true，但真正的上下文消息已丢失。
 /// - 若尚无任何内容，返回空 Vec（query.rs 侧会补 [Request interrupted by user]）。
 fn build_partial_cancelled_messages(
-    generated_text: &str,
-    output_blocks: &mut Vec<ContentBlock>,
+    assistant_output: &mut AssistantOutputBuilder,
     tool_result_blocks: &mut Vec<ContentBlock>,
     additional_context_messages: &mut Vec<Message>,
 ) -> Vec<Message> {
-    if !generated_text.is_empty() {
-        output_blocks.push(ContentBlock::Text {
-            text: generated_text.to_string(),
-        });
-    }
+    let output_blocks = assistant_output.take_blocks();
     if output_blocks.is_empty() {
         return Vec::new();
     }
     let mut messages = vec![Message {
         role: Role::Assistant,
-        content: crate::llm::types::Content::Blocks(std::mem::take(output_blocks)),
+        content: crate::llm::types::Content::Blocks(output_blocks),
     }];
     // 有 tool_result 时一并打包，保证 ToolUse/ToolResult 成对出现。
     if !tool_result_blocks.is_empty() {
@@ -496,8 +531,7 @@ async fn process_delta(
     app: &AppHandle,
     conversation_id: Option<&str>,
     provider: &str,
-    generated_text: &mut String,
-    output_blocks: &mut Vec<ContentBlock>,
+    assistant_output: &mut AssistantOutputBuilder,
     tool_result_blocks: &mut Vec<ContentBlock>,
     additional_context_messages: &mut Vec<Message>,
     prevent_continuation: &mut bool,
@@ -509,7 +543,7 @@ async fn process_delta(
 ) -> Result<(), String> {
     match delta {
         Delta::Text(text) => {
-            generated_text.push_str(&text);
+            assistant_output.append_text(&text);
             crate::llm::services::live_turns::append_text(conversation_id, &text);
             app.emit(
                 "chat-stream",
@@ -588,14 +622,14 @@ async fn process_delta(
         }
 
         Delta::ToolsReady(ready_calls) => {
-            // 先将所有工具写入 output_blocks，再批量执行。
+            // 先将所有工具写入 assistant blocks，再批量执行。
             let mut call_requests: Vec<tools::ToolCallRequest> = Vec::new();
             for call in ready_calls {
-                output_blocks.push(ContentBlock::ToolUse {
-                    id: call.id.clone(),
-                    name: call.name.clone(),
-                    input: call.input.clone(),
-                });
+                assistant_output.push_tool_use(
+                    call.id.clone(),
+                    call.name.clone(),
+                    call.input.clone(),
+                );
                 app.emit(
                     "chat-stream",
                     ChatMessageEvent {
@@ -719,10 +753,7 @@ async fn process_delta(
             thinking,
             signature,
         } => {
-            output_blocks.push(ContentBlock::Thinking {
-                thinking,
-                signature,
-            });
+            assistant_output.push_thinking(thinking, signature);
         }
 
         Delta::Error(msg) => {
@@ -748,4 +779,76 @@ fn is_needs_user_input_payload(raw: &str) -> bool {
                 .map(|s| s == "needs_user_input")
         })
         .unwrap_or(false)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::llm::types::Content;
+
+    #[test]
+    fn partial_messages_preserve_text_before_tool_use_order() {
+        let generated_text = "I'll inspect the file first.";
+        let mut assistant_output = AssistantOutputBuilder::default();
+        assistant_output.append_text(generated_text);
+        assistant_output.push_tool_use(
+            "toolu_1".to_string(),
+            "grep_search".to_string(),
+            serde_json::json!({ "query": "stream" }),
+        );
+        let mut tool_result_blocks = Vec::new();
+        let mut additional_context_messages = Vec::new();
+
+        let messages = build_partial_cancelled_messages(
+            &mut assistant_output,
+            &mut tool_result_blocks,
+            &mut additional_context_messages,
+        );
+
+        assert_eq!(messages.len(), 1);
+        let Content::Blocks(blocks) = &messages[0].content else {
+            panic!("assistant content should be blocks");
+        };
+        assert_eq!(blocks.len(), 2);
+
+        match &blocks[0] {
+            ContentBlock::Text { text } => assert_eq!(text, generated_text),
+            other => panic!("first block should be text, got {other:?}"),
+        }
+        match &blocks[1] {
+            ContentBlock::ToolUse { id, name, .. } => {
+                assert_eq!(id, "toolu_1");
+                assert_eq!(name, "grep_search");
+            }
+            other => panic!("second block should be tool use, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn assistant_output_preserves_text_after_tool_use_order() {
+        let mut assistant_output = AssistantOutputBuilder::default();
+        assistant_output.append_text("before");
+        assistant_output.push_tool_use(
+            "toolu_1".to_string(),
+            "grep_search".to_string(),
+            serde_json::json!({}),
+        );
+        assistant_output.append_text("after");
+
+        let blocks = assistant_output.take_blocks();
+
+        assert_eq!(blocks.len(), 3);
+        match &blocks[0] {
+            ContentBlock::Text { text } => assert_eq!(text, "before"),
+            other => panic!("first block should be text, got {other:?}"),
+        }
+        match &blocks[1] {
+            ContentBlock::ToolUse { id, .. } => assert_eq!(id, "toolu_1"),
+            other => panic!("second block should be tool use, got {other:?}"),
+        }
+        match &blocks[2] {
+            ContentBlock::Text { text } => assert_eq!(text, "after"),
+            other => panic!("third block should be text, got {other:?}"),
+        }
+    }
 }

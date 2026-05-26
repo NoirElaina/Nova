@@ -3,9 +3,11 @@ use tauri::AppHandle;
 use crate::llm::providers::{ProviderPromptEstimate, ProviderTurnError};
 use crate::llm::services::compact;
 use crate::llm::tools;
-use crate::llm::types::{AgentMode, AnthropicRequest, Message};
+use crate::llm::types::{AgentMode, Message};
 use crate::llm::utils::model_context;
 use crate::llm::utils::system_prompt::load_system_prompt;
+
+use super::types::AnthropicRequest;
 
 pub(crate) struct BuiltAnthropicRequest {
     pub request: AnthropicRequest,
@@ -20,6 +22,10 @@ fn clamp_i64_to_u32(value: i64) -> u32 {
     } else {
         value as u32
     }
+}
+
+fn nova_messages_to_anthropic_messages(messages: &[Message]) -> Vec<Message> {
+    messages.to_vec()
 }
 
 pub(crate) fn build_request(
@@ -38,7 +44,7 @@ pub(crate) fn build_request(
         model: profile.model.clone(),
         max_tokens: model_context::get_max_output_tokens(&profile.model),
         system: Some(load_system_prompt(app, agent_mode, conversation_id)?),
-        messages: messages.to_vec(),
+        messages: nova_messages_to_anthropic_messages(messages),
         tools,
         stream: true,
     };

@@ -1,21 +1,19 @@
+pub(crate) mod prompt;
+pub(crate) mod types;
+
 use reqwest::Client;
 use tauri::AppHandle;
 
 use crate::llm::providers::stream_runner::{run_streaming, Delta, ReadyToolCall, StreamParser};
 use crate::llm::providers::{ProviderTurnError, ProviderTurnResult};
 use crate::llm::tools;
-use crate::llm::types::Message;
-use crate::llm::types::{AgentMode, StreamContentBlock, StreamDelta, StreamEvent};
+use crate::llm::types::{AgentMode, Message};
 use crate::llm::utils::error_event::emit_backend_error;
 
 use super::sse_utils::truncate_for_log;
+use types::{StreamContentBlock, StreamDelta, StreamEvent};
 
-// Anthropic Provider 的实现结构体，用于与 Anthropic API 交互。
 pub struct AnthropicProvider;
-
-// ─────────────────────────────────────────────
-// AnthropicStreamParser — 实现 StreamParser trait
-// ─────────────────────────────────────────────
 
 struct AnthropicStreamParser {
     current_tool_id: Option<String>,
@@ -120,7 +118,8 @@ impl StreamParser for AnthropicStreamParser {
                         Err(e) => {
                             return Err(format!(
                                     "Failed to parse Anthropic tool input for '{}': {}. Raw input preview: {}",
-                                    name, e,
+                                    name,
+                                    e,
                                     truncate_for_log(&self.current_tool_input, 1200)
                                 ));
                         }
@@ -130,7 +129,7 @@ impl StreamParser for AnthropicStreamParser {
                     self.pending_tool_calls.push(tools::ToolCallRequest {
                         id: id.clone(),
                         name: name.clone(),
-                        input: input_value.clone(),
+                        input: input_value,
                     });
 
                     if self.pending_tool_calls.len() >= self.streaming_batch_size {
@@ -186,12 +185,26 @@ impl StreamParser for AnthropicStreamParser {
                 });
             }
 
-            _ => {}
+            StreamEvent::Error { error } => {
+                let error_type = error
+                    .error_type
+                    .unwrap_or_else(|| "unknown_error".to_string());
+                let message = error
+                    .message
+                    .unwrap_or_else(|| "Anthropic stream returned an error".to_string());
+                return Err(format!(
+                    "Anthropic stream error [{}]: {}",
+                    error_type, message
+                ));
+            }
+
+            StreamEvent::Ping => {}
         }
 
         Ok(deltas)
     }
 }
+
 impl AnthropicProvider {
     pub async fn send_request(
         &self,
@@ -200,25 +213,19 @@ impl AnthropicProvider {
         agent_mode: AgentMode,
         conversation_id: Option<&str>,
     ) -> Result<ProviderTurnResult, ProviderTurnError> {
-        // 读取设置与当前 provider profile。
         let settings =
             crate::command::settings::get_settings(app.clone()).map_err(ProviderTurnError::new)?;
         let profile = settings.active_provider_profile();
-        // 提取 API key。
         let api_key = profile.api_key;
 
-        // API key 缺失时直接失败。
         if api_key.is_empty() {
             return Err(ProviderTurnError::new(
                 "API error: No API key configured. Please set it in Settings.".to_string(),
             ));
         }
 
-        let request =
-            super::anthropic_prompt::build_request(app, messages, agent_mode, conversation_id)?
-                .request;
+        let request = prompt::build_request(app, messages, agent_mode, conversation_id)?.request;
 
-        // 创建 HTTP 客户端并规范化 URL 到 /v1/messages。
         let client = Client::new();
         let mut url = profile.base_url.trim_end_matches('/').to_string();
         if !url.ends_with("/v1/messages") && !url.ends_with("/messages") {
@@ -229,12 +236,10 @@ impl AnthropicProvider {
             }
         }
 
-        // @@日志记录 wire_request — 记录实际发出的 HTTP 请求 JSON。
         if let Ok(wire) = serde_json::to_string(&request) {
             crate::llm::utils::turn_log::log_wire_request(app, conversation_id, &url, &wire);
         }
 
-        // 发送请求；tokio::select! 竞争取消轮询，避免卡在 DNS/TLS/建连阶段无法响应取消。
         let resp = tokio::select! {
             res = client
                 .post(&url)
@@ -259,10 +264,8 @@ impl AnthropicProvider {
             }
         };
 
-        // 发起 REST 请求（stream=true），本函数本身不做流数据解析，交给 process_stream_response 处理。
         match resp {
             Ok(res) => {
-                // 非 2xx 读取错误体并上报。
                 if !res.status().is_success() {
                     let status = res.status();
                     let error_text = res.text().await.unwrap_or_default();

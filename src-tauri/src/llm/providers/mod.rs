@@ -1,7 +1,5 @@
-// Anthropic provider 实现。
+// Anthropic Messages API provider adapter.
 pub mod anthropic;
-// Anthropic 请求体组装与提示词估算。
-pub mod anthropic_prompt;
 // OpenAI Chat Completions provider 实现。
 pub mod openai;
 // OpenAI Chat Completions 请求体组装与提示词估算。
@@ -130,7 +128,7 @@ impl LlmProvider {
     ) -> Result<ProviderPromptEstimate, ProviderTurnError> {
         match self {
             LlmProvider::Anthropic(_) => {
-                anthropic_prompt::build_request(app, messages, agent_mode, conversation_id)
+                anthropic::prompt::build_request(app, messages, agent_mode, conversation_id)
                     .map(|built| built.estimate)
             }
             LlmProvider::OpenAi(_) => {

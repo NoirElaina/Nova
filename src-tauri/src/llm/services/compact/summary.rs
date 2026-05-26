@@ -3,9 +3,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tauri::AppHandle;
 
-use crate::llm::types::{
-    AnthropicRequest, AnthropicResponse, Content, ContentBlock, Message, Role,
-};
+use crate::llm::providers::anthropic::types::{AnthropicRequest, AnthropicResponse};
+use crate::llm::types::{Content, ContentBlock, Message, Role};
 
 const SUMMARY_MAX_TOKENS: u32 = 1200;
 const MAX_SUMMARY_RETRIES: usize = 3;
@@ -222,7 +221,6 @@ async fn summarize_with_anthropic(app: &AppHandle, user_prompt: &str) -> Result<
     let url = normalize_anthropic_url(&profile.base_url);
     let response = client
         .post(&url)
-        .header("Authorization", format!("Bearer {}", api_key))
         .header("x-api-key", &api_key)
         .header("anthropic-version", "2023-06-01")
         .header("content-type", "application/json")

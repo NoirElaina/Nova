@@ -66,7 +66,7 @@ fn normalize_provider_protocol(protocol: &str) -> String {
 
 fn infer_provider_protocol(provider_key: &str) -> String {
     match provider_key.trim().to_ascii_lowercase().as_str() {
-        "anthropic" | "claude" | "dashscope-anthropic" => "anthropic".to_string(),
+        "anthropic" | "claude" => "anthropic".to_string(),
         _ => "openai".to_string(),
     }
 }

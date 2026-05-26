@@ -26,7 +26,6 @@ const pendingDeleteProfileKey = ref<string | null>(null)
 const builtinProviders = [
   { id: 'anthropic', label: 'Anthropic', protocol: 'anthropic' },
   { id: 'openai', label: 'OpenAI', protocol: 'openai' },
-  { id: 'dashscope-anthropic', label: 'DashScope Anthropic', protocol: 'anthropic' },
 ] as const
 
 const customProviderTemplates = [
@@ -86,7 +85,7 @@ const inferProtocol = (provider: string) => {
   if (key.startsWith('responses-custom-')) {
     return 'openai_responses'
   }
-  if (key === 'anthropic' || key === 'claude' || key === 'dashscope-anthropic') {
+  if (key === 'anthropic' || key === 'claude') {
     return 'anthropic'
   }
   if (key.startsWith('anthropic-custom-')) {
@@ -99,7 +98,6 @@ const defaultBaseUrl = (provider: string) => {
   const key = normalizeProviderKey(provider)
   if (key === 'anthropic') return 'https://api.anthropic.com/v1'
   if (key === 'openai') return 'https://api.openai.com/v1'
-  if (key === 'dashscope-anthropic') return 'https://dashscope.aliyuncs.com/api/v1/apps/anthropic'
   if (key.startsWith('anthropic-custom-')) return 'https://api.anthropic.com/v1'
   if (key.startsWith('responses-custom-')) return 'https://api.openai.com/v1'
   return ''

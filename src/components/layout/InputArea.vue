@@ -75,7 +75,7 @@ const ensureActiveProfile = () => {
   if (!settings.value.providerProfiles[provider]) {
     settings.value.providerProfiles[provider] = {
       displayName: '',
-      protocol: provider === 'anthropic' || provider === 'dashscope-anthropic' ? 'anthropic' : 'openai',
+      protocol: provider === 'anthropic' ? 'anthropic' : 'openai',
       apiKey: '',
       baseUrl: '',
       model: '',

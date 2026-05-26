@@ -1,4 +1,4 @@
-use crate::llm::tools::{app_tool, AppExecuteFuture, ToolRegistration};
+use crate::llm::tools::{app_tool, AppExecuteFuture, ToolFailure, ToolOutcome, ToolRegistration};
 use crate::llm::types::Tool;
 use serde_json::{json, Value};
 use tauri::AppHandle;
@@ -44,11 +44,11 @@ pub fn tool() -> Tool {
 
 // 根据 `action` 访问本地 RAG 数据库。
 // `query` 只在 search 分支使用，`document_id` 只在 read 分支使用。
-pub async fn execute_with_app(
+async fn execute_with_app(
     app: &AppHandle,
     conversation_id: Option<String>,
     input: Value,
-) -> String {
+) -> Result<ToolOutcome, ToolFailure> {
     // action: 统一转成小写后的操作类型，避免模型大小写混用时匹配失败。
     let action = input
         .get("action")
@@ -59,13 +59,12 @@ pub async fn execute_with_app(
 
     match action.as_str() {
         "stats" => match crate::command::rag::rag_get_stats(app.clone()).await {
-            Ok(stats) => json!({
+            Ok(stats) => Ok(ToolOutcome::json(json!({
                 "ok": true,
                 "action": "stats",
                 "stats": stats
-            })
-            .to_string(),
-            Err(e) => json!({ "ok": false, "error": e }).to_string(),
+            }))),
+            Err(e) => Err(ToolFailure::new(e)),
         },
         "search" => {
             let Some(query) = input
@@ -74,11 +73,9 @@ pub async fn execute_with_app(
                 .map(str::trim)
                 .filter(|s| !s.is_empty())
             else {
-                return json!({
-                    "ok": false,
-                    "error": "rag_tool search requires non-empty 'query'"
-                })
-                .to_string();
+                return Err(ToolFailure::invalid_input(
+                    "rag_tool search requires non-empty 'query'",
+                ));
             };
 
             // limit: 搜索结果数量上限；不传时交给底层 RAG 默认值处理。
@@ -105,15 +102,14 @@ pub async fn execute_with_app(
             };
 
             match result {
-                Ok(results) => json!({
+                Ok(results) => Ok(ToolOutcome::json(json!({
                     "ok": true,
                     "action": "search",
                     "query": query,
                     "conversation_scoped": conversation_id.as_deref().map(str::trim).filter(|value| !value.is_empty()).is_some(),
                     "results": results
-                })
-                .to_string(),
-                Err(e) => json!({ "ok": false, "error": e }).to_string(),
+                }))),
+                Err(e) => Err(ToolFailure::new(e)),
             }
         }
         "read" => {
@@ -123,11 +119,9 @@ pub async fn execute_with_app(
                 .map(str::trim)
                 .filter(|s| !s.is_empty())
             else {
-                return json!({
-                    "ok": false,
-                    "error": "rag_tool read requires non-empty 'document_id'"
-                })
-                .to_string();
+                return Err(ToolFailure::invalid_input(
+                    "rag_tool read requires non-empty 'document_id'",
+                ));
             };
 
             match crate::command::rag::rag_read_document(
@@ -137,20 +131,18 @@ pub async fn execute_with_app(
             )
             .await
             {
-                Ok(Some(document)) => json!({
+                Ok(Some(document)) => Ok(ToolOutcome::json(json!({
                     "ok": true,
                     "action": "read",
                     "document": document
-                })
-                .to_string(),
-                Ok(None) => json!({
+                }))),
+                Ok(None) => Ok(ToolOutcome::json(json!({
                     "ok": true,
                     "action": "read",
                     "retrieval_status": "not_found",
                     "document": Value::Null
-                })
-                .to_string(),
-                Err(e) => json!({ "ok": false, "error": e }).to_string(),
+                }))),
+                Err(e) => Err(ToolFailure::new(e)),
             }
         }
         "fetch" => {
@@ -160,11 +152,9 @@ pub async fn execute_with_app(
                 .map(str::trim)
                 .filter(|s| !s.is_empty())
             else {
-                return json!({
-                    "ok": false,
-                    "error": "rag_tool fetch requires non-empty 'source_name'"
-                })
-                .to_string();
+                return Err(ToolFailure::invalid_input(
+                    "rag_tool fetch requires non-empty 'source_name'",
+                ));
             };
 
             let docs = if let Some(scope_id) = conversation_id
@@ -184,17 +174,16 @@ pub async fn execute_with_app(
 
             let docs = match docs {
                 Ok(d) => d,
-                Err(e) => return json!({ "ok": false, "error": e }).to_string(),
+                Err(e) => return Err(ToolFailure::new(e)),
             };
 
             let Some(meta) = docs.iter().find(|d| d.source_name == source_name) else {
-                return json!({
+                return Ok(ToolOutcome::json(json!({
                     "ok": true,
                     "action": "fetch",
                     "retrieval_status": "not_found",
                     "document": Value::Null
-                })
-                .to_string();
+                })));
             };
 
             match crate::command::rag::rag_read_document(
@@ -204,26 +193,22 @@ pub async fn execute_with_app(
             )
             .await
             {
-                Ok(Some(document)) => json!({
+                Ok(Some(document)) => Ok(ToolOutcome::json(json!({
                     "ok": true,
                     "action": "fetch",
                     "document": document
-                })
-                .to_string(),
-                Ok(None) => json!({
+                }))),
+                Ok(None) => Ok(ToolOutcome::json(json!({
                     "ok": true,
                     "action": "fetch",
                     "retrieval_status": "not_found",
                     "document": Value::Null
-                })
-                .to_string(),
-                Err(e) => json!({ "ok": false, "error": e }).to_string(),
+                }))),
+                Err(e) => Err(ToolFailure::new(e)),
             }
         }
-        _ => json!({
-            "ok": false,
-            "error": "rag_tool action must be one of: stats, search, read, fetch"
-        })
-        .to_string(),
+        _ => Err(ToolFailure::invalid_input(
+            "rag_tool action must be one of: stats, search, read, fetch",
+        )),
     }
 }

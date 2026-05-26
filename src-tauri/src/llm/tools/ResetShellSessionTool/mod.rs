@@ -1,4 +1,4 @@
-use crate::llm::tools::{app_tool, AppExecuteFuture, ToolRegistration};
+use crate::llm::tools::{app_tool, AppExecuteFuture, ToolFailure, ToolOutcome, ToolRegistration};
 use crate::llm::types::Tool;
 use serde_json::{json, Value};
 use tauri::AppHandle;
@@ -29,13 +29,7 @@ fn execute_with_app_boxed(
             conversation_id.as_deref(),
         ) {
             Ok(root) => root,
-            Err(error) => {
-                return json!({
-                    "ok": false,
-                    "error": error
-                })
-                .to_string();
-            }
+            Err(error) => return Err(ToolFailure::new(error)),
         };
 
         match crate::llm::services::shell_sessions::reset_session(
@@ -44,16 +38,11 @@ fn execute_with_app_boxed(
         )
         .await
         {
-            Ok(()) => json!({
+            Ok(()) => Ok(ToolOutcome::json(json!({
                 "ok": true,
                 "message": "Shell session reset."
-            })
-            .to_string(),
-            Err(error) => json!({
-                "ok": false,
-                "error": error
-            })
-            .to_string(),
+            }))),
+            Err(error) => Err(ToolFailure::new(error)),
         }
     })
 }

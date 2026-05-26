@@ -1,7 +1,10 @@
 use crate::llm::services::file_changes::{
     apply_patch_change, multi_edit_change, patch_paths, FileEditResult, MultiEditRequest,
 };
-use crate::llm::tools::{app_tool, AppExecuteFuture, ToolPermissionDescriptor, ToolRegistration};
+use crate::llm::tools::{
+    app_tool, AppExecuteFuture, ToolFailure, ToolOutcome, ToolPermissionDescriptor,
+    ToolRegistration,
+};
 use crate::llm::types::Tool;
 use serde_json::{json, Value};
 use std::collections::BTreeSet;
@@ -80,21 +83,19 @@ fn apply_patch_with_app(
     Box::pin(async move {
         let patch = match input.get("patch").and_then(Value::as_str) {
             Some(patch) => patch,
-            None => {
-                return json!({ "ok": false, "error": "apply_patch requires patch" }).to_string()
-            }
+            None => return Err(ToolFailure::invalid_input("apply_patch requires patch")),
         };
         let root = match crate::command::workspace::workspace_root_for_conversation(
             &app,
             conversation_id.as_deref(),
         ) {
             Ok(root) => root,
-            Err(error) => return json!({ "ok": false, "error": error }).to_string(),
+            Err(error) => return Err(ToolFailure::new(error)),
         };
 
         match apply_patch_change(&app, conversation_id.as_deref(), &root, patch).await {
             Ok(result) => result_json(result),
-            Err(error) => json!({ "ok": false, "error": error }).to_string(),
+            Err(error) => Err(ToolFailure::new(error)),
         }
     })
 }
@@ -107,19 +108,19 @@ fn multi_edit_with_app(
     Box::pin(async move {
         let edits = match parse_multi_edits(&input) {
             Ok(edits) => edits,
-            Err(error) => return json!({ "ok": false, "error": error }).to_string(),
+            Err(error) => return Err(ToolFailure::invalid_input(error)),
         };
         let root = match crate::command::workspace::workspace_root_for_conversation(
             &app,
             conversation_id.as_deref(),
         ) {
             Ok(root) => root,
-            Err(error) => return json!({ "ok": false, "error": error }).to_string(),
+            Err(error) => return Err(ToolFailure::new(error)),
         };
 
         match multi_edit_change(&app, conversation_id.as_deref(), &root, edits).await {
             Ok(result) => result_json(result),
-            Err(error) => json!({ "ok": false, "error": error }).to_string(),
+            Err(error) => Err(ToolFailure::new(error)),
         }
     })
 }
@@ -262,13 +263,12 @@ fn required_string(input: &Value, key: &str) -> Result<String, String> {
         .ok_or_else(|| format!("{} is required", key))
 }
 
-fn result_json(result: FileEditResult) -> String {
+fn result_json(result: FileEditResult) -> Result<ToolOutcome, ToolFailure> {
     let changed_files = result.files.len();
-    json!({
+    Ok(ToolOutcome::json(json!({
         "ok": true,
         "files": result.files,
         "changed_files": changed_files,
         "change_batch_id": result.change_batch_id
-    })
-    .to_string()
+    })))
 }

@@ -123,6 +123,7 @@ export interface ChatMessageEvent {
   tool_use_name?: string;
   tool_use_input?: string;
   tool_result?: string;
+  tool_is_error?: boolean;
   token_usage?: number;
   stop_reason?: string;
   turn_state?: string;

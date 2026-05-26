@@ -1,4 +1,4 @@
-use crate::llm::tools::{app_tool, AppExecuteFuture, ToolRegistration};
+use crate::llm::tools::{app_tool, AppExecuteFuture, ToolFailure, ToolOutcome, ToolRegistration};
 use crate::llm::types::Tool;
 use serde_json::{json, Value};
 use tauri::AppHandle;
@@ -34,22 +34,22 @@ fn search_url(base: &str, query: &str) -> Result<String, String> {
 
 // 根据 `query` 生成搜索引擎 URL，供后续 `web_fetch` 继续抓取。
 // URL 编码交给 `url` crate，避免中文、特殊字符或空格被错误拼接。
-fn execute_local(input: Value) -> String {
+fn execute_local(input: Value) -> Result<ToolOutcome, ToolFailure> {
     let query = match input.get("query").and_then(|v| v.as_str()) {
         Some(v) if !v.trim().is_empty() => v.trim(),
-        _ => return json!({ "ok": false, "error": "Missing 'query' argument" }).to_string(),
+        _ => return Err(ToolFailure::invalid_input("Missing 'query' argument")),
     };
 
     let duckduckgo = match search_url("https://duckduckgo.com/", query) {
         Ok(url) => url,
-        Err(e) => return json!({ "ok": false, "error": e }).to_string(),
+        Err(e) => return Err(ToolFailure::new(e)),
     };
     let bing = match search_url("https://www.bing.com/search", query) {
         Ok(url) => url,
-        Err(e) => return json!({ "ok": false, "error": e }).to_string(),
+        Err(e) => return Err(ToolFailure::new(e)),
     };
 
-    json!({
+    Ok(ToolOutcome::json(json!({
         "ok": true,
         "query": query,
         "search_urls": {
@@ -57,8 +57,7 @@ fn execute_local(input: Value) -> String {
             "bing": bing
         },
         "note": "Use web_fetch with one of these URLs to inspect result pages."
-    })
-    .to_string()
+    })))
 }
 
 fn execute_with_app_boxed(

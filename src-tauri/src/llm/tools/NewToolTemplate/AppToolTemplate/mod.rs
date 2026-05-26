@@ -1,4 +1,4 @@
-use crate::llm::tools::{app_tool, AppExecuteFuture, ToolRegistration};
+use crate::llm::tools::{app_tool, AppExecuteFuture, ToolFailure, ToolOutcome, ToolRegistration};
 use crate::llm::types::Tool;
 use serde_json::{json, Value};
 use tauri::AppHandle;
@@ -24,22 +24,21 @@ pub fn tool() -> Tool {
     }
 }
 
-pub async fn execute_with_app(
+async fn execute_with_app(
     _app: &AppHandle,
     _conversation_id: Option<&str>,
     input: Value,
-) -> String {
+) -> Result<ToolOutcome, ToolFailure> {
     let value = match input.get("input").and_then(|v| v.as_str()) {
         Some(v) if !v.trim().is_empty() => v.trim(),
-        _ => return json!({ "ok": false, "error": "Missing 'input'" }).to_string(),
+        _ => return Err(ToolFailure::invalid_input("Missing 'input'")),
     };
 
-    json!({
+    Ok(ToolOutcome::json(json!({
         "ok": true,
         "input": value,
         "message": "Replace this with your real AppHandle-aware logic."
-    })
-    .to_string()
+    })))
 }
 
 fn execute_with_app_boxed(

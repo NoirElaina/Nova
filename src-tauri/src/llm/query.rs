@@ -59,6 +59,7 @@ fn emit_token_usage_event(
             tool_use_name: None,
             tool_use_input: None,
             tool_result: None,
+            tool_is_error: None,
             token_usage: total_tokens,
             stop_reason: None,
             turn_state: Some("usage".into()),
@@ -116,6 +117,7 @@ fn emit_token_debug_event(
             tool_use_name: None,
             tool_use_input: None,
             tool_result: None,
+            tool_is_error: None,
             token_usage: actual_total_tokens.or(actual_input_tokens),
             stop_reason: None,
             turn_state: Some("token_debug".into()),
@@ -168,6 +170,7 @@ fn emit_context_compact_event(
             tool_use_name: None,
             tool_use_input: None,
             tool_result: None,
+            tool_is_error: None,
             token_usage: None,
             stop_reason: None,
             turn_state: Some("context_compacted".into()),
@@ -201,6 +204,7 @@ fn emit_context_usage_event(
             tool_use_name: None,
             tool_use_input: None,
             tool_result: None,
+            tool_is_error: None,
             token_usage: None,
             stop_reason: None,
             turn_state: Some("usage".into()),
@@ -762,6 +766,7 @@ pub async fn send_chat_message(
                         tool_use_name: None,
                         tool_use_input: None,
                         tool_result: None,
+                        tool_is_error: None,
                         token_usage: None,
                         // 停止原因标记为 provider_error。
                         stop_reason: Some("provider_error".into()),
@@ -814,7 +819,7 @@ pub async fn send_chat_message(
                             }
                             user_blocks.push(ContentBlock::ToolResult {
                                 tool_use_id: id.clone(),
-                                is_error: false,
+                                is_error: true,
                                 content: vec![ContentBlock::Text {
                                     text: "Interrupted by user".to_string(),
                                 }],
@@ -919,6 +924,7 @@ pub async fn send_chat_message(
                     tool_use_name: None,
                     tool_use_input: None,
                     tool_result: None,
+                    tool_is_error: None,
                     token_usage: None,
                     stop_reason: Some("provider_error".into()),
                     turn_state: Some("error".into()),
@@ -1033,6 +1039,7 @@ pub async fn send_chat_message(
             tool_use_name: None,
             tool_use_input: None,
             tool_result: None,
+            tool_is_error: None,
             // 本事件不附加 token_usage。
             token_usage: None,
             // 透传最终停止原因。

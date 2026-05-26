@@ -1,4 +1,4 @@
-use crate::llm::tools::{app_tool, AppExecuteFuture, ToolRegistration};
+use crate::llm::tools::{app_tool, AppExecuteFuture, ToolFailure, ToolOutcome, ToolRegistration};
 use crate::llm::types::Tool;
 use serde::Serialize;
 use serde_json::{json, Value};
@@ -235,7 +235,7 @@ pub fn list_skill_summaries_with_app(app: &AppHandle) -> Result<Vec<SkillSummary
 }
 
 // 把 skills 列表转成模型更容易消费的 JSON 数组。
-fn list_skills(skills: &[SkillEntry]) -> String {
+fn list_skills(skills: &[SkillEntry]) -> ToolOutcome {
     let items = skills
         .iter()
         .map(|s| {
@@ -247,11 +247,10 @@ fn list_skills(skills: &[SkillEntry]) -> String {
         })
         .collect::<Vec<_>>();
 
-    json!({
+    ToolOutcome::json(json!({
         "ok": true,
         "skills": items
-    })
-    .to_string()
+    }))
 }
 
 // 收集某个 skill 所在目录下的附属文件列表。
@@ -295,7 +294,11 @@ fn collect_dir_files_relative(root: &Path, current: &Path, out: &mut Vec<(String
 
 // 按名字挑出一个 skill，并把正文和附属文件说明打包成返回文本。
 // `skill_name` 是模型请求的技能名，`args` 是附加给 skill 的可选参数提示。
-fn run_skill(skills: &[SkillEntry], skill_name: &str, args: Option<&str>) -> String {
+fn run_skill(
+    skills: &[SkillEntry],
+    skill_name: &str,
+    args: Option<&str>,
+) -> Result<ToolOutcome, ToolFailure> {
     // skill_name_norm: 归一化后的名字，用于大小写不敏感查找。
     let skill_name_norm = normalize_name(skill_name);
 
@@ -309,11 +312,10 @@ fn run_skill(skills: &[SkillEntry], skill_name: &str, args: Option<&str>) -> Str
         });
 
     let Some(skill) = picked else {
-        return json!({
-            "ok": false,
-            "error": format!("Skill '{}' not found. Use action=list to see available skills.", skill_name)
-        })
-        .to_string();
+        return Err(ToolFailure::new(format!(
+            "Skill '{}' not found. Use action=list to see available skills.",
+            skill_name
+        )));
     };
 
     let skill_dir = skill
@@ -343,16 +345,15 @@ fn run_skill(skills: &[SkillEntry], skill_name: &str, args: Option<&str>) -> Str
     out.push_str("\nSkill instructions:\n");
     out.push_str(&truncate_chars(&skill.content, 20_000));
 
-    json!({
+    Ok(ToolOutcome::json(json!({
         "ok": true,
         "content": out
-    })
-    .to_string()
+    })))
 }
 
 // 根据 action 执行 `list` 或 `run`。
 // `skills` 是当前磁盘上实际存在的技能集合，`skill` 是模型请求运行的目标技能名。
-pub async fn execute_with_app(app: &AppHandle, input: Value) -> String {
+async fn execute_with_app(app: &AppHandle, input: Value) -> Result<ToolOutcome, ToolFailure> {
     let action = input
         .get("action")
         .and_then(|v| v.as_str())
@@ -362,16 +363,16 @@ pub async fn execute_with_app(app: &AppHandle, input: Value) -> String {
 
     let skills = match load_skills(app) {
         Ok(skills) => skills,
-        Err(e) => return json!({ "ok": false, "error": e }).to_string(),
+        Err(e) => return Err(ToolFailure::new(e)),
     };
 
     if action == "list" {
-        return list_skills(&skills);
+        return Ok(list_skills(&skills));
     }
 
     let skill = match input.get("skill").and_then(|v| v.as_str()) {
         Some(v) if !v.trim().is_empty() => v.trim(),
-        _ => return json!({ "ok": false, "error": "Missing 'skill' argument for action=run" }).to_string(),
+        _ => return Err(ToolFailure::invalid_input("Missing 'skill' argument for action=run")),
     };
 
     let args = input.get("args").and_then(|v| v.as_str());

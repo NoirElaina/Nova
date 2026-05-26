@@ -1,4 +1,4 @@
-use crate::llm::tools::{app_tool, AppExecuteFuture, ToolRegistration};
+use crate::llm::tools::{app_tool, AppExecuteFuture, ToolFailure, ToolOutcome, ToolRegistration};
 use crate::llm::types::Tool;
 use serde_json::{json, Value};
 use tauri::AppHandle;
@@ -37,7 +37,7 @@ pub fn tool() -> Tool {
 
 // 从指定 MCP server 读取一个资源。
 // `server_name` 标识服务器，`uri` 标识资源地址，二者都会先去掉首尾空白。
-pub async fn execute_with_app(app: &AppHandle, input: Value) -> String {
+async fn execute_with_app(app: &AppHandle, input: Value) -> Result<ToolOutcome, ToolFailure> {
     let server_name = input
         .get("server")
         .and_then(|v| v.as_str())
@@ -52,15 +52,13 @@ pub async fn execute_with_app(app: &AppHandle, input: Value) -> String {
         .to_string();
 
     if server_name.is_empty() || uri.is_empty() {
-        return json!({
-            "ok": false,
-            "error": "read_mcp_resource requires non-empty 'server' and 'uri'"
-        })
-        .to_string();
+        return Err(ToolFailure::invalid_input(
+            "read_mcp_resource requires non-empty 'server' and 'uri'",
+        ));
     }
 
     match crate::command::mcp::read_mcp_resource(app.clone(), server_name, uri).await {
-        Ok(v) => v.to_string(),
-        Err(e) => json!({ "ok": false, "error": e }).to_string(),
+        Ok(v) => Ok(ToolOutcome::json(v)),
+        Err(e) => Err(ToolFailure::mcp(e)),
     }
 }

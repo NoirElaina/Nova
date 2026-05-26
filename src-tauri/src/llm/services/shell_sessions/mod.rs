@@ -158,7 +158,14 @@ if ($PSStyle) {{ $PSStyle.OutputRendering = 'PlainText' }}
 $global:LASTEXITCODE = 0
 try {{
     Invoke-Expression $__novaCommand
-    $__novaExitCode = if ($LASTEXITCODE -is [int]) {{ [int]$LASTEXITCODE }} else {{ 0 }}
+    $__novaCommandSucceeded = $?
+    $__novaExitCode = if ($LASTEXITCODE -is [int]) {{
+        [int]$LASTEXITCODE
+    }} elseif ($__novaCommandSucceeded) {{
+        0
+    }} else {{
+        1
+    }}
 }} catch {{
     $__novaExitCode = 1
     Write-Error $_

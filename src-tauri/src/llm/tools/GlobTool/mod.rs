@@ -1,5 +1,5 @@
 use crate::llm::services::search::{find_files, GlobSearchOptions, WalkOptions};
-use crate::llm::tools::{app_tool, AppExecuteFuture, ToolRegistration};
+use crate::llm::tools::{app_tool, AppExecuteFuture, ToolFailure, ToolOutcome, ToolRegistration};
 use crate::llm::types::Tool;
 use serde_json::{json, Value};
 use tauri::AppHandle;
@@ -37,7 +37,11 @@ fn execute_with_app_boxed(
     Box::pin(async move { execute_async(&app, conversation_id.as_deref(), input).await })
 }
 
-async fn execute_async(app: &AppHandle, conversation_id: Option<&str>, input: Value) -> String {
+async fn execute_async(
+    app: &AppHandle,
+    conversation_id: Option<&str>,
+    input: Value,
+) -> Result<ToolOutcome, ToolFailure> {
     let root_arg = input
         .get("root")
         .and_then(Value::as_str)
@@ -46,7 +50,7 @@ async fn execute_async(app: &AppHandle, conversation_id: Option<&str>, input: Va
         .unwrap_or(".");
     let pattern = match input.get("pattern").and_then(Value::as_str) {
         Some(value) if !value.trim().is_empty() => value.trim().to_string(),
-        _ => return json!({ "ok": false, "error": "Missing 'pattern' argument" }).to_string(),
+        _ => return Err(ToolFailure::invalid_input("Missing 'pattern' argument")),
     };
     let max_results = input
         .get("max_results")
@@ -58,18 +62,18 @@ async fn execute_async(app: &AppHandle, conversation_id: Option<&str>, input: Va
     let workspace_root =
         match crate::command::workspace::workspace_root_for_conversation(app, conversation_id) {
             Ok(root) => root,
-            Err(error) => return json!({ "ok": false, "error": error }).to_string(),
+            Err(error) => return Err(ToolFailure::new(error)),
         };
     let search_root =
         match crate::llm::services::file_changes::resolve_tool_path(&workspace_root, root_arg) {
             Ok(path) => path,
-            Err(error) => return json!({ "ok": false, "error": error }).to_string(),
+            Err(error) => return Err(ToolFailure::new(error)),
         };
     if !search_root.exists() {
-        return json!({ "ok": false, "error": "Root path does not exist" }).to_string();
+        return Err(ToolFailure::new("Root path does not exist"));
     }
     if !search_root.is_dir() {
-        return json!({ "ok": false, "error": "Root path is not a directory" }).to_string();
+        return Err(ToolFailure::new("Root path is not a directory"));
     }
 
     let options = GlobSearchOptions {
@@ -97,10 +101,10 @@ async fn execute_async(app: &AppHandle, conversation_id: Option<&str>, input: Va
 
     let result = match find_files(&workspace_root, &search_root, &options) {
         Ok(result) => result,
-        Err(error) => return json!({ "ok": false, "error": error }).to_string(),
+        Err(error) => return Err(ToolFailure::new(error)),
     };
 
-    json!({
+    Ok(ToolOutcome::json(json!({
         "ok": true,
         "query": {
             "root": root_arg,
@@ -113,6 +117,5 @@ async fn execute_async(app: &AppHandle, conversation_id: Option<&str>, input: Va
         },
         "stats": result.stats,
         "files": result.files,
-    })
-    .to_string()
+    })))
 }

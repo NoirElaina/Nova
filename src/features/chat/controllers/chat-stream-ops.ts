@@ -525,7 +525,7 @@ export function createChatStreamOperations(deps: StreamOpsDeps) {
         toolId || null,
         toolName,
         result,
-        "completed",
+        payload.tool_is_error ? "error" : "completed",
         persistToolExecutionLog,
         rawInput,
       );

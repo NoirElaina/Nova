@@ -1,4 +1,4 @@
-use crate::llm::tools::{app_tool, AppExecuteFuture, ToolRegistration};
+use crate::llm::tools::{app_tool, AppExecuteFuture, ToolFailure, ToolOutcome, ToolRegistration};
 use crate::llm::types::Tool;
 use serde_json::{json, Value};
 use tauri::AppHandle;
@@ -53,23 +53,21 @@ fn base_url_summary(raw: &str) -> Option<String> {
     Some(summary)
 }
 
-pub async fn execute_with_app(app: &AppHandle, input: Value) -> String {
+async fn execute_with_app(app: &AppHandle, input: Value) -> Result<ToolOutcome, ToolFailure> {
     let action = match input.get("action").and_then(Value::as_str) {
         Some(value) => value.trim(),
-        None => return json!({ "ok": false, "error": "Missing 'action' argument" }).to_string(),
+        None => return Err(ToolFailure::invalid_input("Missing 'action' argument")),
     };
 
     if action != "get_runtime_config_summary" {
-        return json!({
-            "ok": false,
-            "error": "config_tool only supports get_runtime_config_summary"
-        })
-        .to_string();
+        return Err(ToolFailure::invalid_input(
+            "config_tool only supports get_runtime_config_summary",
+        ));
     }
 
     let settings = match crate::command::settings::get_settings(app.clone()) {
         Ok(settings) => settings,
-        Err(error) => return json!({ "ok": false, "error": error }).to_string(),
+        Err(error) => return Err(ToolFailure::new(error)),
     };
     let active_provider = settings.active_provider_key();
     let active_profile = settings.active_provider_profile();
@@ -80,7 +78,7 @@ pub async fn execute_with_app(app: &AppHandle, input: Value) -> String {
         .map(Vec::len)
         .unwrap_or(0);
 
-    json!({
+    Ok(ToolOutcome::json(json!({
         "ok": true,
         "action": "get_runtime_config_summary",
         "provider": {
@@ -111,6 +109,5 @@ pub async fn execute_with_app(app: &AppHandle, input: Value) -> String {
             "appLogEnabled": settings.enable_app_log
         },
         "redacted": true
-    })
-    .to_string()
+    })))
 }

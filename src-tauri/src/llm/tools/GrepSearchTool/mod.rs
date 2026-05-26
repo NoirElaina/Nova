@@ -1,5 +1,5 @@
 use crate::llm::services::search::{grep_text, TextSearchMode, TextSearchOptions, WalkOptions};
-use crate::llm::tools::{app_tool, AppExecuteFuture, ToolRegistration};
+use crate::llm::tools::{app_tool, AppExecuteFuture, ToolFailure, ToolOutcome, ToolRegistration};
 use crate::llm::types::Tool;
 use serde_json::{json, Value};
 use tauri::AppHandle;
@@ -78,10 +78,14 @@ fn parse_include_globs(input: &Value) -> Result<Vec<String>, String> {
     Ok(globs)
 }
 
-async fn execute_async(app: &AppHandle, conversation_id: Option<&str>, input: Value) -> String {
+async fn execute_async(
+    app: &AppHandle,
+    conversation_id: Option<&str>,
+    input: Value,
+) -> Result<ToolOutcome, ToolFailure> {
     let pattern = match input.get("pattern").and_then(Value::as_str) {
         Some(value) if !value.trim().is_empty() => value.trim().to_string(),
-        _ => return json!({ "ok": false, "error": "Missing 'pattern' argument" }).to_string(),
+        _ => return Err(ToolFailure::invalid_input("Missing 'pattern' argument")),
     };
     let path_arg = input
         .get("path")
@@ -91,11 +95,11 @@ async fn execute_async(app: &AppHandle, conversation_id: Option<&str>, input: Va
         .unwrap_or(".");
     let mode = match parse_mode(&input) {
         Ok(mode) => mode,
-        Err(error) => return json!({ "ok": false, "error": error }).to_string(),
+        Err(error) => return Err(ToolFailure::invalid_input(error)),
     };
     let include_globs = match parse_include_globs(&input) {
         Ok(globs) => globs,
-        Err(error) => return json!({ "ok": false, "error": error }).to_string(),
+        Err(error) => return Err(ToolFailure::invalid_input(error)),
     };
     let max_results = input
         .get("max_results")
@@ -113,15 +117,15 @@ async fn execute_async(app: &AppHandle, conversation_id: Option<&str>, input: Va
     let workspace_root =
         match crate::command::workspace::workspace_root_for_conversation(app, conversation_id) {
             Ok(root) => root,
-            Err(error) => return json!({ "ok": false, "error": error }).to_string(),
+            Err(error) => return Err(ToolFailure::new(error)),
         };
     let target =
         match crate::llm::services::file_changes::resolve_tool_path(&workspace_root, path_arg) {
             Ok(path) => path,
-            Err(error) => return json!({ "ok": false, "error": error }).to_string(),
+            Err(error) => return Err(ToolFailure::new(error)),
         };
     if !target.exists() {
-        return json!({ "ok": false, "error": "Search path does not exist" }).to_string();
+        return Err(ToolFailure::new("Search path does not exist"));
     }
 
     let options = TextSearchOptions {
@@ -153,10 +157,10 @@ async fn execute_async(app: &AppHandle, conversation_id: Option<&str>, input: Va
 
     let result = match grep_text(&workspace_root, &target, &options) {
         Ok(result) => result,
-        Err(error) => return json!({ "ok": false, "error": error }).to_string(),
+        Err(error) => return Err(ToolFailure::new(error)),
     };
 
-    json!({
+    Ok(ToolOutcome::json(json!({
         "ok": true,
         "query": {
             "path": path_arg,
@@ -172,6 +176,5 @@ async fn execute_async(app: &AppHandle, conversation_id: Option<&str>, input: Va
         },
         "stats": result.stats,
         "matches": result.matches,
-    })
-    .to_string()
+    })))
 }

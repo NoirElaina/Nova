@@ -1,4 +1,8 @@
-use crate::llm::tools::{app_tool, AppExecuteFuture, ToolPermissionDescriptor, ToolRegistration};
+use crate::llm::services::shell_sessions::ShellExecutionResult;
+use crate::llm::tools::{
+    app_tool, AppExecuteFuture, ToolFailure, ToolOutcome, ToolPermissionDescriptor,
+    ToolRegistration,
+};
 use crate::llm::types::Tool;
 use serde_json::{json, Value};
 use tauri::AppHandle;
@@ -40,10 +44,14 @@ fn execute_with_app_boxed(
     Box::pin(async move { execute_async(&app, conversation_id.as_deref(), input).await })
 }
 
-async fn execute_async(app: &AppHandle, conversation_id: Option<&str>, input: Value) -> String {
+async fn execute_async(
+    app: &AppHandle,
+    conversation_id: Option<&str>,
+    input: Value,
+) -> Result<ToolOutcome, ToolFailure> {
     let cmd = match input.get("command").and_then(|v| v.as_str()) {
         Some(v) if !v.trim().is_empty() => v.to_string(),
-        _ => return json!({ "ok": false, "error": "Missing 'command' argument" }).to_string(),
+        _ => return Err(ToolFailure::invalid_input("Missing 'command' argument")),
     };
     let timeout_ms = input.get("timeout_ms").and_then(|value| value.as_u64());
     let background = input
@@ -56,11 +64,10 @@ async fn execute_async(app: &AppHandle, conversation_id: Option<&str>, input: Va
         {
             Ok(root) => root,
             Err(error) => {
-                return json!({
-                    "ok": false,
-                    "error": format!("Failed to resolve workspace: {}", error)
-                })
-                .to_string()
+                return Err(ToolFailure::new(format!(
+                    "Failed to resolve workspace: {}",
+                    error
+                )));
             }
         };
 
@@ -82,38 +89,47 @@ async fn execute_async(app: &AppHandle, conversation_id: Option<&str>, input: Va
     };
 
     match result {
-        Ok(result) if result.cancelled => json!({ "ok": false, "error": "cancelled" }).to_string(),
-        Ok(result) if result.timed_out => json!({
-            "ok": false,
-            "error": "command timed out",
-            "stdout": result.stdout,
-            "stderr": result.stderr,
-            "exitCode": result.exit_code,
-            "cwd": result.cwd,
-            "timedOut": true,
-            "background": result.background,
-            "pid": result.pid
-        })
-        .to_string(),
-        Ok(result) => {
-            let ok = result.exit_code.unwrap_or(1) == 0;
-            json!({
-                "ok": ok,
-                "error": if ok { Value::Null } else { json!("command exited with non-zero status") },
-                "stdout": result.stdout,
-                "stderr": result.stderr,
-                "exitCode": result.exit_code,
-                "cwd": result.cwd,
-                "timedOut": result.timed_out,
-                "background": result.background,
-                "pid": result.pid
-            })
-            .to_string()
-        }
-        Err(error) => json!({
-            "ok": false,
-            "error": format!("Failed to execute command: {}", error)
-        })
-        .to_string(),
+        Ok(result) if result.cancelled => Err(ToolFailure::cancelled(shell_failure_text(
+            "command cancelled",
+            &result,
+        ))),
+        Ok(result) if result.timed_out => Err(ToolFailure::new(shell_failure_text(
+            "command timed out",
+            &result,
+        ))),
+        Ok(result) if result.exit_code.unwrap_or(1) != 0 => Err(ToolFailure::new(
+            shell_failure_text("command exited with non-zero status", &result),
+        )),
+        Ok(result) => Ok(ToolOutcome::json(shell_success_json(result))),
+        Err(error) => Err(ToolFailure::new(format!(
+            "Failed to execute command: {}",
+            error
+        ))),
     }
+}
+
+fn shell_success_json(result: ShellExecutionResult) -> Value {
+    json!({
+        "ok": true,
+        "stdout": result.stdout,
+        "stderr": result.stderr,
+        "exitCode": result.exit_code,
+        "cwd": result.cwd,
+        "timedOut": result.timed_out,
+        "background": result.background,
+        "pid": result.pid
+    })
+}
+
+fn shell_failure_text(reason: &str, result: &ShellExecutionResult) -> String {
+    format!(
+        "{reason}\nexitCode: {:?}\ncwd: {}\ntimedOut: {}\nbackground: {}\npid: {:?}\nstdout:\n{}\nstderr:\n{}",
+        result.exit_code,
+        result.cwd.as_deref().unwrap_or(""),
+        result.timed_out,
+        result.background,
+        result.pid,
+        result.stdout,
+        result.stderr
+    )
 }

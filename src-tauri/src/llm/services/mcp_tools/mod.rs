@@ -1,5 +1,6 @@
 use tauri::AppHandle;
 
+use crate::llm::tools::{ToolExecResult, ToolFailure, ToolOutcome};
 use crate::llm::types::Tool;
 
 pub fn build_mcp_tool_name(server: &str, tool: &str) -> String {
@@ -28,18 +29,21 @@ pub fn dynamic_tool_read_only(name: &str) -> Option<bool> {
     )
 }
 
-pub async fn execute_dynamic_with_app(
+pub(crate) async fn execute_dynamic_with_app(
     app: &AppHandle,
     name: &str,
     arguments: serde_json::Value,
-) -> Option<String> {
+) -> Option<ToolExecResult> {
     let (server_name, tool_name) = parse_mcp_tool_name(name)?;
     Some(
         match crate::command::mcp::call_mcp_tool(app.clone(), server_name, tool_name, arguments)
             .await
         {
-            Ok(v) => v.to_string(),
-            Err(e) => serde_json::json!({ "ok": false, "error": e }).to_string(),
+            Ok(v) if v.get("isError").and_then(|value| value.as_bool()) == Some(true) => {
+                Err(ToolFailure::mcp(v.to_string()))
+            }
+            Ok(v) => Ok(ToolOutcome::json(v)),
+            Err(e) => Err(ToolFailure::mcp(e)),
         },
     )
 }

@@ -36,10 +36,9 @@ pub fn run_pre_tool_use_hooks(
 
 pub fn run_post_tool_use_hooks(
     app: &AppHandle,
-    tool_name: &str,
+    _tool_name: &str,
     _input: &serde_json::Value,
     output: &str,
-    is_error: bool,
     _conversation_id: Option<&str>,
 ) -> HookOutcome {
     let config = match HookConfig::from_app(app) {
@@ -51,14 +50,6 @@ pub fn run_post_tool_use_hooks(
     if let Some(extra) = config.value("NOVA_POST_TOOL_CONTEXT") {
         out.additional_messages
             .push(context_message("[PostToolUse]", extra));
-    }
-
-    if config.truthy("NOVA_POST_TOOL_STOP_ON_ERROR") && is_error {
-        out.prevent_continuation = true;
-        out.stop_reason = Some(format!(
-            "PostToolUse hook stopped continuation after '{}' returned an error",
-            tool_name
-        ));
     }
 
     if let Some(pattern) = config.value("NOVA_POST_TOOL_BLOCK_PATTERN") {
@@ -92,7 +83,8 @@ pub fn run_post_tool_use_failure_hooks(
             .push(context_message("[PostToolUseFailure]", extra));
     }
 
-    if config.truthy("NOVA_POST_TOOL_FAILURE_STOP") {
+    if config.truthy("NOVA_POST_TOOL_FAILURE_STOP") || config.truthy("NOVA_POST_TOOL_STOP_ON_ERROR")
+    {
         out.prevent_continuation = true;
         out.stop_reason = Some(format!(
             "PostToolUseFailure hook stopped continuation after '{}' failed: {}",

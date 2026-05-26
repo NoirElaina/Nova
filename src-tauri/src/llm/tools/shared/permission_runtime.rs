@@ -1,6 +1,7 @@
 use crate::llm::query_engine::ChatMessageEvent;
 use crate::llm::services::mcp_tools::build_mcp_tool_name;
-use serde_json::{json, Value};
+use crate::llm::tools::{ToolExecResult, ToolFailure, ToolOutcome};
+use serde_json::Value;
 use tauri::{AppHandle, Emitter};
 
 pub fn is_needs_user_input_payload(raw: &str) -> bool {
@@ -39,6 +40,7 @@ pub async fn await_permission_and_recheck(
             tool_use_name: Some(tool_name.to_string()),
             tool_use_input: None,
             tool_result: None,
+            tool_is_error: None,
             token_usage: None,
             stop_reason: None,
             turn_state: Some("awaiting_permission".into()),
@@ -82,13 +84,13 @@ pub async fn await_permission_and_recheck(
     }
 }
 
-pub async fn call_mcp_tool_with_nested_permission(
+pub(crate) async fn call_mcp_tool_with_nested_permission(
     app: &AppHandle,
     conversation_id: Option<&str>,
     server_name: String,
     tool_name: String,
     arguments: Value,
-) -> String {
+) -> ToolExecResult {
     let resolved_tool_name = build_mcp_tool_name(&server_name, &tool_name);
 
     match crate::llm::utils::permissions::enforce_tool_permission(
@@ -99,7 +101,7 @@ pub async fn call_mcp_tool_with_nested_permission(
     ) {
         crate::llm::utils::permissions::PermissionEnforcement::Allow => {}
         crate::llm::utils::permissions::PermissionEnforcement::Deny(e) => {
-            return json!({ "ok": false, "error": e }).to_string();
+            return Err(ToolFailure::permission_denied(e));
         }
         crate::llm::utils::permissions::PermissionEnforcement::AskUser {
             request_id,
@@ -115,13 +117,16 @@ pub async fn call_mcp_tool_with_nested_permission(
             )
             .await
             {
-                return json!({ "ok": false, "error": e }).to_string();
+                return Err(ToolFailure::permission_denied(e));
             }
         }
     }
 
     match crate::command::mcp::call_mcp_tool(app.clone(), server_name, tool_name, arguments).await {
-        Ok(v) => v.to_string(),
-        Err(e) => json!({ "ok": false, "error": e }).to_string(),
+        Ok(v) if v.get("isError").and_then(|value| value.as_bool()) == Some(true) => {
+            Err(ToolFailure::mcp(v.to_string()))
+        }
+        Ok(v) => Ok(ToolOutcome::json(v)),
+        Err(e) => Err(ToolFailure::mcp(e)),
     }
 }

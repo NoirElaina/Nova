@@ -112,7 +112,7 @@ fn tool_result_output(
         }
     }
 
-    if !has_non_text {
+    if !has_non_text && !is_error {
         return Ok(text_blocks.join("\n"));
     }
 

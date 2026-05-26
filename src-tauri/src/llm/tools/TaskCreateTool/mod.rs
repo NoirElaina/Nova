@@ -1,5 +1,5 @@
 use crate::llm::tools::shared::task_store;
-use crate::llm::tools::{app_tool, AppExecuteFuture, ToolRegistration};
+use crate::llm::tools::{app_tool, AppExecuteFuture, ToolFailure, ToolOutcome, ToolRegistration};
 use crate::llm::types::Tool;
 use serde_json::{json, Value};
 use tauri::AppHandle;
@@ -34,10 +34,10 @@ fn execute_with_app_boxed(
     Box::pin(async move { execute_scoped(conversation_id.as_deref(), input) })
 }
 
-fn execute_scoped(conversation_id: Option<&str>, input: Value) -> String {
+fn execute_scoped(conversation_id: Option<&str>, input: Value) -> Result<ToolOutcome, ToolFailure> {
     let title = match input.get("title").and_then(|v| v.as_str()) {
         Some(v) if !v.trim().is_empty() => v.trim().to_string(),
-        _ => return json!({ "ok": false, "error": "Missing 'title' argument" }).to_string(),
+        _ => return Err(ToolFailure::invalid_input("Missing 'title' argument")),
     };
 
     let status = input
@@ -50,5 +50,5 @@ fn execute_scoped(conversation_id: Option<&str>, input: Value) -> String {
     let notes = input.get("notes").and_then(|v| v.as_str()).map(|s| s.to_string());
 
     let task = task_store::create(conversation_id, title, status, notes);
-    json!({ "ok": true, "task": task }).to_string()
+    Ok(ToolOutcome::json(json!({ "ok": true, "task": task })))
 }

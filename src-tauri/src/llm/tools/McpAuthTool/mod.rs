@@ -1,4 +1,4 @@
-use crate::llm::tools::{app_tool, AppExecuteFuture, ToolRegistration};
+use crate::llm::tools::{app_tool, AppExecuteFuture, ToolFailure, ToolOutcome, ToolRegistration};
 use crate::llm::types::Tool;
 use serde_json::{json, Value};
 use tauri::AppHandle;
@@ -43,11 +43,11 @@ pub fn tool() -> Tool {
 
 // 执行 MCP 管理动作。
 // `action` 决定分支；`server_name`、`tool_name`、`arguments` 只在对应分支中生效。
-pub async fn execute_with_app(
+async fn execute_with_app(
     app: &AppHandle,
     conversation_id: Option<&str>,
     input: Value,
-) -> String {
+) -> Result<ToolOutcome, ToolFailure> {
     // action: 统一转成小写后的操作类型，避免大小写差异导致匹配失败。
     let action = input
         .get("action")
@@ -58,26 +58,24 @@ pub async fn execute_with_app(
 
     match action.as_str() {
         "status" => match crate::command::mcp::get_mcp_server_statuses(app.clone()).await {
-            Ok(statuses) => json!({
+            Ok(statuses) => Ok(ToolOutcome::json(json!({
                 "ok": true,
                 "action": "status",
                 "servers": statuses
-            })
-            .to_string(),
-            Err(e) => json!({ "ok": false, "error": e }).to_string(),
+            }))),
+            Err(e) => Err(ToolFailure::mcp(e)),
         },
         "reload_all" => {
             if let Err(e) = crate::command::mcp::reload_all_mcp_servers(app.clone()).await {
-                return json!({ "ok": false, "error": e }).to_string();
+                return Err(ToolFailure::mcp(e));
             }
             match crate::command::mcp::get_mcp_server_statuses(app.clone()).await {
-                Ok(statuses) => json!({
+                Ok(statuses) => Ok(ToolOutcome::json(json!({
                     "ok": true,
                     "action": "reload_all",
                     "servers": statuses
-                })
-                .to_string(),
-                Err(e) => json!({ "ok": false, "error": e }).to_string(),
+                }))),
+                Err(e) => Err(ToolFailure::mcp(e)),
             }
         }
         "enable" | "disable" => {
@@ -87,11 +85,9 @@ pub async fn execute_with_app(
                 .map(str::trim)
                 .filter(|s| !s.is_empty())
             else {
-                return json!({
-                    "ok": false,
-                    "error": "mcp_auth action requires non-empty 'server'"
-                })
-                .to_string();
+                return Err(ToolFailure::invalid_input(
+                    "mcp_auth action requires non-empty 'server'",
+                ));
             };
 
             // enabled: true 表示启用 server，false 表示禁用 server。
@@ -103,14 +99,13 @@ pub async fn execute_with_app(
             )
             .await
             {
-                Ok(()) => json!({
+                Ok(()) => Ok(ToolOutcome::json(json!({
                     "ok": true,
                     "action": action,
                     "server": server_name,
                     "enabled": enabled
-                })
-                .to_string(),
-                Err(e) => json!({ "ok": false, "error": e }).to_string(),
+                }))),
+                Err(e) => Err(ToolFailure::mcp(e)),
             }
         }
         "list_tools" => {
@@ -120,22 +115,19 @@ pub async fn execute_with_app(
                 .map(str::trim)
                 .filter(|s| !s.is_empty())
             else {
-                return json!({
-                    "ok": false,
-                    "error": "mcp_auth list_tools requires non-empty 'server'"
-                })
-                .to_string();
+                return Err(ToolFailure::invalid_input(
+                    "mcp_auth list_tools requires non-empty 'server'",
+                ));
             };
 
             match crate::command::mcp::list_mcp_tools(app.clone(), server_name.to_string()).await {
-                Ok(tools) => json!({
+                Ok(tools) => Ok(ToolOutcome::json(json!({
                     "ok": true,
                     "action": "list_tools",
                     "server": server_name,
                     "tools": tools
-                })
-                .to_string(),
-                Err(e) => json!({ "ok": false, "error": e }).to_string(),
+                }))),
+                Err(e) => Err(ToolFailure::mcp(e)),
             }
         }
         "probe_tool" | "call_tool" => {
@@ -158,11 +150,9 @@ pub async fn execute_with_app(
                 .unwrap_or_else(|| json!({}));
 
             if server_name.is_empty() || tool_name.is_empty() {
-                return json!({
-                    "ok": false,
-                    "error": "mcp_auth probe_tool requires non-empty 'server' and 'tool'"
-                })
-                .to_string();
+                return Err(ToolFailure::invalid_input(
+                    "mcp_auth probe_tool requires non-empty 'server' and 'tool'",
+                ));
             }
 
             crate::llm::tools::shared::permission_runtime::call_mcp_tool_with_nested_permission(
@@ -174,10 +164,8 @@ pub async fn execute_with_app(
             )
             .await
         }
-        _ => json!({
-            "ok": false,
-            "error": "mcp_auth action must be one of: status, reload_all, enable, disable, list_tools, probe_tool, call_tool"
-        })
-        .to_string(),
+        _ => Err(ToolFailure::invalid_input(
+            "mcp_auth action must be one of: status, reload_all, enable, disable, list_tools, probe_tool, call_tool",
+        )),
     }
 }

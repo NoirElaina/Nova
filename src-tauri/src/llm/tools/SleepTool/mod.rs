@@ -1,4 +1,4 @@
-use crate::llm::tools::{app_tool, AppExecuteFuture, ToolRegistration};
+use crate::llm::tools::{app_tool, AppExecuteFuture, ToolFailure, ToolOutcome, ToolRegistration};
 use crate::llm::types::Tool;
 use serde_json::{json, Value};
 use std::time::Duration;
@@ -45,15 +45,16 @@ fn parse_sleep_ms(input: &Value) -> Option<u64> {
 }
 
 // 分块异步 sleep，每 50ms 检查一次取消标记，保证用户取消可以中断等待。
-async fn execute_async(conversation_id: Option<&str>, input: Value) -> String {
+async fn execute_async(
+    conversation_id: Option<&str>,
+    input: Value,
+) -> Result<ToolOutcome, ToolFailure> {
     let requested_ms = match parse_sleep_ms(&input) {
         Some(v) => v,
         None => {
-            return json!({
-                "ok": false,
-                "error": "Sleep requires positive integer 'duration_ms'"
-            })
-            .to_string();
+            return Err(ToolFailure::invalid_input(
+                "Sleep requires positive integer 'duration_ms'",
+            ));
         }
     };
     let slept_ms = requested_ms.min(MAX_SLEEP_MS);
@@ -61,19 +62,21 @@ async fn execute_async(conversation_id: Option<&str>, input: Value) -> String {
     let mut elapsed: u64 = 0;
     while elapsed < slept_ms {
         if crate::llm::cancellation::is_cancelled(conversation_id) {
-            return json!({ "ok": false, "error": "cancelled", "slept_ms": elapsed }).to_string();
+            return Err(ToolFailure::cancelled(format!(
+                "cancelled after sleeping {} ms",
+                elapsed
+            )));
         }
         let to_sleep = (slept_ms - elapsed).min(chunk_ms);
         tokio::time::sleep(Duration::from_millis(to_sleep)).await;
         elapsed += to_sleep;
     }
-    json!({
+    Ok(ToolOutcome::json(json!({
         "ok": true,
         "requested_ms": requested_ms,
         "slept_ms": slept_ms,
         "clamped": requested_ms > MAX_SLEEP_MS
-    })
-    .to_string()
+    })))
 }
 
 fn execute_with_app_boxed(

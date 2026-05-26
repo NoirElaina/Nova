@@ -1,7 +1,8 @@
 use crate::llm::tools::{
-    app_tool_with_extras, AppExecuteFuture, ToolPermissionDescriptor, ToolRegistration,
+    app_tool, AppExecuteFuture, ToolFailure, ToolOutcome, ToolPermissionDescriptor,
+    ToolRegistration,
 };
-use crate::llm::types::{Message, Tool};
+use crate::llm::types::Tool;
 use serde_json::{json, Value};
 use tauri::AppHandle;
 
@@ -26,21 +27,20 @@ pub fn tool() -> Tool {
     }
 }
 
-pub async fn execute_with_app(
+async fn execute_with_app(
     _app: &AppHandle,
     _conversation_id: Option<&str>,
     input: Value,
-) -> String {
+) -> Result<ToolOutcome, ToolFailure> {
     let value = match input.get("input").and_then(|v| v.as_str()) {
         Some(v) if !v.trim().is_empty() => v.trim(),
-        _ => return json!({ "ok": false, "error": "Missing 'input'" }).to_string(),
+        _ => return Err(ToolFailure::invalid_input("Missing 'input'")),
     };
 
-    json!({
+    Ok(ToolOutcome::json(json!({
         "ok": true,
         "echo": value
-    })
-    .to_string()
+    })))
 }
 
 // 把 async 执行函数桥接成注册表需要的 future 形态。
@@ -50,11 +50,6 @@ fn execute_with_app_boxed(
     input: Value,
 ) -> AppExecuteFuture {
     Box::pin(async move { execute_with_app(&app, conversation_id.as_deref(), input).await })
-}
-
-// 可选后处理：需要 side-channel 消息时在这里补。
-pub fn postprocess_output(output: &str) -> (String, Vec<Message>) {
-    (output.to_string(), Vec::new())
 }
 
 // 显式权限声明：敏感工具在这里返回稳定的签名和提示文案。
@@ -74,11 +69,5 @@ fn permission(input: &Value) -> Option<ToolPermissionDescriptor> {
 }
 
 pub(crate) fn registration() -> ToolRegistration {
-    app_tool_with_extras(
-        tool,
-        execute_with_app_boxed,
-        false,
-        Some(permission),
-        Some(postprocess_output),
-    )
+    app_tool(tool, execute_with_app_boxed, false, Some(permission))
 }

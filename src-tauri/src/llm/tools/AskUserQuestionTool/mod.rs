@@ -1,4 +1,4 @@
-use crate::llm::tools::{app_tool, AppExecuteFuture, ToolRegistration};
+use crate::llm::tools::{app_tool, AppExecuteFuture, ToolFailure, ToolOutcome, ToolRegistration};
 use crate::llm::types::Tool;
 use serde_json::{json, Value};
 use tauri::AppHandle;
@@ -148,7 +148,7 @@ fn normalize_question(question: &Value) -> Option<Value> {
 
 // 把模型传来的提问参数整理成统一的 `needs_user_input` payload。
 // `context` 是为什么要提问，`questions` 是最终展示给用户的问题数组。
-fn execute_local(input: Value) -> String {
+fn execute_local(input: Value) -> Result<ToolOutcome, ToolFailure> {
     let context = input
         .get("context")
         .and_then(|v| v.as_str())
@@ -169,18 +169,18 @@ fn execute_local(input: Value) -> String {
         .unwrap_or_default();
 
     if questions.is_empty() {
-        return json!({ "ok": false, "error": "ask_user_question requires non-empty 'questions'" })
-            .to_string();
+        return Err(ToolFailure::invalid_input(
+            "ask_user_question requires non-empty 'questions'",
+        ));
     }
 
-    json!({
+    Ok(ToolOutcome::json(json!({
         "type": "needs_user_input",
         "context": context,
         "questions": questions,
         "allow_freeform": allow_freeform,
         "instruction": "Stop tool execution and ask the user this question before continuing."
-    })
-    .to_string()
+    })))
 }
 
 fn execute_with_app_boxed(

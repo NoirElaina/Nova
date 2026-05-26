@@ -70,7 +70,7 @@ declare_builtin_tools! {
 pub mod shared;
 
 use crate::llm::types::{Message, Tool};
-use serde_json::{json, Value};
+use serde_json::Value;
 use std::collections::{BTreeMap, VecDeque};
 use std::future::Future;
 use std::pin::Pin;
@@ -78,10 +78,120 @@ use std::sync::OnceLock;
 use tauri::AppHandle;
 use tokio::task::JoinSet;
 
-pub(crate) type AppExecuteFuture = Pin<Box<dyn Future<Output = String> + Send>>;
+pub(crate) type ToolExecResult = Result<ToolOutcome, ToolFailure>;
+pub(crate) type AppExecuteFuture = Pin<Box<dyn Future<Output = ToolExecResult> + Send>>;
 pub(crate) type AppExecuteFn = fn(AppHandle, Option<String>, Value) -> AppExecuteFuture;
-pub(crate) type PostprocessFn = fn(&str) -> (String, Vec<Message>);
 pub(crate) type PermissionFn = fn(&Value) -> Option<ToolPermissionDescriptor>;
+
+#[derive(Debug, Clone)]
+pub(crate) struct ToolOutcome {
+    pub output: String,
+    pub additional_messages: Vec<Message>,
+    pub prevent_continuation: bool,
+    pub stop_reason: Option<String>,
+}
+
+impl ToolOutcome {
+    pub(crate) fn text(output: impl Into<String>) -> Self {
+        Self {
+            output: output.into(),
+            additional_messages: Vec::new(),
+            prevent_continuation: false,
+            stop_reason: None,
+        }
+    }
+
+    pub(crate) fn json(value: Value) -> Self {
+        Self::text(value.to_string())
+    }
+
+    pub(crate) fn with_additional_messages(mut self, messages: Vec<Message>) -> Self {
+        self.additional_messages = messages;
+        self
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ToolFailureKind {
+    Execution,
+    InvalidInput,
+    PermissionDenied,
+    UnknownTool,
+    Cancelled,
+    Mcp,
+    Hook,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct ToolFailure {
+    pub message: String,
+    pub kind: ToolFailureKind,
+    pub additional_messages: Vec<Message>,
+    pub prevent_continuation: bool,
+    pub stop_reason: Option<String>,
+    pub suppress_backend_error: bool,
+}
+
+impl ToolFailure {
+    pub(crate) fn new(message: impl Into<String>) -> Self {
+        Self {
+            message: message.into(),
+            kind: ToolFailureKind::Execution,
+            additional_messages: Vec::new(),
+            prevent_continuation: false,
+            stop_reason: None,
+            suppress_backend_error: false,
+        }
+    }
+
+    pub(crate) fn invalid_input(message: impl Into<String>) -> Self {
+        Self::new(message).with_kind(ToolFailureKind::InvalidInput)
+    }
+
+    pub(crate) fn permission_denied(message: impl Into<String>) -> Self {
+        Self::new(message).with_kind(ToolFailureKind::PermissionDenied)
+    }
+
+    pub(crate) fn unknown_tool(message: impl Into<String>) -> Self {
+        Self::new(message).with_kind(ToolFailureKind::UnknownTool)
+    }
+
+    pub(crate) fn cancelled(message: impl Into<String>) -> Self {
+        Self::new(message)
+            .with_kind(ToolFailureKind::Cancelled)
+            .suppress_backend_error()
+    }
+
+    pub(crate) fn mcp(message: impl Into<String>) -> Self {
+        Self::new(message).with_kind(ToolFailureKind::Mcp)
+    }
+
+    pub(crate) fn hook(message: impl Into<String>) -> Self {
+        Self::new(message).with_kind(ToolFailureKind::Hook)
+    }
+
+    pub(crate) fn with_kind(mut self, kind: ToolFailureKind) -> Self {
+        self.kind = kind;
+        self
+    }
+
+    pub(crate) fn suppress_backend_error(mut self) -> Self {
+        self.suppress_backend_error = true;
+        self
+    }
+}
+
+impl From<String> for ToolFailure {
+    fn from(message: String) -> Self {
+        Self::new(message)
+    }
+}
+
+impl From<&str> for ToolFailure {
+    fn from(message: &str) -> Self {
+        Self::new(message)
+    }
+}
 
 #[derive(Debug, Clone)]
 pub(crate) struct ToolPermissionDescriptor {
@@ -101,8 +211,6 @@ pub(crate) struct ToolRegistration {
     tool: fn() -> Tool,
     // execute_with_app: 唯一执行入口，始终携带 AppHandle / conversation_id / WorkspaceRoot 能力。
     execute_with_app: AppExecuteFn,
-    // postprocess: 执行完成后补充 side-channel 消息或清洗输出。
-    postprocess: Option<PostprocessFn>,
     // permission: 工具自己的权限描述函数；内置工具不再走按名字兜底。
     permission: Option<PermissionFn>,
     // read_only: 只读工具可进入批量并发执行队列。
@@ -118,23 +226,6 @@ pub(crate) const fn app_tool(
     ToolRegistration {
         tool,
         execute_with_app,
-        postprocess: None,
-        permission,
-        read_only,
-    }
-}
-
-pub(crate) const fn app_tool_with_extras(
-    tool: fn() -> Tool,
-    execute_with_app: AppExecuteFn,
-    read_only: bool,
-    permission: Option<PermissionFn>,
-    postprocess: Option<PostprocessFn>,
-) -> ToolRegistration {
-    ToolRegistration {
-        tool,
-        execute_with_app,
-        postprocess,
         permission,
         read_only,
     }
@@ -216,26 +307,6 @@ fn validate_tool_input(name: &str, input: &Value) -> Result<(), String> {
     Ok(())
 }
 
-fn infer_is_error(output: &str) -> bool {
-    let Ok(v) = serde_json::from_str::<Value>(output.trim()) else {
-        return false;
-    };
-
-    if v.get("type")
-        .and_then(|t| t.as_str())
-        .map(|t| t == "needs_user_input")
-        .unwrap_or(false)
-    {
-        return false;
-    }
-
-    if v.get("ok").and_then(|ok| ok.as_bool()) == Some(false) {
-        return true;
-    }
-
-    v.get("error").is_some() && v.get("ok").is_none()
-}
-
 fn is_subagent_start_tool(name: &str) -> bool {
     name == task_create_tool::tool().name
 }
@@ -269,11 +340,94 @@ fn cancelled_result_from_call(call: ToolCallRequest, reason: &str) -> ToolCallRe
         id: call.id,
         name: call.name,
         input: call.input,
-        output: json!({ "ok": false, "error": reason }).to_string(),
+        output: reason.to_string(),
         is_error: true,
         additional_messages: Vec::new(),
         prevent_continuation: false,
         stop_reason: None,
+    }
+}
+
+fn merge_controls(
+    additional_messages: &mut Vec<Message>,
+    prevent_continuation: &mut bool,
+    stop_reason: &mut Option<String>,
+    messages: Vec<Message>,
+    should_prevent: bool,
+    reason: Option<String>,
+) {
+    additional_messages.extend(messages);
+    if should_prevent {
+        *prevent_continuation = true;
+        if stop_reason.is_none() {
+            *stop_reason = reason;
+        }
+    }
+}
+
+fn emit_tool_failure(app: &AppHandle, name: &str, failure: &ToolFailure) {
+    if failure.suppress_backend_error || failure.kind == ToolFailureKind::Cancelled {
+        return;
+    }
+
+    crate::llm::utils::error_event::emit_backend_error(
+        app,
+        "tool.execute",
+        format!("工具 {} 执行失败：{}", name, failure.message),
+        Some(name),
+    );
+}
+
+fn finalize_failure_result(
+    app: &AppHandle,
+    conversation_id: Option<&str>,
+    id: String,
+    name: String,
+    input: Value,
+    mut failure: ToolFailure,
+    mut additional_messages: Vec<Message>,
+    mut prevent_continuation: bool,
+    mut stop_reason: Option<String>,
+) -> ToolCallResult {
+    merge_controls(
+        &mut additional_messages,
+        &mut prevent_continuation,
+        &mut stop_reason,
+        failure.additional_messages.clone(),
+        failure.prevent_continuation,
+        failure.stop_reason.clone(),
+    );
+
+    let failure_hook = crate::llm::services::hooks::run_post_tool_use_failure_hooks(
+        app,
+        &name,
+        &input,
+        &failure.message,
+        conversation_id,
+    );
+    merge_controls(
+        &mut additional_messages,
+        &mut prevent_continuation,
+        &mut stop_reason,
+        failure_hook.additional_messages,
+        failure_hook.prevent_continuation,
+        failure_hook.stop_reason,
+    );
+    if let Some(err) = failure_hook.override_error {
+        failure = ToolFailure::hook(err);
+    }
+
+    emit_tool_failure(app, &name, &failure);
+
+    ToolCallResult {
+        id,
+        name,
+        input,
+        output: failure.message,
+        is_error: true,
+        additional_messages,
+        prevent_continuation,
+        stop_reason,
     }
 }
 
@@ -308,140 +462,108 @@ pub(crate) async fn execute_single_tool_call(
     }
 
     if let Some(err) = pre_hook.override_error {
-        return ToolCallResult {
+        return finalize_failure_result(
+            app,
+            conversation_id,
             id,
             name,
             input,
-            output: json!({ "ok": false, "error": err }).to_string(),
-            is_error: true,
+            ToolFailure::hook(err),
             additional_messages,
             prevent_continuation,
             stop_reason,
-        };
+        );
     }
 
     if let Err(e) = validate_tool_input(&name, &input) {
-        let failure_hook = crate::llm::services::hooks::run_post_tool_use_failure_hooks(
+        return finalize_failure_result(
             app,
-            &name,
-            &input,
-            &e,
             conversation_id,
-        );
-        additional_messages.extend(failure_hook.additional_messages);
-        if failure_hook.prevent_continuation {
-            prevent_continuation = true;
-            if stop_reason.is_none() {
-                stop_reason = failure_hook.stop_reason;
-            }
-        }
-
-        let output = json!({ "ok": false, "error": e }).to_string();
-        return ToolCallResult {
             id,
             name,
             input,
-            output,
-            is_error: true,
+            ToolFailure::invalid_input(e),
             additional_messages,
             prevent_continuation,
             stop_reason,
-        };
-    }
-
-    let output = execute_tool_with_app(app, conversation_id, &name, input.clone()).await;
-
-    let (tool_output, tool_side_channel_messages) =
-        match find_registered_tool(&name).and_then(|entry| entry.postprocess) {
-            Some(postprocess) => postprocess(&output),
-            None => (output, Vec::new()),
-        };
-    additional_messages.extend(tool_side_channel_messages);
-
-    let mut is_error = infer_is_error(&tool_output);
-
-    if is_error {
-        let failure_hook = crate::llm::services::hooks::run_post_tool_use_failure_hooks(
-            app,
-            &name,
-            &input,
-            &tool_output,
-            conversation_id,
         );
-        additional_messages.extend(failure_hook.additional_messages);
-        if failure_hook.prevent_continuation {
-            prevent_continuation = true;
-            if stop_reason.is_none() {
-                stop_reason = failure_hook.stop_reason;
-            }
-        }
     }
+
+    let outcome = match execute_tool_with_app(app, conversation_id, &name, input.clone()).await {
+        Ok(outcome) => outcome,
+        Err(failure) => {
+            return finalize_failure_result(
+                app,
+                conversation_id,
+                id,
+                name,
+                input,
+                failure,
+                additional_messages,
+                prevent_continuation,
+                stop_reason,
+            );
+        }
+    };
+
+    let tool_output = outcome.output;
+    merge_controls(
+        &mut additional_messages,
+        &mut prevent_continuation,
+        &mut stop_reason,
+        outcome.additional_messages,
+        outcome.prevent_continuation,
+        outcome.stop_reason,
+    );
 
     let post_hook = crate::llm::services::hooks::run_post_tool_use_hooks(
         app,
         &name,
         &input,
         &tool_output,
-        is_error,
         conversation_id,
     );
-    additional_messages.extend(post_hook.additional_messages);
-    if post_hook.prevent_continuation {
-        prevent_continuation = true;
-        if stop_reason.is_none() {
-            stop_reason = post_hook.stop_reason;
-        }
+    merge_controls(
+        &mut additional_messages,
+        &mut prevent_continuation,
+        &mut stop_reason,
+        post_hook.additional_messages,
+        post_hook.prevent_continuation,
+        post_hook.stop_reason,
+    );
+    if let Some(err) = post_hook.override_error {
+        return finalize_failure_result(
+            app,
+            conversation_id,
+            id,
+            name,
+            input,
+            ToolFailure::hook(err),
+            additional_messages,
+            prevent_continuation,
+            stop_reason,
+        );
     }
-
-    let final_output = if let Some(err) = post_hook.override_error {
-        is_error = true;
-        json!({ "ok": false, "error": err }).to_string()
-    } else {
-        tool_output
-    };
 
     if is_subagent_stop_tool(&name) {
         let subagent_stop_hook =
             crate::llm::services::hooks::run_subagent_stop_hooks(app, &name, conversation_id);
-        additional_messages.extend(subagent_stop_hook.additional_messages);
-        if subagent_stop_hook.prevent_continuation {
-            prevent_continuation = true;
-            if stop_reason.is_none() {
-                stop_reason = subagent_stop_hook.stop_reason;
-            }
-        }
-    }
-
-    if is_error {
-        let error_text = serde_json::from_str::<serde_json::Value>(&final_output)
-            .ok()
-            .and_then(|v| {
-                v.get("error")
-                    .and_then(|e| e.as_str())
-                    .map(|s| s.to_string())
-            })
-            .unwrap_or_else(|| final_output.clone());
-        let is_cancelled = error_text.trim().eq_ignore_ascii_case("cancelled")
-            || error_text
-                .trim()
-                .to_ascii_lowercase()
-                .starts_with("cancelled:");
-        if !is_cancelled {
-            crate::llm::utils::error_event::emit_backend_error(
-                app,
-                "tool.execute",
-                format!("工具 {} 执行失败：{}", name, error_text),
-                Some(name.as_str()),
-            );
-        }
+        merge_controls(
+            &mut additional_messages,
+            &mut prevent_continuation,
+            &mut stop_reason,
+            subagent_stop_hook.additional_messages,
+            subagent_stop_hook.prevent_continuation,
+            subagent_stop_hook.stop_reason,
+        );
     }
 
     ToolCallResult {
         id,
         name,
         input,
-        is_error,
-        output: final_output,
+        is_error: false,
+        output: tool_output,
         additional_messages,
         prevent_continuation,
         stop_reason,
@@ -593,13 +715,12 @@ pub fn get_available_tools() -> Vec<Tool> {
 }
 
 // 在带 AppHandle 的环境中执行工具，附带权限校验和 MCP 代理能力。
-// 若权限拒绝返回特殊 JSON payload；允许则执行工具。
-pub async fn execute_tool_with_app(
+pub(crate) async fn execute_tool_with_app(
     app: &AppHandle,
     conversation_id: Option<&str>,
     name: &str,
     input: Value,
-) -> String {
+) -> ToolExecResult {
     match crate::llm::utils::permissions::enforce_tool_permission(
         app,
         conversation_id,
@@ -608,7 +729,7 @@ pub async fn execute_tool_with_app(
     ) {
         crate::llm::utils::permissions::PermissionEnforcement::Allow => {}
         crate::llm::utils::permissions::PermissionEnforcement::Deny(e) => {
-            return serde_json::json!({ "ok": false, "error": e }).to_string();
+            return Err(ToolFailure::permission_denied(e));
         }
         crate::llm::utils::permissions::PermissionEnforcement::AskUser {
             request_id,
@@ -624,7 +745,7 @@ pub async fn execute_tool_with_app(
             )
             .await
             {
-                return serde_json::json!({ "ok": false, "error": e }).to_string();
+                return Err(ToolFailure::permission_denied(e));
             }
         }
     }
@@ -640,5 +761,5 @@ pub async fn execute_tool_with_app(
             .await;
     }
 
-    json!({ "ok": false, "error": format!("Unknown tool: {}", name) }).to_string()
+    Err(ToolFailure::unknown_tool(format!("Unknown tool: {}", name)))
 }

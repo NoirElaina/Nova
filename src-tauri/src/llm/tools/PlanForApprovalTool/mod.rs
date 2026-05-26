@@ -1,4 +1,4 @@
-use crate::llm::tools::{app_tool, AppExecuteFuture, ToolRegistration};
+use crate::llm::tools::{app_tool, AppExecuteFuture, ToolFailure, ToolOutcome, ToolRegistration};
 use crate::llm::types::Tool;
 use serde_json::{json, Value};
 use tauri::AppHandle;
@@ -85,18 +85,15 @@ pub fn tool() -> Tool {
 
 // 把计划摘要、步骤和风险整理成 `needs_user_input` payload，请用户明确审批。
 // `summary` 是高层概述，`steps` 是具体实施步骤，`risks` 是可选风险提醒。
-fn execute_local(input: Value) -> String {
+fn execute_local(input: Value) -> Result<ToolOutcome, ToolFailure> {
     let summary = match normalized_non_empty_string(&input, "summary") {
         Some(v) => v,
-        None => {
-            return json!({ "ok": false, "error": "Missing or empty 'summary' argument" })
-                .to_string()
-        }
+        None => return Err(ToolFailure::invalid_input("Missing or empty 'summary' argument")),
     };
 
     let steps = normalized_string_list(&input, "steps");
     if steps.is_empty() {
-        return json!({ "ok": false, "error": "Missing non-empty 'steps' array" }).to_string();
+        return Err(ToolFailure::invalid_input("Missing non-empty 'steps' array"));
     }
 
     // title: 展示给用户看的计划标题，不传时使用默认“计划提审”。
@@ -123,7 +120,7 @@ fn execute_local(input: Value) -> String {
         context_lines.push(join_bullets(&risks));
     }
 
-    json!({
+    Ok(ToolOutcome::json(json!({
         "type": "needs_user_input",
         "context": context_lines.join("\n"),
         "questions": [
@@ -152,8 +149,7 @@ fn execute_local(input: Value) -> String {
         ],
         "allow_freeform": allow_freeform,
         "instruction": "Stop execution and wait for user decision before implementation."
-    })
-    .to_string()
+    })))
 }
 
 fn execute_with_app_boxed(

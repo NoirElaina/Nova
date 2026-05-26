@@ -12,7 +12,8 @@ use tauri::AppHandle;
 use tokio::sync::Mutex;
 
 use crate::llm::tools::{
-    app_tool_with_extras, AppExecuteFuture, ToolPermissionDescriptor, ToolRegistration,
+    app_tool, AppExecuteFuture, ToolFailure, ToolOutcome, ToolPermissionDescriptor,
+    ToolRegistration,
 };
 use crate::llm::types::{Content, ContentBlock, ImageSource, Message, Role, Tool};
 
@@ -52,13 +53,7 @@ fn permission(input: &Value) -> Option<ToolPermissionDescriptor> {
 
 // 注册 computer_use，同时挂上权限描述和截图后处理逻辑。
 pub(crate) fn registration() -> ToolRegistration {
-    app_tool_with_extras(
-        tool,
-        execute_with_app_boxed,
-        false,
-        Some(permission),
-        Some(postprocess_output),
-    )
+    app_tool(tool, execute_with_app_boxed, false, Some(permission))
 }
 
 // 返回一个进程级互斥锁，保证同一时刻只有一个桌面控制操作在执行。
@@ -582,11 +577,11 @@ fn execute_blocking(action: String, input: Value) -> Result<Value, String> {
 }
 
 // 处理 wait 这种纯异步动作，或串行执行其余桌面控制动作并返回 JSON 结果。
-pub async fn execute_with_app(
+async fn execute_with_app(
     _app: &AppHandle,
     _conversation_id: Option<&str>,
     input: Value,
-) -> String {
+) -> Result<ToolOutcome, ToolFailure> {
     // action: 当前请求的桌面动作名，会决定走哪个执行分支。
     let action = input
         .get("action")
@@ -601,24 +596,26 @@ pub async fn execute_with_app(
             .unwrap_or(DEFAULT_WAIT_MS)
             .clamp(1, MAX_WAIT_MS);
         tokio::time::sleep(Duration::from_millis(wait_ms)).await;
-        return json!({
+        return Ok(ToolOutcome::json(json!({
             "ok": true,
             "action": "wait",
             "duration_ms": wait_ms
-        })
-        .to_string();
+        })));
     }
 
     // _guard: 持有互斥锁期间，阻止多个桌面动作同时操作同一会话环境。
     let _guard = session_lock().lock().await;
     match tokio::task::spawn_blocking(move || execute_blocking(action, input)).await {
-        Ok(Ok(value)) => value.to_string(),
-        Ok(Err(err)) => json!({ "ok": false, "error": err }).to_string(),
-        Err(err) => json!({
-            "ok": false,
-            "error": format!("computer_use worker failed: {}", err)
-        })
-        .to_string(),
+        Ok(Ok(value)) => {
+            let raw_output = value.to_string();
+            let (output, messages) = postprocess_output(&raw_output);
+            Ok(ToolOutcome::text(output).with_additional_messages(messages))
+        }
+        Ok(Err(err)) => Err(ToolFailure::new(err)),
+        Err(err) => Err(ToolFailure::new(format!(
+            "computer_use worker failed: {}",
+            err
+        ))),
     }
 }
 

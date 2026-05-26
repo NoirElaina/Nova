@@ -1,5 +1,5 @@
 use crate::llm::tools::shared::task_store;
-use crate::llm::tools::{app_tool, AppExecuteFuture, ToolRegistration};
+use crate::llm::tools::{app_tool, AppExecuteFuture, ToolOutcome, ToolRegistration};
 use crate::llm::types::Tool;
 use serde_json::{json, Value};
 use tauri::AppHandle;
@@ -28,6 +28,6 @@ fn execute_with_app_boxed(
 ) -> AppExecuteFuture {
     Box::pin(async move {
         let tasks = task_store::list(conversation_id.as_deref());
-        json!({ "ok": true, "tasks": tasks }).to_string()
+        Ok(ToolOutcome::json(json!({ "ok": true, "tasks": tasks })))
     })
 }

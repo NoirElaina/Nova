@@ -1,4 +1,4 @@
-use crate::llm::tools::{app_tool, AppExecuteFuture, ToolRegistration};
+use crate::llm::tools::{app_tool, AppExecuteFuture, ToolFailure, ToolOutcome, ToolRegistration};
 use crate::llm::types::Tool;
 use reqwest::header::CONTENT_TYPE;
 use reqwest::redirect::Policy;
@@ -60,14 +60,14 @@ fn execute_with_app_boxed(
     Box::pin(async move { execute_fetch(input).await })
 }
 
-async fn execute_fetch(input: Value) -> String {
+async fn execute_fetch(input: Value) -> Result<ToolOutcome, ToolFailure> {
     let Some(raw_url) = input.get("url").and_then(|v| v.as_str()) else {
-        return json!({ "ok": false, "error": "Missing 'url' argument" }).to_string();
+        return Err(ToolFailure::invalid_input("Missing 'url' argument"));
     };
 
     let url = match parse_http_url(raw_url) {
         Ok(url) => url,
-        Err(e) => return json!({ "ok": false, "error": e }).to_string(),
+        Err(e) => return Err(ToolFailure::invalid_input(e)),
     };
 
     let client = match reqwest::Client::builder()
@@ -77,26 +77,12 @@ async fn execute_fetch(input: Value) -> String {
         .build()
     {
         Ok(client) => client,
-        Err(e) => {
-            return json!({
-                "ok": false,
-                "url": url.as_str(),
-                "error": format!("Failed to create HTTP client: {e}")
-            })
-            .to_string()
-        }
+        Err(e) => return Err(ToolFailure::new(format!("Failed to create HTTP client: {e}"))),
     };
 
     let response = match client.get(url.clone()).send().await {
         Ok(response) => response,
-        Err(e) => {
-            return json!({
-                "ok": false,
-                "url": url.as_str(),
-                "error": format!("Failed to fetch URL: {e}")
-            })
-            .to_string()
-        }
+        Err(e) => return Err(ToolFailure::new(format!("Failed to fetch URL: {e}"))),
     };
 
     let status = response.status();
@@ -109,17 +95,7 @@ async fn execute_fetch(input: Value) -> String {
 
     let body = match response.text().await {
         Ok(text) => text,
-        Err(e) => {
-            return json!({
-                "ok": false,
-                "url": url.as_str(),
-                "finalUrl": final_url,
-                "status": status.as_u16(),
-                "contentType": content_type,
-                "error": format!("Failed to read response body: {e}")
-            })
-            .to_string()
-        }
+        Err(e) => return Err(ToolFailure::new(format!("Failed to read response body: {e}"))),
     };
     let truncated = body.len() > 12000;
     let content = if body.trim().is_empty() {
@@ -128,14 +104,22 @@ async fn execute_fetch(input: Value) -> String {
         truncate(body, 12000)
     };
 
-    json!({
-        "ok": status.is_success(),
+    if !status.is_success() {
+        return Err(ToolFailure::new(format!(
+            "HTTP {} fetching {}: {}",
+            status.as_u16(),
+            final_url,
+            content
+        )));
+    }
+
+    Ok(ToolOutcome::json(json!({
+        "ok": true,
         "url": url.as_str(),
         "finalUrl": final_url,
         "status": status.as_u16(),
         "contentType": content_type,
         "truncated": truncated,
         "content": content
-    })
-    .to_string()
+    })))
 }

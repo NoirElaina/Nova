@@ -1,4 +1,4 @@
-use crate::llm::tools::{app_tool, AppExecuteFuture, ToolRegistration};
+use crate::llm::tools::{app_tool, AppExecuteFuture, ToolFailure, ToolOutcome, ToolRegistration};
 use crate::llm::types::Tool;
 use serde_json::{json, Value};
 use tauri::AppHandle;
@@ -24,18 +24,17 @@ pub fn tool() -> Tool {
     }
 }
 
-fn execute_local(input: Value) -> String {
+fn execute_local(input: Value) -> Result<ToolOutcome, ToolFailure> {
     let query = match input.get("query").and_then(|v| v.as_str()) {
         Some(value) if !value.trim().is_empty() => value.trim(),
-        _ => return json!({ "ok": false, "error": "Missing 'query'" }).to_string(),
+        _ => return Err(ToolFailure::invalid_input("Missing 'query'")),
     };
 
-    json!({
+    Ok(ToolOutcome::json(json!({
         "ok": true,
         "query": query,
         "message": "Replace this with your read-only logic."
-    })
-    .to_string()
+    })))
 }
 
 fn execute_with_app_boxed(

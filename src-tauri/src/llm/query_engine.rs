@@ -17,6 +17,8 @@ pub struct ChatMessageEvent {
     pub tool_use_input: Option<String>,
     // 工具输出（工具事件可选）。
     pub tool_result: Option<String>,
+    // 工具结果是否为错误（tool-result 事件可选）。
+    pub tool_is_error: Option<bool>,
     // token 使用量（可选）。
     pub token_usage: Option<u32>,
     // 停止原因（stop 事件可选）。

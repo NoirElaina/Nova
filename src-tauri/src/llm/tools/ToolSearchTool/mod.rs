@@ -1,5 +1,7 @@
 use crate::llm::services::mcp_tools;
-use crate::llm::tools::{app_tool, get_available_tools, AppExecuteFuture, ToolRegistration};
+use crate::llm::tools::{
+    app_tool, get_available_tools, AppExecuteFuture, ToolFailure, ToolOutcome, ToolRegistration,
+};
 use crate::llm::types::Tool;
 use serde_json::{json, Value};
 use std::collections::HashSet;
@@ -26,15 +28,15 @@ pub fn tool() -> Tool {
 }
 
 // 搜索内置工具加已连接的 MCP 动态工具；这是运行时实际使用的完整搜索路径。
-pub async fn execute_with_app(app: &AppHandle, input: Value) -> String {
+async fn execute_with_app(app: &AppHandle, input: Value) -> Result<ToolOutcome, ToolFailure> {
     let query = match input.get("query").and_then(|v| v.as_str()) {
         Some(v) if !v.trim().is_empty() => v.trim(),
-        _ => return json!({ "ok": false, "error": "Missing 'query' argument" }).to_string(),
+        _ => return Err(ToolFailure::invalid_input("Missing 'query' argument")),
     };
 
     let mut tools = get_available_tools();
     tools.extend(mcp_tools::collect_mcp_tools(app).await);
-    search_tools(query, tools)
+    Ok(ToolOutcome::text(search_tools(query, tools)))
 }
 
 // 把 async execute_with_app 包成统一的 AppExecuteFuture，供注册层调用。

@@ -1,4 +1,7 @@
-use crate::llm::tools::{app_tool, AppExecuteFuture, ToolPermissionDescriptor, ToolRegistration};
+use crate::llm::tools::{
+    app_tool, AppExecuteFuture, ToolFailure, ToolOutcome, ToolPermissionDescriptor,
+    ToolRegistration,
+};
 use crate::llm::types::Tool;
 use serde_json::{json, Value};
 use tauri::AppHandle;
@@ -40,19 +43,23 @@ fn execute_with_app_boxed(
     Box::pin(async move { execute_async(&app, conversation_id.as_deref(), input).await })
 }
 
-async fn execute_async(app: &AppHandle, conversation_id: Option<&str>, input: Value) -> String {
+async fn execute_async(
+    app: &AppHandle,
+    conversation_id: Option<&str>,
+    input: Value,
+) -> Result<ToolOutcome, ToolFailure> {
     let path = match input.get("path").and_then(|v| v.as_str()) {
         Some(path) if !path.trim().is_empty() => path,
-        _ => return json!({ "ok": false, "error": "Missing 'path' argument" }).to_string(),
+        _ => return Err(ToolFailure::invalid_input("Missing 'path' argument")),
     };
     let content = match input.get("content").and_then(|v| v.as_str()) {
         Some(content) => content,
-        _ => return json!({ "ok": false, "error": "Missing 'content' argument" }).to_string(),
+        _ => return Err(ToolFailure::invalid_input("Missing 'content' argument")),
     };
     let root =
         match crate::command::workspace::workspace_root_for_conversation(app, conversation_id) {
             Ok(root) => root,
-            Err(error) => return json!({ "ok": false, "error": error }).to_string(),
+            Err(error) => return Err(ToolFailure::new(error)),
         };
     match crate::llm::services::file_changes::write_file_change(
         app,
@@ -65,15 +72,14 @@ async fn execute_async(app: &AppHandle, conversation_id: Option<&str>, input: Va
     {
         Ok(result) => {
             let changed_files = result.files.len();
-            json!({
+            Ok(ToolOutcome::json(json!({
                 "ok": true,
                 "message": if result.change_batch_id.is_some() { "Successfully wrote to file" } else { "No file changes" },
                 "files": result.files,
                 "changed_files": changed_files,
                 "change_batch_id": result.change_batch_id
-            })
-            .to_string()
+            })))
         }
-        Err(error) => json!({ "ok": false, "error": error }).to_string(),
+        Err(error) => Err(ToolFailure::new(error)),
     }
 }

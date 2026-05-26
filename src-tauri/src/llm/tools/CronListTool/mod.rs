@@ -1,5 +1,5 @@
 use crate::llm::tools::shared::cron_store::list_jobs;
-use crate::llm::tools::{app_tool, AppExecuteFuture, ToolRegistration};
+use crate::llm::tools::{app_tool, AppExecuteFuture, ToolFailure, ToolOutcome, ToolRegistration};
 use crate::llm::types::Tool;
 use serde_json::{json, Value};
 use tauri::AppHandle;
@@ -33,7 +33,7 @@ pub fn tool() -> Tool {
 
 // 读取当前会话和持久化存储里的所有计划任务。
 // `jobs` 是合并后的任务列表，最后会统一转成 JSON 数组返回给模型。
-pub async fn execute_with_app(app: &AppHandle, _input: Value) -> String {
+async fn execute_with_app(app: &AppHandle, _input: Value) -> Result<ToolOutcome, ToolFailure> {
     match list_jobs(app) {
         Ok(jobs) => {
             // list: 返回给模型的轻量序列化结果，只保留工具协议需要的字段。
@@ -53,8 +53,8 @@ pub async fn execute_with_app(app: &AppHandle, _input: Value) -> String {
                 })
                 .collect::<Vec<_>>();
 
-            json!({ "ok": true, "jobs": list }).to_string()
+            Ok(ToolOutcome::json(json!({ "ok": true, "jobs": list })))
         }
-        Err(e) => json!({ "ok": false, "error": e }).to_string(),
+        Err(e) => Err(ToolFailure::new(e)),
     }
 }

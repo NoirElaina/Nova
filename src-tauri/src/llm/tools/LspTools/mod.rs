@@ -1,4 +1,4 @@
-use crate::llm::tools::{app_tool, AppExecuteFuture, ToolRegistration};
+use crate::llm::tools::{app_tool, AppExecuteFuture, ToolFailure, ToolOutcome, ToolRegistration};
 use crate::llm::types::Tool;
 use serde_json::{json, Value};
 use tauri::AppHandle;
@@ -34,10 +34,10 @@ fn required_u64(input: &Value, tool_name: &str, key: &str) -> Result<u64, String
         .ok_or_else(|| format!("{} requires 1-based {}", tool_name, key))
 }
 
-fn result_json<T: serde::Serialize>(result: Result<T, String>) -> String {
+fn result_json<T: serde::Serialize>(result: Result<T, String>) -> Result<ToolOutcome, ToolFailure> {
     match result {
-        Ok(result) => json!({ "ok": true, "result": result }).to_string(),
-        Err(error) => json!({ "ok": false, "error": error }).to_string(),
+        Ok(result) => Ok(ToolOutcome::json(json!({ "ok": true, "result": result }))),
+        Err(error) => Err(ToolFailure::new(error)),
     }
 }
 

@@ -1,4 +1,4 @@
-use crate::llm::tools::{app_tool, AppExecuteFuture, ToolRegistration};
+use crate::llm::tools::{app_tool, AppExecuteFuture, ToolFailure, ToolOutcome, ToolRegistration};
 use crate::llm::types::Tool;
 use serde_json::{json, Value};
 use tauri::AppHandle;
@@ -49,13 +49,10 @@ pub fn tool() -> Tool {
 
 // 把一条稳定信息写进全局记忆库。
 // `content` 是真正要保存的内容，`kind` 是分类标签，`source` 标记来源。
-pub async fn execute_with_app(app: &AppHandle, input: Value) -> String {
+async fn execute_with_app(app: &AppHandle, input: Value) -> Result<ToolOutcome, ToolFailure> {
     let content = match input.get("content").and_then(|v| v.as_str()) {
         Some(v) if !v.trim().is_empty() => v.trim(),
-        _ => {
-            return json!({ "ok": false, "error": "Missing non-empty 'content' argument" })
-                .to_string()
-        }
+        _ => return Err(ToolFailure::invalid_input("Missing non-empty 'content' argument")),
     };
 
     // kind/source: 这两个字段都是可选元数据，会原样传给底层 memory 写入逻辑。
@@ -63,7 +60,7 @@ pub async fn execute_with_app(app: &AppHandle, input: Value) -> String {
     let source = input.get("source").and_then(|v| v.as_str());
 
     match crate::llm::history::upsert_global_memory(app, content, kind, source).await {
-        Ok(entry) => json!({ "ok": true, "memory": entry }).to_string(),
-        Err(e) => json!({ "ok": false, "error": e }).to_string(),
+        Ok(entry) => Ok(ToolOutcome::json(json!({ "ok": true, "memory": entry }))),
+        Err(e) => Err(ToolFailure::new(e)),
     }
 }

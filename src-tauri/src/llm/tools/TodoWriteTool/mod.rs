@@ -1,5 +1,5 @@
 use crate::llm::tools::shared::task_store;
-use crate::llm::tools::{app_tool, AppExecuteFuture, ToolRegistration};
+use crate::llm::tools::{app_tool, AppExecuteFuture, ToolFailure, ToolOutcome, ToolRegistration};
 use crate::llm::types::Tool;
 use serde_json::{json, Value};
 use tauri::AppHandle;
@@ -43,10 +43,10 @@ fn execute_with_app_boxed(
     Box::pin(async move { execute_scoped(conversation_id.as_deref(), input) })
 }
 
-fn execute_scoped(conversation_id: Option<&str>, input: Value) -> String {
+fn execute_scoped(conversation_id: Option<&str>, input: Value) -> Result<ToolOutcome, ToolFailure> {
     let todos = match input.get("todos").and_then(|v| v.as_array()) {
         Some(v) => v,
-        None => return json!({ "ok": false, "error": "Missing 'todos' array" }).to_string(),
+        None => return Err(ToolFailure::invalid_input("Missing 'todos' array")),
     };
 
     // items: replace_all 需要的内部任务元组列表。
@@ -68,5 +68,5 @@ fn execute_scoped(conversation_id: Option<&str>, input: Value) -> String {
     }
 
     let created = task_store::replace_all(conversation_id, items);
-    json!({ "ok": true, "tasks": created }).to_string()
+    Ok(ToolOutcome::json(json!({ "ok": true, "tasks": created })))
 }

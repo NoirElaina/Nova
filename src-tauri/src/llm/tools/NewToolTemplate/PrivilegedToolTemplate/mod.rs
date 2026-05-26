@@ -1,18 +1,13 @@
 use crate::llm::tools::{
-    app_tool_with_extras, AppExecuteFuture, ToolPermissionDescriptor, ToolRegistration,
+    app_tool, AppExecuteFuture, ToolFailure, ToolOutcome, ToolPermissionDescriptor,
+    ToolRegistration,
 };
-use crate::llm::types::{Message, Tool};
+use crate::llm::types::Tool;
 use serde_json::{json, Value};
 use tauri::AppHandle;
 
 pub(crate) fn registration() -> ToolRegistration {
-    app_tool_with_extras(
-        tool,
-        execute_with_app_boxed,
-        false,
-        Some(permission),
-        Some(postprocess_output),
-    )
+    app_tool(tool, execute_with_app_boxed, false, Some(permission))
 }
 
 pub fn tool() -> Tool {
@@ -32,22 +27,21 @@ pub fn tool() -> Tool {
     }
 }
 
-pub async fn execute_with_app(
+async fn execute_with_app(
     _app: &AppHandle,
     _conversation_id: Option<&str>,
     input: Value,
-) -> String {
+) -> Result<ToolOutcome, ToolFailure> {
     let target = match input.get("target").and_then(|v| v.as_str()) {
         Some(v) if !v.trim().is_empty() => v.trim(),
-        _ => return json!({ "ok": false, "error": "Missing 'target'" }).to_string(),
+        _ => return Err(ToolFailure::invalid_input("Missing 'target'")),
     };
 
-    json!({
+    Ok(ToolOutcome::json(json!({
         "ok": true,
         "target": target,
         "message": "Replace this with your actual sensitive operation."
-    })
-    .to_string()
+    })))
 }
 
 fn execute_with_app_boxed(
@@ -71,8 +65,4 @@ fn permission(input: &Value) -> Option<ToolPermissionDescriptor> {
         warning: Some("这是一个需要授权的模板工具，请根据真实风险调整提示。".to_string()),
         needs_approval: true,
     })
-}
-
-pub fn postprocess_output(output: &str) -> (String, Vec<Message>) {
-    (output.to_string(), Vec::new())
 }

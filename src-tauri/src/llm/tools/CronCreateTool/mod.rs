@@ -1,4 +1,4 @@
-use crate::llm::tools::{app_tool, AppExecuteFuture, ToolRegistration};
+use crate::llm::tools::{app_tool, AppExecuteFuture, ToolFailure, ToolOutcome, ToolRegistration};
 use crate::llm::types::Tool;
 use chrono::Local;
 use serde_json::{json, Value};
@@ -68,20 +68,20 @@ fn parse_semantic_bool(input: &Value, key: &str, default_value: bool) -> bool {
 
 // 创建计划任务并返回保存结果。
 // `cron` 是触发表达式，`prompt` 是到时要执行的提示词，`recurring/durable` 控制重复和持久化行为。
-pub async fn execute_with_app(app: &AppHandle, input: Value) -> String {
+async fn execute_with_app(app: &AppHandle, input: Value) -> Result<ToolOutcome, ToolFailure> {
     let cron = match input.get("cron").and_then(|v| v.as_str()).map(str::trim) {
         Some(v) if !v.is_empty() => v,
-        _ => return json!({ "ok": false, "error": "CronCreate requires non-empty 'cron'" }).to_string(),
+        _ => return Err(ToolFailure::invalid_input("CronCreate requires non-empty 'cron'")),
     };
 
     let schedule_info = match crate::llm::services::cron_schedule::schedule_info(cron, &Local::now()) {
         Ok(info) => info,
-        Err(e) => return json!({ "ok": false, "error": e }).to_string(),
+        Err(e) => return Err(ToolFailure::invalid_input(e)),
     };
 
     let prompt = match input.get("prompt").and_then(|v| v.as_str()).map(str::trim) {
         Some(v) if !v.is_empty() => v,
-        _ => return json!({ "ok": false, "error": "CronCreate requires non-empty 'prompt'" }).to_string(),
+        _ => return Err(ToolFailure::invalid_input("CronCreate requires non-empty 'prompt'")),
     };
 
     // recurring: true 表示反复执行；false 表示一次性任务。
@@ -98,7 +98,7 @@ pub async fn execute_with_app(app: &AppHandle, input: Value) -> String {
     )
     .await
     {
-        Ok(saved) => json!({
+        Ok(saved) => Ok(ToolOutcome::json(json!({
             "ok": true,
             "id": saved.id,
             "cron": saved.cron,
@@ -109,8 +109,7 @@ pub async fn execute_with_app(app: &AppHandle, input: Value) -> String {
             "recurring": saved.recurring,
             "durable": saved.durable,
             "createdAt": saved.created_at
-        })
-        .to_string(),
-        Err(e) => json!({ "ok": false, "error": e }).to_string(),
+        }))),
+        Err(e) => Err(ToolFailure::new(e)),
     }
 }

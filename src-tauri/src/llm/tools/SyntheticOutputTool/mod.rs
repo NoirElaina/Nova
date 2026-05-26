@@ -1,4 +1,4 @@
-use crate::llm::tools::{app_tool, AppExecuteFuture, ToolRegistration};
+use crate::llm::tools::{app_tool, AppExecuteFuture, ToolOutcome, ToolRegistration};
 use crate::llm::types::Tool;
 use serde_json::{json, Value};
 use tauri::AppHandle;
@@ -40,5 +40,5 @@ fn execute_with_app_boxed(
     _conversation_id: Option<String>,
     input: Value,
 ) -> AppExecuteFuture {
-    Box::pin(async move { execute_local(input) })
+    Box::pin(async move { Ok(ToolOutcome::text(execute_local(input))) })
 }

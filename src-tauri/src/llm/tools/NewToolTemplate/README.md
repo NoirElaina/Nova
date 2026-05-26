@@ -34,7 +34,7 @@ my_tool => "MyTool/mod.rs",
 ## 目录说明
 
 - `mod.rs`
-  - 当前全功能模板：`app_tool_with_extras + execute_with_app + permission + postprocess`
+  - 当前全功能模板：`app_tool + execute_with_app + permission + ToolOutcome/ToolFailure`
 - `ReadOnlyToolTemplate/mod.rs`
   - 只读、同步、无 `AppHandle` 的简单工具
 - `AppToolTemplate/mod.rs`
@@ -59,7 +59,7 @@ my_tool => "MyTool/mod.rs",
 3. 按模板实现真实逻辑：
    - `ReadOnlyToolTemplate` 只实现 `execute()`
    - `AppToolTemplate` 实现 `execute_with_app()`
-   - `PrivilegedToolTemplate` / `mod.rs` 实现 `execute_with_app()`，并按需补 `permission()`、`postprocess_output()`
+   - `PrivilegedToolTemplate` / `mod.rs` 实现 `execute_with_app()`，并按需补 `permission()` 和 `ToolOutcome.additional_messages`
 4. 不要加兼容字段、别名字段或 fallback 路径
 5. 在 `tools/mod.rs` 的 `declare_builtin_tools!` 中加一行
 6. 运行：
@@ -88,16 +88,6 @@ cargo check --manifest-path src-tauri/Cargo.toml
 - 需要 conversation scope
 - 后处理不复杂，权限策略显式传 `None` 或 `Some(permission)`
 
-### `app_tool_with_extras(...)`
-
-适合：
-
-- 需要权限确认
-- 需要 side-channel 消息
-- 或者你想把复杂行为显式写在工具模块里
-
-不要在一个工具文件里同时保留多套注册方式，选定一种就只留一种。
-
 ## 常见实现建议
 
 ### 1. 只读工具尽量标成 `read_only = true`
@@ -106,30 +96,30 @@ cargo check --manifest-path src-tauri/Cargo.toml
 
 ### 2. 返回值尽量稳定
 
-推荐优先返回 JSON 字符串，例如：
+推荐成功时返回 `ToolOutcome::json(...)`，失败时返回 `Err(ToolFailure::...)`，例如：
 
 ```rust
-json!({
+Ok(ToolOutcome::json(json!({
     "ok": true,
     "result": data
-}).to_string()
+})))
 ```
 
-这样更方便前后续工具链处理，也更容易判断 `is_error`。
+中心执行器只看 `Result` 的 `Ok/Err` 决定 `is_error`，不要在字符串里编码失败状态。
 
 ### 3. 权限描述要稳定
 
 `signature` 最好能稳定描述“这次敏感操作是什么”，避免授权缓存失效过多或过少。
 
-### 4. 后处理只做 side-channel
+### 4. side-channel 放进 ToolOutcome
 
-`postprocess_output()` 适合做：
+`ToolOutcome.additional_messages` 适合做：
 
 - 截图转图片消息
 - 额外上下文块
 - 结构化结果补充
 
-不要把主要业务逻辑塞进后处理。
+不要把主要业务逻辑拆到执行器之外。
 
 ## 一个最常见的新增工具流程
 

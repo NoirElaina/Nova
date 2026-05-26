@@ -1,7 +1,6 @@
 use reqwest::Client;
 use serde::Deserialize;
-use serde_json::Value;
-use std::collections::{BTreeMap, HashMap};
+use std::collections::BTreeMap;
 use tauri::AppHandle;
 
 use crate::llm::providers::stream_runner::{run_streaming, Delta, ReadyToolCall, StreamParser};
@@ -13,7 +12,6 @@ use super::sse_utils::truncate_for_log;
 
 // OpenAI Provider 相关结构体定义。
 // 主要负责：
-// - 将 internal Message -> OpenAI JSON message
 // - 触发 /v1/chat/completions?stream
 // - 处理流式 SSE Delta 并 emit 到前端
 
@@ -47,11 +45,10 @@ struct OpenAiChoice {
 struct OpenAiDelta {
     // 文本增量。
     content: Option<String>,
+    // 拒绝消息增量（OpenAI Chat Completions 标准字段）。
+    refusal: Option<String>,
     // 工具调用增量。
     tool_calls: Option<Vec<OpenAiToolCall>>,
-    // 兼容部分 OpenAI-compatible / reasoning 接口的推理增量字段。
-    #[serde(flatten)]
-    extra: HashMap<String, Value>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -71,29 +68,6 @@ struct OpenAiFunctionCall {
     name: Option<String>,
     // 工具函数参数增量。
     arguments: Option<String>,
-}
-
-fn extract_reasoning_text(value: &Value) -> String {
-    match value {
-        Value::String(text) => text.clone(),
-        Value::Array(items) => items
-            .iter()
-            .map(extract_reasoning_text)
-            .collect::<Vec<_>>()
-            .join(""),
-        Value::Object(map) => {
-            for key in ["text", "content", "reasoning", "summary", "delta"] {
-                if let Some(found) = map.get(key) {
-                    let extracted = extract_reasoning_text(found);
-                    if !extracted.is_empty() {
-                        return extracted;
-                    }
-                }
-            }
-            String::new()
-        }
-        _ => String::new(),
-    }
 }
 
 #[derive(Debug, Default)]
@@ -158,8 +132,8 @@ impl StreamParser for OpenAiStreamParser {
         for choice in chunk.choices {
             let OpenAiDelta {
                 content,
+                refusal,
                 tool_calls,
-                extra,
             } = choice.delta;
 
             // 文本增量。
@@ -169,13 +143,10 @@ impl StreamParser for OpenAiStreamParser {
                 }
             }
 
-            // 推理增量（OpenAI o 系列 / 各兼容厂商扩展字段）。
-            for key in ["reasoning", "reasoning_content"] {
-                if let Some(value) = extra.get(key) {
-                    let text = extract_reasoning_text(value);
-                    if !text.is_empty() {
-                        deltas.push(Delta::Reasoning(text));
-                    }
+            // 拒绝消息也是 OpenAI Chat Completions 标准 delta 字段。
+            if let Some(text) = refusal {
+                if !text.is_empty() {
+                    deltas.push(Delta::Text(text));
                 }
             }
 

@@ -3,6 +3,7 @@ mod summary;
 
 use std::collections::{HashMap, HashSet};
 
+use serde::Serialize;
 use serde_json::{json, Value};
 use tauri::AppHandle;
 
@@ -426,6 +427,12 @@ fn build_auto_compact_summary_message(summary: &str) -> Message {
 
 pub fn estimate_tokens_for_messages(messages: &[Message]) -> i64 {
     estimate_message_tokens(messages)
+}
+
+pub fn estimate_tokens_for_serializable<T: Serialize>(value: &T) -> Result<i64, String> {
+    let value = serde_json::to_value(value)
+        .map_err(|error| format!("Failed to serialize value for token estimate: {}", error))?;
+    Ok(estimate_json_tokens(&value))
 }
 
 // 根据消息数量、估算 token 数和是否存在超大工具结果文本来决定压缩策略。

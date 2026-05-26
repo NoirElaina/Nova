@@ -1,15 +1,13 @@
 use reqwest::Client;
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 use serde_json::Value;
 use std::collections::{BTreeMap, HashMap, VecDeque};
 use tauri::AppHandle;
 
 use crate::llm::providers::stream_runner::{run_streaming, Delta, ReadyToolCall, StreamParser};
 use crate::llm::providers::{ProviderTurnError, ProviderTurnResult};
-use crate::llm::tools;
-use crate::llm::types::{AgentMode, ContentBlock, Message, Role};
+use crate::llm::types::{AgentMode, Message};
 use crate::llm::utils::error_event::emit_backend_error;
-use crate::llm::utils::system_prompt::load_system_prompt;
 
 use super::sse_utils::truncate_for_log;
 
@@ -21,77 +19,6 @@ use super::sse_utils::truncate_for_log;
 
 const STREAM_DIAGNOSTIC_EVENT_LIMIT: usize = 20;
 const STREAM_DIAGNOSTIC_PREVIEW_CHARS: usize = 240;
-
-#[derive(Debug, Serialize)]
-struct OpenAiRequest {
-    // 目标模型名。
-    model: String,
-    // 发送给 OpenAI 的消息数组。
-    messages: Vec<OpenAiMessage>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    // 可选工具定义列表。
-    tools: Option<Vec<OpenAiTool>>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    // 可选流配置。官方 OpenAI 可用 include_usage 在流末尾返回 usage。
-    stream_options: Option<OpenAiStreamOptions>,
-    // 是否开启流式返回。
-    stream: bool,
-}
-
-#[derive(Debug, Serialize)]
-struct OpenAiStreamOptions {
-    include_usage: bool,
-}
-
-#[derive(Debug, Serialize, Clone)]
-struct OpenAiMessage {
-    // 消息角色：system/user/assistant/tool。
-    role: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    content: Option<Value>, // String or array of parts
-    #[serde(skip_serializing_if = "Option::is_none")]
-    // assistant 触发工具调用时携带的 tool_calls。
-    tool_calls: Option<Vec<OpenAiReqToolCall>>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    // tool 角色消息对应的调用 ID。
-    tool_call_id: Option<String>,
-}
-
-#[derive(Debug, Serialize, Clone)]
-struct OpenAiReqToolCall {
-    // 本次工具调用 ID。
-    id: String,
-    // 固定为 function。
-    r#type: String,
-    // 函数调用体。
-    function: OpenAiReqFunction,
-}
-
-#[derive(Debug, Serialize, Clone)]
-struct OpenAiReqFunction {
-    // 工具名。
-    name: String,
-    // JSON 字符串化参数。
-    arguments: String,
-}
-
-#[derive(Debug, Serialize)]
-struct OpenAiTool {
-    // 固定为 function。
-    r#type: String,
-    // 工具函数描述。
-    function: OpenAiFunction,
-}
-
-#[derive(Debug, Serialize)]
-struct OpenAiFunction {
-    // 工具名。
-    name: String,
-    // 工具描述。
-    description: String,
-    // 工具输入 schema。
-    parameters: Value,
-}
 
 #[derive(Debug, Deserialize)]
 struct OpenAiStreamChunk {
@@ -300,25 +227,6 @@ struct PendingToolCall {
     name: Option<String>,
     // 累积到的 JSON 参数字符串。
     arguments: String,
-}
-
-fn build_openai_image_part(source: &crate::llm::types::ImageSource) -> Option<Value> {
-    if !source.source_type.eq_ignore_ascii_case("base64") {
-        return None;
-    }
-
-    let media_type = source.media_type.trim();
-    let data = source.data.trim();
-    if media_type.is_empty() || data.is_empty() {
-        return None;
-    }
-
-    Some(serde_json::json!({
-        "type": "image_url",
-        "image_url": {
-            "url": format!("data:{};base64,{}", media_type, data)
-        }
-    }))
 }
 
 // ─────────────────────────────────────────────
@@ -535,194 +443,9 @@ impl OpenAiProvider {
             crate::command::settings::get_settings(app.clone()).map_err(ProviderTurnError::new)?;
         let profile = settings.active_provider_profile();
 
-        // 仅注入内置工具；MCP 采用 server 级发现，避免每轮发送全部动态工具 schema。
-        let available_tools = tools::get_available_tools();
-
-        // 加载系统提示词（含 Agent/Plan/Auto 模式逻辑）。
-        let system_prompt = load_system_prompt(app, agent_mode, conversation_id)?;
-
-        // 先注入 system 消息。
-        let mut oai_messages = vec![OpenAiMessage {
-            role: "system".into(),
-            content: Some(Value::String(system_prompt)),
-            tool_calls: None,
-            tool_call_id: None,
-        }];
-
-        for m in messages {
-            // 将内部角色映射到 OpenAI 角色字符串。
-            let base_role = match m.role {
-                Role::User => "user",
-                Role::Assistant => "assistant",
-            };
-
-            match &m.content {
-                crate::llm::types::Content::Text(t) => {
-                    // 纯文本消息直接转换为单条 OpenAI 消息。
-                    oai_messages.push(OpenAiMessage {
-                        role: base_role.into(),
-                        content: Some(Value::String(t.clone())),
-                        tool_calls: None,
-                        tool_call_id: None,
-                    });
-                }
-                crate::llm::types::Content::Blocks(blocks) => {
-                    // blocks 消息拆分为文本、图片、tool_calls、tool_results 四类。
-                    let mut text_parts = Vec::new();
-                    let mut image_parts = Vec::new();
-                    let mut tool_calls = Vec::new();
-                    let mut tool_results = Vec::new();
-
-                    for b in blocks {
-                        match b {
-                            ContentBlock::Text { text } => {
-                                text_parts.push(text.clone());
-                            }
-                            ContentBlock::Thinking { .. } => {}
-                            ContentBlock::Image { source } => {
-                                if let Some(part) = build_openai_image_part(source) {
-                                    image_parts.push(part);
-                                }
-                            }
-                            ContentBlock::ToolUse { id, name, input } => {
-                                // ToolUse 的 input 需要序列化为 OpenAI function.arguments 字符串。
-                                let serialized_args = match serde_json::to_string(input) {
-                                    Ok(v) => v,
-                                    Err(e) => {
-                                        // 序列化失败时上报错误并终止本次请求。
-                                        let msg = format!(
-                                            "Failed to serialize tool arguments for '{}': {}",
-                                            name, e
-                                        );
-                                        emit_backend_error(
-                                            app,
-                                            "llm.providers.openai",
-                                            msg.clone(),
-                                            Some("tool.arguments_serialize"),
-                                        );
-                                        return Err(ProviderTurnError::new(msg));
-                                    }
-                                };
-                                // 组装 assistant.tool_calls 条目。
-                                tool_calls.push(OpenAiReqToolCall {
-                                    id: id.clone(),
-                                    r#type: "function".into(),
-                                    function: OpenAiReqFunction {
-                                        name: name.clone(),
-                                        arguments: serialized_args,
-                                    },
-                                });
-                            }
-                            ContentBlock::ToolResult {
-                                tool_use_id,
-                                is_error: _,
-                                content,
-                            } => {
-                                // 将 tool_result 内所有文本块拼接为单文本。
-                                let mut tr_text = Vec::new();
-                                for tb in content {
-                                    if let ContentBlock::Text { text } = tb {
-                                        tr_text.push(text.clone());
-                                    }
-                                }
-                                // 保留 tool_use_id 与结果文本映射。
-                                tool_results.push((tool_use_id.clone(), tr_text.join("\n")));
-                            }
-                        }
-                    }
-
-                    if base_role == "assistant" {
-                        // assistant 有 tool_calls 时，content 可为空。
-                        let content_val = if text_parts.is_empty() && !tool_calls.is_empty() {
-                            None // Optional for tool calls in assistant
-                        } else {
-                            Some(Value::String(text_parts.join("\n")))
-                        };
-
-                        // 仅有 tool_calls 时写入 Some(tool_calls)，否则为 None。
-                        let tc = if tool_calls.is_empty() {
-                            None
-                        } else {
-                            Some(tool_calls)
-                        };
-                        oai_messages.push(OpenAiMessage {
-                            role: "assistant".into(),
-                            content: content_val,
-                            tool_calls: tc,
-                            tool_call_id: None,
-                        });
-                    } else {
-                        // 必须先回灌 tool 角色消息（OpenAI 要求 tool_result 紧跟在 assistant 的 tool_calls 之后）。
-                        for (tid, tr_text) in tool_results {
-                            oai_messages.push(OpenAiMessage {
-                                role: "tool".into(),
-                                content: Some(Value::String(tr_text)),
-                                tool_calls: None,
-                                tool_call_id: Some(tid),
-                            });
-                        }
-
-                        // User message might contain text/image/tool results.
-                        if !image_parts.is_empty() {
-                            let mut user_content_parts = Vec::new();
-                            if !text_parts.is_empty() {
-                                user_content_parts.push(serde_json::json!({
-                                    "type": "text",
-                                    "text": text_parts.join("\n")
-                                }));
-                            }
-                            user_content_parts.extend(image_parts);
-                            oai_messages.push(OpenAiMessage {
-                                role: "user".into(),
-                                content: Some(Value::Array(user_content_parts)),
-                                tool_calls: None,
-                                tool_call_id: None,
-                            });
-                        } else if !text_parts.is_empty() {
-                            oai_messages.push(OpenAiMessage {
-                                role: "user".into(),
-                                content: Some(Value::String(text_parts.join("\n"))),
-                                tool_calls: None,
-                                tool_call_id: None,
-                            });
-                        }
-                    }
-                }
-            }
-        }
-
-        // 将工具定义转换为 OpenAI function tool schema。
-        let tools: Option<Vec<OpenAiTool>> = if available_tools.is_empty() {
-            None
-        } else {
-            Some(
-                available_tools
-                    .into_iter()
-                    .map(|t| OpenAiTool {
-                        r#type: "function".into(),
-                        function: OpenAiFunction {
-                            name: t.name,
-                            description: t.description,
-                            parameters: t.input_schema,
-                        },
-                    })
-                    .collect(),
-            )
-        };
-
-        // 组装最终请求体。
-        let provider_key = settings.provider.trim().to_ascii_lowercase();
-        let supports_stream_usage =
-            provider_key == "openai" || profile.base_url.contains("api.openai.com");
-        let request = OpenAiRequest {
-            model: profile.model.clone(),
-            messages: oai_messages,
-            tools,
-            stream_options: supports_stream_usage.then_some(OpenAiStreamOptions {
-                include_usage: true,
-            }),
-            stream: true,
-        };
+        let request =
+            super::openai_prompt::build_request(app, messages, agent_mode, conversation_id)?
+                .request;
 
         // 创建 HTTP 客户端。
         let client = Client::new();

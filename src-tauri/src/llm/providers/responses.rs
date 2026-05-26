@@ -1,15 +1,12 @@
 use reqwest::Client;
-use serde::Serialize;
 use serde_json::Value;
 use std::collections::BTreeMap;
 use tauri::AppHandle;
 
 use crate::llm::providers::stream_runner::{run_streaming, Delta, ReadyToolCall, StreamParser};
 use crate::llm::providers::{ProviderTurnError, ProviderTurnResult};
-use crate::llm::tools;
-use crate::llm::types::{AgentMode, ContentBlock, Message, Role};
+use crate::llm::types::{AgentMode, Message};
 use crate::llm::utils::error_event::emit_backend_error;
-use crate::llm::utils::system_prompt::load_system_prompt;
 
 use super::sse_utils::truncate_for_log;
 
@@ -25,34 +22,6 @@ use super::sse_utils::truncate_for_log;
 
 pub struct ResponsesProvider;
 
-#[derive(Debug, Serialize)]
-struct ResponsesRequest {
-    // 目标模型名。
-    model: String,
-    // 输入项数组（消息、函数调用、函数结果）。
-    input: Vec<Value>,
-    // 系统提示词，作为顶层 instructions 传递。
-    #[serde(skip_serializing_if = "Option::is_none")]
-    instructions: Option<String>,
-    // 工具定义列表。
-    #[serde(skip_serializing_if = "Option::is_none")]
-    tools: Option<Vec<ResponsesTool>>,
-    // 开启流式返回。
-    stream: bool,
-}
-
-#[derive(Debug, Serialize)]
-struct ResponsesTool {
-    // 固定为 function。
-    r#type: String,
-    // 工具名。
-    name: String,
-    // 工具描述。
-    description: String,
-    // 工具输入 schema。
-    parameters: Value,
-}
-
 // 流内正在累积的 function call 状态（按 output_index 索引）。
 #[derive(Debug, Default)]
 struct PendingFunctionCall {
@@ -62,135 +31,6 @@ struct PendingFunctionCall {
     name: Option<String>,
     // 累积中的 JSON 参数字符串。
     arguments: String,
-}
-
-//   Assistant(Blocks) → text 转换为 message item，ToolUse 转换为 function_call item
-fn messages_to_input(messages: &[Message]) -> Vec<Value> {
-    let mut input: Vec<Value> = Vec::new();
-
-    for m in messages {
-        match m.role {
-            Role::User => match &m.content {
-                crate::llm::types::Content::Text(t) => {
-                    input.push(serde_json::json!({
-                        "type": "message",
-                        "role": "user",
-                        "content": [{"type": "input_text", "text": t}]
-                    }));
-                }
-                crate::llm::types::Content::Blocks(blocks) => {
-                    let mut content_parts: Vec<Value> = Vec::new();
-
-                    for b in blocks {
-                        match b {
-                            ContentBlock::Text { text } => {
-                                content_parts.push(serde_json::json!({
-                                    "type": "input_text",
-                                    "text": text
-                                }));
-                            }
-                            ContentBlock::Image { source } => {
-                                if source.source_type.eq_ignore_ascii_case("base64")
-                                    && !source.media_type.is_empty()
-                                    && !source.data.is_empty()
-                                {
-                                    content_parts.push(serde_json::json!({
-                                        "type": "input_image",
-                                        "image_url": format!("data:{};base64,{}", source.media_type, source.data)
-                                    }));
-                                }
-                            }
-                            ContentBlock::ToolResult {
-                                tool_use_id,
-                                content,
-                                ..
-                            } => {
-                                // 工具结果作为顶层 function_call_output 项，call_id 对应工具调用 ID。
-                                let text = content
-                                    .iter()
-                                    .filter_map(|b| {
-                                        if let ContentBlock::Text { text } = b {
-                                            Some(text.as_str())
-                                        } else {
-                                            None
-                                        }
-                                    })
-                                    .collect::<Vec<_>>()
-                                    .join("\n");
-                                // function_call_output 先于同轮 user 消息推入 input。
-                                input.push(serde_json::json!({
-                                    "type": "function_call_output",
-                                    "call_id": tool_use_id,
-                                    "output": text
-                                }));
-                            }
-                            _ => {}
-                        }
-                    }
-
-                    if !content_parts.is_empty() {
-                        input.push(serde_json::json!({
-                            "type": "message",
-                            "role": "user",
-                            "content": content_parts
-                        }));
-                    }
-                }
-            },
-
-            Role::Assistant => match &m.content {
-                crate::llm::types::Content::Text(t) => {
-                    input.push(serde_json::json!({
-                        "type": "message",
-                        "role": "assistant",
-                        "content": [{"type": "output_text", "text": t}]
-                    }));
-                }
-                crate::llm::types::Content::Blocks(blocks) => {
-                    let mut text_content: Vec<&str> = Vec::new();
-                    let mut tool_uses: Vec<(&String, &String, &Value)> = Vec::new();
-
-                    for b in blocks {
-                        match b {
-                            ContentBlock::Text { text } => {
-                                text_content.push(text.as_str());
-                            }
-                            ContentBlock::ToolUse {
-                                id,
-                                name,
-                                input: tool_input,
-                            } => {
-                                tool_uses.push((id, name, tool_input));
-                            }
-                            // Thinking 块跳过（Responses API 不支持）。
-                            _ => {}
-                        }
-                    }
-
-                    if !text_content.is_empty() {
-                        let combined = text_content.join("\n");
-                        input.push(serde_json::json!({
-                            "type": "message",
-                            "role": "assistant",
-                            "content": [{"type": "output_text", "text": combined}]
-                        }));
-                    }
-
-                    for (id, name, tool_input) in tool_uses {
-                        let args = serde_json::to_string(tool_input).unwrap_or_default();
-                        input.push(serde_json::json!({
-                            "type": "function_call",
-                            "call_id": id,
-                            "name": name,
-                            "arguments": args
-                        }));
-                    }
-                }
-            },
-        }
-    }
-
-    input
 }
 
 // ─────────────────────────────────────────────
@@ -362,34 +202,9 @@ impl ResponsesProvider {
             crate::command::settings::get_settings(app.clone()).map_err(ProviderTurnError::new)?;
         let profile = settings.active_provider_profile();
 
-        let available_tools = tools::get_available_tools();
-        let system_prompt = load_system_prompt(app, agent_mode, conversation_id)?;
-
-        let input = messages_to_input(messages);
-
-        let tools_list: Option<Vec<ResponsesTool>> = if available_tools.is_empty() {
-            None
-        } else {
-            Some(
-                available_tools
-                    .into_iter()
-                    .map(|t| ResponsesTool {
-                        r#type: "function".into(),
-                        name: t.name,
-                        description: t.description,
-                        parameters: t.input_schema,
-                    })
-                    .collect(),
-            )
-        };
-
-        let request = ResponsesRequest {
-            model: profile.model.clone(),
-            input,
-            instructions: Some(system_prompt),
-            tools: tools_list,
-            stream: true,
-        };
+        let request =
+            super::responses_prompt::build_request(app, messages, agent_mode, conversation_id)?
+                .request;
 
         let client = Client::new();
 

@@ -1,9 +1,15 @@
 // Anthropic provider 实现。
 pub mod anthropic;
+// Anthropic 请求体组装与提示词估算。
+pub mod anthropic_prompt;
 // OpenAI Chat Completions provider 实现。
 pub mod openai;
+// OpenAI Chat Completions 请求体组装与提示词估算。
+pub mod openai_prompt;
 // OpenAI Responses API provider 实现。
 pub mod responses;
+// OpenAI Responses API 请求体组装与提示词估算。
+pub mod responses_prompt;
 // 共享 SSE 解析工具函数。
 pub mod sse_utils;
 // 共享流式运行器（StreamParser trait + run_streaming + Delta）。
@@ -24,6 +30,13 @@ pub struct ProviderTurnResult {
     pub output_tokens: Option<u32>,
     // 是否阻止 query 层继续发起下一轮。
     pub prevent_continuation: bool,
+}
+
+#[derive(Debug, Clone)]
+pub struct ProviderPromptEstimate {
+    pub input_tokens: u32,
+    pub source: &'static str,
+    pub tool_count: usize,
 }
 
 /// 流式请求失败时携带的错误信息。
@@ -104,6 +117,29 @@ impl LlmProvider {
             LlmProvider::Responses(p) => {
                 p.send_request(app, messages, agent_mode, conversation_id)
                     .await
+            }
+        }
+    }
+
+    pub fn estimate_prompt_tokens(
+        &self,
+        app: &AppHandle,
+        messages: &[Message],
+        agent_mode: AgentMode,
+        conversation_id: Option<&str>,
+    ) -> Result<ProviderPromptEstimate, ProviderTurnError> {
+        match self {
+            LlmProvider::Anthropic(_) => {
+                anthropic_prompt::build_request(app, messages, agent_mode, conversation_id)
+                    .map(|built| built.estimate)
+            }
+            LlmProvider::OpenAi(_) => {
+                openai_prompt::build_request(app, messages, agent_mode, conversation_id)
+                    .map(|built| built.estimate)
+            }
+            LlmProvider::Responses(_) => {
+                responses_prompt::build_request(app, messages, agent_mode, conversation_id)
+                    .map(|built| built.estimate)
             }
         }
     }

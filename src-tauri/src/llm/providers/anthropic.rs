@@ -5,11 +5,8 @@ use crate::llm::providers::stream_runner::{run_streaming, Delta, ReadyToolCall, 
 use crate::llm::providers::{ProviderTurnError, ProviderTurnResult};
 use crate::llm::tools;
 use crate::llm::types::Message;
-use crate::llm::types::{
-    AgentMode, AnthropicRequest, StreamContentBlock, StreamDelta, StreamEvent,
-};
+use crate::llm::types::{AgentMode, StreamContentBlock, StreamDelta, StreamEvent};
 use crate::llm::utils::error_event::emit_backend_error;
-use crate::llm::utils::system_prompt::load_system_prompt;
 
 use super::sse_utils::truncate_for_log;
 
@@ -217,22 +214,9 @@ impl AnthropicProvider {
             ));
         }
 
-        // 仅注入内置工具；MCP 采用 server 级发现，避免每轮发送全部动态工具 schema。
-        let available_tools = tools::get_available_tools();
-
-        // 从模型数据库查询最大输出 token 数，找不到时 fallback 到 8192。
-        let max_output_tokens =
-            crate::llm::utils::model_context::get_max_output_tokens(&profile.model);
-
-        // 构造 Anthropic 请求体。
-        let request = AnthropicRequest {
-            model: profile.model.clone(),
-            max_tokens: max_output_tokens,
-            system: Some(load_system_prompt(app, agent_mode, conversation_id)?),
-            messages: messages.to_vec(),
-            tools: available_tools,
-            stream: true,
-        };
+        let request =
+            super::anthropic_prompt::build_request(app, messages, agent_mode, conversation_id)?
+                .request;
 
         // 创建 HTTP 客户端并规范化 URL 到 /v1/messages。
         let client = Client::new();

@@ -598,14 +598,21 @@ pub async fn send_chat_message(
         // 请求 provider 前先估算当前 prompt 占用，并通知前端更新 context window UI。
         // 这是本地估算值，不参与模型调用；provider 返回真实 usage 后会再用 actual 数据校正。
 
-        let request_input_estimate =
-            clamp_i64_to_u32(compact::estimate_tokens_for_messages(&current_messages));
+        let prompt_estimate = provider
+            .estimate_prompt_tokens(
+                &app,
+                &current_messages,
+                agent_mode,
+                conversation_id.as_deref(),
+            )
+            .map_err(|error| error.message)?;
+        let request_input_estimate = prompt_estimate.input_tokens;
         emit_context_usage_event(
             &app,
             conversation_id.as_deref(),
             request_input_estimate,
             window_tokens as u32,
-            "estimated",
+            prompt_estimate.source,
         );
 
         // 发起 provider 请求并等待结果。

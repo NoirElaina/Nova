@@ -17,7 +17,9 @@ pub fn tool() -> Tool {
         description: "Return structured JSON output as the final machine-readable result.".into(),
         input_schema: json!({
             "type": "object",
-            "description": "Arbitrary structured JSON object that will be returned to the caller as-is."
+            "description": "Arbitrary structured JSON object that will be returned to the caller as-is.",
+            "properties": {},
+            "additionalProperties": true
         }),
     }
 }

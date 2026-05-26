@@ -1,4 +1,3 @@
-use serde::Serialize;
 use serde_json::Value;
 use tauri::AppHandle;
 
@@ -8,58 +7,10 @@ use crate::llm::tools;
 use crate::llm::types::{AgentMode, Content, ContentBlock, ImageSource, Message, Role};
 use crate::llm::utils::system_prompt::load_system_prompt;
 
-#[derive(Debug, Serialize)]
-pub(crate) struct OpenAiRequest {
-    model: String,
-    messages: Vec<OpenAiMessage>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    tools: Option<Vec<OpenAiTool>>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    stream_options: Option<OpenAiStreamOptions>,
-    stream: bool,
-}
-
-#[derive(Debug, Serialize)]
-struct OpenAiStreamOptions {
-    include_usage: bool,
-}
-
-#[derive(Debug, Serialize, Clone)]
-struct OpenAiMessage {
-    role: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    content: Option<Value>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    tool_calls: Option<Vec<OpenAiReqToolCall>>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    tool_call_id: Option<String>,
-}
-
-#[derive(Debug, Serialize, Clone)]
-struct OpenAiReqToolCall {
-    id: String,
-    r#type: String,
-    function: OpenAiReqFunction,
-}
-
-#[derive(Debug, Serialize, Clone)]
-struct OpenAiReqFunction {
-    name: String,
-    arguments: String,
-}
-
-#[derive(Debug, Serialize)]
-struct OpenAiTool {
-    r#type: String,
-    function: OpenAiFunction,
-}
-
-#[derive(Debug, Serialize)]
-struct OpenAiFunction {
-    name: String,
-    description: String,
-    parameters: Value,
-}
+use super::types::{
+    OpenAiFunction, OpenAiMessage, OpenAiReqFunction, OpenAiReqToolCall, OpenAiRequest,
+    OpenAiStreamOptions, OpenAiTool,
+};
 
 pub(crate) struct BuiltOpenAiRequest {
     pub request: OpenAiRequest,
@@ -135,7 +86,7 @@ fn messages_to_openai_messages(
                         ContentBlock::ToolUse { id, name, input } => {
                             let arguments = serde_json::to_string(input).map_err(|error| {
                                 ProviderTurnError::new(format!(
-                                    "Failed to serialize tool arguments for '{}': {}",
+                                    "Failed to serialize OpenAI tool arguments for '{}': {}",
                                     name, error
                                 ))
                             })?;
@@ -270,15 +221,11 @@ pub(crate) fn build_request(
         )
     };
 
-    let provider_key = settings.provider.trim().to_ascii_lowercase();
-    let supports_stream_usage =
-        provider_key == "openai" || profile.base_url.contains("api.openai.com");
-
     let request = OpenAiRequest {
         model: profile.model.clone(),
         messages: oai_messages,
         tools,
-        stream_options: supports_stream_usage.then_some(OpenAiStreamOptions {
+        stream_options: Some(OpenAiStreamOptions {
             include_usage: true,
         }),
         stream: true,

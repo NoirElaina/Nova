@@ -1,4 +1,3 @@
-use serde::Serialize;
 use serde_json::Value;
 use tauri::AppHandle;
 
@@ -8,24 +7,7 @@ use crate::llm::tools;
 use crate::llm::types::{AgentMode, Content, ContentBlock, Message, Role};
 use crate::llm::utils::system_prompt::load_system_prompt;
 
-#[derive(Debug, Serialize)]
-pub(crate) struct ResponsesRequest {
-    model: String,
-    input: Vec<Value>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    instructions: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    tools: Option<Vec<ResponsesTool>>,
-    stream: bool,
-}
-
-#[derive(Debug, Serialize)]
-struct ResponsesTool {
-    r#type: String,
-    name: String,
-    description: String,
-    parameters: Value,
-}
+use super::types::{ResponsesRequest, ResponsesTool};
 
 pub(crate) struct BuiltResponsesRequest {
     pub request: ResponsesRequest,

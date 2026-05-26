@@ -1,13 +1,9 @@
 // Anthropic Messages API provider adapter.
 pub mod anthropic;
-// OpenAI Chat Completions provider 实现。
+// OpenAI Chat Completions provider adapter.
 pub mod openai;
-// OpenAI Chat Completions 请求体组装与提示词估算。
-pub mod openai_prompt;
-// OpenAI Responses API provider 实现。
+// OpenAI Responses API provider adapter.
 pub mod responses;
-// OpenAI Responses API 请求体组装与提示词估算。
-pub mod responses_prompt;
 // 共享 SSE 解析工具函数。
 pub mod sse_utils;
 // 共享流式运行器（StreamParser trait + run_streaming + Delta）。
@@ -132,11 +128,11 @@ impl LlmProvider {
                     .map(|built| built.estimate)
             }
             LlmProvider::OpenAi(_) => {
-                openai_prompt::build_request(app, messages, agent_mode, conversation_id)
+                openai::prompt::build_request(app, messages, agent_mode, conversation_id)
                     .map(|built| built.estimate)
             }
             LlmProvider::Responses(_) => {
-                responses_prompt::build_request(app, messages, agent_mode, conversation_id)
+                responses::prompt::build_request(app, messages, agent_mode, conversation_id)
                     .map(|built| built.estimate)
             }
         }

@@ -8,7 +8,7 @@ import type {
   ToolTurnSummary,
   TurnCost,
   UploadedImageFile,
-  UploadedRagFile,
+  UploadedDocumentFile,
 } from "../../../lib/chat-types";
 import type {
   ConversationTurnRuntimeState,
@@ -16,6 +16,10 @@ import type {
   ModelMessage,
   ModelTextBlock,
 } from "./chat-controller-types";
+
+export type BuildModelMessageOptions = {
+  includeDocumentContent?: boolean;
+};
 
 export function buildAssistantCost(
   currentInputTokens: number,
@@ -79,24 +83,54 @@ export function estimateInputTokensForTurn(
   return estimateTokens(`${historyText}\n${memoryText}\n${attachmentText}\n${userText}`);
 }
 
-export function formatMessageContentForModel(msg: ChatMessage): string {
+export function formatMessageContentForModel(
+  msg: ChatMessage,
+  options: BuildModelMessageOptions = {},
+): string {
+  const includeDocumentContent = options.includeDocumentContent ?? true;
   const content = msg.content.trim();
-  const names =
+  const documentAttachments =
     msg.attachments
-      ?.filter((item) => item.kind !== "image")
-      .map((item) => item.sourceName)
-      .filter(Boolean) ?? [];
-  const ragNotice =
-    names.length > 0
-      ? `\n\n已上传文件（可在会话RAG中检索）：${names.join("，")}\n文件全文已在本轮上下文中直接提供，请直接使用。会话压缩后如需重新获取，可调用 rag_tool 工具检索。`
+      ?.filter((item) => item.kind === "document")
+      .filter((item) => item.sourceName?.trim()) ?? [];
+
+  const documentBlocks = documentAttachments
+    .filter((item) => includeDocumentContent && item.content?.trim())
+    .map((item) => {
+      const meta = [
+        `name=${item.sourceName}`,
+        item.mimeType ? `mime=${item.mimeType}` : null,
+        Number.isFinite(item.size) ? `size=${item.size}` : null,
+        item.knowledgeStored ? "knowledge=stored" : "knowledge=inline",
+      ]
+        .filter(Boolean)
+        .join(" ");
+      return `<document ${meta}>\n${item.content?.trim()}\n</document>`;
+    });
+
+  const attachedDocumentContext =
+    documentBlocks.length > 0
+      ? `\n\n[Attached Documents]\nThese documents are attached directly for this turn. Use them as primary context for the user's request.\n${documentBlocks.join("\n\n")}`
+      : "";
+
+  const attachmentNotice =
+    documentAttachments.length > 0 && documentBlocks.length === 0
+      ? `\n\n[Attached Documents]\nDocument attachment metadata: ${documentAttachments.map((item) => {
+          const status = item.knowledgeStored ? "stored in conversation knowledge base" : "attached to conversation";
+          return `${item.sourceName} (${status})`;
+        }).join(", ")}`
       : "";
 
   if (content) {
-    return `${content}${ragNotice}`;
+    return `${content}${attachedDocumentContext}${attachmentNotice}`;
   }
 
-  if (names.length > 0) {
-    return `请优先结合我上传的文件回答。${ragNotice}`;
+  if (documentBlocks.length > 0) {
+    return `请优先结合我上传的文件回答。${attachedDocumentContext}`;
+  }
+
+  if (documentAttachments.length > 0) {
+    return `请优先结合我上传的文件回答。${attachmentNotice}`;
   }
 
   return "";
@@ -104,7 +138,7 @@ export function formatMessageContentForModel(msg: ChatMessage): string {
 
 export function isDocumentUploadFile(
   file: PendingUploadFile,
-): file is UploadedRagFile {
+): file is UploadedDocumentFile {
   return file.kind === "document";
 }
 
@@ -124,7 +158,10 @@ export function isImageAttachment(
   return item.kind === "image" && !!item.mediaType && !!item.data;
 }
 
-export function toAttachmentMeta(files: PendingUploadFile[]): ChatAttachment[] {
+export function toAttachmentMeta(
+  files: PendingUploadFile[],
+  options: { includeDocumentContent?: boolean; includeImageData?: boolean } = {},
+): ChatAttachment[] {
   return files.map((file) => {
     if (file.kind === "image") {
       return {
@@ -133,7 +170,7 @@ export function toAttachmentMeta(files: PendingUploadFile[]): ChatAttachment[] {
         size: file.size,
         kind: "image",
         mediaType: file.mediaType,
-        data: file.data,
+        data: options.includeImageData ? file.data : undefined,
       };
     }
 
@@ -142,12 +179,17 @@ export function toAttachmentMeta(files: PendingUploadFile[]): ChatAttachment[] {
       mimeType: file.mimeType,
       size: file.size,
       kind: "document",
+      content: options.includeDocumentContent ? file.content : undefined,
+      knowledgeStored: file.knowledgeStored,
     };
   });
 }
 
-export function buildModelMessage(msg: ChatMessage): ModelMessage {
-  const textContent = formatMessageContentForModel(msg);
+export function buildModelMessage(
+  msg: ChatMessage,
+  options: BuildModelMessageOptions = {},
+): ModelMessage {
+  const textContent = formatMessageContentForModel(msg, options);
   if (msg.role !== "user") {
     return {
       role: msg.role,

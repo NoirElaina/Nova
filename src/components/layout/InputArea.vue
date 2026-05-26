@@ -5,7 +5,7 @@ import type {
   AgentMode,
   PendingUploadFile,
   UploadedImageFile,
-  UploadedRagFile,
+  UploadedDocumentFile,
   ContextUsage,
 } from '../../lib/chat-types';
 import {
@@ -134,13 +134,13 @@ const computeUploadTokens = async (file: PendingUploadFile, index: number) => {
   if (uploadTokenCache.value.has(key)) return;
   try {
     const n = await invoke<number>('estimate_text_tokens', {
-      text: (file as UploadedRagFile).content,
+      text: (file as UploadedDocumentFile).content,
       protocol: 'anthropic',
     });
     uploadTokenCache.value = new Map(uploadTokenCache.value).set(key, n);
   } catch {
     // 降级：chars / 4
-    const n = Math.ceil((file as UploadedRagFile).content.trim().length / 4);
+    const n = Math.ceil((file as UploadedDocumentFile).content.trim().length / 4);
     uploadTokenCache.value = new Map(uploadTokenCache.value).set(key, n);
   }
 };
@@ -274,12 +274,13 @@ const buildPendingUploadFiles = async (files: File[]): Promise<{
       continue;
     }
 
-    const textItem: UploadedRagFile = {
+    const textItem: UploadedDocumentFile = {
       kind: 'document',
       sourceName: file.name,
       mimeType: file.type || undefined,
       content: parsed.content,
       size: file.size,
+      knowledgeStored: false,
     };
     accepted.push(textItem);
   }
@@ -476,6 +477,13 @@ defineExpose({
             <span class="max-w-[160px] truncate" :title="file.sourceName">{{ file.sourceName }}</span>
             <span class="text-[11px] opacity-75">{{ formatFileSize(file.size) }}</span>
             <span v-if="file.kind === 'document'" class="text-[11px] opacity-50">{{ formatTokenCount(file, index) }}</span>
+            <span
+              v-if="file.kind === 'document'"
+              class="rounded-md bg-black/5 px-1.5 py-0.5 text-[10px] leading-none text-[#64748b] dark:bg-white/10 dark:text-[#cbd5e1]"
+              title="文档会持续作为会话上下文；超出模型上下文窗口时自动转入会话知识库。"
+            >
+              会话上下文
+            </span>
             <button
               type="button"
               class="w-4 h-4 inline-flex items-center justify-center rounded hover:bg-black/5 dark:hover:bg-white/10"

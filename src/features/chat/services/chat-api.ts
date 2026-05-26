@@ -17,6 +17,23 @@ type ChatRequestMessage = Pick<ChatMessage, "role"> & {
   content: ChatRequestContent;
 };
 
+type RuntimeProviderProfile = {
+  protocol?: string;
+  model?: string;
+};
+
+type RuntimeSettings = {
+  provider?: string;
+  providerProfiles?: Record<string, RuntimeProviderProfile>;
+};
+
+export type ActiveModelRuntime = {
+  provider: string;
+  protocol: string;
+  model: string;
+  windowTokens: number;
+};
+
 export type RagUploadDocumentInput = {
   sourceName: string;
   sourceType: string;
@@ -388,6 +405,33 @@ export async function readRagDocument(
     documentId,
     conversationId,
   });
+}
+
+export async function getActiveModelRuntime(): Promise<ActiveModelRuntime> {
+  const settings = await invoke<RuntimeSettings>("get_settings");
+  const provider = (settings.provider || "anthropic").trim().toLowerCase() || "anthropic";
+  const profile = settings.providerProfiles?.[provider] ?? {};
+  const protocol = (profile.protocol || (provider.includes("anthropic") ? "anthropic" : "openai"))
+    .trim()
+    .toLowerCase();
+  const model = (profile.model || "").trim();
+  const windowTokens = model
+    ? await invoke<number>("get_model_window_tokens", { model })
+    : 200_000;
+
+  return {
+    provider,
+    protocol,
+    model,
+    windowTokens,
+  };
+}
+
+export async function estimateTextTokens(
+  text: string,
+  protocol = "anthropic",
+): Promise<number> {
+  return invoke<number>("estimate_text_tokens", { text, protocol });
 }
 
 export async function cancelChatMessage(conversationId: string | null): Promise<boolean> {

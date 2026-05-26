@@ -20,6 +20,8 @@ import {
   replaceConversationHistory,
   sendChatMessage,
   submitPermissionDecision,
+  estimateTextTokens,
+  getActiveModelRuntime,
   upsertConversationRagDocuments,
 } from "../services/chat-api";
 import type {
@@ -37,10 +39,88 @@ import {
 } from "./chat-runtime-state";
 import {
   buildModelMessage,
+  type BuildModelMessageOptions,
   isDocumentUploadFile,
   isImageUploadFile,
   toAttachmentMeta,
 } from "./chat-message-helpers";
+
+const INLINE_CONTEXT_WINDOW_RATIO = 0.82;
+const MIN_INLINE_CONTEXT_TOKENS = 8_000;
+
+type PreparedContextDispatch = {
+  messages: ChatMessage[];
+  buildOptions: BuildModelMessageOptions;
+  rewroteHistory: boolean;
+};
+
+type ConversationDocumentForRag = {
+  sourceName: string;
+  mimeType?: string;
+  content: string;
+};
+
+function modelMessageTextForEstimate(message: ChatMessage, options: BuildModelMessageOptions) {
+  const built = buildModelMessage(message, options);
+  if (typeof built.content === "string") {
+    return built.content;
+  }
+
+  return built.content
+    .filter((block): block is { type: "text"; text: string } => block.type === "text")
+    .map((block) => block.text)
+    .join("\n");
+}
+
+function collectInlineConversationDocuments(messages: ChatMessage[]): ConversationDocumentForRag[] {
+  const byKey = new Map<string, ConversationDocumentForRag>();
+  for (const message of messages) {
+    for (const attachment of message.attachments ?? []) {
+      if (attachment.kind !== "document") {
+        continue;
+      }
+      const content = attachment.content?.trim();
+      if (!content) {
+        continue;
+      }
+      const sourceName = attachment.sourceName?.trim();
+      if (!sourceName) {
+        continue;
+      }
+      byKey.set(`${sourceName}\n${content}`, {
+        sourceName,
+        mimeType: attachment.mimeType,
+        content,
+      });
+    }
+  }
+  return [...byKey.values()];
+}
+
+function markConversationDocumentsStored(messages: ChatMessage[]): ChatMessage[] {
+  return messages.map((message) => {
+    if (!message.attachments?.some((attachment) => attachment.kind === "document")) {
+      return message;
+    }
+
+    return {
+      ...message,
+      attachments: message.attachments.map((attachment) => {
+        if (attachment.kind !== "document") {
+          return attachment;
+        }
+
+        return {
+          sourceName: attachment.sourceName,
+          mimeType: attachment.mimeType,
+          size: attachment.size,
+          kind: "document" as const,
+          knowledgeStored: true,
+        };
+      }),
+    };
+  });
+}
 
 type SendOpsDeps = {
   activeConversationId: Ref<string>;
@@ -113,9 +193,98 @@ export function createSendOperations(deps: SendOpsDeps) {
     resetBackgroundRuntimeState,
   } = deps;
 
+  async function prepareConversationContextForDispatch(
+    sendingConversationId: string,
+    nextMessages: ChatMessage[],
+  ): Promise<PreparedContextDispatch> {
+    const inlineDocuments = collectInlineConversationDocuments(nextMessages);
+    if (inlineDocuments.length === 0) {
+      return {
+        messages: nextMessages,
+        buildOptions: { includeDocumentContent: true },
+        rewroteHistory: false,
+      };
+    }
+
+    try {
+      const runtime = await getActiveModelRuntime();
+      const estimatedPromptText = nextMessages
+        .map((message) => modelMessageTextForEstimate(message, { includeDocumentContent: true }))
+        .join("\n\n");
+      const estimatedTokens = await estimateTextTokens(estimatedPromptText, runtime.protocol);
+      const inlineLimit = Math.max(
+        MIN_INLINE_CONTEXT_TOKENS,
+        Math.floor(runtime.windowTokens * INLINE_CONTEXT_WINDOW_RATIO),
+      );
+
+      if (estimatedTokens <= inlineLimit) {
+        return {
+          messages: nextMessages,
+          buildOptions: { includeDocumentContent: true },
+          rewroteHistory: false,
+        };
+      }
+
+      const result = await upsertConversationRagDocuments(
+        sendingConversationId,
+        inlineDocuments.map((file) => ({
+          sourceName: file.sourceName,
+          sourceType: "file",
+          mimeType: file.mimeType,
+          content: file.content,
+        })),
+      );
+
+      if (result.rejected.length > 0 || result.added + result.updated <= 0) {
+        const detail = result.rejected
+          .slice(0, 2)
+          .map((item) => `${item.sourceName}(${item.reason})`)
+          .join("；");
+        emitToast({
+          variant: "warning",
+          source: "upload",
+          message: detail
+            ? `文档超过上下文窗口，但自动入库不完整：${detail}。本轮仍尝试按全文发送。`
+            : "文档超过上下文窗口，但自动入库未完成。本轮仍尝试按全文发送。",
+        });
+        return {
+          messages: nextMessages,
+          buildOptions: { includeDocumentContent: true },
+          rewroteHistory: false,
+        };
+      }
+
+      await refreshConversationFiles(sendingConversationId);
+      emitToast({
+        variant: "info",
+        source: "upload",
+        message: "文档已超过当前模型上下文窗口，已自动转入会话知识库。",
+      });
+
+      return {
+        messages: markConversationDocumentsStored(nextMessages),
+        buildOptions: { includeDocumentContent: false },
+        rewroteHistory: true,
+      };
+    } catch (err) {
+      console.error("Failed to prepare conversation document context:", err);
+      emitToast({
+        variant: "warning",
+        source: "upload",
+        message: "文档上下文策略判断失败，本轮仍尝试按全文发送。",
+      });
+      return {
+        messages: nextMessages,
+        buildOptions: { includeDocumentContent: true },
+        rewroteHistory: false,
+      };
+    }
+  }
+
   async function dispatchConversationMessages(
     sendingConversationId: string,
     nextMessages: ChatMessage[],
+    buildOptions: BuildModelMessageOptions = {},
   ) {
     if (activeConversationId.value !== sendingConversationId) {
       emitToast({
@@ -144,7 +313,7 @@ export function createSendOperations(deps: SendOpsDeps) {
     currentTurnId.value = `turn-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
     void chatScreenRef.value?.scrollLiveAssistantIntoView();
 
-    const rustMessages = nextMessages.map((message) => buildModelMessage(message));
+    const rustMessages = nextMessages.map((message) => buildModelMessage(message, buildOptions));
 
     try {
       await sendChatMessage(
@@ -241,65 +410,36 @@ export function createSendOperations(deps: SendOpsDeps) {
 
     const sendingConversationId = activeConversationId.value;
 
-    let uploadedAttachments: ChatAttachment[] = toAttachmentMeta(imageFiles);
-    if (textFiles.length > 0) {
-      try {
-        const result = await upsertConversationRagDocuments(
-          sendingConversationId,
-          textFiles.map((file) => ({
-            sourceName: file.sourceName,
-            sourceType: "file",
-            mimeType: file.mimeType,
-            content: file.content,
-          })),
-        );
-
-        if (result.added + result.updated <= 0 && imageFiles.length === 0) {
-          emitToast({
-            variant: "error",
-            source: "upload",
-            message: "文件上传失败，本轮未发送。",
-          });
-          return;
-        }
-
-        const rejectedNames = new Set(result.rejected.map((item) => item.sourceName));
-        const acceptedTextFiles = textFiles.filter((file) => !rejectedNames.has(file.sourceName));
-        uploadedAttachments = [
-          ...toAttachmentMeta(acceptedTextFiles),
-          ...toAttachmentMeta(imageFiles),
-        ];
-        await refreshConversationFiles(sendingConversationId);
-
-        if (result.rejected.length > 0) {
-          const detail = result.rejected
-            .slice(0, 2)
-            .map((item) => `${item.sourceName}(${item.reason})`)
-            .join("；");
-          emitToast({
-            variant: "error",
-            source: "upload",
-            message: `部分文件上传失败：${detail}`,
-          });
-        }
-      } catch (err) {
-        console.error("Failed to upload conversation documents:", err);
-        return;
-      }
-    }
-
-    if (filesToSend.length > 0) {
-      pendingUploads.value = [];
-    }
-
+    const uploadedAttachments: ChatAttachment[] = [
+      ...toAttachmentMeta(textFiles, { includeDocumentContent: true }),
+      ...toAttachmentMeta(imageFiles, { includeImageData: true }),
+    ];
     const userMessage: ChatMessage = {
       role: "user",
       content: text,
       attachments: uploadedAttachments.length > 0 ? uploadedAttachments : undefined,
     };
-    messages.value.push(userMessage);
-    await persistMessage(userMessage, sendingConversationId);
-    await dispatchConversationMessages(sendingConversationId, messages.value);
+    const nextMessages = [...messages.value, userMessage];
+    const contextPlan = await prepareConversationContextForDispatch(
+      sendingConversationId,
+      nextMessages,
+    );
+
+    if (filesToSend.length > 0) {
+      pendingUploads.value = [];
+    }
+
+    messages.value = contextPlan.messages;
+    if (contextPlan.rewroteHistory) {
+      await replaceConversationHistory(sendingConversationId, contextPlan.messages);
+    } else {
+      await persistMessage(userMessage, sendingConversationId);
+    }
+    await dispatchConversationMessages(
+      sendingConversationId,
+      contextPlan.messages,
+      contextPlan.buildOptions,
+    );
   }
 
   async function handleEditMessage(messageIndex: number, nextContent: string) {
@@ -325,11 +465,16 @@ export function createSendOperations(deps: SendOpsDeps) {
     ];
 
     try {
-      await replaceConversationHistory(conversationId, nextMessages);
-      messages.value = nextMessages;
+      const contextPlan = await prepareConversationContextForDispatch(conversationId, nextMessages);
+      await replaceConversationHistory(conversationId, contextPlan.messages);
+      messages.value = contextPlan.messages;
       toolExecutionLogs.value = [];
       pendingUploads.value = [];
-      await dispatchConversationMessages(conversationId, nextMessages);
+      await dispatchConversationMessages(
+        conversationId,
+        contextPlan.messages,
+        contextPlan.buildOptions,
+      );
     } catch (err) {
       console.error("Failed to edit and resend message:", err);
       emitToast({

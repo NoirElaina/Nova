@@ -18,6 +18,7 @@ use sqlx::{Row, SqlitePool};
 use std::cmp::Ordering;
 use std::collections::{HashMap, HashSet};
 use tauri::AppHandle;
+use tracing::{debug, warn};
 use uuid::Uuid;
 
 const GLOBAL_SCOPE: &str = "global";
@@ -27,6 +28,7 @@ const SEARCH_LIMIT_MAX: usize = 50;
 const SEARCH_CANDIDATE_MULTIPLIER: usize = 4;
 const VECTOR_WEIGHT: f64 = 0.70;
 const FTS_WEIGHT: f64 = 0.30;
+const FTS_ONLY_EMBEDDING_MODEL: &str = "__fts_only__";
 
 struct PreparedDocument {
     source_name: String,
@@ -283,15 +285,33 @@ async fn upsert_documents_for_scope(
         });
     }
 
-    let config = load_embedding_config(&app)?;
     let chunk_texts = prepared
         .iter()
         .flat_map(|doc| doc.chunks.iter().cloned())
         .collect::<Vec<_>>();
-    let embeddings = embed_texts(&config, &chunk_texts).await?;
-    if embeddings.len() != chunk_texts.len() {
-        return Err("Embedding result count mismatch".to_string());
-    }
+    let embedding_plan = match load_embedding_config(&app) {
+        Ok(config) => match embed_texts(&config, &chunk_texts).await {
+            Ok(embeddings) if embeddings.len() == chunk_texts.len() => {
+                Some((config.model.clone(), embeddings))
+            }
+            Ok(embeddings) => {
+                warn!(
+                    expected = chunk_texts.len(),
+                    actual = embeddings.len(),
+                    "RAG embedding count mismatch; falling back to FTS-only indexing"
+                );
+                None
+            }
+            Err(error) => {
+                warn!(error = %error, "RAG embedding failed; falling back to FTS-only indexing");
+                None
+            }
+        },
+        Err(error) => {
+            debug!(error = %error, "RAG embedding unavailable; falling back to FTS-only indexing");
+            None
+        }
+    };
 
     let mut embedding_index = 0usize;
     let now = now_ts();
@@ -365,10 +385,16 @@ async fn upsert_documents_for_scope(
         .map_err(|e| e.to_string())?;
 
         for (chunk_index, chunk) in document.chunks.iter().enumerate() {
-            let embedding = embeddings
-                .get(embedding_index)
-                .ok_or_else(|| "Embedding result count mismatch".to_string())?;
-            embedding_index += 1;
+            let (embedding_model, embedding_blob) =
+                if let Some((model, embeddings)) = embedding_plan.as_ref() {
+                    let embedding = embeddings
+                        .get(embedding_index)
+                        .ok_or_else(|| "Embedding result count mismatch".to_string())?;
+                    embedding_index += 1;
+                    (model.as_str(), embedding_to_blob(embedding))
+                } else {
+                    (FTS_ONLY_EMBEDDING_MODEL, Vec::new())
+                };
             let chunk_id = Uuid::new_v4().to_string();
             let chunk_checksum = checksum_hex(chunk);
 
@@ -386,8 +412,8 @@ async fn upsert_documents_for_scope(
             .bind(chunk)
             .bind(chunk.chars().count() as i64)
             .bind(chunk_checksum)
-            .bind(&config.model)
-            .bind(embedding_to_blob(embedding))
+            .bind(embedding_model)
+            .bind(embedding_blob)
             .bind(now)
             .bind(now)
             .execute(&mut *tx)
@@ -465,24 +491,32 @@ async fn search_documents_for_scope(
         return Ok(Vec::new());
     }
 
-    let config = load_embedding_config(&app)?;
-    let query_embeddings = embed_texts(&config, &[query_text.to_string()]).await?;
-    let Some(query_embedding) = query_embeddings.first() else {
-        return Err("Embedding response was empty".to_string());
-    };
-
     let candidate_limit = max_hits * SEARCH_CANDIDATE_MULTIPLIER;
     let mut candidates: HashMap<String, CandidateScore> = HashMap::new();
 
-    collect_vector_candidates(
-        &pool,
-        &scope,
-        &config.model,
-        &embedding_to_blob(query_embedding),
-        candidate_limit,
-        &mut candidates,
-    )
-    .await?;
+    match load_embedding_config(&app) {
+        Ok(config) => match embed_texts(&config, &[query_text.to_string()]).await {
+            Ok(query_embeddings) => {
+                if let Some(query_embedding) = query_embeddings.first() {
+                    collect_vector_candidates(
+                        &pool,
+                        &scope,
+                        &config.model,
+                        &embedding_to_blob(query_embedding),
+                        candidate_limit,
+                        &mut candidates,
+                    )
+                    .await?;
+                }
+            }
+            Err(error) => {
+                warn!(error = %error, "RAG query embedding failed; using FTS-only search");
+            }
+        },
+        Err(error) => {
+            debug!(error = %error, "RAG query embedding unavailable; using FTS-only search");
+        }
+    }
 
     if let Some(fts_query) = build_fts_query(query_text) {
         collect_fts_candidates(&pool, &scope, &fts_query, candidate_limit, &mut candidates).await?;

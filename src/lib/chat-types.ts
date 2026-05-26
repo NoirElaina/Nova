@@ -54,6 +54,8 @@ export interface ChatAttachment {
   kind?: AttachmentKind;
   mediaType?: string;
   data?: string;
+  content?: string;
+  knowledgeStored?: boolean;
 }
 
 export interface ChatMessage {
@@ -65,10 +67,11 @@ export interface ChatMessage {
   cost?: TurnCost;
 }
 
-export interface UploadedRagFile extends ChatAttachment {
+export interface UploadedDocumentFile extends ChatAttachment {
   kind: "document";
   content: string;
   size: number;
+  knowledgeStored?: boolean;
 }
 
 export interface UploadedImageFile extends ChatAttachment {
@@ -78,7 +81,7 @@ export interface UploadedImageFile extends ChatAttachment {
   size: number;
 }
 
-export type PendingUploadFile = UploadedRagFile | UploadedImageFile;
+export type PendingUploadFile = UploadedDocumentFile | UploadedImageFile;
 
 export interface PersistedMessage {
   role: string;

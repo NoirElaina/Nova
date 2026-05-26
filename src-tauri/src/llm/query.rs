@@ -182,30 +182,14 @@ fn latest_user_query_text(messages: &[Message]) -> Option<String> {
         }
 
         let text = text_from_content(&message.content);
-        // Strip the RAG notice lines appended by the frontend so they don't
-        // pollute hybrid retrieval query terms. The notice starts with the marker line and
-        // continues to the end of the text.
+        // Strip direct attachment blocks appended by the frontend so they do not
+        // pollute hybrid retrieval query terms.
         let clean = text
             .lines()
-            .take_while(|line| !line.trim().starts_with("已上传文件（可在会话RAG中检索）："))
+            .take_while(|line| !line.trim().starts_with("[Attached Documents]"))
             .collect::<Vec<_>>()
             .join("\n");
         let trimmed = clean.trim();
-        if trimmed.is_empty() {
-            None
-        } else {
-            Some(trimmed.to_string())
-        }
-    })
-}
-
-fn latest_user_raw_text(messages: &[Message]) -> Option<String> {
-    messages.iter().rev().find_map(|message| {
-        if message.role != Role::User {
-            return None;
-        }
-        let text = text_from_content(&message.content);
-        let trimmed = text.trim();
         if trimmed.is_empty() {
             None
         } else {
@@ -224,71 +208,10 @@ fn truncate_chars(input: &str, limit: usize) -> String {
     }
 }
 
-fn extract_uploaded_document_names(query: &str) -> Vec<String> {
-    query
-        .lines()
-        .find_map(|line| {
-            line.trim()
-                .strip_prefix("已上传文件（可在会话RAG中检索）：")
-                .map(str::trim)
-        })
-        .map(|raw| {
-            raw.split("，")
-                .map(str::trim)
-                .filter(|name| !name.is_empty())
-                .map(|name| name.to_string())
-                .collect::<Vec<_>>()
-        })
-        .unwrap_or_default()
-}
-
-async fn build_direct_attachment_context(
-    app: &AppHandle,
-    conversation_id: &str,
-    source_names: &[String],
-) -> Result<Vec<String>, String> {
-    if source_names.is_empty() {
-        return Ok(Vec::new());
-    }
-
-    let documents = crate::command::rag::rag_list_conversation_documents(
-        app.clone(),
-        conversation_id.to_string(),
-    )
-    .await?;
-
-    let mut lines = Vec::new();
-
-    for source_name in source_names {
-        let Some(doc) = documents.iter().find(|doc| doc.source_name == *source_name) else {
-            continue;
-        };
-
-        let Some(content) = crate::command::rag::rag_read_document(
-            app.clone(),
-            doc.id.clone(),
-            Some(conversation_id.to_string()),
-        )
-        .await?
-        else {
-            continue;
-        };
-
-        lines.push(format!(
-            "Attached document: {} (id={}, chars={})",
-            content.source_name, content.id, content.content_chars
-        ));
-        lines.push(content.content.clone());
-    }
-
-    Ok(lines)
-}
-
 async fn build_session_rag_context_message(
     app: &AppHandle,
     conversation_id: Option<&str>,
     query: &str,
-    raw_text: &str,
 ) -> Result<Option<Message>, String> {
     let Some(scope_id) = conversation_id
         .map(|id| id.trim())
@@ -302,11 +225,6 @@ async fn build_session_rag_context_message(
         return Ok(None);
     }
 
-    // 用原始文本（含文件名行）提取附件名，用清洁 query 做混合 RAG 检索。
-    let attached_source_names = extract_uploaded_document_names(raw_text);
-    let direct_attachment_lines =
-        build_direct_attachment_context(app, scope_id, &attached_source_names).await?;
-
     let hits = crate::command::rag::rag_search_conversation_documents(
         app.clone(),
         scope_id.to_string(),
@@ -316,9 +234,7 @@ async fn build_session_rag_context_message(
     .await?;
 
     if hits.is_empty() {
-        if direct_attachment_lines.is_empty() {
-            return Ok(None);
-        }
+        return Ok(None);
     }
 
     let mut context_lines = vec![
@@ -326,14 +242,7 @@ async fn build_session_rag_context_message(
 		"Use the retrieved snippets below as supporting context. If they conflict with current repository reality or explicit user instructions, prioritize repository reality and user intent.".to_string(),
 	];
 
-    if !direct_attachment_lines.is_empty() {
-        context_lines.push("Directly attached documents for this turn:".to_string());
-        context_lines.extend(direct_attachment_lines);
-    }
-
-    if !hits.is_empty() {
-        context_lines.push("Retrieved snippets:".to_string());
-    }
+    context_lines.push("Retrieved snippets:".to_string());
     for (idx, hit) in hits.iter().enumerate() {
         context_lines.push(format!(
             "{}. {} (score={}, id={})",
@@ -492,7 +401,6 @@ pub async fn send_chat_message(
     agent_mode: AgentMode,
 ) -> Result<(), String> {
     let rag_query = latest_user_query_text(&messages);
-    let rag_raw_text = latest_user_raw_text(&messages);
     let session_start_turn = is_session_start_turn(&messages);
     // 记录前端传入消息数量，用于之后从 turn_messages 中定位"本轮新消息"起始位置。
     let frontend_msg_count = messages.len();
@@ -611,14 +519,7 @@ pub async fn send_chat_message(
     // 使用最新用户文本检索当前 conversation 绑定的文档，并把命中的片段追加到 current_messages。
     // 检索失败只发 backend-error，不中断主对话；保存 snapshot 前会剥掉该类临时注入。
     if let Some(query_text) = rag_query.as_deref() {
-        let raw_text = rag_raw_text.as_deref().unwrap_or(query_text);
-        match build_session_rag_context_message(
-            &app,
-            conversation_id.as_deref(),
-            query_text,
-            raw_text,
-        )
-        .await
+        match build_session_rag_context_message(&app, conversation_id.as_deref(), query_text).await
         {
             Ok(Some(rag_context)) => current_messages.push(rag_context),
             Ok(None) => {}

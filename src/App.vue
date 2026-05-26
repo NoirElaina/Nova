@@ -165,6 +165,7 @@ const handleBrowserAnnotationSelected = async (payload: BrowserAnnotationSelecte
     mimeType: "text/markdown",
     content,
     size: new TextEncoder().encode(content).length,
+    knowledgeStored: false,
   };
   await handleUploadFiles([file]);
 };

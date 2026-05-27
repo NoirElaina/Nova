@@ -687,12 +687,18 @@ async fn process_delta(
                     .ok();
                 }
 
+                let result_content = if executed.result_content.is_empty() {
+                    vec![ContentBlock::Text {
+                        text: executed.output,
+                    }]
+                } else {
+                    executed.result_content
+                };
+
                 tool_result_blocks.push(ContentBlock::ToolResult {
                     tool_use_id: executed.id,
                     is_error: executed.is_error,
-                    content: vec![ContentBlock::Text {
-                        text: executed.output,
-                    }],
+                    content: result_content,
                 });
 
                 if !executed.additional_messages.is_empty() {

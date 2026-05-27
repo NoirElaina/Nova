@@ -82,9 +82,10 @@ fn push_message_if_any(
 fn tool_result_output(
     content: &[ContentBlock],
     is_error: bool,
-) -> Result<String, ProviderTurnError> {
+) -> Result<(String, Vec<ResponsesContentPart>), ProviderTurnError> {
     let mut text_blocks = Vec::new();
     let mut serialized_blocks = Vec::new();
+    let mut image_parts = Vec::new();
     let mut has_non_text = false;
 
     for block in content {
@@ -95,6 +96,9 @@ fn tool_result_output(
             }
             ContentBlock::Image { source } => {
                 has_non_text = true;
+                if let Some(part) = image_to_responses_part(source) {
+                    image_parts.push(part);
+                }
                 serialized_blocks.push(SerializedToolOutputBlock::Image {
                     source_type: source.source_type.clone(),
                     media_type: source.media_type.clone(),
@@ -113,10 +117,20 @@ fn tool_result_output(
     }
 
     if !has_non_text && !is_error {
-        return Ok(text_blocks.join("\n"));
+        return Ok((text_blocks.join("\n"), image_parts));
     }
 
-    serde_json::to_string(&SerializedToolOutput {
+    if !image_parts.is_empty() {
+        let mut output = text_blocks.join("\n");
+        if output.trim().is_empty() {
+            output = "Tool result image is attached in the following user message.".to_string();
+        } else {
+            output.push_str("\n\n[Tool result image is attached in the following user message.]");
+        }
+        return Ok((output, image_parts));
+    }
+
+    let output = serde_json::to_string(&SerializedToolOutput {
         is_error,
         content: serialized_blocks,
     })
@@ -125,7 +139,9 @@ fn tool_result_output(
             "Failed to serialize Responses function_call_output content: {}",
             error
         ))
-    })
+    })?;
+
+    Ok((output, image_parts))
 }
 
 fn messages_to_input(messages: &[Message]) -> Result<Vec<ResponsesInputItem>, ProviderTurnError> {
@@ -161,10 +177,21 @@ fn messages_to_input(messages: &[Message]) -> Result<Vec<ResponsesInputItem>, Pr
                                 ..
                             } => {
                                 push_message_if_any(&mut input, "user", &mut content_parts);
+                                let (output, image_parts) = tool_result_output(content, *is_error)?;
                                 input.push(ResponsesInputItem::FunctionCallOutput {
                                     call_id: tool_use_id.clone(),
-                                    output: tool_result_output(content, *is_error)?,
+                                    output,
                                 });
+                                if !image_parts.is_empty() {
+                                    let mut image_content = vec![ResponsesContentPart::InputText {
+                                        text: format!(
+                                            "Tool result image attachment for call_id {}.",
+                                            tool_use_id
+                                        ),
+                                    }];
+                                    image_content.extend(image_parts);
+                                    push_message_if_any(&mut input, "user", &mut image_content);
+                                }
                             }
                             ContentBlock::Thinking { .. } | ContentBlock::ToolUse { .. } => {
                                 return Err(ProviderTurnError::new(

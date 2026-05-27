@@ -3,7 +3,9 @@ mod summary;
 
 use std::collections::{HashMap, HashSet};
 
+use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
 use serde::Serialize;
+use serde_json::Map;
 use serde_json::{json, Value};
 use tauri::AppHandle;
 
@@ -15,7 +17,10 @@ const TOKEN_OVERHEAD_PER_MESSAGE: i64 = 6;
 const TOKEN_OVERHEAD_PER_BLOCK: i64 = 3;
 const TOKEN_OVERHEAD_TOOL_USE: i64 = 20;
 const TOKEN_OVERHEAD_TOOL_RESULT: i64 = 14;
-const TOKEN_OVERHEAD_IMAGE_INPUT: i64 = 512;
+const IMAGE_TOKEN_PIXEL_DIVISOR: u64 = 750;
+const IMAGE_TOKEN_MIN: i64 = 256;
+const IMAGE_TOKEN_MAX: i64 = 8192;
+const IMAGE_TOKEN_FALLBACK: i64 = 1536;
 
 // 策略阈值：完全按 token 比例触发（对标 Claude Code 的 autoCompact 策略）。
 // 不再使用消息条数或工具结果字符数等硬编码阈值。
@@ -122,6 +127,71 @@ fn estimate_text_tokens(text: &str) -> i64 {
     cjk + (latin_or_digit + 3) / 4 + (punctuation_or_symbol + 1) / 2 + (whitespace + 15) / 16
 }
 
+fn estimate_image_tokens_from_dimensions(width: u32, height: u32) -> i64 {
+    if width == 0 || height == 0 {
+        return IMAGE_TOKEN_FALLBACK;
+    }
+
+    let area = u64::from(width).saturating_mul(u64::from(height));
+    let tokens = area.div_ceil(IMAGE_TOKEN_PIXEL_DIVISOR) as i64;
+    tokens.clamp(IMAGE_TOKEN_MIN, IMAGE_TOKEN_MAX)
+}
+
+fn estimate_image_tokens_from_bytes(bytes: &[u8]) -> Option<i64> {
+    let image = screenshots::image::load_from_memory(bytes).ok()?;
+    Some(estimate_image_tokens_from_dimensions(
+        image.width(),
+        image.height(),
+    ))
+}
+
+fn estimate_image_tokens_from_base64(data: &str) -> Option<i64> {
+    let normalized = data.trim();
+    if normalized.is_empty() {
+        return None;
+    }
+    let bytes = BASE64.decode(normalized).ok()?;
+    estimate_image_tokens_from_bytes(&bytes)
+}
+
+fn estimate_image_tokens_from_data_url(value: &str) -> Option<i64> {
+    let trimmed = value.trim();
+    let lower = trimmed.get(..trimmed.len().min(32))?.to_ascii_lowercase();
+    if !lower.starts_with("data:image/") {
+        return None;
+    }
+    let (_, data) = trimmed.split_once(";base64,")?;
+    estimate_image_tokens_from_base64(data).or(Some(IMAGE_TOKEN_FALLBACK))
+}
+
+fn estimate_image_tokens_from_json_object(map: &Map<String, Value>) -> Option<i64> {
+    let media_type = map
+        .get("media_type")
+        .or_else(|| map.get("mime_type"))
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .trim()
+        .to_ascii_lowercase();
+    let source_type = map
+        .get("type")
+        .or_else(|| map.get("source_type"))
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .trim()
+        .to_ascii_lowercase();
+    let data = map.get("data").and_then(Value::as_str)?.trim();
+
+    if data.is_empty() || (!source_type.eq("base64") && !media_type.starts_with("image/")) {
+        return None;
+    }
+
+    Some(
+        estimate_image_tokens_from_base64(data)
+            .unwrap_or(IMAGE_TOKEN_FALLBACK)
+            .saturating_add(TOKEN_OVERHEAD_PER_BLOCK + estimate_text_tokens(&media_type) + 4),
+    )
+}
+
 // 估算 JSON 数据结构的 token 大小，包含结构符号 + 键值 + 嵌套内容。
 // 用于 tool_use / tool_result 中包含结构化 JSON 字符串时提供更加合理的估算。
 fn estimate_json_tokens(value: &Value) -> i64 {
@@ -130,13 +200,18 @@ fn estimate_json_tokens(value: &Value) -> i64 {
         Value::Null => 1,
         Value::Bool(_) => 1,
         Value::Number(_) => 2,
-        // 字符串先按文本估算再加上结构符成本
-        Value::String(s) => estimate_text_tokens(s) + 1,
+        // data:image URL 是图片输入，不是普通文本；按图片像素面积估算，避免 base64 炸穿上下文预测。
+        Value::String(s) => {
+            estimate_image_tokens_from_data_url(s).unwrap_or_else(|| estimate_text_tokens(s) + 1)
+        }
         Value::Array(items) => {
             // array: 计算头尾符号成本 + 每个项目的递归成本 + 项目分隔符成本
             2 + items.iter().map(estimate_json_tokens).sum::<i64>() + items.len() as i64
         }
         Value::Object(map) => {
+            if let Some(tokens) = estimate_image_tokens_from_json_object(map) {
+                return tokens;
+            }
             // object: 头尾成本 + 每个 key 的文本成本 + 对应 value 的递归成本 + 分隔符
             3 + map
                 .iter()
@@ -157,8 +232,11 @@ fn estimate_block_tokens(block: &ContentBlock) -> i64 {
         ContentBlock::Thinking { thinking, .. } => {
             TOKEN_OVERHEAD_PER_BLOCK + estimate_text_tokens(thinking)
         }
-        // 图片块：采用固定近似开销，避免按 base64 字符长度严重高估。
-        ContentBlock::Image { .. } => TOKEN_OVERHEAD_PER_BLOCK + TOKEN_OVERHEAD_IMAGE_INPUT,
+        // 图片块：统一使用 Claude 风格面积公式 ceil(width * height / 750)，不按 base64 字符长度估算。
+        ContentBlock::Image { source } => {
+            TOKEN_OVERHEAD_PER_BLOCK
+                + estimate_image_tokens_from_base64(&source.data).unwrap_or(IMAGE_TOKEN_FALLBACK)
+        }
         // 工具调用：块开销 + 固定工具使用开销 + 输入 JSON 的结构化估算
         ContentBlock::ToolUse { input, .. } => {
             TOKEN_OVERHEAD_PER_BLOCK + TOKEN_OVERHEAD_TOOL_USE + estimate_json_tokens(input)

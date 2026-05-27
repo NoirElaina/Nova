@@ -7,8 +7,11 @@ use grep_searcher::{
 use ignore::WalkBuilder;
 use serde::Serialize;
 use std::collections::BTreeSet;
+use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
+
+const MAX_LINE_CHARS: usize = 500;
 
 #[derive(Clone, Debug)]
 pub struct WalkOptions {
@@ -48,21 +51,28 @@ pub struct GlobSearchResult {
     pub files: Vec<String>,
 }
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
-pub enum TextSearchMode {
-    Literal,
-    Regex,
+pub enum TextSearchOutputMode {
+    Content,
+    FilesWithMatches,
+    Count,
 }
 
 #[derive(Clone, Debug)]
 pub struct TextSearchOptions {
     pub pattern: String,
-    pub mode: TextSearchMode,
     pub case_sensitive: bool,
-    pub include_globs: Vec<String>,
-    pub context_lines: usize,
-    pub max_results: usize,
+    pub glob_patterns: Vec<String>,
+    pub type_globs: Vec<String>,
+    pub exclude_globs: Vec<String>,
+    pub output_mode: TextSearchOutputMode,
+    pub before_context: usize,
+    pub after_context: usize,
+    pub show_line_numbers: bool,
+    pub head_limit: Option<usize>,
+    pub offset: usize,
+    pub multiline: bool,
     pub max_output_chars: usize,
     pub walk: WalkOptions,
 }
@@ -91,9 +101,22 @@ pub struct TextSearchStats {
 }
 
 #[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct TextSearchResult {
+    pub mode: TextSearchOutputMode,
+    pub num_files: usize,
+    pub filenames: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub content: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub num_lines: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub num_matches: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub applied_limit: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub applied_offset: Option<usize>,
     pub stats: TextSearchStats,
-    pub matches: Vec<TextMatch>,
 }
 
 pub fn find_files(
@@ -106,12 +129,12 @@ pub fn find_files(
         options.case_sensitive,
         "pattern",
     )?;
-    let files = collect_files(workspace_root, search_root, None, &options.walk);
+    let files = collect_files(workspace_root, search_root, Vec::new(), None, &options.walk);
     let mut matches = Vec::new();
     let mut truncated = false;
 
     for file in &files {
-        let Some(relative) = relative_path(workspace_root, file) else {
+        let Some(relative) = display_path(workspace_root, file) else {
             continue;
         };
         if !matcher.is_match(&relative) {
@@ -139,78 +162,320 @@ pub fn grep_text(
     target: &Path,
     options: &TextSearchOptions,
 ) -> Result<TextSearchResult, String> {
-    let matcher = build_text_matcher(&options.pattern, &options.mode, options.case_sensitive)?;
-    let include_matcher = if options.include_globs.is_empty() {
-        None
-    } else {
-        let patterns = options
-            .include_globs
-            .iter()
-            .map(String::as_str)
-            .collect::<Vec<_>>();
-        Some(build_glob_set(
-            &patterns,
-            options.case_sensitive,
-            "include_globs",
-        )?)
-    };
-
+    let matcher = build_text_matcher(&options.pattern, options.case_sensitive, options.multiline)?;
+    let include_matchers = build_include_matchers(options)?;
+    let exclude_matcher = build_exclude_matcher(options)?;
     let files = collect_files(
         workspace_root,
         target,
-        include_matcher.as_ref(),
+        include_matchers,
+        exclude_matcher.as_ref(),
         &options.walk,
     );
-    let mut matches = Vec::new();
-    let mut truncated = false;
-    let mut used_chars = 0usize;
 
-    for file in &files {
-        let remaining_results = options.max_results.saturating_sub(matches.len());
+    match options.output_mode {
+        TextSearchOutputMode::Content => grep_content(workspace_root, &files, &matcher, options),
+        TextSearchOutputMode::FilesWithMatches => {
+            grep_files_with_matches(workspace_root, &files, &matcher, options)
+        }
+        TextSearchOutputMode::Count => grep_count(workspace_root, &files, &matcher, options),
+    }
+}
+
+fn build_include_matchers(options: &TextSearchOptions) -> Result<Vec<GlobSet>, String> {
+    let mut matchers = Vec::new();
+    if !options.glob_patterns.is_empty() {
+        let patterns = options
+            .glob_patterns
+            .iter()
+            .map(String::as_str)
+            .collect::<Vec<_>>();
+        matchers.push(build_glob_set(&patterns, true, "glob")?);
+    }
+    if !options.type_globs.is_empty() {
+        let patterns = options
+            .type_globs
+            .iter()
+            .map(String::as_str)
+            .collect::<Vec<_>>();
+        matchers.push(build_glob_set(&patterns, false, "type")?);
+    }
+    Ok(matchers)
+}
+
+fn build_exclude_matcher(options: &TextSearchOptions) -> Result<Option<GlobSet>, String> {
+    if options.exclude_globs.is_empty() {
+        return Ok(None);
+    }
+    let patterns = options
+        .exclude_globs
+        .iter()
+        .map(String::as_str)
+        .collect::<Vec<_>>();
+    build_glob_set(&patterns, false, "exclude_globs").map(Some)
+}
+
+fn grep_content(
+    workspace_root: &Path,
+    files: &[PathBuf],
+    matcher: &RegexMatcher,
+    options: &TextSearchOptions,
+) -> Result<TextSearchResult, String> {
+    let mut lines = Vec::<String>::new();
+    let mut files_with_matches = BTreeSet::<String>::new();
+    let mut matches_returned = 0usize;
+    let mut used_chars = 0usize;
+    let mut truncated = false;
+
+    for file in files {
         let remaining_chars = options.max_output_chars.saturating_sub(used_chars);
-        if remaining_results == 0 || remaining_chars == 0 {
+        if remaining_chars == 0 {
             truncated = true;
             break;
         }
 
-        let path =
-            relative_path(workspace_root, file).unwrap_or_else(|| file.display().to_string());
-        let mut sink = StructuredSearchSink::new(path, remaining_results + 1, remaining_chars);
-        let mut builder = SearcherBuilder::new();
-        builder
-            .line_number(true)
-            .before_context(options.context_lines)
-            .after_context(options.context_lines)
-            .binary_detection(BinaryDetection::quit(b'\x00'));
-        let mut searcher = builder.build();
+        let path = display_path(workspace_root, file).unwrap_or_else(|| file.display().to_string());
+        let mut sink = StructuredSearchSink::new(path.clone(), usize::MAX, remaining_chars);
+        let mut searcher = searcher_builder(options)
+            .before_context(options.before_context)
+            .after_context(options.after_context)
+            .build();
 
-        if searcher.search_path(&matcher, file, &mut sink).is_err() {
+        if searcher.search_path(matcher, file, &mut sink).is_err() {
             continue;
         }
 
-        let (mut file_matches, file_chars, file_truncated) = sink.finish();
-        used_chars = used_chars.saturating_add(file_chars);
-        if file_matches.len() > remaining_results {
-            file_matches.truncate(remaining_results);
-            truncated = true;
+        let (file_matches, file_chars, file_truncated) = sink.finish();
+        if file_matches.is_empty() {
+            continue;
         }
+
+        used_chars = used_chars.saturating_add(file_chars);
+        files_with_matches.insert(path);
+        matches_returned = matches_returned.saturating_add(file_matches.len());
         truncated = truncated || file_truncated;
-        matches.extend(file_matches);
+
+        for item in &file_matches {
+            append_match_lines(&mut lines, item, options.show_line_numbers);
+        }
         if truncated {
             break;
         }
     }
 
-    let files_with_matches = count_files_with_matches(&matches);
+    let window = apply_window(lines, options.head_limit, options.offset);
+    truncated = truncated || window.truncated;
+
+    let filenames = files_with_matches.into_iter().collect::<Vec<_>>();
+    let num_files = filenames.len();
+
     Ok(TextSearchResult {
+        mode: TextSearchOutputMode::Content,
+        num_files,
+        filenames,
+        content: Some(window.items.join("\n")),
+        num_lines: Some(window.items.len()),
+        num_matches: None,
+        applied_limit: window.applied_limit,
+        applied_offset: window.applied_offset,
         stats: TextSearchStats {
             files_searched: files.len(),
-            files_with_matches,
-            matches_returned: matches.len(),
+            files_with_matches: num_files,
+            matches_returned,
             truncated,
         },
-        matches,
     })
+}
+
+fn grep_files_with_matches(
+    workspace_root: &Path,
+    files: &[PathBuf],
+    matcher: &RegexMatcher,
+    options: &TextSearchOptions,
+) -> Result<TextSearchResult, String> {
+    let mut matches = Vec::<(String, u128)>::new();
+
+    for file in files {
+        let mut sink = CountSearchSink::stop_after_first();
+        let mut searcher = searcher_builder(options).build();
+        if searcher.search_path(matcher, file, &mut sink).is_err() {
+            continue;
+        }
+        if sink.count == 0 {
+            continue;
+        }
+
+        let display =
+            display_path(workspace_root, file).unwrap_or_else(|| file.display().to_string());
+        matches.push((display, mtime_millis(file)));
+    }
+
+    matches.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+    let all_filenames = matches
+        .into_iter()
+        .map(|(path, _)| path)
+        .collect::<Vec<_>>();
+    let total_matches = all_filenames.len();
+    let window = apply_window(all_filenames, options.head_limit, options.offset);
+
+    Ok(TextSearchResult {
+        mode: TextSearchOutputMode::FilesWithMatches,
+        num_files: window.items.len(),
+        filenames: window.items,
+        content: None,
+        num_lines: None,
+        num_matches: None,
+        applied_limit: window.applied_limit,
+        applied_offset: window.applied_offset,
+        stats: TextSearchStats {
+            files_searched: files.len(),
+            files_with_matches: total_matches,
+            matches_returned: total_matches,
+            truncated: window.truncated,
+        },
+    })
+}
+
+fn grep_count(
+    workspace_root: &Path,
+    files: &[PathBuf],
+    matcher: &RegexMatcher,
+    options: &TextSearchOptions,
+) -> Result<TextSearchResult, String> {
+    let mut count_lines = Vec::<(String, usize)>::new();
+    let mut total_matching_lines = 0usize;
+
+    for file in files {
+        let mut sink = CountSearchSink::count_all();
+        let mut searcher = searcher_builder(options).build();
+        if searcher.search_path(matcher, file, &mut sink).is_err() {
+            continue;
+        }
+        if sink.count == 0 {
+            continue;
+        }
+
+        total_matching_lines = total_matching_lines.saturating_add(sink.count);
+        let path = display_path(workspace_root, file).unwrap_or_else(|| file.display().to_string());
+        count_lines.push((path, sink.count));
+    }
+
+    let all_lines = count_lines
+        .iter()
+        .map(|(path, count)| format!("{}:{}", path, count))
+        .collect::<Vec<_>>();
+    let window = apply_window(all_lines, options.head_limit, options.offset);
+
+    let displayed_matches = window
+        .items
+        .iter()
+        .filter_map(|line| line.rsplit_once(':'))
+        .filter_map(|(_, count)| count.parse::<usize>().ok())
+        .sum::<usize>();
+
+    Ok(TextSearchResult {
+        mode: TextSearchOutputMode::Count,
+        num_files: window.items.len(),
+        filenames: Vec::new(),
+        content: Some(window.items.join("\n")),
+        num_lines: None,
+        num_matches: Some(displayed_matches),
+        applied_limit: window.applied_limit,
+        applied_offset: window.applied_offset,
+        stats: TextSearchStats {
+            files_searched: files.len(),
+            files_with_matches: count_lines.len(),
+            matches_returned: total_matching_lines,
+            truncated: window.truncated,
+        },
+    })
+}
+
+fn append_match_lines(lines: &mut Vec<String>, item: &TextMatch, show_line_numbers: bool) {
+    for before in &item.before {
+        lines.push(format_search_line(
+            &item.path,
+            before,
+            show_line_numbers,
+            false,
+        ));
+    }
+    lines.push(format_search_line(
+        &item.path,
+        &SearchLine {
+            line_number: item.line_number,
+            text: item.line.clone(),
+        },
+        show_line_numbers,
+        true,
+    ));
+    for after in &item.after {
+        lines.push(format_search_line(
+            &item.path,
+            after,
+            show_line_numbers,
+            false,
+        ));
+    }
+}
+
+fn format_search_line(
+    path: &str,
+    line: &SearchLine,
+    show_line_numbers: bool,
+    is_match: bool,
+) -> String {
+    if show_line_numbers {
+        let separator = if is_match { ':' } else { '-' };
+        format!(
+            "{}{}{}{}{}",
+            path, separator, line.line_number, separator, line.text
+        )
+    } else {
+        format!("{}:{}", path, line.text)
+    }
+}
+
+struct Window<T> {
+    items: Vec<T>,
+    applied_limit: Option<usize>,
+    applied_offset: Option<usize>,
+    truncated: bool,
+}
+
+fn apply_window<T>(items: Vec<T>, head_limit: Option<usize>, offset: usize) -> Window<T> {
+    let total = items.len();
+    let skipped = offset.min(total);
+    let mut iter = items.into_iter().skip(skipped);
+    let (items, truncated, applied_limit) = match head_limit {
+        Some(limit) => {
+            let mut kept = Vec::new();
+            for item in iter.by_ref().take(limit) {
+                kept.push(item);
+            }
+            let remaining_after_window = total.saturating_sub(skipped).saturating_sub(kept.len());
+            let truncated = remaining_after_window > 0;
+            let applied_limit = truncated.then_some(limit);
+            (kept, truncated, applied_limit)
+        }
+        None => (iter.collect(), false, None),
+    };
+
+    Window {
+        items,
+        applied_limit,
+        applied_offset: (offset > 0).then_some(offset),
+        truncated,
+    }
+}
+
+fn searcher_builder(options: &TextSearchOptions) -> SearcherBuilder {
+    let mut builder = SearcherBuilder::new();
+    builder
+        .line_number(true)
+        .multi_line(options.multiline)
+        .binary_detection(BinaryDetection::quit(b'\x00'));
+    builder
 }
 
 fn build_glob_set(patterns: &[&str], case_sensitive: bool, label: &str) -> Result<GlobSet, String> {
@@ -222,7 +487,6 @@ fn build_glob_set(patterns: &[&str], case_sensitive: bool, label: &str) -> Resul
         }
         add_glob(&mut builder, trimmed, case_sensitive, label)?;
 
-        // Match ripgrep-style file globs: a bare pattern applies at any depth.
         if !trimmed.contains('/') && !trimmed.contains('\\') {
             add_glob(
                 &mut builder,
@@ -256,28 +520,26 @@ fn add_glob(
 
 fn build_text_matcher(
     pattern: &str,
-    mode: &TextSearchMode,
     case_sensitive: bool,
+    multiline: bool,
 ) -> Result<RegexMatcher, String> {
-    let effective_pattern = match mode {
-        TextSearchMode::Literal => regex::escape(pattern),
-        TextSearchMode::Regex => pattern.to_string(),
-    };
-
     RegexMatcherBuilder::new()
         .case_insensitive(!case_sensitive)
-        .build(&effective_pattern)
+        .multi_line(multiline)
+        .dot_matches_new_line(multiline)
+        .build(pattern)
         .map_err(|error| format!("Invalid search pattern: {}", error))
 }
 
 fn collect_files(
     workspace_root: &Path,
     target: &Path,
-    include_glob: Option<&GlobSet>,
+    include_globs: Vec<GlobSet>,
+    exclude_glob: Option<&GlobSet>,
     options: &WalkOptions,
 ) -> Vec<PathBuf> {
     if target.is_file() {
-        return should_search_file(workspace_root, target, include_glob)
+        return should_search_file(workspace_root, target, &include_globs, exclude_glob)
             .then(|| target.to_path_buf())
             .into_iter()
             .collect();
@@ -299,7 +561,9 @@ fn collect_files(
         let Some(file_type) = entry.file_type() else {
             continue;
         };
-        if !file_type.is_file() || !should_search_file(workspace_root, entry.path(), include_glob) {
+        if !file_type.is_file()
+            || !should_search_file(workspace_root, entry.path(), &include_globs, exclude_glob)
+        {
             continue;
         }
         files.push(entry.path().to_path_buf());
@@ -309,28 +573,41 @@ fn collect_files(
     files
 }
 
-fn should_search_file(workspace_root: &Path, file: &Path, include_glob: Option<&GlobSet>) -> bool {
-    let Some(include_glob) = include_glob else {
-        return true;
+fn should_search_file(
+    workspace_root: &Path,
+    file: &Path,
+    include_globs: &[GlobSet],
+    exclude_glob: Option<&GlobSet>,
+) -> bool {
+    let Some(match_path) = display_path(workspace_root, file) else {
+        return false;
     };
-    relative_path(workspace_root, file)
-        .map(|relative| include_glob.is_match(relative))
+    if exclude_glob
+        .map(|matcher| matcher.is_match(&match_path))
         .unwrap_or(false)
-}
-
-fn count_files_with_matches(matches: &[TextMatch]) -> usize {
-    let mut files = BTreeSet::<&str>::new();
-    for item in matches {
-        files.insert(&item.path);
+    {
+        return false;
     }
-    files.len()
+    include_globs
+        .iter()
+        .all(|matcher| matcher.is_match(&match_path))
 }
 
-fn relative_path(workspace_root: &Path, path: &Path) -> Option<String> {
-    path.strip_prefix(workspace_root)
+fn display_path(workspace_root: &Path, path: &Path) -> Option<String> {
+    if let Ok(relative) = path.strip_prefix(workspace_root) {
+        let value = relative.to_string_lossy().replace('\\', "/");
+        return (!value.is_empty()).then_some(value);
+    }
+    Some(path.to_string_lossy().replace('\\', "/"))
+}
+
+fn mtime_millis(path: &Path) -> u128 {
+    fs::metadata(path)
+        .and_then(|metadata| metadata.modified())
         .ok()
-        .map(|relative| relative.to_string_lossy().replace('\\', "/"))
-        .filter(|relative| !relative.is_empty())
+        .and_then(|mtime| mtime.duration_since(std::time::UNIX_EPOCH).ok())
+        .map(|duration| duration.as_millis())
+        .unwrap_or(0)
 }
 
 struct StructuredSearchSink {
@@ -449,11 +726,47 @@ impl Sink for StructuredSearchSink {
     }
 }
 
+struct CountSearchSink {
+    count: usize,
+    stop_after_first: bool,
+}
+
+impl CountSearchSink {
+    fn count_all() -> Self {
+        Self {
+            count: 0,
+            stop_after_first: false,
+        }
+    }
+
+    fn stop_after_first() -> Self {
+        Self {
+            count: 0,
+            stop_after_first: true,
+        }
+    }
+}
+
+impl Sink for CountSearchSink {
+    type Error = io::Error;
+
+    fn matched(&mut self, _searcher: &Searcher, _mat: &SinkMatch<'_>) -> Result<bool, Self::Error> {
+        self.count = self.count.saturating_add(1);
+        Ok(!self.stop_after_first)
+    }
+}
+
 fn sink_line(line_number: Option<u64>, bytes: &[u8]) -> Result<SearchLine, io::Error> {
     let line_number = line_number
         .ok_or_else(|| io::Error::new(io::ErrorKind::Other, "line numbers not enabled"))?;
-    let text = String::from_utf8_lossy(bytes)
+    let mut text = String::from_utf8_lossy(bytes)
         .trim_end_matches(&['\r', '\n'][..])
         .to_string();
+    if text.chars().count() > MAX_LINE_CHARS {
+        text = format!(
+            "{}...",
+            text.chars().take(MAX_LINE_CHARS).collect::<String>()
+        );
+    }
     Ok(SearchLine { line_number, text })
 }

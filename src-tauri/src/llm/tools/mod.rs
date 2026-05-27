@@ -69,7 +69,7 @@ declare_builtin_tools! {
 
 pub mod shared;
 
-use crate::llm::types::{ContentBlock, Message, Tool};
+use crate::llm::types::{Message, Tool};
 use serde_json::Value;
 use std::collections::{BTreeMap, VecDeque};
 use std::future::Future;
@@ -86,7 +86,6 @@ pub(crate) type PermissionFn = fn(&Value) -> Option<ToolPermissionDescriptor>;
 #[derive(Debug, Clone)]
 pub(crate) struct ToolOutcome {
     pub output: String,
-    pub result_content: Vec<ContentBlock>,
     pub additional_messages: Vec<Message>,
     pub prevent_continuation: bool,
     pub stop_reason: Option<String>,
@@ -96,7 +95,6 @@ impl ToolOutcome {
     pub(crate) fn text(output: impl Into<String>) -> Self {
         Self {
             output: output.into(),
-            result_content: Vec::new(),
             additional_messages: Vec::new(),
             prevent_continuation: false,
             stop_reason: None,
@@ -109,11 +107,6 @@ impl ToolOutcome {
 
     pub(crate) fn with_additional_messages(mut self, messages: Vec<Message>) -> Self {
         self.additional_messages = messages;
-        self
-    }
-
-    pub(crate) fn with_result_content(mut self, content: Vec<ContentBlock>) -> Self {
-        self.result_content = content;
         self
     }
 }
@@ -258,7 +251,6 @@ pub struct ToolCallResult {
     pub name: String,
     pub input: Value,
     pub output: String,
-    pub result_content: Vec<ContentBlock>,
     pub is_error: bool,
     pub additional_messages: Vec<crate::llm::types::Message>,
     pub prevent_continuation: bool,
@@ -349,7 +341,6 @@ fn cancelled_result_from_call(call: ToolCallRequest, reason: &str) -> ToolCallRe
         name: call.name,
         input: call.input,
         output: reason.to_string(),
-        result_content: Vec::new(),
         is_error: true,
         additional_messages: Vec::new(),
         prevent_continuation: false,
@@ -433,7 +424,6 @@ fn finalize_failure_result(
         name,
         input,
         output: failure.message,
-        result_content: Vec::new(),
         is_error: true,
         additional_messages,
         prevent_continuation,
@@ -517,7 +507,6 @@ pub(crate) async fn execute_single_tool_call(
     };
 
     let tool_output = outcome.output;
-    let tool_result_content = outcome.result_content;
     merge_controls(
         &mut additional_messages,
         &mut prevent_continuation,
@@ -575,7 +564,6 @@ pub(crate) async fn execute_single_tool_call(
         input,
         is_error: false,
         output: tool_output,
-        result_content: tool_result_content,
         additional_messages,
         prevent_continuation,
         stop_reason,

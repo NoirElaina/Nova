@@ -71,7 +71,6 @@ fn messages_to_openai_messages(
                 let mut image_parts = Vec::new();
                 let mut tool_calls = Vec::new();
                 let mut tool_results = Vec::new();
-                let mut tool_result_image_messages = Vec::new();
 
                 for block in blocks {
                     match block {
@@ -105,43 +104,17 @@ fn messages_to_openai_messages(
                             content,
                             ..
                         } => {
-                            let mut result_text_parts = Vec::new();
-                            let mut result_image_parts = Vec::new();
-                            for block in content {
-                                match block {
-                                    ContentBlock::Text { text } => {
-                                        result_text_parts.push(text.as_str());
+                            let text = content
+                                .iter()
+                                .filter_map(|block| {
+                                    if let ContentBlock::Text { text } = block {
+                                        Some(text.as_str())
+                                    } else {
+                                        None
                                     }
-                                    ContentBlock::Image { source } => {
-                                        if let Some(part) = build_openai_image_part(source) {
-                                            result_image_parts.push(part);
-                                        }
-                                    }
-                                    ContentBlock::Thinking { .. }
-                                    | ContentBlock::ToolUse { .. }
-                                    | ContentBlock::ToolResult { .. } => {}
-                                }
-                            }
-                            let mut text = result_text_parts.join("\n");
-                            if !result_image_parts.is_empty() {
-                                if text.trim().is_empty() {
-                                    text = "Tool result image is attached in the following user message.".to_string();
-                                } else {
-                                    text.push_str(
-                                        "\n\n[Tool result image is attached in the following user message.]",
-                                    );
-                                }
-
-                                let mut image_message = vec![serde_json::json!({
-                                    "type": "text",
-                                    "text": format!(
-                                        "Tool result image attachment for tool_call_id {}.",
-                                        tool_use_id
-                                    )
-                                })];
-                                image_message.extend(result_image_parts);
-                                tool_result_image_messages.push(image_message);
-                            }
+                                })
+                                .collect::<Vec<_>>()
+                                .join("\n");
                             tool_results.push((tool_use_id.clone(), text));
                         }
                     }
@@ -173,15 +146,6 @@ fn messages_to_openai_messages(
                         content: Some(Value::String(result_text)),
                         tool_calls: None,
                         tool_call_id: Some(tool_call_id),
-                    });
-                }
-
-                for image_message in tool_result_image_messages {
-                    oai_messages.push(OpenAiMessage {
-                        role: "user".into(),
-                        content: Some(Value::Array(image_message)),
-                        tool_calls: None,
-                        tool_call_id: None,
                     });
                 }
 

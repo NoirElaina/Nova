@@ -10,7 +10,7 @@ use crate::llm::tools::{
     app_tool, AppExecuteFuture, ToolFailure, ToolOutcome, ToolPermissionDescriptor,
     ToolRegistration,
 };
-use crate::llm::types::{ContentBlock, ImageSource, Tool};
+use crate::llm::types::{Content, ContentBlock, ImageSource, Message, Role, Tool};
 
 const DEFAULT_MAX_LINES: usize = 2_000;
 const MAX_LIMIT_LINES: usize = 20_000;
@@ -276,7 +276,7 @@ async fn read_image(path: PathBuf, file_size: u64) -> Result<ToolOutcome, ToolFa
 
     let base64 = base64::engine::general_purpose::STANDARD.encode(bytes);
     let text = format!(
-        "Image file read: {} ({}, {}). The image is attached in this tool result.",
+        "Image file read: {} ({}, {}). The image is attached as additional context.",
         path.display(),
         format_file_size(file_size),
         media_type
@@ -290,16 +290,21 @@ async fn read_image(path: PathBuf, file_size: u64) -> Result<ToolOutcome, ToolFa
     })
     .to_string();
 
-    Ok(ToolOutcome::text(output).with_result_content(vec![
-        ContentBlock::Text { text },
-        ContentBlock::Image {
-            source: ImageSource {
-                source_type: "base64".to_string(),
-                media_type: media_type.to_string(),
-                data: base64,
+    let message = Message {
+        role: Role::User,
+        content: Content::Blocks(vec![
+            ContentBlock::Text { text },
+            ContentBlock::Image {
+                source: ImageSource {
+                    source_type: "base64".to_string(),
+                    media_type: media_type.to_string(),
+                    data: base64,
+                },
             },
-        },
-    ]))
+        ]),
+    };
+
+    Ok(ToolOutcome::text(output).with_additional_messages(vec![message]))
 }
 
 struct TextRangeResult {

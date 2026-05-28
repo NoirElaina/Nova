@@ -30,14 +30,9 @@ pub async fn revert_file_change(
     conversation_id: Option<String>,
     batch_id: String,
 ) -> Result<FileChangeBatch, String> {
-    let root = crate::command::workspace::workspace_root_for_conversation(
-        &app,
-        conversation_id.as_deref(),
-    )?;
     crate::llm::services::file_changes::revert_change_batch(
         &app,
         conversation_id.as_deref(),
-        &root,
         &batch_id,
     )
     .await

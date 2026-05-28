@@ -1,7 +1,6 @@
 use super::{commit_change_batch, path_for_display, resolve_tool_path, FileChangeDraft};
 use std::collections::BTreeMap;
 use std::fs;
-use std::path::Path;
 use tauri::AppHandle;
 
 #[derive(Debug, Clone)]
@@ -21,11 +20,10 @@ pub struct FileEditResult {
 pub async fn write_file_change(
     app: &AppHandle,
     conversation_id: Option<&str>,
-    root: &Path,
     raw_path: &str,
     content: &str,
 ) -> Result<FileEditResult, String> {
-    let target = resolve_tool_path(root, raw_path)?;
+    let target = resolve_tool_path(raw_path)?;
     let before = if target.exists() {
         Some(
             fs::read_to_string(&target)
@@ -38,7 +36,6 @@ pub async fn write_file_change(
     commit_drafts(
         app,
         conversation_id,
-        root,
         "write_file",
         vec![FileChangeDraft {
             path: target,
@@ -52,7 +49,6 @@ pub async fn write_file_change(
 pub async fn multi_edit_change(
     app: &AppHandle,
     conversation_id: Option<&str>,
-    root: &Path,
     edits: Vec<MultiEditRequest>,
 ) -> Result<FileEditResult, String> {
     if edits.is_empty() {
@@ -73,7 +69,7 @@ pub async fn multi_edit_change(
             ));
         }
 
-        let target = resolve_tool_path(root, &edit.path)?;
+        let target = resolve_tool_path(&edit.path)?;
         let mut content = match pending.get(&target) {
             Some(content) => content.clone(),
             None => {
@@ -105,23 +101,21 @@ pub async fn multi_edit_change(
         })
         .collect::<Vec<_>>();
 
-    commit_drafts(app, conversation_id, root, "multi_edit", drafts).await
+    commit_drafts(app, conversation_id, "multi_edit", drafts).await
 }
 
 pub(super) async fn commit_drafts(
     app: &AppHandle,
     conversation_id: Option<&str>,
-    root: &Path,
     tool_name: &str,
     drafts: Vec<FileChangeDraft>,
 ) -> Result<FileEditResult, String> {
     let files = drafts
         .iter()
         .filter(|draft| draft.before != draft.after)
-        .map(|draft| path_for_display(root, &draft.path))
+        .map(|draft| path_for_display(&draft.path))
         .collect::<Vec<_>>();
-    let change_batch_id =
-        commit_change_batch(app, conversation_id, root, tool_name, drafts).await?;
+    let change_batch_id = commit_change_batch(app, conversation_id, tool_name, drafts).await?;
     let files = if change_batch_id.is_some() {
         files
     } else {

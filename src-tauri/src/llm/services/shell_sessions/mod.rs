@@ -186,7 +186,7 @@ fn build_background_wrapper(command_id: &str, command: &str) -> String {
     format!(
         r#"$__novaCommandId = '{command_id}'
 $__novaCwd = (Get-Location).Path
-$__nova = Start-Process -FilePath '{pwsh}' -ArgumentList @('-NoLogo','-NoProfile','-NonInteractive','-EncodedCommand','{encoded}') -WorkingDirectory $__novaCwd -WindowStyle Hidden -RedirectStandardOutput 'NUL' -RedirectStandardError 'NUL' -PassThru
+$__nova = Start-Process -FilePath '{pwsh}' -ArgumentList @('-NoLogo','-NonInteractive','-EncodedCommand','{encoded}') -WorkingDirectory $__novaCwd -WindowStyle Hidden -RedirectStandardOutput 'NUL' -RedirectStandardError 'NUL' -PassThru
 [pscustomobject]@{{
     ok = $true
     background = $true
@@ -251,14 +251,7 @@ fn spawn_stream_reader<R>(
 fn make_shell_command() -> Command {
     let mut command = Command::new(PWSH_PATH);
     command
-        .args([
-            "-NoLogo",
-            "-NoProfile",
-            "-NonInteractive",
-            "-NoExit",
-            "-Command",
-            "-",
-        ])
+        .args(["-NoLogo", "-NonInteractive", "-NoExit", "-Command", "-"])
         .creation_flags(CREATE_NO_WINDOW)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())

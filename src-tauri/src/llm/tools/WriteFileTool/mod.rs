@@ -23,11 +23,12 @@ fn permission(input: &Value) -> Option<ToolPermissionDescriptor> {
 pub fn tool() -> Tool {
     Tool {
         name: "write_file".into(),
-        description: "Write content to a file inside the conversation WorkspaceRoot. This completely overwrites the file and records the change for review.".into(),
+        description: "Write content to an absolute file path. This completely overwrites the file and records the change for review.".into(),
         input_schema: json!({
             "type": "object",
+            "additionalProperties": false,
             "properties": {
-                "path": { "type": "string", "description": "Workspace-relative path or absolute path inside WorkspaceRoot" },
+                "path": { "type": "string", "description": "Absolute file path to write. Relative paths and ~ are rejected." },
                 "content": { "type": "string", "description": "The content to write" }
             },
             "required": ["path", "content"]
@@ -56,15 +57,9 @@ async fn execute_async(
         Some(content) => content,
         _ => return Err(ToolFailure::invalid_input("Missing 'content' argument")),
     };
-    let root =
-        match crate::command::workspace::workspace_root_for_conversation(app, conversation_id) {
-            Ok(root) => root,
-            Err(error) => return Err(ToolFailure::new(error)),
-        };
     match crate::llm::services::file_changes::write_file_change(
         app,
         conversation_id,
-        &root,
         path,
         content,
     )

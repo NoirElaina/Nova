@@ -2,9 +2,8 @@ use serde::{Deserialize, Serialize};
 use similar::{ChangeTag, TextDiff};
 use sqlx::{Row, SqlitePool};
 use std::collections::BTreeSet;
-use std::ffi::OsString;
 use std::fs;
-use std::path::{Component, Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::OnceLock;
 use std::time::{SystemTime, UNIX_EPOCH};
 use tauri::AppHandle;
@@ -92,91 +91,12 @@ fn normalize_conversation_id(conversation_id: Option<&str>) -> Result<String, St
         .ok_or_else(|| "conversation_id is required for file change review".to_string())
 }
 
-pub fn resolve_tool_path(root: &Path, raw_path: &str) -> Result<PathBuf, String> {
-    let trimmed = raw_path.trim();
-    if trimmed.is_empty() {
-        return Err("path is required".to_string());
-    }
-    let root = root
-        .canonicalize()
-        .map_err(|error| format!("failed to resolve workspace root: {}", error))?;
-    let path = Path::new(trimmed);
-    if path.is_absolute() {
-        return resolve_absolute_tool_path(&root, path, raw_path);
-    }
-
-    let mut clean = PathBuf::new();
-    for component in path.components() {
-        match component {
-            Component::Normal(part) => clean.push(part),
-            Component::CurDir => {}
-            Component::ParentDir | Component::RootDir | Component::Prefix(_) => {
-                return Err(format!("path cannot leave workspace: {}", raw_path));
-            }
-        }
-    }
-    resolve_absolute_tool_path(&root, &root.join(clean), raw_path)
+pub fn resolve_tool_path(raw_path: &str) -> Result<PathBuf, String> {
+    crate::llm::utils::paths::resolve_absolute_path_for_write(raw_path, "path")
 }
 
-fn resolve_absolute_tool_path(root: &Path, path: &Path, raw_path: &str) -> Result<PathBuf, String> {
-    if path
-        .components()
-        .any(|component| matches!(component, Component::ParentDir))
-    {
-        return Err(format!("path cannot leave workspace: {}", raw_path));
-    }
-
-    if path.exists() {
-        let canonical = path
-            .canonicalize()
-            .map_err(|error| format!("failed to resolve path: {}", error))?;
-        if !canonical.starts_with(root) {
-            return Err(format!("path cannot leave workspace: {}", raw_path));
-        }
-        return Ok(canonical);
-    }
-
-    let mut ancestor = path;
-    let mut missing = Vec::<OsString>::new();
-    while !ancestor.exists() {
-        let name = ancestor
-            .file_name()
-            .ok_or_else(|| format!("path cannot be resolved: {}", raw_path))?;
-        missing.push(name.to_os_string());
-        ancestor = ancestor
-            .parent()
-            .ok_or_else(|| format!("path cannot be resolved: {}", raw_path))?;
-    }
-
-    let canonical_ancestor = ancestor
-        .canonicalize()
-        .map_err(|error| format!("failed to resolve path parent: {}", error))?;
-    if !canonical_ancestor.starts_with(root) {
-        return Err(format!("path cannot leave workspace: {}", raw_path));
-    }
-
-    let mut resolved = canonical_ancestor;
-    for part in missing.iter().rev() {
-        resolved.push(part);
-    }
-    Ok(resolved)
-}
-
-fn path_for_display(root: &Path, path: &Path) -> String {
-    path.strip_prefix(root)
-        .ok()
-        .map(|relative| {
-            relative
-                .components()
-                .filter_map(|component| match component {
-                    Component::Normal(part) => Some(part.to_string_lossy().to_string()),
-                    _ => None,
-                })
-                .collect::<Vec<_>>()
-                .join("/")
-        })
-        .filter(|value| !value.is_empty())
-        .unwrap_or_else(|| path.display().to_string())
+fn path_for_display(path: &PathBuf) -> String {
+    path.display().to_string()
 }
 
 fn change_type(before: &Option<String>, after: &Option<String>) -> String {
@@ -188,10 +108,10 @@ fn change_type(before: &Option<String>, after: &Option<String>) -> String {
     .to_string()
 }
 
-fn build_entry(root: &Path, draft: FileChangeDraft) -> FileChangeEntry {
+fn build_entry(draft: FileChangeDraft) -> FileChangeEntry {
     let diff = diff_lines(draft.before.as_deref(), draft.after.as_deref());
     FileChangeEntry {
-        path: path_for_display(root, &draft.path),
+        path: path_for_display(&draft.path),
         absolute_path: draft.path.display().to_string(),
         change_type: change_type(&draft.before, &draft.after),
         before: draft.before,
@@ -201,7 +121,6 @@ fn build_entry(root: &Path, draft: FileChangeDraft) -> FileChangeEntry {
 }
 
 fn build_batch(
-    root: &Path,
     conversation_id: &str,
     tool_name: &str,
     drafts: Vec<FileChangeDraft>,
@@ -211,7 +130,7 @@ fn build_batch(
         .into_iter()
         .filter(|draft| draft.before != draft.after)
         .filter(|draft| seen.insert(draft.path.clone()))
-        .map(|draft| build_entry(root, draft))
+        .map(build_entry)
         .collect::<Vec<_>>();
 
     if files.is_empty() {
@@ -232,21 +151,20 @@ fn build_batch(
 pub(super) async fn commit_change_batch(
     app: &AppHandle,
     conversation_id: Option<&str>,
-    root: &Path,
     tool_name: &str,
     drafts: Vec<FileChangeDraft>,
 ) -> Result<Option<String>, String> {
     let conversation_id = normalize_conversation_id(conversation_id)?;
-    let Some(batch) = build_batch(root, &conversation_id, tool_name, drafts) else {
+    let Some(batch) = build_batch(&conversation_id, tool_name, drafts) else {
         return Ok(None);
     };
     let batch_id = batch.id.clone();
     let _guard = file_change_lock().lock().await;
     let pool = crate::llm::history::get_pool_with_schema(app).await?;
-    validate_batch_current_state(root, &batch)?;
-    apply_batch_after(root, &batch)?;
+    validate_batch_current_state(&batch)?;
+    apply_batch_after(&batch)?;
     if let Err(error) = persist_batch(&pool, &batch).await {
-        rollback_batch_after(root, &batch)?;
+        rollback_batch_after(&batch)?;
         return Err(error);
     }
     Ok(Some(batch_id))
@@ -492,14 +410,13 @@ async fn load_change_batch(
 pub async fn revert_change_batch(
     app: &AppHandle,
     conversation_id: Option<&str>,
-    root: &Path,
     batch_id: &str,
 ) -> Result<FileChangeBatch, String> {
     let conversation_id = normalize_conversation_id(conversation_id)?;
     let _guard = file_change_lock().lock().await;
     let pool = crate::llm::history::get_pool_with_schema(app).await?;
     let mut batch = load_change_batch(&pool, &conversation_id, batch_id).await?;
-    apply_revert(root, &mut batch)?;
+    apply_revert(&mut batch)?;
     sqlx::query("UPDATE file_change_batches SET reverted = 1, reverted_at = ? WHERE conversation_id = ? AND id = ?")
         .bind(batch.reverted_at.map(|value| value as i64))
         .bind(&conversation_id)
@@ -510,16 +427,13 @@ pub async fn revert_change_batch(
     Ok(batch)
 }
 
-fn apply_revert(root: &Path, batch: &mut FileChangeBatch) -> Result<(), String> {
+fn apply_revert(batch: &mut FileChangeBatch) -> Result<(), String> {
     if batch.reverted {
         return Err("这次变更已经回退过了".to_string());
     }
 
     for file in &batch.files {
-        let target = PathBuf::from(&file.absolute_path);
-        if !target.starts_with(root) {
-            return Err(format!("拒绝回退工作区之外的文件: {}", file.path));
-        }
+        let target = absolute_path_from_change_entry(file)?;
         match &file.after {
             Some(expected) => {
                 let current = fs::read_to_string(&target)
@@ -537,7 +451,7 @@ fn apply_revert(root: &Path, batch: &mut FileChangeBatch) -> Result<(), String> 
     }
 
     for file in batch.files.iter().rev() {
-        let target = PathBuf::from(&file.absolute_path);
+        let target = absolute_path_from_change_entry(file)?;
         match &file.before {
             Some(content) => {
                 if let Some(parent) = target.parent() {
@@ -561,9 +475,9 @@ fn apply_revert(root: &Path, batch: &mut FileChangeBatch) -> Result<(), String> 
     Ok(())
 }
 
-fn validate_batch_current_state(root: &Path, batch: &FileChangeBatch) -> Result<(), String> {
+fn validate_batch_current_state(batch: &FileChangeBatch) -> Result<(), String> {
     for file in &batch.files {
-        let target = path_inside_root(root, file)?;
+        let target = absolute_path_from_change_entry(file)?;
         match &file.before {
             Some(expected) => {
                 let current = fs::read_to_string(&target)
@@ -582,11 +496,11 @@ fn validate_batch_current_state(root: &Path, batch: &FileChangeBatch) -> Result<
     Ok(())
 }
 
-fn apply_batch_after(root: &Path, batch: &FileChangeBatch) -> Result<(), String> {
+fn apply_batch_after(batch: &FileChangeBatch) -> Result<(), String> {
     let mut applied = Vec::<FileChangeEntry>::new();
     for file in &batch.files {
-        if let Err(error) = apply_file_snapshot(root, file, &file.after) {
-            let rollback_error = rollback_applied(root, &applied).err();
+        if let Err(error) = apply_file_snapshot(file, &file.after) {
+            let rollback_error = rollback_applied(&applied).err();
             return Err(match rollback_error {
                 Some(rollback_error) => format!("{}；回滚失败: {}", error, rollback_error),
                 None => error,
@@ -597,23 +511,19 @@ fn apply_batch_after(root: &Path, batch: &FileChangeBatch) -> Result<(), String>
     Ok(())
 }
 
-fn rollback_batch_after(root: &Path, batch: &FileChangeBatch) -> Result<(), String> {
-    rollback_applied(root, &batch.files)
+fn rollback_batch_after(batch: &FileChangeBatch) -> Result<(), String> {
+    rollback_applied(&batch.files)
 }
 
-fn rollback_applied(root: &Path, files: &[FileChangeEntry]) -> Result<(), String> {
+fn rollback_applied(files: &[FileChangeEntry]) -> Result<(), String> {
     for file in files.iter().rev() {
-        apply_file_snapshot(root, file, &file.before)?;
+        apply_file_snapshot(file, &file.before)?;
     }
     Ok(())
 }
 
-fn apply_file_snapshot(
-    root: &Path,
-    file: &FileChangeEntry,
-    snapshot: &Option<String>,
-) -> Result<(), String> {
-    let target = path_inside_root(root, file)?;
+fn apply_file_snapshot(file: &FileChangeEntry, snapshot: &Option<String>) -> Result<(), String> {
+    let target = absolute_path_from_change_entry(file)?;
     match snapshot {
         Some(content) => {
             if let Some(parent) = target.parent() {
@@ -633,10 +543,10 @@ fn apply_file_snapshot(
     }
 }
 
-fn path_inside_root(root: &Path, file: &FileChangeEntry) -> Result<PathBuf, String> {
+fn absolute_path_from_change_entry(file: &FileChangeEntry) -> Result<PathBuf, String> {
     let target = PathBuf::from(&file.absolute_path);
-    if !target.starts_with(root) {
-        return Err(format!("拒绝访问工作区之外的文件: {}", file.path));
+    if !target.is_absolute() {
+        return Err(format!("文件审查记录不是绝对路径: {}", file.path));
     }
     Ok(target)
 }

@@ -78,7 +78,6 @@ fn shell_command(root: &Path) -> CommandBuilder {
         };
         let mut command = CommandBuilder::new(program);
         command.arg("-NoLogo");
-        command.arg("-NoProfile");
         command.cwd(std::ffi::OsString::from(
             crate::command::workspace::display_path_string(root),
         ));

@@ -1,6 +1,5 @@
 use base64::Engine;
 use serde_json::{json, Value};
-use std::borrow::Cow;
 use std::fs::File;
 use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
@@ -11,6 +10,7 @@ use crate::llm::tools::{
     ToolRegistration,
 };
 use crate::llm::types::{Content, ContentBlock, ImageSource, Message, Role, Tool};
+use crate::llm::utils::paths::absolute_path_from_tool_arg;
 
 const DEFAULT_MAX_LINES: usize = 2_000;
 const MAX_LIMIT_LINES: usize = 20_000;
@@ -96,7 +96,8 @@ async fn execute_async(
     input: Value,
 ) -> Result<ToolOutcome, ToolFailure> {
     let args = ReadArgs::parse(&input)?;
-    let target = expand_absolute_path(&args.file_path).map_err(ToolFailure::invalid_input)?;
+    let target =
+        absolute_path_from_tool_arg(&args.file_path, "file_path").map_err(ToolFailure::invalid_input)?;
 
     if let Some(pages) = &args.pages {
         validate_pdf_pages(pages).map_err(ToolFailure::invalid_input)?;
@@ -518,56 +519,6 @@ fn notebook_string_field(value: Option<&Value>) -> String {
             .collect::<Vec<_>>()
             .join(""),
         _ => String::new(),
-    }
-}
-
-fn expand_absolute_path(raw: &str) -> Result<PathBuf, String> {
-    let trimmed = trim_wrapping_quotes(raw.trim());
-    let expanded = expand_home(trimmed);
-    let path = PathBuf::from(expanded.as_ref());
-    if !path.is_absolute() {
-        return Err(format!(
-            "file_path must be an absolute path, not a relative path: {}",
-            raw
-        ));
-    }
-    Ok(path)
-}
-
-fn expand_home(path: &str) -> Cow<'_, str> {
-    if path == "~" {
-        if let Some(home) = home_dir_string() {
-            return Cow::Owned(home);
-        }
-    }
-
-    if let Some(rest) = path.strip_prefix("~/").or_else(|| path.strip_prefix("~\\")) {
-        if let Some(home) = home_dir_string() {
-            let mut full = PathBuf::from(home);
-            full.push(rest);
-            return Cow::Owned(full.display().to_string());
-        }
-    }
-
-    Cow::Borrowed(path)
-}
-
-fn home_dir_string() -> Option<String> {
-    std::env::var("USERPROFILE")
-        .ok()
-        .filter(|v| !v.trim().is_empty())
-        .or_else(|| std::env::var("HOME").ok().filter(|v| !v.trim().is_empty()))
-}
-
-fn trim_wrapping_quotes(value: &str) -> &str {
-    let bytes = value.as_bytes();
-    if bytes.len() >= 2
-        && ((bytes[0] == b'"' && bytes[bytes.len() - 1] == b'"')
-            || (bytes[0] == b'\'' && bytes[bytes.len() - 1] == b'\''))
-    {
-        &value[1..value.len() - 1]
-    } else {
-        value
     }
 }
 

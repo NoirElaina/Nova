@@ -120,7 +120,7 @@ pub struct TextSearchResult {
 }
 
 pub fn find_files(
-    workspace_root: &Path,
+    match_root: &Path,
     search_root: &Path,
     options: &GlobSearchOptions,
 ) -> Result<GlobSearchResult, String> {
@@ -129,12 +129,12 @@ pub fn find_files(
         options.case_sensitive,
         "pattern",
     )?;
-    let files = collect_files(workspace_root, search_root, Vec::new(), None, &options.walk);
+    let files = collect_files(match_root, search_root, Vec::new(), None, &options.walk);
     let mut matches = Vec::new();
     let mut truncated = false;
 
     for file in &files {
-        let Some(relative) = display_path(workspace_root, file) else {
+        let Some(relative) = match_path(match_root, file) else {
             continue;
         };
         if !matcher.is_match(&relative) {
@@ -144,7 +144,7 @@ pub fn find_files(
             truncated = true;
             break;
         }
-        matches.push(relative);
+        matches.push(output_path(file));
     }
 
     Ok(GlobSearchResult {
@@ -158,7 +158,7 @@ pub fn find_files(
 }
 
 pub fn grep_text(
-    workspace_root: &Path,
+    match_root: &Path,
     target: &Path,
     options: &TextSearchOptions,
 ) -> Result<TextSearchResult, String> {
@@ -166,7 +166,7 @@ pub fn grep_text(
     let include_matchers = build_include_matchers(options)?;
     let exclude_matcher = build_exclude_matcher(options)?;
     let files = collect_files(
-        workspace_root,
+        match_root,
         target,
         include_matchers,
         exclude_matcher.as_ref(),
@@ -174,11 +174,11 @@ pub fn grep_text(
     );
 
     match options.output_mode {
-        TextSearchOutputMode::Content => grep_content(workspace_root, &files, &matcher, options),
+        TextSearchOutputMode::Content => grep_content(&files, &matcher, options),
         TextSearchOutputMode::FilesWithMatches => {
-            grep_files_with_matches(workspace_root, &files, &matcher, options)
+            grep_files_with_matches(&files, &matcher, options)
         }
-        TextSearchOutputMode::Count => grep_count(workspace_root, &files, &matcher, options),
+        TextSearchOutputMode::Count => grep_count(&files, &matcher, options),
     }
 }
 
@@ -216,7 +216,6 @@ fn build_exclude_matcher(options: &TextSearchOptions) -> Result<Option<GlobSet>,
 }
 
 fn grep_content(
-    workspace_root: &Path,
     files: &[PathBuf],
     matcher: &RegexMatcher,
     options: &TextSearchOptions,
@@ -234,7 +233,7 @@ fn grep_content(
             break;
         }
 
-        let path = display_path(workspace_root, file).unwrap_or_else(|| file.display().to_string());
+        let path = output_path(file);
         let mut sink = StructuredSearchSink::new(path.clone(), usize::MAX, remaining_chars);
         let mut searcher = searcher_builder(options)
             .before_context(options.before_context)
@@ -288,7 +287,6 @@ fn grep_content(
 }
 
 fn grep_files_with_matches(
-    workspace_root: &Path,
     files: &[PathBuf],
     matcher: &RegexMatcher,
     options: &TextSearchOptions,
@@ -305,9 +303,7 @@ fn grep_files_with_matches(
             continue;
         }
 
-        let display =
-            display_path(workspace_root, file).unwrap_or_else(|| file.display().to_string());
-        matches.push((display, mtime_millis(file)));
+        matches.push((output_path(file), mtime_millis(file)));
     }
 
     matches.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
@@ -337,7 +333,6 @@ fn grep_files_with_matches(
 }
 
 fn grep_count(
-    workspace_root: &Path,
     files: &[PathBuf],
     matcher: &RegexMatcher,
     options: &TextSearchOptions,
@@ -356,7 +351,7 @@ fn grep_count(
         }
 
         total_matching_lines = total_matching_lines.saturating_add(sink.count);
-        let path = display_path(workspace_root, file).unwrap_or_else(|| file.display().to_string());
+        let path = output_path(file);
         count_lines.push((path, sink.count));
     }
 
@@ -532,14 +527,14 @@ fn build_text_matcher(
 }
 
 fn collect_files(
-    workspace_root: &Path,
+    match_root: &Path,
     target: &Path,
     include_globs: Vec<GlobSet>,
     exclude_glob: Option<&GlobSet>,
     options: &WalkOptions,
 ) -> Vec<PathBuf> {
     if target.is_file() {
-        return should_search_file(workspace_root, target, &include_globs, exclude_glob)
+        return should_search_file(match_root, target, &include_globs, exclude_glob)
             .then(|| target.to_path_buf())
             .into_iter()
             .collect();
@@ -562,7 +557,7 @@ fn collect_files(
             continue;
         };
         if !file_type.is_file()
-            || !should_search_file(workspace_root, entry.path(), &include_globs, exclude_glob)
+            || !should_search_file(match_root, entry.path(), &include_globs, exclude_glob)
         {
             continue;
         }
@@ -574,31 +569,35 @@ fn collect_files(
 }
 
 fn should_search_file(
-    workspace_root: &Path,
+    match_root: &Path,
     file: &Path,
     include_globs: &[GlobSet],
     exclude_glob: Option<&GlobSet>,
 ) -> bool {
-    let Some(match_path) = display_path(workspace_root, file) else {
+    let Some(candidate_path) = match_path(match_root, file) else {
         return false;
     };
     if exclude_glob
-        .map(|matcher| matcher.is_match(&match_path))
+        .map(|matcher| matcher.is_match(&candidate_path))
         .unwrap_or(false)
     {
         return false;
     }
     include_globs
         .iter()
-        .all(|matcher| matcher.is_match(&match_path))
+        .all(|matcher| matcher.is_match(&candidate_path))
 }
 
-fn display_path(workspace_root: &Path, path: &Path) -> Option<String> {
-    if let Ok(relative) = path.strip_prefix(workspace_root) {
+fn match_path(match_root: &Path, path: &Path) -> Option<String> {
+    if let Ok(relative) = path.strip_prefix(match_root) {
         let value = relative.to_string_lossy().replace('\\', "/");
         return (!value.is_empty()).then_some(value);
     }
     Some(path.to_string_lossy().replace('\\', "/"))
+}
+
+fn output_path(path: &Path) -> String {
+    path.to_string_lossy().replace('\\', "/")
 }
 
 fn mtime_millis(path: &Path) -> u128 {

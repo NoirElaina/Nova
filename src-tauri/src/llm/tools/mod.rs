@@ -209,7 +209,7 @@ pub(crate) struct ToolPermissionDescriptor {
 pub(crate) struct ToolRegistration {
     // tool: 暴露给模型看的静态定义（name/description/schema）。
     tool: fn() -> Tool,
-    // execute_with_app: 唯一执行入口，始终携带 AppHandle / conversation_id / WorkspaceRoot 能力。
+    // execute_with_app: 唯一执行入口，始终携带 AppHandle / conversation_id / workspace context。
     execute_with_app: AppExecuteFn,
     // permission: 工具自己的权限描述函数；内置工具不再走按名字兜底。
     permission: Option<PermissionFn>,

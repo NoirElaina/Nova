@@ -30,13 +30,14 @@ pub(crate) fn registrations() -> Vec<ToolRegistration> {
 fn apply_patch_tool() -> Tool {
     Tool {
         name: "apply_patch".into(),
-        description: "Apply a structured multi-file patch inside the conversation WorkspaceRoot. All writes go through Nova's file-change review service and produce a review record.".into(),
+        description: "Apply a structured multi-file patch to absolute file paths. All writes go through Nova's file-change review service and produce a review record.".into(),
         input_schema: json!({
             "type": "object",
+            "additionalProperties": false,
             "properties": {
                 "patch": {
                     "type": "string",
-                    "description": "Patch text using *** Begin Patch / *** Update File / *** Add File / *** Delete File / @@ hunks / *** End Patch"
+                    "description": "Patch text using *** Begin Patch / *** Update File / *** Add File / *** Delete File / @@ hunks / *** End Patch. Every file path in patch headers must be absolute."
                 }
             },
             "required": ["patch"]
@@ -47,17 +48,19 @@ fn apply_patch_tool() -> Tool {
 fn multi_edit_tool() -> Tool {
     Tool {
         name: "multi_edit".into(),
-        description: "Apply multiple exact string replacements inside the conversation WorkspaceRoot. All writes go through Nova's file-change review service and produce a review record.".into(),
+        description: "Apply multiple exact string replacements to absolute file paths. All writes go through Nova's file-change review service and produce a review record.".into(),
         input_schema: json!({
             "type": "object",
+            "additionalProperties": false,
             "properties": {
                 "edits": {
                     "type": "array",
                     "minItems": 1,
                     "items": {
                         "type": "object",
+                        "additionalProperties": false,
                         "properties": {
-                            "path": { "type": "string", "description": "Workspace-relative or absolute file path" },
+                            "path": { "type": "string", "description": "Absolute file path. Relative paths and ~ are rejected." },
                             "old_string": { "type": "string", "description": "Exact string to replace" },
                             "new_string": { "type": "string", "description": "Replacement string" },
                             "expected_replacements": {
@@ -85,15 +88,7 @@ fn apply_patch_with_app(
             Some(patch) => patch,
             None => return Err(ToolFailure::invalid_input("apply_patch requires patch")),
         };
-        let root = match crate::command::workspace::workspace_root_for_conversation(
-            &app,
-            conversation_id.as_deref(),
-        ) {
-            Ok(root) => root,
-            Err(error) => return Err(ToolFailure::new(error)),
-        };
-
-        match apply_patch_change(&app, conversation_id.as_deref(), &root, patch).await {
+        match apply_patch_change(&app, conversation_id.as_deref(), patch).await {
             Ok(result) => result_json(result),
             Err(error) => Err(ToolFailure::new(error)),
         }
@@ -110,15 +105,7 @@ fn multi_edit_with_app(
             Ok(edits) => edits,
             Err(error) => return Err(ToolFailure::invalid_input(error)),
         };
-        let root = match crate::command::workspace::workspace_root_for_conversation(
-            &app,
-            conversation_id.as_deref(),
-        ) {
-            Ok(root) => root,
-            Err(error) => return Err(ToolFailure::new(error)),
-        };
-
-        match multi_edit_change(&app, conversation_id.as_deref(), &root, edits).await {
+        match multi_edit_change(&app, conversation_id.as_deref(), edits).await {
             Ok(result) => result_json(result),
             Err(error) => Err(ToolFailure::new(error)),
         }

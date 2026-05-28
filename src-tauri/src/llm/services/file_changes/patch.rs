@@ -1,7 +1,6 @@
 use super::editing::{commit_drafts, FileEditResult};
 use super::{resolve_tool_path, FileChangeDraft};
 use std::collections::BTreeMap;
-use std::path::Path;
 use tauri::AppHandle;
 
 #[derive(Debug, Clone)]
@@ -39,14 +38,13 @@ pub fn patch_paths(patch: &str) -> Result<Vec<String>, String> {
 pub async fn apply_patch_change(
     app: &AppHandle,
     conversation_id: Option<&str>,
-    root: &Path,
     patch: &str,
 ) -> Result<FileEditResult, String> {
-    let drafts = patch_to_drafts(root, patch)?;
-    commit_drafts(app, conversation_id, root, "apply_patch", drafts).await
+    let drafts = patch_to_drafts(patch)?;
+    commit_drafts(app, conversation_id, "apply_patch", drafts).await
 }
 
-fn patch_to_drafts(root: &Path, patch: &str) -> Result<Vec<FileChangeDraft>, String> {
+fn patch_to_drafts(patch: &str) -> Result<Vec<FileChangeDraft>, String> {
     let operations = parse_patch(patch)?;
     let mut pending: BTreeMap<_, Option<String>> = BTreeMap::new();
     let mut originals: BTreeMap<_, Option<String>> = BTreeMap::new();
@@ -54,7 +52,7 @@ fn patch_to_drafts(root: &Path, patch: &str) -> Result<Vec<FileChangeDraft>, Str
     for operation in operations {
         match operation {
             PatchOperation::Add { path, content } => {
-                let target = resolve_tool_path(root, &path)?;
+                let target = resolve_tool_path(&path)?;
                 if target.exists() || pending.contains_key(&target) {
                     return Err(format!("Add File target already exists: {}", path));
                 }
@@ -62,7 +60,7 @@ fn patch_to_drafts(root: &Path, patch: &str) -> Result<Vec<FileChangeDraft>, Str
                 pending.insert(target, Some(content));
             }
             PatchOperation::Delete { path } => {
-                let target = resolve_tool_path(root, &path)?;
+                let target = resolve_tool_path(&path)?;
                 if pending.get(&target).is_some_and(Option::is_none) {
                     return Err(format!("Delete File target already deleted: {}", path));
                 }
@@ -83,7 +81,7 @@ fn patch_to_drafts(root: &Path, patch: &str) -> Result<Vec<FileChangeDraft>, Str
                 pending.insert(target, None);
             }
             PatchOperation::Update { path, hunks } => {
-                let target = resolve_tool_path(root, &path)?;
+                let target = resolve_tool_path(&path)?;
                 if !originals.contains_key(&target) {
                     originals.insert(
                         target.clone(),

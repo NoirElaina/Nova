@@ -26,3 +26,7 @@ pub mod error_event;
 
 // 每轮 LLM 请求/响应原始数据，以 JSONL 格式追加写入 app_data_dir/turn_logs/。
 pub mod turn_log;
+
+// Tool-facing path helpers. File tools must use explicit absolute paths; workspace
+// context is descriptive/default cwd only, not an implicit relative-path resolver.
+pub mod paths;

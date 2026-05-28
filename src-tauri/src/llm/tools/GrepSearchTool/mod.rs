@@ -6,9 +6,9 @@ use crate::llm::tools::{
     ToolRegistration,
 };
 use crate::llm::types::Tool;
+use crate::llm::utils::paths::absolute_path_from_tool_arg;
 use serde_json::{json, Value};
-use std::borrow::Cow;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use tauri::AppHandle;
 
 const DEFAULT_HEAD_LIMIT: usize = 250;
@@ -35,7 +35,7 @@ pub fn tool() -> Tool {
                 },
                 "path": {
                     "type": "string",
-                    "description": "File or directory to search. Absolute paths are allowed; relative paths resolve under the conversation WorkspaceRoot. Defaults to WorkspaceRoot."
+                    "description": "Absolute file or directory path to search. Relative paths and ~ are rejected."
                 },
                 "glob": {
                     "type": "string",
@@ -98,7 +98,7 @@ pub fn tool() -> Tool {
                     "description": "Enable multiline regex mode where matches may span lines and . matches newlines. Defaults to false."
                 }
             },
-            "required": ["pattern"]
+            "required": ["pattern", "path"]
         }),
     }
 }
@@ -129,8 +129,8 @@ fn permission(input: &Value) -> Option<ToolPermissionDescriptor> {
 }
 
 async fn execute_async(
-    app: &AppHandle,
-    conversation_id: Option<&str>,
+    _app: &AppHandle,
+    _conversation_id: Option<&str>,
     input: Value,
 ) -> Result<ToolOutcome, ToolFailure> {
     let pattern = input
@@ -162,16 +162,13 @@ async fn execute_async(
         .map(|value| value as usize)
         .unwrap_or(0);
 
-    let workspace_root =
-        crate::command::workspace::workspace_root_for_conversation(app, conversation_id)
-            .map_err(ToolFailure::new)?;
     let path_arg = input
         .get("path")
         .and_then(Value::as_str)
         .map(str::trim)
         .filter(|value| !value.is_empty())
-        .unwrap_or(".");
-    let target = resolve_search_path(&workspace_root, path_arg).map_err(ToolFailure::new)?;
+        .ok_or_else(|| ToolFailure::invalid_input("Missing 'path' argument"))?;
+    let target = resolve_search_path(path_arg).map_err(ToolFailure::invalid_input)?;
     if !target.exists() {
         return Err(ToolFailure::new(format!(
             "Search path does not exist: {}",
@@ -184,6 +181,17 @@ async fn execute_async(
             target.display()
         )));
     }
+    let target = target
+        .canonicalize()
+        .map_err(|error| ToolFailure::new(format!("Failed to resolve search path: {}", error)))?;
+    let match_root = if target.is_file() {
+        target
+            .parent()
+            .map(PathBuf::from)
+            .unwrap_or_else(|| target.clone())
+    } else {
+        target.clone()
+    };
 
     let options = TextSearchOptions {
         pattern,
@@ -209,11 +217,11 @@ async fn execute_async(
         },
     };
 
-    let result = grep_text(&workspace_root, &target, &options).map_err(ToolFailure::new)?;
+    let result = grep_text(&match_root, &target, &options).map_err(ToolFailure::new)?;
     Ok(ToolOutcome::json(json!({
         "ok": true,
         "query": {
-            "path": path_arg,
+            "path": target.display().to_string(),
             "pattern": options.pattern,
             "glob": options.glob_patterns,
             "type": type_name,
@@ -310,14 +318,8 @@ fn parse_head_limit(input: &Value) -> Option<usize> {
     }
 }
 
-fn resolve_search_path(workspace_root: &Path, raw_path: &str) -> Result<PathBuf, String> {
-    let trimmed = trim_wrapping_quotes(raw_path.trim());
-    let expanded = expand_home(trimmed);
-    let path = PathBuf::from(expanded.as_ref());
-    if path.is_absolute() {
-        return Ok(path);
-    }
-    crate::llm::services::file_changes::resolve_tool_path(workspace_root, expanded.as_ref())
+fn resolve_search_path(raw_path: &str) -> Result<PathBuf, String> {
+    absolute_path_from_tool_arg(raw_path, "path")
 }
 
 fn type_globs(name: &str) -> Result<Vec<String>, String> {
@@ -388,43 +390,6 @@ fn default_exclude_globs() -> Vec<String> {
     .iter()
     .map(|value| value.to_string())
     .collect()
-}
-
-fn expand_home(path: &str) -> Cow<'_, str> {
-    if path == "~" {
-        if let Some(home) = home_dir_string() {
-            return Cow::Owned(home);
-        }
-    }
-
-    if let Some(rest) = path.strip_prefix("~/").or_else(|| path.strip_prefix("~\\")) {
-        if let Some(home) = home_dir_string() {
-            let mut full = PathBuf::from(home);
-            full.push(rest);
-            return Cow::Owned(full.display().to_string());
-        }
-    }
-
-    Cow::Borrowed(path)
-}
-
-fn home_dir_string() -> Option<String> {
-    std::env::var("USERPROFILE")
-        .ok()
-        .filter(|value| !value.trim().is_empty())
-        .or_else(|| std::env::var("HOME").ok().filter(|value| !value.trim().is_empty()))
-}
-
-fn trim_wrapping_quotes(value: &str) -> &str {
-    let bytes = value.as_bytes();
-    if bytes.len() >= 2
-        && ((bytes[0] == b'"' && bytes[bytes.len() - 1] == b'"')
-            || (bytes[0] == b'\'' && bytes[bytes.len() - 1] == b'\''))
-    {
-        &value[1..value.len() - 1]
-    } else {
-        value
-    }
 }
 
 fn normalize_path_for_permission(path: &str) -> String {

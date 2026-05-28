@@ -1,5 +1,6 @@
 use crate::llm::tools::{app_tool, AppExecuteFuture, ToolFailure, ToolOutcome, ToolRegistration};
 use crate::llm::types::Tool;
+use crate::llm::utils::paths::absolute_path_from_tool_arg;
 use serde_json::{json, Value};
 use tauri::AppHandle;
 
@@ -25,6 +26,26 @@ fn string_arg(input: &Value, key: &str) -> Option<String> {
 
 fn required_string(input: &Value, tool_name: &str, key: &str) -> Result<String, String> {
     string_arg(input, key).ok_or_else(|| format!("{} requires {}", tool_name, key))
+}
+
+fn absolute_path_string(path: String, tool_name: &str, key: &str) -> Result<String, String> {
+    absolute_path_from_tool_arg(&path, key)
+        .map(|path| path.display().to_string())
+        .map_err(|error| format!("{} {}", tool_name, error))
+}
+
+fn required_absolute_path(input: &Value, tool_name: &str, key: &str) -> Result<String, String> {
+    absolute_path_string(required_string(input, tool_name, key)?, tool_name, key)
+}
+
+fn optional_absolute_path(
+    input: &Value,
+    tool_name: &str,
+    key: &str,
+) -> Result<Option<String>, String> {
+    string_arg(input, key)
+        .map(|path| absolute_path_string(path, tool_name, key).map(Some))
+        .unwrap_or(Ok(None))
 }
 
 fn required_u64(input: &Value, tool_name: &str, key: &str) -> Result<u64, String> {
@@ -65,13 +86,13 @@ fn status_with_app(
 fn diagnostics_tool() -> Tool {
     Tool {
         name: "lsp_diagnostics".into(),
-        description: "Read native LSP diagnostics for a workspace file. If path is omitted, returns cached diagnostics from running language servers.".into(),
+        description: "Read native LSP diagnostics for an absolute file path. If path is omitted, returns cached diagnostics from running language servers.".into(),
         input_schema: json!({
             "type": "object",
             "properties": {
                 "path": {
                     "type": "string",
-                    "description": "Workspace-relative or absolute path to a source file"
+                    "description": "Absolute path to a source file. Relative paths and ~ are rejected."
                 }
             }
         }),
@@ -84,14 +105,12 @@ fn diagnostics_with_app(
     input: Value,
 ) -> AppExecuteFuture {
     Box::pin(async move {
-        result_json(
-            crate::llm::services::lsp::diagnostics(
-                &app,
-                conversation_id.as_deref(),
-                string_arg(&input, "path"),
-            )
-            .await,
-        )
+        let result = async {
+            let path = optional_absolute_path(&input, "lsp_diagnostics", "path")?;
+            crate::llm::services::lsp::diagnostics(&app, conversation_id.as_deref(), path).await
+        }
+        .await;
+        result_json(result)
     })
 }
 
@@ -103,7 +122,7 @@ fn definition_tool() -> Tool {
         input_schema: json!({
             "type": "object",
             "properties": {
-                "path": { "type": "string", "description": "Workspace-relative or absolute source file path" },
+                "path": { "type": "string", "description": "Absolute source file path. Relative paths and ~ are rejected." },
                 "line": { "type": "integer", "description": "1-based line number" },
                 "character": { "type": "integer", "description": "1-based character/column number" }
             },
@@ -122,7 +141,7 @@ fn definition_with_app(
             crate::llm::services::lsp::definition(
                 &app,
                 conversation_id.as_deref(),
-                required_string(&input, "lsp_definition", "path")?,
+                required_absolute_path(&input, "lsp_definition", "path")?,
                 required_u64(&input, "lsp_definition", "line")?,
                 required_u64(&input, "lsp_definition", "character")?,
             )
@@ -140,7 +159,7 @@ fn references_tool() -> Tool {
         input_schema: json!({
             "type": "object",
             "properties": {
-                "path": { "type": "string", "description": "Workspace-relative or absolute source file path" },
+                "path": { "type": "string", "description": "Absolute source file path. Relative paths and ~ are rejected." },
                 "line": { "type": "integer", "description": "1-based line number" },
                 "character": { "type": "integer", "description": "1-based character/column number" },
                 "includeDeclaration": { "type": "boolean", "description": "Whether to include the declaration location" }
@@ -160,7 +179,7 @@ fn references_with_app(
             crate::llm::services::lsp::references(
                 &app,
                 conversation_id.as_deref(),
-                required_string(&input, "lsp_references", "path")?,
+                required_absolute_path(&input, "lsp_references", "path")?,
                 required_u64(&input, "lsp_references", "line")?,
                 required_u64(&input, "lsp_references", "character")?,
                 input
@@ -182,7 +201,7 @@ fn symbols_tool() -> Tool {
         input_schema: json!({
             "type": "object",
             "properties": {
-                "path": { "type": "string", "description": "Optional workspace-relative or absolute source file path" },
+                "path": { "type": "string", "description": "Optional absolute source file path. Relative paths and ~ are rejected." },
                 "query": { "type": "string", "description": "Optional workspace symbol query" }
             }
         }),
@@ -195,18 +214,21 @@ fn symbols_with_app(
     input: Value,
 ) -> AppExecuteFuture {
     Box::pin(async move {
-        result_json(
+        let result = async {
+            let path = optional_absolute_path(&input, "lsp_symbols", "path")?;
             crate::llm::services::lsp::symbols(
                 &app,
                 conversation_id.as_deref(),
-                string_arg(&input, "path"),
+                path,
                 input
                     .get("query")
                     .and_then(Value::as_str)
                     .map(str::to_string),
             )
-            .await,
-        )
+            .await
+        }
+        .await;
+        result_json(result)
     })
 }
 
@@ -217,7 +239,7 @@ fn hover_tool() -> Tool {
         input_schema: json!({
             "type": "object",
             "properties": {
-                "path": { "type": "string", "description": "Workspace-relative or absolute source file path" },
+                "path": { "type": "string", "description": "Absolute source file path. Relative paths and ~ are rejected." },
                 "line": { "type": "integer", "description": "1-based line number" },
                 "character": { "type": "integer", "description": "1-based character/column number" }
             },
@@ -236,7 +258,7 @@ fn hover_with_app(
             crate::llm::services::lsp::hover(
                 &app,
                 conversation_id.as_deref(),
-                required_string(&input, "lsp_hover", "path")?,
+                required_absolute_path(&input, "lsp_hover", "path")?,
                 required_u64(&input, "lsp_hover", "line")?,
                 required_u64(&input, "lsp_hover", "character")?,
             )

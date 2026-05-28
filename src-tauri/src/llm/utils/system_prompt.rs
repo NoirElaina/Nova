@@ -2,7 +2,7 @@ use std::path::PathBuf;
 
 use tauri::AppHandle;
 
-use crate::llm::tools::skill_tool::list_skill_summaries_with_app;
+use crate::llm::services::skills::list_skill_summaries_with_app;
 use crate::llm::types::AgentMode;
 
 // 系统提示文件名（相对工程目录 src/prompt）

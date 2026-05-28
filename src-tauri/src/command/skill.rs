@@ -1,4 +1,4 @@
-use crate::llm::tools::skill_tool::{list_skill_summaries_with_app, SkillSummary};
+use crate::llm::services::skills::{list_skill_summaries_with_app, SkillSummary};
 use crate::llm::utils::error_event::report_backend_result;
 use std::path::PathBuf;
 use tauri::AppHandle;

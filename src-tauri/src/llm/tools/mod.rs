@@ -1,71 +1,7 @@
-#[path = "LspTools/mod.rs"]
-pub mod language_server_tools;
-#[path = "PatchTool/mod.rs"]
-pub mod patch_tools;
-
 // 这是工具注册入口模块，定义了所有内置工具（Bash/PowerShell/File/Task/... 等）
-// 以及工具发现、执行、权限检查的统一接口。
-macro_rules! declare_builtin_tools {
-    ($( $module:ident => $path:literal ),* $(,)?) => {
-        $(
-            #[path = $path]
-            pub mod $module;
-        )*
-
-        fn builtin_tool_registrations() -> Vec<ToolRegistration> {
-            let mut tools = vec![
-                $(
-                    $module::registration(),
-                )*
-            ];
-            tools.extend(language_server_tools::registrations());
-            tools.extend(patch_tools::registrations());
-            tools
-        }
-    };
-}
-
-declare_builtin_tools! {
-    bash_tool => "BashTool/mod.rs",
-    reset_shell_session_tool => "ResetShellSessionTool/mod.rs",
-    write_file_tool => "WriteFileTool/mod.rs",
-    grep_search_tool => "GrepSearchTool/mod.rs",
-    glob_tool => "GlobTool/mod.rs",
-    powershell_tool => "PowerShellTool/mod.rs",
-    web_fetch_tool => "WebFetchTool/mod.rs",
-    web_search_tool => "WebSearchTool/mod.rs",
-    nova_browser_navigate_tool => "NovaBrowserTool/navigate.rs",
-    nova_browser_snapshot_tool => "NovaBrowserTool/snapshot.rs",
-    nova_browser_click_tool => "NovaBrowserTool/click.rs",
-    nova_browser_type_tool => "NovaBrowserTool/type_text.rs",
-    nova_browser_reset_tool => "NovaBrowserTool/reset.rs",
-    task_create_tool => "TaskCreateTool/mod.rs",
-    task_list_tool => "TaskListTool/mod.rs",
-    task_update_tool => "TaskUpdateTool/mod.rs",
-    task_get_tool => "TaskGetTool/mod.rs",
-    task_output_tool => "TaskOutputTool/mod.rs",
-    task_stop_tool => "TaskStopTool/mod.rs",
-    skill_tool => "SkillTool/mod.rs",
-    todo_write_tool => "TodoWriteTool/mod.rs",
-    tool_search_tool => "ToolSearchTool/mod.rs",
-    list_mcp_resources_tool => "ListMcpResourcesTool/mod.rs",
-    read_mcp_resource_tool => "ReadMcpResourceTool/mod.rs",
-    mcp_auth_tool => "McpAuthTool/mod.rs",
-    file_read_tool => "FileReadTool/mod.rs",
-    ask_user_question_tool => "AskUserQuestionTool/mod.rs",
-    plan_for_approval_tool => "PlanForApprovalTool/mod.rs",
-    remember_global_memory_tool => "RememberGlobalMemoryTool/mod.rs",
-    config_tool => "ConfigTool/mod.rs",
-    enter_plan_mode_tool => "EnterPlanModeTool/mod.rs",
-    exit_plan_mode_tool => "ExitPlanModeTool/mod.rs",
-    rag_tool => "RagTool/mod.rs",
-    synthetic_output_tool => "SyntheticOutputTool/mod.rs",
-    sleep_tool => "SleepTool/mod.rs",
-    cron_create_tool => "CronCreateTool/mod.rs",
-    cron_list_tool => "CronListTool/mod.rs",
-    cron_delete_tool => "CronDeleteTool/mod.rs",
-    computer_use_tool => "ComputerUseTool/mod.rs",
-}
+// 以及工具发现、执行、权限检查的统一接口。具体工具包由 build.rs 扫描
+// tools/*/mod.rs 中的 registrations() 后生成，避免中心模块手写工具清单。
+include!(concat!(env!("OUT_DIR"), "/builtin_tool_registry.rs"));
 
 pub mod shared;
 
@@ -205,6 +141,13 @@ pub(crate) struct ToolPermissionDescriptor {
     pub needs_approval: bool,
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ToolRegistrationRole {
+    General,
+    SubagentStart,
+    SubagentStop,
+}
+
 #[derive(Clone, Copy)]
 pub(crate) struct ToolRegistration {
     // tool: 暴露给模型看的静态定义（name/description/schema）。
@@ -215,6 +158,8 @@ pub(crate) struct ToolRegistration {
     permission: Option<PermissionFn>,
     // read_only: 只读工具可进入批量并发执行队列。
     read_only: bool,
+    // role: 工具在执行循环里的特殊语义；中心层只读注册元数据，不点名具体工具模块。
+    role: ToolRegistrationRole,
 }
 
 pub(crate) const fn app_tool(
@@ -223,11 +168,28 @@ pub(crate) const fn app_tool(
     read_only: bool,
     permission: Option<PermissionFn>,
 ) -> ToolRegistration {
+    app_tool_with_role(
+        tool,
+        execute_with_app,
+        read_only,
+        permission,
+        ToolRegistrationRole::General,
+    )
+}
+
+pub(crate) const fn app_tool_with_role(
+    tool: fn() -> Tool,
+    execute_with_app: AppExecuteFn,
+    read_only: bool,
+    permission: Option<PermissionFn>,
+    role: ToolRegistrationRole,
+) -> ToolRegistration {
     ToolRegistration {
         tool,
         execute_with_app,
         permission,
         read_only,
+        role,
     }
 }
 fn registered_tools() -> &'static [ToolRegistration] {
@@ -308,11 +270,15 @@ fn validate_tool_input(name: &str, input: &Value) -> Result<(), String> {
 }
 
 fn is_subagent_start_tool(name: &str) -> bool {
-    name == task_create_tool::tool().name
+    find_registered_tool(name)
+        .map(|entry| entry.role == ToolRegistrationRole::SubagentStart)
+        .unwrap_or(false)
 }
 
 fn is_subagent_stop_tool(name: &str) -> bool {
-    name == task_stop_tool::tool().name
+    find_registered_tool(name)
+        .map(|entry| entry.role == ToolRegistrationRole::SubagentStop)
+        .unwrap_or(false)
 }
 
 pub(crate) fn is_read_only_tool(name: &str) -> bool {

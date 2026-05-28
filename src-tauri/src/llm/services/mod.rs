@@ -11,5 +11,6 @@ pub mod memory_dir;
 pub mod rag;
 pub mod search;
 pub mod shell_sessions;
+pub mod skills;
 pub mod tools;
 pub mod user_terminal;

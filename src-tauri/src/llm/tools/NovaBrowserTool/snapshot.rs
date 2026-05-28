@@ -3,7 +3,7 @@ use crate::llm::types::Tool;
 use serde_json::{json, Value};
 use tauri::AppHandle;
 
-pub(crate) fn registration() -> ToolRegistration {
+pub(super) fn registration() -> ToolRegistration {
     app_tool(tool, execute_with_app_boxed, true, None)
 }
 

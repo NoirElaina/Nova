@@ -28,11 +28,28 @@ const toggleEntryCollapse = (entryId: string) => {
 };
 
 const collapsedPreview = (entry: ToolExecutionEntry) => {
+  if (entry.status === "running" && !entry.input.trim() && !entry.result.trim()) {
+    return "正在等待工具参数...";
+  }
   const text = (entry.result || entry.input || "").trim();
   if (!text) {
     return "（无可预览内容）";
   }
   return text.length > 100 ? `${text.slice(0, 100)}...` : text;
+};
+
+const inputText = (entry: ToolExecutionEntry) => {
+  if (entry.input.trim()) {
+    return entry.input;
+  }
+  return entry.status === "running" ? "正在等待工具参数..." : "（无参数）";
+};
+
+const resultText = (entry: ToolExecutionEntry) => {
+  if (entry.result.trim()) {
+    return entry.result;
+  }
+  return entry.status === "running" ? "工具正在执行，等待结果..." : "（暂无结果）";
 };
 
 const displayedEntries = computed(() =>
@@ -170,12 +187,12 @@ onBeforeUnmount(() => {
           <template v-else>
             <div class="mt-2 text-[11px] text-[#667085] dark:text-[#ada496]">
               <div class="font-medium mb-1">命令参数</div>
-              <pre class="trace-content">{{ entry.input || '（无参数）' }}</pre>
+              <pre class="trace-content">{{ inputText(entry) }}</pre>
             </div>
 
             <div class="mt-2 text-[11px] text-[#667085] dark:text-[#ada496]">
               <div class="font-medium mb-1">执行结果</div>
-              <pre class="trace-content">{{ entry.result || '（暂无结果）' }}</pre>
+              <pre class="trace-content">{{ resultText(entry) }}</pre>
             </div>
           </template>
         </div>

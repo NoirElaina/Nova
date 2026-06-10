@@ -130,7 +130,7 @@ type SendOpsDeps = {
   toolExecutionLogs: Ref<ToolExecutionEntry[]>;
   pendingUploads: Ref<PendingUploadFile[]>;
   pendingPermissionRequestId: Ref<string | null>;
-  mainView: Ref<"chat" | "custom" | "hooks" | "agent" | "agentMarket" | "schedule">;
+  mainView: Ref<"chat" | "custom" | "hooks" | "agent" | "agentMarket" | "schedule" | "settings">;
   planMode: Ref<boolean>;
   agentMode: Ref<AgentMode>;
   assistantResponse: Ref<string>;

@@ -6,7 +6,7 @@ import type {
   TurnCost,
 } from "../../../lib/chat-types";
 
-export type MainView = "chat" | "custom" | "hooks" | "agent" | "agentMarket" | "schedule";
+export type MainView = "chat" | "custom" | "hooks" | "agent" | "agentMarket" | "schedule" | "settings";
 export type LiveTurnStage = "processing" | "compacting";
 
 export type BackendErrorEvent = {

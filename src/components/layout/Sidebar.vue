@@ -2,7 +2,6 @@
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import SettingsModal from "./settings/SettingsModal.vue";
 
 interface ConversationItem {
   id: string;
@@ -10,7 +9,7 @@ interface ConversationItem {
   pinnedAt?: number | null;
 }
 
-type MainView = "chat" | "custom" | "hooks" | "agent" | "agentMarket" | "schedule";
+type MainView = "chat" | "custom" | "hooks" | "agent" | "agentMarket" | "schedule" | "settings";
 type ConversationExportFormat = "json" | "pdf";
 
 const props = defineProps<{
@@ -31,13 +30,9 @@ const emit = defineEmits<{
   (e: "change-main-view", view: MainView): void;
 }>();
 
-const isSettingsOpen = ref(false);
 const sidebarRef = ref<HTMLElement | null>(null);
 const openActionMenuId = ref<string | null>(null);
 const exportDialogConversationId = ref<string | null>(null);
-const openSettings = () => {
-  isSettingsOpen.value = true;
-};
 
 const isSearchOpen = ref(false);
 const searchKeyword = ref("");
@@ -453,7 +448,7 @@ watch(
     </div>
 
     <!-- User Profile -->
-    <div @click="openSettings" class="flex cursor-pointer items-center justify-between border-t border-[#dfe6ee] px-2.5 py-2 transition-colors hover:bg-white/70 dark:border-[#333] dark:hover:bg-[#2d2d2d]">
+    <div @click="emit('change-main-view', 'settings')" class="flex cursor-pointer items-center justify-between border-t border-[#dfe6ee] px-2.5 py-2 transition-colors hover:bg-white/70 dark:border-[#333] dark:hover:bg-[#2d2d2d]">
       <div class="flex items-center gap-2">
         <div class="flex h-7 w-7 items-center justify-center rounded-full bg-[#2f343b] text-[13px] font-medium text-white">N</div>
         <div class="flex flex-col">
@@ -469,7 +464,6 @@ watch(
         </Button>
       </div>
     </div>
-    <SettingsModal v-model="isSettingsOpen" />
     <Teleport to="body">
       <Transition name="export-backdrop">
         <div

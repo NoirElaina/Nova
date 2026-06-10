@@ -12,6 +12,7 @@ import HooksConfigScreen from "./components/hooks/HooksConfigScreen.vue";
 import AgentConfigScreen from "./components/agent/AgentConfigScreen.vue";
 import AgentMarketScreen from "./components/agent/AgentMarketScreen.vue";
 import ScheduleTaskScreen from "./components/schedule/ScheduleTaskScreen.vue";
+import SettingsScreen from "./components/layout/settings/SettingsScreen.vue";
 import GlobalToastHost from "./components/layout/GlobalToastHost.vue";
 import { useChatController } from "./features/chat/controllers/useChatController";
 import {
@@ -196,25 +197,31 @@ onBeforeUnmount(() => {
 <template>
   <div class="flex h-screen bg-[#fcfcfc] dark:bg-[#1a1a1a] text-[#1a1a1a] dark:text-[#ececec] overflow-hidden font-sans">
     <GlobalToastHost />
-    
-    <Sidebar
-      v-if="isSidebarOpen"
-      :recents="conversations"
-      :activeConversationId="activeConversationId"
-      :activeMainView="mainView"
-      :exportingConversationId="exportingConversationId"
-      :exportingFormat="exportingFormat"
-      @new-chat="handleNewChat"
-      @select-conversation="handleSelectConversation"
-      @delete-conversation="handleDeleteConversation"
-      @pin-conversation="handlePinConversation"
-      @export-conversation="handleExportConversation"
+
+    <SettingsScreen
+      v-if="mainView === 'settings'"
       @change-main-view="handleChangeMainView"
-      @toggle-sidebar="isSidebarOpen = !isSidebarOpen"
     />
 
-    <!-- Main Content Area -->
-    <main class="flex h-full min-w-0 flex-1 overflow-hidden">
+    <template v-else>
+      <Sidebar
+        v-if="isSidebarOpen"
+        :recents="conversations"
+        :activeConversationId="activeConversationId"
+        :activeMainView="mainView"
+        :exportingConversationId="exportingConversationId"
+        :exportingFormat="exportingFormat"
+        @new-chat="handleNewChat"
+        @select-conversation="handleSelectConversation"
+        @delete-conversation="handleDeleteConversation"
+        @pin-conversation="handlePinConversation"
+        @export-conversation="handleExportConversation"
+        @change-main-view="handleChangeMainView"
+        @toggle-sidebar="isSidebarOpen = !isSidebarOpen"
+      />
+
+      <!-- Main Content Area -->
+      <main class="flex h-full min-w-0 flex-1 overflow-hidden">
       <section class="app-chat-pane relative flex h-full min-w-0 flex-1 flex-col">
         <!-- Top Title Bar -->
         <header class="h-14 flex items-center justify-between px-4 absolute top-0 w-full z-10 pointer-events-none">
@@ -330,6 +337,7 @@ onBeforeUnmount(() => {
         @close="isDrawerOpen = false"
       />
     </main>
+    </template>
   </div>
 </template>
 

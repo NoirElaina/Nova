@@ -152,7 +152,6 @@ const deleteDialogDesc = computed(() => {
     <div class="mb-6 flex items-center justify-between">
       <div class="flex flex-col gap-1">
         <h2 class="text-xl font-bold tracking-tight text-foreground">模型配置</h2>
-        <p class="text-sm text-muted-foreground">管理并配置您的 LLM 提供商，这与 cc-switch 风格一致。</p>
       </div>
       <Button @click="handleCreate" class="gap-2">
         <Plus class="h-4 w-4" /> 添加配置

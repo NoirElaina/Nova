@@ -221,16 +221,16 @@ onUnmounted(() => {
       @confirm="handleConfirmAction"
     />
 
-    <Card class="mb-3 border-[#ebe9e3] bg-[#faf9f7] dark:border-[#3b3a37] dark:bg-[#252422]">
+    <Card class="mb-3 border-[#e5e7eb] bg-[#f9fafb] dark:border-[#333] dark:bg-[#1e1e1e]">
       <CardHeader class="px-4 pb-2">
-        <CardTitle class="text-[13.5px] text-[#2a2820] dark:text-[#e8e3db]">{{ t.introTitle }}</CardTitle>
+        <CardTitle class="text-[13.5px] text-[#111827] dark:text-[#f3f4f6]">{{ t.introTitle }}</CardTitle>
         <CardDescription class="text-[12px] leading-relaxed">{{ t.introDesc }}</CardDescription>
       </CardHeader>
     </Card>
 
-    <Card class="mb-3 border-[#ebe9e3] dark:border-[#3b3a37]">
+    <Card class="mb-3 border-[#e5e7eb] dark:border-[#333]">
       <CardHeader class="px-4 pb-2">
-        <CardTitle class="text-[13.5px] text-[#2a2820] dark:text-[#e8e3db]">{{ t.historyTitle }}</CardTitle>
+        <CardTitle class="text-[13.5px] text-[#111827] dark:text-[#f3f4f6]">{{ t.historyTitle }}</CardTitle>
         <CardDescription class="text-[12px]">{{ t.historyDesc }}</CardDescription>
       </CardHeader>
       <CardContent class="px-4 pt-0">
@@ -245,16 +245,16 @@ onUnmounted(() => {
       </CardContent>
     </Card>
 
-    <Card class="mb-3 border-[#ebe9e3] dark:border-[#3b3a37]">
+    <Card class="mb-3 border-[#e5e7eb] dark:border-[#333]">
       <CardHeader class="px-4 pb-2">
-        <CardTitle class="text-[13.5px] text-[#2a2820] dark:text-[#e8e3db]">{{ t.apiTitle }}</CardTitle>
+        <CardTitle class="text-[13.5px] text-[#111827] dark:text-[#f3f4f6]">{{ t.apiTitle }}</CardTitle>
         <CardDescription class="text-[12px]">{{ t.apiDesc }}</CardDescription>
       </CardHeader>
       <CardContent class="px-4 pt-0">
         <Button
           variant="outline"
           size="sm"
-          class="border-[#e8c5c5] text-[#c0392b] hover:bg-[#fff0f0] dark:border-[#5c3a3a] dark:text-[#e57373] dark:hover:bg-[#3b2a2a]"
+          class="border-red-200 text-red-600 hover:bg-red-50 dark:border-red-900/50 dark:text-red-400 dark:hover:bg-red-950/30"
           :disabled="isClearingApiKeys"
           @click="requestClearApiKeys"
         >

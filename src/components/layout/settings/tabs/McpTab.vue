@@ -245,86 +245,86 @@ refresh()
     </TransitionGroup>
 
     <div class="flex items-center justify-between mb-4">
-      <span class="text-[12.5px] text-[#aaa49a] dark:text-[#88857f]">{{ servers.length }} 个服务</span>
+      <span class="text-[12.5px] text-[#64748b] dark:text-[#a3a3a3]">{{ servers.length }} 个服务</span>
       <div class="flex items-center gap-2">
-        <Button variant="ghost" size="sm" class="gap-[6px] text-[13px] text-[#6b6456] hover:bg-[#f5f4f0] hover:text-[#1a1915] dark:text-[#a09e99] dark:hover:bg-[#32312e] dark:hover:text-[#e8e3db]" :disabled="reloading" @click="handleReload">
+        <Button variant="ghost" size="sm" class="gap-[6px] text-[13px] text-[#475569] hover:bg-[#f3f4f6] hover:text-[#111827] dark:text-[#a3a3a3] dark:hover:bg-[#2a2a2a] dark:hover:text-[#f3f4f6]" :disabled="reloading" @click="handleReload">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="w-[15px] h-[15px]" :class="{ 'animate-spin': reloading }">
             <path d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" stroke-linecap="round" stroke-linejoin="round"/>
           </svg>
           重新连接
         </Button>
-        <Button size="sm" class="bg-[#da7756] text-white hover:bg-[#c06548]" @click="openCreateForm">
+        <Button size="sm" @click="openCreateForm">
           {{ showForm && !editingOriginalName ? '取消' : '+ 添加' }}
         </Button>
       </div>
     </div>
 
-    <div v-if="showForm" class="bg-[#faf9f7] dark:bg-[#252422] border border-[#ebe9e3] dark:border-[#3b3a37] rounded-xl p-4 mb-4 flex flex-col transition-all overflow-hidden origin-top">
+    <div v-if="showForm" class="bg-[#f9fafb] dark:bg-[#1e1e1e] border border-[#e5e7eb] dark:border-[#333] rounded-xl p-4 mb-4 flex flex-col transition-all overflow-hidden origin-top">
       <div class="flex items-center justify-between mb-3">
         <div>
-          <div class="text-[14px] font-semibold text-[#1a1915] dark:text-[#e8e3db]">
+          <div class="text-[14px] font-semibold text-[#111827] dark:text-[#f3f4f6]">
             {{ editingOriginalName ? '编辑 MCP 服务' : '添加 MCP 服务' }}
           </div>
-          <div class="text-[12px] text-[#8a8478] dark:text-[#a09e99] mt-0.5">
+          <div class="text-[12px] text-[#6b7280] dark:text-[#a3a3a3] mt-0.5">
             {{ editingOriginalName ? '修改后会覆盖当前配置，并在已启用时自动重连。' : '保存后会立即写入配置，并尝试连接服务。' }}
           </div>
         </div>
-        <span v-if="editingOriginalName" class="text-[11px] px-2 py-1 rounded bg-[#f0ede7] dark:bg-[#32312e] text-[#8a8478] dark:text-[#a09e99] font-mono">
+        <span v-if="editingOriginalName" class="text-[11px] px-2 py-1 rounded bg-[#f3f4f6] dark:bg-[#2a2a2a] text-[#6b7280] dark:text-[#a3a3a3] font-mono">
           原名称: {{ editingOriginalName }}
         </span>
       </div>
       <div class="flex gap-3 items-end mb-2.5">
         <div class="flex-1 flex flex-col text-[14px]">
-          <label class="text-[13px] font-semibold text-[#1a1915] dark:text-[#e8e3db] mb-[6px] uppercase tracking-wider">名称</label>
-          <Input v-model="form.name" placeholder="filesystem" class="w-full h-9 px-3 text-[14px] bg-white dark:bg-[#2e2d2a] border border-[#e8e3db] dark:border-[#44423f] rounded-lg text-[#1a1915] dark:text-[#d3d0c9] placeholder:text-[#b0a99f] dark:placeholder:text-[#66645e] focus:outline-none focus:border-[#d7a16f]"/>
+          <label class="text-[13px] font-semibold text-[#111827] dark:text-[#f3f4f6] mb-[6px] uppercase tracking-wider">名称</label>
+          <Input v-model="form.name" placeholder="filesystem" class="w-full h-9 px-3 text-[14px]"/>
         </div>
         <div class="w-[210px] flex flex-col text-[14px]">
-          <label class="text-[13px] font-semibold text-[#1a1915] dark:text-[#e8e3db] mb-[6px] uppercase tracking-wider">类型</label>
-          <div class="flex p-[2px] bg-[#f0ede7] dark:bg-[#32312e] rounded-[8px]">
-            <Button variant="ghost" size="sm" class="h-auto flex-1 py-[5px] text-[12px]" :class="{ 'bg-white text-[#1a1915] shadow-[0_1px_3px_rgba(0,0,0,0.05)] dark:bg-[#44423f] dark:text-[#e8e3db]': form.type === 'stdio' }" @click="form.type = 'stdio'">stdio</Button>
-            <Button variant="ghost" size="sm" class="h-auto flex-1 py-[5px] text-[12px]" :class="{ 'bg-white text-[#1a1915] shadow-[0_1px_3px_rgba(0,0,0,0.05)] dark:bg-[#44423f] dark:text-[#e8e3db]': form.type === 'sse' }" @click="form.type = 'sse'">SSE</Button>
-            <Button variant="ghost" size="sm" class="h-auto flex-1 py-[5px] text-[12px]" :class="{ 'bg-white text-[#1a1915] shadow-[0_1px_3px_rgba(0,0,0,0.05)] dark:bg-[#44423f] dark:text-[#e8e3db]': form.type === 'streamable_http' }" @click="form.type = 'streamable_http'">streamable_http</Button>
+          <label class="text-[13px] font-semibold text-[#111827] dark:text-[#f3f4f6] mb-[6px] uppercase tracking-wider">类型</label>
+          <div class="flex p-[2px] bg-muted dark:bg-[#2a2a2a] rounded-[8px]">
+            <Button variant="ghost" size="sm" class="h-auto flex-1 py-[5px] text-[12px]" :class="{ 'bg-background text-foreground shadow-[0_1px_3px_rgba(0,0,0,0.05)] dark:bg-[#333]': form.type === 'stdio' }" @click="form.type = 'stdio'">stdio</Button>
+            <Button variant="ghost" size="sm" class="h-auto flex-1 py-[5px] text-[12px]" :class="{ 'bg-background text-foreground shadow-[0_1px_3px_rgba(0,0,0,0.05)] dark:bg-[#333]': form.type === 'sse' }" @click="form.type = 'sse'">SSE</Button>
+            <Button variant="ghost" size="sm" class="h-auto flex-1 py-[5px] text-[12px]" :class="{ 'bg-background text-foreground shadow-[0_1px_3px_rgba(0,0,0,0.05)] dark:bg-[#333]': form.type === 'streamable_http' }" @click="form.type = 'streamable_http'">streamable_http</Button>
           </div>
         </div>
       </div>
       <template v-if="form.type === 'stdio'">
         <div class="mb-2.5 flex flex-col text-[14px]">
-          <label class="text-[13px] font-semibold text-[#1a1915] dark:text-[#e8e3db] mb-[6px] uppercase tracking-wider">命令</label>
-          <Input v-model="form.command" placeholder="npx / uvx / node" class="w-full h-9 px-3 text-[14px] bg-white dark:bg-[#2e2d2a] border border-[#e8e3db] dark:border-[#44423f] rounded-lg text-[#1a1915] dark:text-[#d3d0c9] placeholder:text-[#b0a99f] dark:placeholder:text-[#66645e] focus:outline-none focus:border-[#d7a16f] font-mono"/>
+          <label class="text-[13px] font-semibold text-[#111827] dark:text-[#f3f4f6] mb-[6px] uppercase tracking-wider">命令</label>
+          <Input v-model="form.command" placeholder="npx / uvx / node" class="w-full h-9 px-3 text-[14px] font-mono"/>
         </div>
         <div class="mb-2.5 flex flex-col text-[14px]">
-          <label class="text-[13px] font-semibold text-[#1a1915] dark:text-[#e8e3db] mb-[6px] uppercase tracking-wider">参数 <span class="font-normal text-[#aaa49a] dark:text-[#88857f] ml-1 lowercase">空格分隔</span></label>
-          <Input v-model="form.args" placeholder="-y @playwright/mcp@latest" class="w-full h-9 px-3 text-[14px] bg-white dark:bg-[#2e2d2a] border border-[#e8e3db] dark:border-[#44423f] rounded-lg text-[#1a1915] dark:text-[#d3d0c9] placeholder:text-[#b0a99f] dark:placeholder:text-[#66645e] focus:outline-none focus:border-[#d7a16f] font-mono"/>
+          <label class="text-[13px] font-semibold text-[#111827] dark:text-[#f3f4f6] mb-[6px] uppercase tracking-wider">参数 <span class="font-normal text-[#64748b] dark:text-[#a3a3a3] ml-1 lowercase">空格分隔</span></label>
+          <Input v-model="form.args" placeholder="-y @playwright/mcp@latest" class="w-full h-9 px-3 text-[14px] font-mono"/>
         </div>
         <div class="mb-2.5 flex flex-col text-[14px]">
-          <label class="text-[13px] font-semibold text-[#1a1915] dark:text-[#e8e3db] mb-[6px] uppercase tracking-wider">环境变量 <span class="font-normal text-[#aaa49a] dark:text-[#88857f] ml-1 lowercase">每行 KEY=VALUE（可选）</span></label>
-          <Textarea v-model="form.env" placeholder="API_KEY=xxx" rows="2" class="w-full px-3 py-2 text-[14px] bg-white dark:bg-[#2e2d2a] border border-[#e8e3db] dark:border-[#44423f] rounded-lg text-[#1a1915] dark:text-[#d3d0c9] placeholder:text-[#b0a99f] dark:placeholder:text-[#66645e] focus:outline-none focus:border-[#d7a16f] font-mono resize-y"/>
+          <label class="text-[13px] font-semibold text-[#111827] dark:text-[#f3f4f6] mb-[6px] uppercase tracking-wider">环境变量 <span class="font-normal text-[#64748b] dark:text-[#a3a3a3] ml-1 lowercase">每行 KEY=VALUE（可选）</span></label>
+          <Textarea v-model="form.env" placeholder="API_KEY=xxx" rows="2" class="w-full px-3 py-2 text-[14px] font-mono resize-y"/>
         </div>
       </template>
       <template v-else>
         <div class="mb-2.5 flex flex-col text-[14px]">
-          <label class="text-[13px] font-semibold text-[#1a1915] dark:text-[#e8e3db] mb-[6px] uppercase tracking-wider">{{ form.type === 'sse' ? 'SSE URL' : 'HTTP URL' }}</label>
-          <Input v-model="form.url" :placeholder="form.type === 'sse' ? 'http://localhost:8080/sse' : 'https://example.com/mcp'" class="w-full h-9 px-3 text-[14px] bg-white dark:bg-[#2e2d2a] border border-[#e8e3db] dark:border-[#44423f] rounded-lg text-[#1a1915] dark:text-[#d3d0c9] placeholder:text-[#b0a99f] dark:placeholder:text-[#66645e] focus:outline-none focus:border-[#d7a16f] font-mono"/>
+          <label class="text-[13px] font-semibold text-[#111827] dark:text-[#f3f4f6] mb-[6px] uppercase tracking-wider">{{ form.type === 'sse' ? 'SSE URL' : 'HTTP URL' }}</label>
+          <Input v-model="form.url" :placeholder="form.type === 'sse' ? 'http://localhost:8080/sse' : 'https://example.com/mcp'" class="w-full h-9 px-3 text-[14px] font-mono"/>
         </div>
         <div class="mb-2.5 flex flex-col text-[14px]">
-          <label class="text-[13px] font-semibold text-[#1a1915] dark:text-[#e8e3db] mb-[6px] uppercase tracking-wider">请求头 <span class="font-normal text-[#aaa49a] dark:text-[#88857f] ml-1 lowercase">每行 KEY=VALUE（可选）</span></label>
-          <Textarea v-model="form.headers" placeholder="Authorization=Bearer xxx&#10;X-API-Key=xxx" rows="3" class="w-full px-3 py-2 text-[14px] bg-white dark:bg-[#2e2d2a] border border-[#e8e3db] dark:border-[#44423f] rounded-lg text-[#1a1915] dark:text-[#d3d0c9] placeholder:text-[#b0a99f] dark:placeholder:text-[#66645e] focus:outline-none focus:border-[#d7a16f] font-mono resize-y"/>
-          <div class="mt-1 text-[12px] text-[#8a8478] dark:text-[#a09e99]">保存时后端会加密这些值，连接时自动带上。</div>
+          <label class="text-[13px] font-semibold text-[#111827] dark:text-[#f3f4f6] mb-[6px] uppercase tracking-wider">请求头 <span class="font-normal text-[#64748b] dark:text-[#a3a3a3] ml-1 lowercase">每行 KEY=VALUE（可选）</span></label>
+          <Textarea v-model="form.headers" placeholder="Authorization=Bearer xxx&#10;X-API-Key=xxx" rows="3" class="w-full px-3 py-2 text-[14px] font-mono resize-y"/>
+          <div class="mt-1 text-[12px] text-[#6b7280] dark:text-[#a3a3a3]">保存时后端会加密这些值，连接时自动带上。</div>
         </div>
       </template>
-      <div v-if="error" class="text-[12.5px] text-[#c0392b] dark:text-[#e57373] mb-2.5">{{ error }}</div>
+      <div v-if="error" class="text-[12.5px] text-red-600 dark:text-red-400 mb-2.5">{{ error }}</div>
       <div class="flex items-center justify-end gap-3 mt-2">
-        <Button class="h-9 bg-[#da7756] text-white hover:bg-[#c06548]" :disabled="adding" @click="submit">
+        <Button @click="submit" :disabled="adding">
           {{ adding ? (editingOriginalName ? '保存中...' : '连接中...') : (editingOriginalName ? '保存修改' : '添加并连接') }}
         </Button>
         <Button variant="outline" size="sm" @click="resetForm">取消</Button>
       </div>
     </div>
 
-    <div v-if="loading" class="text-center py-8 text-[13.5px] text-[#aaa49a] dark:text-[#88857f]">加载中...</div>
-    <div v-else-if="servers.length === 0 && !showForm" class="text-center py-8 text-[13.5px] text-[#aaa49a] dark:text-[#88857f]">暂无 MCP 服务，点击「添加」接入工具服务</div>
+    <div v-if="loading" class="text-center py-8 text-[13.5px] text-[#64748b] dark:text-[#a3a3a3]">加载中...</div>
+    <div v-else-if="servers.length === 0 && !showForm" class="text-center py-8 text-[13.5px] text-[#64748b] dark:text-[#a3a3a3]">暂无 MCP 服务，点击「添加」接入工具服务</div>
     <div v-else class="flex flex-col gap-2">
-      <div v-for="s in servers" :key="s.name" class="flex items-center justify-between p-3 border border-[#ebe9e3] dark:border-[#3b3a37] rounded-xl gap-3 transition-colors duration-150 hover:border-[#d8d5cc] dark:hover:border-[#52504b]">
+      <div v-for="s in servers" :key="s.name" class="flex items-center justify-between p-3 border border-[#e5e7eb] dark:border-[#333] rounded-xl gap-3 transition-colors duration-150 hover:border-[#d1d5db] dark:hover:border-[#555]">
         <div class="flex items-center gap-2.5 flex-1 min-w-0">
           <span class="w-2 h-2 rounded-full shrink-0" :class="{
             'bg-[#4caf50]': s.status === 'connected',
@@ -333,13 +333,13 @@ refresh()
             'bg-[#bdbdbd] dark:bg-[#666]': s.status === 'disconnected'
           }"></span>
           <div class="min-w-0">
-            <div class="text-[13.5px] font-semibold text-[#2a2820] dark:text-[#e8e3db] truncate">{{ s.name }}</div>
+            <div class="text-[13.5px] font-semibold text-[#111827] dark:text-[#f3f4f6] truncate">{{ s.name }}</div>
             <div class="flex items-center gap-2 mt-0.5">
-              <span class="text-[11px] px-1.5 py-[1px] rounded bg-[#f0ede7] dark:bg-[#32312e] text-[#8a8478] dark:text-[#a09e99] font-mono shrink-0">{{ s.type }}</span>
-              <span v-if="s.enabled" class="text-[11px] px-1.5 py-[1px] rounded bg-[#edf7ed] dark:bg-[#233323] text-[#3a7c3a] dark:text-[#87c787] shrink-0">已启用</span>
-              <span v-else class="text-[11px] px-1.5 py-[1px] rounded bg-[#f3f3f3] dark:bg-[#2f2f2f] text-[#7b7b7b] dark:text-[#9f9f9f] shrink-0">已停用</span>
-              <span v-if="s.status === 'connected'" class="text-[12px] text-[#8a8478] dark:text-[#a09e99] whitespace-nowrap shrink-0">{{ s.toolCount }} 个工具</span>
-              <span v-if="s.error" class="text-[12px] text-[#e53935] dark:text-[#e57373] truncate" :title="s.error">{{ s.error }}</span>
+              <span class="text-[11px] px-1.5 py-[1px] rounded bg-[#f3f4f6] dark:bg-[#2a2a2a] text-[#6b7280] dark:text-[#a3a3a3] font-mono shrink-0">{{ s.type }}</span>
+              <span v-if="s.enabled" class="text-[11px] px-1.5 py-[1px] rounded bg-green-50 dark:bg-green-950/30 text-green-700 dark:text-green-400 shrink-0">已启用</span>
+              <span v-else class="text-[11px] px-1.5 py-[1px] rounded bg-[#f3f4f6] dark:bg-[#2a2a2a] text-[#6b7280] dark:text-[#9f9f9f] shrink-0">已停用</span>
+              <span v-if="s.status === 'connected'" class="text-[12px] text-[#6b7280] dark:text-[#a3a3a3] whitespace-nowrap shrink-0">{{ s.toolCount }} 个工具</span>
+              <span v-if="s.error" class="text-[12px] text-red-600 dark:text-red-400 truncate" :title="s.error">{{ s.error }}</span>
             </div>
           </div>
         </div>
@@ -347,10 +347,10 @@ refresh()
           <Button variant="outline" size="sm" class="px-3 py-1.5 text-[12px]" :disabled="loadingEditName === s.name" @click="handleEdit(s.name)">
             {{ loadingEditName === s.name ? '读取中...' : '编辑' }}
           </Button>
-          <Button variant="outline" size="sm" class="px-3 py-1.5 text-[12px]" :class="s.enabled ? 'text-[#8a6d3b] dark:text-[#d6b77a] border-[#ead8b5] dark:border-[#5a4b2f] hover:bg-[#fff8ec] dark:hover:bg-[#3a3226]' : 'text-[#2e7d32] dark:text-[#7bc67f] border-[#cfe8d1] dark:border-[#355c37] hover:bg-[#effaf0] dark:hover:bg-[#233323]'" :disabled="togglingName === s.name" @click="handleToggleEnabled(s.name, !s.enabled)">
+          <Button variant="outline" size="sm" class="px-3 py-1.5 text-[12px]" :class="s.enabled ? 'text-amber-600 dark:text-amber-400 border-amber-200 dark:border-amber-800 hover:bg-amber-50 dark:hover:bg-amber-950/30' : 'text-green-600 dark:text-green-400 border-green-200 dark:border-green-800 hover:bg-green-50 dark:hover:bg-green-950/30'" :disabled="togglingName === s.name" @click="handleToggleEnabled(s.name, !s.enabled)">
             {{ togglingName === s.name ? '处理中...' : (s.enabled ? '停用' : '启用') }}
           </Button>
-          <Button variant="ghost" size="sm" class="px-3 py-1.5 text-[12.5px] text-[#c0392b] hover:bg-[#fff0f0] dark:text-[#e57373] dark:hover:bg-[#3b2a2a]" :disabled="removingName === s.name" @click="handleRemove(s.name)">
+          <Button variant="ghost" size="sm" class="px-3 py-1.5 text-[12.5px] text-red-600 hover:bg-red-50 dark:text-red-400 dark:hover:bg-red-950/30" :disabled="removingName === s.name" @click="handleRemove(s.name)">
             {{ removingName === s.name ? '删除中...' : '删除' }}
           </Button>
         </div>

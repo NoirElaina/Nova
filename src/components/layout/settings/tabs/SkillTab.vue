@@ -101,26 +101,26 @@ const deleteSkill = async (skill: SkillItem) => {
 <template>
   <div class="px-6 py-4 flex flex-col h-full overflow-y-auto">
     <div class="mb-4 flex items-center justify-between">
-      <span class="text-[12.5px] text-[#aaa49a] dark:text-[#88857f]">{{ skills.length }} 个技能</span>
+      <span class="text-[12.5px] text-[#64748b] dark:text-[#a3a3a3]">{{ skills.length }} 个技能</span>
       <div class="flex items-center gap-2">
         <Button
           variant="outline"
           size="sm"
-          class="border-[#ddd9d0] text-[#6b6456] hover:bg-[#f5f4f0] dark:border-[#44423f] dark:text-[#a09e99] dark:hover:bg-[#32312e]"
+          class="border-[#d1d5db] text-[#475569] hover:bg-[#f3f4f6] dark:border-[#444] dark:text-[#a3a3a3] dark:hover:bg-[#2a2a2a]"
           :disabled="loading"
           @click="refresh"
         >刷新</Button>
         <Button
           variant="outline"
           size="sm"
-          class="border-[#ddd9d0] text-[#6b6456] hover:bg-[#f5f4f0] dark:border-[#44423f] dark:text-[#a09e99] dark:hover:bg-[#32312e]"
+          class="border-[#d1d5db] text-[#475569] hover:bg-[#f3f4f6] dark:border-[#444] dark:text-[#a3a3a3] dark:hover:bg-[#2a2a2a]"
           :disabled="loading || skills.length === 0"
           @click="setAllEnabled(true)"
         >全部启用</Button>
         <Button
           variant="outline"
           size="sm"
-          class="border-[#ddd9d0] text-[#6b6456] hover:bg-[#f5f4f0] dark:border-[#44423f] dark:text-[#a09e99] dark:hover:bg-[#32312e]"
+          class="border-[#d1d5db] text-[#475569] hover:bg-[#f3f4f6] dark:border-[#444] dark:text-[#a3a3a3] dark:hover:bg-[#2a2a2a]"
           :disabled="loading || skills.length === 0"
           @click="setAllEnabled(false)"
         >全部停用</Button>
@@ -129,16 +129,16 @@ const deleteSkill = async (skill: SkillItem) => {
 
     <Card
       v-if="loading"
-      class="border-[#ebe9e3] bg-[#faf9f7] dark:border-[#3b3a37] dark:bg-[#252422]"
+      class="border-[#e5e7eb] bg-[#f9fafb] dark:border-[#333] dark:bg-[#1e1e1e]"
     >
-      <CardContent class="py-8 text-center text-[13.5px] text-[#aaa49a] dark:text-[#88857f]">技能扫描中...</CardContent>
+      <CardContent class="py-8 text-center text-[13.5px] text-[#64748b] dark:text-[#a3a3a3]">技能扫描中...</CardContent>
     </Card>
 
     <Card
       v-else-if="skills.length === 0"
-      class="border-[#ebe9e3] bg-[#faf9f7] dark:border-[#3b3a37] dark:bg-[#252422]"
+      class="border-[#e5e7eb] bg-[#f9fafb] dark:border-[#333] dark:bg-[#1e1e1e]"
     >
-      <CardContent class="py-8 text-center text-[13.5px] text-[#aaa49a] dark:text-[#88857f]">
+      <CardContent class="py-8 text-center text-[13.5px] text-[#64748b] dark:text-[#a3a3a3]">
         未发现技能。请将技能放在应用数据目录的 skills 子目录（.../com.tauri-app.nova/skills/*/SKILL.md）。
       </CardContent>
     </Card>
@@ -147,19 +147,19 @@ const deleteSkill = async (skill: SkillItem) => {
       <Card
         v-for="skill in skills"
         :key="skill.path"
-        class="gap-0 border-[#ebe9e3] py-3 dark:border-[#3b3a37]"
+        class="gap-0 border-[#e5e7eb] py-3 dark:border-[#333]"
       >
         <CardHeader class="px-3 pb-1">
           <div class="flex min-w-0 items-center justify-between gap-3">
             <div class="min-w-0">
-              <CardTitle class="truncate text-[13.5px] text-[#2a2820] dark:text-[#e8e3db]">{{ skill.name }}</CardTitle>
-              <CardDescription class="mt-1 line-clamp-2 text-[12px] text-[#8a8478] dark:text-[#a09e99]">{{ skill.description }}</CardDescription>
-              <div class="mt-1 truncate text-[11px] text-[#b0a99f] dark:text-[#66645e]" :title="skill.path">{{ skill.path }}</div>
+              <CardTitle class="truncate text-[13.5px] text-[#111827] dark:text-[#f3f4f6]">{{ skill.name }}</CardTitle>
+              <CardDescription class="mt-1 line-clamp-2 text-[12px] text-[#6b7280] dark:text-[#a3a3a3]">{{ skill.description }}</CardDescription>
+              <div class="mt-1 truncate text-[11px] text-[#9ca3af] dark:text-[#666]" :title="skill.path">{{ skill.path }}</div>
             </div>
             <div class="flex shrink-0 items-center gap-2">
               <span
                 class="rounded px-1.5 py-[1px] text-[11px]"
-                :class="skill.enabled ? 'bg-[#edf7ed] text-[#3a7c3a] dark:bg-[#233323] dark:text-[#87c787]' : 'bg-[#f3f3f3] text-[#7b7b7b] dark:bg-[#2f2f2f] dark:text-[#9f9f9f]'"
+                :class="skill.enabled ? 'bg-green-50 text-green-700 dark:bg-green-950/30 dark:text-green-400' : 'bg-[#f3f4f6] text-[#6b7280] dark:bg-[#2a2a2a] dark:text-[#9f9f9f]'"
               >{{ skill.enabled ? '已启用' : '已停用' }}</span>
               <Button
                 variant="outline"
@@ -170,7 +170,7 @@ const deleteSkill = async (skill: SkillItem) => {
               <Button
                 variant="outline"
                 size="sm"
-                class="h-7 px-2 text-[12px] border-[#f0cfc9] text-[#c0392b] hover:bg-[#fdf3f2] dark:border-[#5c2e2e] dark:text-[#e57373] dark:hover:bg-[#3a2020]"
+                class="h-7 px-2 text-[12px] border-red-200 text-red-600 hover:bg-red-50 dark:border-red-900/50 dark:text-red-400 dark:hover:bg-red-950/30"
                 :disabled="deletingPath === skill.path"
                 @click="deleteSkill(skill)"
               >
@@ -183,14 +183,14 @@ const deleteSkill = async (skill: SkillItem) => {
       </Card>
     </div>
 
-    <div class="mt-auto border-t border-[#f0ece4] pt-4 dark:border-[#32312e]">
-      <div v-if="error" class="mb-2 text-[12.5px] text-[#c0392b] dark:text-[#e57373]">{{ error }}</div>
-      <div v-if="deleteError" class="mb-2 text-[12.5px] text-[#c0392b] dark:text-[#e57373]">{{ deleteError }}</div>
+    <div class="mt-auto border-t border-[#e5e7eb] pt-4 dark:border-[#333]">
+      <div v-if="error" class="mb-2 text-[12.5px] text-red-600 dark:text-red-400">{{ error }}</div>
+      <div v-if="deleteError" class="mb-2 text-[12.5px] text-red-600 dark:text-red-400">{{ deleteError }}</div>
       <div class="flex items-center justify-end gap-3">
         <span v-if="savedTip" class="text-[13px] text-[#4f9c64] dark:text-[#62c07a]">✓ 已保存</span>
         <Button
           size="sm"
-          class="bg-[#da7756] text-white hover:bg-[#c06548]"
+          class="bg-primary text-primary-foreground hover:bg-primary/90"
           :disabled="saving"
           @click="save"
         >{{ saving ? '保存中...' : '保存设置' }}</Button>

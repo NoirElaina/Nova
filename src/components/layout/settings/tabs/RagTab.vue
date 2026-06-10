@@ -354,37 +354,36 @@ defineExpose({ refresh })
 
 <template>
   <div class="px-6 py-4 flex flex-col h-full overflow-y-auto gap-4">
-    <Card class="border-[#ebe9e3] dark:border-[#3b3a37] bg-[#f7f6f2] dark:bg-[#252422] py-4 gap-4">
+    <Card class="border-[#e5e7eb] dark:border-[#333] bg-muted/50 dark:bg-[#1e1e1e] py-4 gap-4">
       <CardContent class="px-4">
         <div class="grid grid-cols-1 md:grid-cols-3 gap-3">
-          <div class="rounded-lg border border-[#e6e1d6] dark:border-[#3b3a37] bg-white/80 dark:bg-[#1f1e1b] p-3">
-            <div class="text-[12px] text-[#8a8478] dark:text-[#a09e99] mb-1">文档数</div>
-            <div class="text-[20px] font-semibold text-[#2a2820] dark:text-[#e8e3db]">{{ stats.documentCount }}</div>
+          <div class="rounded-lg border border-[#e5e7eb] dark:border-[#333] bg-background p-3">
+            <div class="text-[12px] text-[#6b7280] dark:text-[#a3a3a3] mb-1">文档数</div>
+            <div class="text-[20px] font-semibold text-[#111827] dark:text-[#f3f4f6]">{{ stats.documentCount }}</div>
           </div>
-          <div class="rounded-lg border border-[#e6e1d6] dark:border-[#3b3a37] bg-white/80 dark:bg-[#1f1e1b] p-3">
-            <div class="text-[12px] text-[#8a8478] dark:text-[#a09e99] mb-1">总字符</div>
-            <div class="text-[20px] font-semibold text-[#2a2820] dark:text-[#e8e3db]">{{ stats.totalChars.toLocaleString() }}</div>
+          <div class="rounded-lg border border-[#e5e7eb] dark:border-[#333] bg-background p-3">
+            <div class="text-[12px] text-[#6b7280] dark:text-[#a3a3a3] mb-1">总字符</div>
+            <div class="text-[20px] font-semibold text-[#111827] dark:text-[#f3f4f6]">{{ stats.totalChars.toLocaleString() }}</div>
           </div>
-          <div class="rounded-lg border border-[#e6e1d6] dark:border-[#3b3a37] bg-white/80 dark:bg-[#1f1e1b] p-3">
-            <div class="text-[12px] text-[#8a8478] dark:text-[#a09e99] mb-1">最后更新</div>
-            <div class="text-[13px] font-medium text-[#2a2820] dark:text-[#e8e3db] truncate">{{ lastUpdatedText }}</div>
+          <div class="rounded-lg border border-[#e5e7eb] dark:border-[#333] bg-background p-3">
+            <div class="text-[12px] text-[#6b7280] dark:text-[#a3a3a3] mb-1">最后更新</div>
+            <div class="text-[13px] font-medium text-[#111827] dark:text-[#f3f4f6] truncate">{{ lastUpdatedText }}</div>
           </div>
         </div>
       </CardContent>
     </Card>
 
-    <Card class="border-[#ebe9e3] dark:border-[#3b3a37] py-5 gap-4">
+    <Card class="border-[#e5e7eb] dark:border-[#333] py-5 gap-4">
       <CardHeader class="pb-2">
-        <CardTitle class="text-[15px] text-[#2a2820] dark:text-[#e8e3db]">RAG 参数设置</CardTitle>
+        <CardTitle class="text-[15px] text-[#111827] dark:text-[#f3f4f6]">RAG 参数设置</CardTitle>
         <CardDescription>只需要指定 Embedding 模型；分块、重叠和文件大小上限由后端策略统一管理。</CardDescription>
       </CardHeader>
       <CardContent class="space-y-3">
         <div class="space-y-1.5">
-          <Label class="text-[13px] text-[#2a2820] dark:text-[#e8e3db]">Embedding Model</Label>
+          <Label class="text-[13px] text-[#111827] dark:text-[#f3f4f6]">Embedding Model</Label>
           <Input
             v-model="embeddingModel"
             placeholder="例如：text-embedding-3-large"
-            class="h-9 border-[#ddd9d0] dark:border-[#44423f]"
           />
         </div>
         <div class="rounded-md border border-[#e5e7eb] bg-[#f8fafc] px-3 py-2 text-[12px] leading-5 text-[#64748b] dark:border-[#333] dark:bg-[#252525] dark:text-[#aaa]">
@@ -392,14 +391,13 @@ defineExpose({ refresh })
         </div>
         <div
           v-if="isEmbeddingModelMissing"
-          class="rounded-md border border-[#f2c9c9] dark:border-[#5c3a3a] bg-[#fff6f6] dark:bg-[#3b2a2a] px-3 py-2 text-[12px] text-[#b24a4a] dark:text-[#f0aaaa]"
+          class="rounded-md border border-red-200 dark:border-red-900/50 bg-red-50 dark:bg-red-950/30 px-3 py-2 text-[12px] text-red-600 dark:text-red-400"
         >
           Embedding 模型未填写。请先保存后再导入文本或文件。
         </div>
       </CardContent>
       <CardFooter class="justify-end">
         <Button
-          class="bg-[#da7756] hover:bg-[#c06548] text-white"
           :disabled="savingSettings"
           @click="saveRagSettings"
         >
@@ -408,24 +406,23 @@ defineExpose({ refresh })
       </CardFooter>
     </Card>
 
-    <Card class="border-[#ebe9e3] dark:border-[#3b3a37] py-5 gap-4">
+    <Card class="border-[#e5e7eb] dark:border-[#333] py-5 gap-4">
       <CardHeader class="pb-2">
-        <CardTitle class="text-[15px] text-[#2a2820] dark:text-[#e8e3db]">导入知识</CardTitle>
+        <CardTitle class="text-[15px] text-[#111827] dark:text-[#f3f4f6]">导入知识</CardTitle>
         <CardDescription>支持粘贴文本或上传文件。建议先上传结构化文档（md/txt/csv/json）。</CardDescription>
       </CardHeader>
       <CardContent class="space-y-3">
         <div class="space-y-1.5">
-          <Label class="text-[13px] text-[#2a2820] dark:text-[#e8e3db]">文本导入</Label>
+          <Label class="text-[13px] text-[#111827] dark:text-[#f3f4f6]">文本导入</Label>
           <Textarea
             v-model="textInput"
-            class="min-h-[130px] border-[#ddd9d0] dark:border-[#44423f]"
+            class="min-h-[130px]"
             placeholder="粘贴 SOP、FAQ、产品说明、项目文档等..."
           />
         </div>
 
         <div class="flex flex-wrap gap-2">
           <Button
-            class="bg-[#da7756] hover:bg-[#c06548] text-white"
             :disabled="importingText || uploadingFiles"
             @click="importText"
           >
@@ -447,19 +444,19 @@ defineExpose({ refresh })
           >
         </div>
 
-        <div class="text-[12px] text-[#8a8478] dark:text-[#a09e99]">
+        <div class="text-[12px] text-[#6b7280] dark:text-[#a3a3a3]">
           单次最多 {{ MAX_FILES_PER_BATCH }} 个文件，大小限制由后端统一校验，支持扩展名：{{ SUPPORTED_EXTENSIONS_TEXT }}
         </div>
 
-        <div v-if="selectedFiles.length > 0" class="rounded-lg border border-[#ebe9e3] dark:border-[#3b3a37] p-2.5 space-y-1.5">
+        <div v-if="selectedFiles.length > 0" class="rounded-lg border border-[#e5e7eb] dark:border-[#333] p-2.5 space-y-1.5">
           <div
             v-for="(file, index) in selectedFiles"
             :key="`${file.name}-${file.size}-${index}`"
-            class="flex items-center justify-between gap-3 rounded-md bg-[#faf9f7] dark:bg-[#2b2a27] px-2.5 py-2 text-[12px]"
+            class="flex items-center justify-between gap-3 rounded-md bg-muted/50 dark:bg-[#1e1e1e] px-2.5 py-2 text-[12px]"
           >
             <div class="min-w-0">
-              <div class="truncate text-[#2a2820] dark:text-[#e8e3db]">{{ file.name }}</div>
-              <div class="text-[#8a8478] dark:text-[#a09e99]">{{ Math.ceil(file.size / 1024) }} KB</div>
+              <div class="truncate text-[#111827] dark:text-[#f3f4f6]">{{ file.name }}</div>
+              <div class="text-[#6b7280] dark:text-[#a3a3a3]">{{ Math.ceil(file.size / 1024) }} KB</div>
             </div>
             <Button size="sm" variant="ghost" class="h-7 px-2" @click="removeSelectedFile(index)">
               移除
@@ -469,36 +466,36 @@ defineExpose({ refresh })
       </CardContent>
     </Card>
 
-    <Card class="border-[#ebe9e3] dark:border-[#3b3a37] py-5 gap-4">
+    <Card class="border-[#e5e7eb] dark:border-[#333] py-5 gap-4">
       <CardHeader class="pb-2">
-        <CardTitle class="text-[15px] text-[#2a2820] dark:text-[#e8e3db]">知识库文档</CardTitle>
+        <CardTitle class="text-[15px] text-[#111827] dark:text-[#f3f4f6]">知识库文档</CardTitle>
         <CardDescription>管理已导入文档，删除后不会再参与后续检索。</CardDescription>
       </CardHeader>
       <CardContent class="space-y-2.5">
-        <div v-if="loading" class="text-[13px] text-[#8a8478] dark:text-[#a09e99]">加载中...</div>
-        <div v-else-if="documents.length === 0" class="text-[13px] text-[#8a8478] dark:text-[#a09e99]">
+        <div v-if="loading" class="text-[13px] text-[#6b7280] dark:text-[#a3a3a3]">加载中...</div>
+        <div v-else-if="documents.length === 0" class="text-[13px] text-[#6b7280] dark:text-[#a3a3a3]">
           暂无文档。可先导入文本或上传文件。
         </div>
         <div v-else class="space-y-2">
           <div
             v-for="doc in documents"
             :key="doc.id"
-            class="rounded-lg border border-[#ebe9e3] dark:border-[#3b3a37] p-3 bg-[#faf9f7] dark:bg-[#2b2a27]"
+            class="rounded-lg border border-[#e5e7eb] dark:border-[#333] p-3 bg-muted/50 dark:bg-[#1e1e1e]"
           >
             <div class="flex items-start justify-between gap-3">
               <div class="min-w-0">
-                <div class="text-[13px] font-medium text-[#2a2820] dark:text-[#e8e3db] truncate">{{ doc.sourceName }}</div>
-                <div class="text-[12px] text-[#8a8478] dark:text-[#a09e99] mt-0.5">
+                <div class="text-[13px] font-medium text-[#111827] dark:text-[#f3f4f6] truncate">{{ doc.sourceName }}</div>
+                <div class="text-[12px] text-[#6b7280] dark:text-[#a3a3a3] mt-0.5">
                   {{ doc.sourceType }} · {{ doc.contentChars.toLocaleString() }} 字符 · 更新于 {{ formatDocumentTime(doc.updatedAt) }}
                 </div>
-                <div class="text-[12px] text-[#6b6456] dark:text-[#b6b2aa] mt-1.5 leading-relaxed">
+                <div class="text-[12px] text-[#6b7280] dark:text-[#a3a3a3] mt-1.5 leading-relaxed">
                   {{ doc.preview || '（无预览内容）' }}
                 </div>
               </div>
               <Button
                 size="sm"
                 variant="ghost"
-                class="text-[#c0392b] hover:text-[#a93226]"
+                class="text-red-600 hover:text-red-700 dark:text-red-400 dark:hover:text-red-300"
                 :disabled="deletingDocumentId === doc.id"
                 @click="removeDocument(doc.id)"
               >
@@ -512,7 +509,7 @@ defineExpose({ refresh })
         <Button
           v-if="!confirmClear"
           variant="outline"
-          class="text-[#c0392b] border-[#f0d7d5] hover:bg-[#fff3f2]"
+          class="text-red-600 border-red-200 hover:bg-red-50 dark:text-red-400 dark:border-red-900/50 dark:hover:bg-red-950/30"
           :disabled="clearing"
           @click="confirmClear = true"
         >
@@ -535,9 +532,9 @@ defineExpose({ refresh })
       v-if="status"
       class="text-[12.5px] leading-relaxed px-3 py-2 rounded-md border"
       :class="{
-        'text-[#2e7d32] dark:text-[#9de5ad] bg-[#f2fbf4] dark:bg-[#1f3325] border-[#cde8d3] dark:border-[#3a6b48]': statusType === 'success',
-        'text-[#c0392b] dark:text-[#ffb3b3] bg-[#fff4f4] dark:bg-[#3a2222] border-[#f2c9c9] dark:border-[#6a3535]': statusType === 'error',
-        'text-[#6b6456] dark:text-[#b6b2aa] bg-[#f7f5ef] dark:bg-[#252422] border-[#ebe9e3] dark:border-[#3b3a37]': statusType === 'muted',
+        'text-green-700 dark:text-green-400 bg-green-50 dark:bg-green-950/30 border-green-200 dark:border-green-900/50': statusType === 'success',
+        'text-red-600 dark:text-red-400 bg-red-50 dark:bg-red-950/30 border-red-200 dark:border-red-900/50': statusType === 'error',
+        'text-[#6b7280] dark:text-[#a3a3a3] bg-muted/50 dark:bg-[#1e1e1e] border-[#e5e7eb] dark:border-[#333]': statusType === 'muted',
       }"
     >
       {{ status }}

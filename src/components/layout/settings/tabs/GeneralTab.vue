@@ -154,7 +154,7 @@ onMounted(() => {
 
 <template>
   <div class="flex flex-col gap-3">
-    <Card class="border-[#ebe9e3] dark:border-[#3b3a37]">
+    <Card class="border-[#e5e7eb] dark:border-[#333]">
       <CardHeader class="pb-2">
         <CardTitle class="text-[0.9rem]">{{ t.appearanceTitle }}</CardTitle>
         <CardDescription>{{ t.appearanceDesc }}</CardDescription>
@@ -175,7 +175,7 @@ onMounted(() => {
       </CardContent>
     </Card>
 
-    <Card class="border-[#ebe9e3] dark:border-[#3b3a37]">
+    <Card class="border-[#e5e7eb] dark:border-[#333]">
       <CardHeader class="pb-2">
         <CardTitle class="text-[0.9rem]">{{ t.languageTitle }}</CardTitle>
         <CardDescription>{{ t.languageDesc }}</CardDescription>
@@ -193,7 +193,7 @@ onMounted(() => {
       </CardContent>
     </Card>
 
-    <Card class="border-[#ebe9e3] dark:border-[#3b3a37]">
+    <Card class="border-[#e5e7eb] dark:border-[#333]">
       <CardHeader class="pb-2">
         <CardTitle class="text-[0.9rem]">{{ t.loggingTitle }}</CardTitle>
         <CardDescription>{{ t.loggingDesc }}</CardDescription>
@@ -202,11 +202,10 @@ onMounted(() => {
         <div class="flex items-center gap-3">
           <Checkbox
             id="general-enable-app-log"
-            class="border-[#c8baa3] data-[state=checked]:border-[#da7756] data-[state=checked]:bg-[#da7756]"
             :model-value="enableAppLog"
             @update:model-value="onEnableAppLogChange"
           />
-          <Label for="general-enable-app-log" class="text-[0.9rem] font-normal text-[#5f574a] dark:text-[#d8cfbf]">
+          <Label for="general-enable-app-log" class="text-[0.9rem] font-normal text-[#374151] dark:text-[#d7d7d7]">
             {{ t.loggingSwitchLabel }}
           </Label>
         </div>

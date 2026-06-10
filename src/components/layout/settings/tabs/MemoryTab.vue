@@ -208,15 +208,15 @@ onUnmounted(() => {
       @confirm="clearGlobalMemory"
     />
 
-    <Card class="mb-3 border-[#ebe9e3] dark:border-[#3b3a37]">
+    <Card class="mb-3 border-[#e5e7eb] dark:border-[#333]">
       <CardHeader class="px-4 pb-2">
-        <CardTitle class="text-[13.5px] text-[#2a2820] dark:text-[#e8e3db]">{{ t.title }}</CardTitle>
+        <CardTitle class="text-[13.5px] text-[#111827] dark:text-[#f3f4f6]">{{ t.title }}</CardTitle>
         <CardDescription class="text-[12px]">{{ t.desc }}</CardDescription>
       </CardHeader>
       <CardContent class="px-4 pt-0">
         <div class="space-y-3">
           <div class="flex flex-wrap items-center gap-2">
-            <span class="text-[12px] text-[#6f6759] dark:text-[#b4aa9c]">{{ t.kindLabel }}</span>
+            <span class="text-[12px] text-[#374151] dark:text-[#d7d7d7]">{{ t.kindLabel }}</span>
             <Button
               v-for="opt in globalMemoryKindOptions"
               :key="opt.value"
@@ -254,31 +254,31 @@ onUnmounted(() => {
             </Button>
           </div>
 
-          <div class="rounded-lg border border-[#ece6da] dark:border-[#3b3a37] bg-[#fcfbf9] dark:bg-[#242321]">
-            <div v-if="isLoadingGlobalMemory" class="px-3 py-3 text-[12px] text-[#8f8678] dark:text-[#ada496]">
+          <div class="rounded-lg border border-[#e5e7eb] dark:border-[#333] bg-[#f9fafb] dark:bg-[#1e1e1e]">
+            <div v-if="isLoadingGlobalMemory" class="px-3 py-3 text-[12px] text-[#64748b] dark:text-[#a3a3a3]">
               {{ t.loading }}
             </div>
-            <div v-else-if="globalMemoryEntries.length === 0" class="px-3 py-3 text-[12px] text-[#8f8678] dark:text-[#ada496]">
+            <div v-else-if="globalMemoryEntries.length === 0" class="px-3 py-3 text-[12px] text-[#64748b] dark:text-[#a3a3a3]">
               {{ t.empty }}
             </div>
-            <div v-else class="max-h-64 overflow-y-auto divide-y divide-[#ece6da] dark:divide-[#3b3a37]">
+            <div v-else class="max-h-64 overflow-y-auto divide-y divide-[#e5e7eb] dark:divide-[#333]">
               <div
                 v-for="entry in globalMemoryEntries"
                 :key="entry.id"
                 class="flex items-start justify-between gap-3 px-3 py-2.5"
               >
                 <div class="min-w-0">
-                  <div class="text-[11px] text-[#8f8678] dark:text-[#ada496]">
+                  <div class="text-[11px] text-[#64748b] dark:text-[#a3a3a3]">
                     {{ entry.kind }} · {{ t.hits }} {{ entry.hits }}
                   </div>
-                  <div class="mt-0.5 text-[12.5px] leading-relaxed text-[#352f25] dark:text-[#e0d8cb] break-words">
+                  <div class="mt-0.5 text-[12.5px] leading-relaxed text-[#111827] dark:text-[#ececec] break-words">
                     {{ entry.content }}
                   </div>
                 </div>
                 <Button
                   variant="ghost"
                   size="sm"
-                  class="h-7 px-2 text-[11px] text-[#b94b3c] hover:bg-[#fff1ee] dark:text-[#ef8a7f] dark:hover:bg-[#3b2a2a]"
+                  class="h-7 px-2 text-[11px] text-red-500 hover:bg-red-50 dark:text-red-400 dark:hover:bg-red-950/30"
                   :disabled="isRemovingGlobalMemoryId === entry.id"
                   @click="removeGlobalMemory(entry.id)"
                 >

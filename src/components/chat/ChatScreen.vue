@@ -17,6 +17,7 @@ import AssistantMessageBubble from './messages/AssistantMessageBubble.vue';
 import ContextCompactNotice from './messages/ContextCompactNotice.vue';
 import CurrentTurnActivityRail from './messages/CurrentTurnActivityRail.vue';
 import MarkdownRenderer from './MarkdownRenderer.vue';
+import MessageTimelineNavigator from './MessageTimelineNavigator.vue';
 import UserMessageBubble from './messages/UserMessageBubble.vue';
 
 const props = defineProps<{
@@ -53,6 +54,7 @@ const liveAssistantRef = ref<HTMLElement | null>(null);
 const reactionMap = ref<Record<number, 'up' | 'down' | undefined>>({});
 const copiedMap = ref<Record<string, boolean>>({});
 const showScrollToBottom = ref(false);
+const activeUserMessageIndex = ref<number | null>(null);
 const copyTimers: Record<string, ReturnType<typeof setTimeout> | undefined> = {};
 
 const formatNowTime = () => {
@@ -159,8 +161,60 @@ const updateScrollToBottomVisibility = () => {
   showScrollToBottom.value = distanceFromBottom > 120;
 };
 
+const summarizeUserMessage = (content: string) => {
+  const normalized = content.replace(/\s+/g, ' ').trim();
+  if (!normalized) return '空消息';
+  return normalized.length > 56 ? `${normalized.slice(0, 56)}...` : normalized;
+};
+
+const userTimelineItems = computed(() =>
+  props.messages
+    .map((message, index) => ({ message, index }))
+    .filter(({ message }) => message.role === 'user' && message.content.trim())
+    .map(({ message, index }) => ({
+      index,
+      summary: summarizeUserMessage(message.content),
+    })),
+);
+
+const updateActiveUserMessage = () => {
+  const container = chatAreaRef.value;
+  if (!container || userTimelineItems.value.length === 0) {
+    activeUserMessageIndex.value = null;
+    return;
+  }
+
+  const rows = Array.from(
+    container.querySelectorAll<HTMLElement>('[data-role="user"][data-message-index]'),
+  );
+  if (rows.length === 0) {
+    activeUserMessageIndex.value = null;
+    return;
+  }
+
+  const containerTop = container.getBoundingClientRect().top;
+  let closestIndex: number | null = null;
+  let closestDistance = Number.POSITIVE_INFINITY;
+
+  for (const row of rows) {
+    const rawIndex = row.dataset.messageIndex;
+    if (!rawIndex) continue;
+    const index = Number.parseInt(rawIndex, 10);
+    if (!Number.isFinite(index)) continue;
+
+    const distance = Math.abs(row.getBoundingClientRect().top - containerTop - 20);
+    if (distance < closestDistance) {
+      closestDistance = distance;
+      closestIndex = index;
+    }
+  }
+
+  activeUserMessageIndex.value = closestIndex;
+};
+
 const handleChatScroll = () => {
   updateScrollToBottomVisibility();
+  updateActiveUserMessage();
 };
 
 const scrollToBottomSmooth = async () => {
@@ -171,8 +225,18 @@ const scrollToBottomSmooth = async () => {
   });
 };
 
+const scrollToMessageIndex = async (index: number) => {
+  await nextTick();
+  const container = chatAreaRef.value;
+  const target = container?.querySelector<HTMLElement>(`[data-message-index="${index}"]`);
+  if (!target) return;
+  activeUserMessageIndex.value = index;
+  target.scrollIntoView({ block: 'start', behavior: 'smooth' });
+};
+
 onMounted(() => {
   void scrollToBottom();
+  void nextTick(updateActiveUserMessage);
 });
 
 watch(
@@ -183,11 +247,12 @@ watch(
     props.currentTurnToolEntries.length,
     props.isGenerating,
   ],
-  async () => {
-    await nextTick();
-    updateScrollToBottomVisibility();
-  },
-);
+    async () => {
+      await nextTick();
+      updateScrollToBottomVisibility();
+      updateActiveUserMessage();
+    },
+  );
 
 const handleSend = (msg: string) => {
   emit('send', msg);
@@ -309,7 +374,7 @@ defineExpose({
 </script>
 
 <template>
-  <div class="flex flex-col h-full w-full max-w-4xl mx-auto pt-14">
+  <div class="relative flex flex-col h-full w-full max-w-4xl mx-auto pt-14">
     <div
       class="chat-scroll-area flex-1 overflow-y-auto px-4 pb-4 custom-scrollbar"
       ref="chatAreaRef"
@@ -320,6 +385,7 @@ defineExpose({
           v-for="(msg, index) in messages"
           :key="index"
           :data-role="msg.role"
+          :data-message-index="index"
           class="flex w-full group"
         >
           <UserMessageBubble
@@ -409,6 +475,12 @@ defineExpose({
         </div>
       </div>
     </div>
+
+    <MessageTimelineNavigator
+      :items="userTimelineItems"
+      :activeIndex="activeUserMessageIndex"
+      @select="scrollToMessageIndex"
+    />
 
     <button
       v-if="showScrollToBottom"

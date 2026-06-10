@@ -16,6 +16,9 @@ type ProviderProfile = {
   model: string
 }
 
+const customModels = ref<Record<string, string[]>>({})
+const providerOrder = ref<string[]>([])
+
 const builtinProviderIds = new Set(['anthropic', 'openai'])
 
 const currentProviderId = ref('anthropic')
@@ -26,6 +29,32 @@ const dialogDraft = ref<ProviderDraft | null>(null)
 const dialogIsNew = ref(false)
 const pendingDeleteId = ref<string | null>(null)
 
+const resolveProviderModels = (id: string, profile: ProviderProfile) => {
+  if (customModels.value[id]?.length) {
+    return customModels.value[id]
+  }
+  return profile.model ? [profile.model] : []
+}
+
+const syncProviderOrder = (profiles: Record<string, ProviderProfile>, order: string[]) => {
+  const nextOrder = order.filter((id) => id in profiles)
+  for (const id of Object.keys(profiles)) {
+    if (!nextOrder.includes(id)) {
+      nextOrder.push(id)
+    }
+  }
+  providerOrder.value = nextOrder
+}
+
+const compareByProviderOrder = (aId: string, bId: string) => {
+  const aIndex = providerOrder.value.indexOf(aId)
+  const bIndex = providerOrder.value.indexOf(bId)
+  if (aIndex === -1 && bIndex === -1) return aId.localeCompare(bId)
+  if (aIndex === -1) return 1
+  if (bIndex === -1) return -1
+  return aIndex - bIndex
+}
+
 const loadSettings = async () => {
   try {
     const settings: any = await invoke('get_settings')
@@ -33,7 +62,14 @@ const loadSettings = async () => {
       if (settings.providerProfiles && typeof settings.providerProfiles === 'object') {
         providerProfiles.value = settings.providerProfiles
       }
+      if (settings.customModels && typeof settings.customModels === 'object') {
+        customModels.value = settings.customModels
+      }
+      if (Array.isArray(settings.providerOrder)) {
+        providerOrder.value = settings.providerOrder
+      }
       currentProviderId.value = settings.provider || 'anthropic'
+      syncProviderOrder(providerProfiles.value, providerOrder.value)
     }
   } catch (error) {
     console.error('Failed to load settings:', error)
@@ -45,10 +81,13 @@ onMounted(loadSettings)
 const saveSettings = async () => {
   try {
     const prevSettings: any = (await invoke('get_settings')) || {}
+    syncProviderOrder(providerProfiles.value, providerOrder.value)
     const settings = {
       ...prevSettings,
       provider: currentProviderId.value,
       providerProfiles: providerProfiles.value,
+      customModels: customModels.value,
+      providerOrder: providerOrder.value,
     }
     await invoke('save_settings', { settings })
     window.dispatchEvent(new CustomEvent('settings-updated'))
@@ -58,13 +97,20 @@ const saveSettings = async () => {
 }
 
 const providersList = computed(() => {
-  return Object.entries(providerProfiles.value).map(([id, profile]) => ({
-    id,
-    label: profile.displayName || id,
-    apiFormat: profile.apiFormat || 'openai',
-    model: profile.model || '',
-    isBuiltin: builtinProviderIds.has(id),
-  }))
+  return Object.entries(providerProfiles.value)
+    .map(([id, profile]) => {
+      const models = resolveProviderModels(id, profile)
+
+      return {
+        id,
+        label: profile.displayName || id,
+        apiFormat: profile.apiFormat || 'openai',
+        model: models.join(' / '),
+        models,
+        isBuiltin: builtinProviderIds.has(id),
+      }
+    })
+    .sort((a, b) => compareByProviderOrder(a.id, b.id))
 })
 
 const handleSwitch = async (id: string) => {
@@ -81,13 +127,14 @@ const handleCreate = () => {
 const handleEdit = (id: string) => {
   const profile = providerProfiles.value[id]
   if (!profile) return
+
   dialogDraft.value = {
     id,
     displayName: profile.displayName || id,
     apiFormat: profile.apiFormat || 'openai',
     apiKey: profile.apiKey || '',
     baseUrl: profile.baseUrl || '',
-    model: profile.model || ''
+    models: [...resolveProviderModels(id, profile)],
   }
   dialogIsNew.value = false
   dialogOpen.value = true
@@ -95,9 +142,12 @@ const handleEdit = (id: string) => {
 
 const handleSaveDraft = async (draft: ProviderDraft, originalId: string | null) => {
   const id = draft.id || 'custom-provider'
-  
+  const models = Array.from(new Set((draft.models || []).map((item) => item.trim()).filter(Boolean)))
+
   if (originalId && originalId !== id) {
     delete providerProfiles.value[originalId]
+    delete customModels.value[originalId]
+    providerOrder.value = providerOrder.value.map((item) => (item === originalId ? id : item))
   }
 
   providerProfiles.value[id] = {
@@ -105,7 +155,13 @@ const handleSaveDraft = async (draft: ProviderDraft, originalId: string | null) 
     apiFormat: draft.apiFormat,
     apiKey: draft.apiKey,
     baseUrl: draft.baseUrl,
-    model: draft.model
+    model: models[0] || '',
+  }
+
+  customModels.value[id] = models
+
+  if (!providerOrder.value.includes(id)) {
+    providerOrder.value = [...providerOrder.value, id]
   }
 
   if (dialogIsNew.value) {
@@ -125,6 +181,8 @@ const confirmDelete = async () => {
   if (!id) return
 
   delete providerProfiles.value[id]
+  delete customModels.value[id]
+  providerOrder.value = providerOrder.value.filter((item) => item !== id)
   if (currentProviderId.value === id) {
     currentProviderId.value = 'openai'
   }

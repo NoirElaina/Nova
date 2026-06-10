@@ -85,8 +85,15 @@ const ensureActiveProfile = () => {
 };
 
 const availableModels = computed(() => {
-  if (!settings.value || !settings.value.provider || !settings.value.customModels) return [];
-  return settings.value.customModels[settings.value.provider] || [];
+  if (!settings.value?.provider) return [];
+  const provider = normalizeProviderKey(settings.value.provider);
+  const listed = settings.value.customModels?.[provider];
+  if (Array.isArray(listed) && listed.length > 0) {
+    return listed;
+  }
+  const profile = settings.value.providerProfiles?.[provider];
+  const fallbackModel = typeof profile?.model === 'string' ? profile.model.trim() : '';
+  return fallbackModel ? [fallbackModel] : [];
 });
 
 const currentModel = computed({

@@ -50,12 +50,12 @@ const logoText = computed(() => {
 
     <div class="flex shrink-0 items-center gap-2">
       <Button
-        v-if="!isCurrent"
         variant="secondary"
         size="sm"
+        :disabled="isCurrent"
         @click="emit('switch', id)"
       >
-        使用
+        {{ isCurrent ? '使用中' : '使用' }}
       </Button>
 
       <Button variant="ghost" size="icon" class="h-8 w-8 text-muted-foreground hover:bg-muted" @click="emit('edit', id)">

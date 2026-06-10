@@ -144,6 +144,9 @@ pub struct AppSettings {
     // 各 provider 的独立配置。
     pub provider_profiles: HashMap<String, ProviderProfile>,
     #[serde(default)]
+    // 模型配置页展示顺序（provider id 列表）。
+    pub provider_order: Vec<String>,
+    #[serde(default)]
     // 被禁用的技能列表。
     pub disabled_skills: Vec<String>,
     #[serde(default = "default_hook_env")]
@@ -170,6 +173,7 @@ impl Default for AppSettings {
             provider: "anthropic".to_string(),
             custom_models: HashMap::new(),
             provider_profiles: HashMap::new(),
+            provider_order: Vec::new(),
             disabled_skills: Vec::new(),
             hook_env: HashMap::new(),
             rag: RagSettings::default(),
@@ -231,9 +235,25 @@ impl AppSettings {
         // 规范化 RAG 配置。
         self.rag.embedding_model = self.rag.embedding_model.trim().to_string();
 
+        self.sync_provider_order();
+
         // 规范化 UI 偏好配置。
         self.ui_language = normalize_ui_language(&self.ui_language);
         self.ui_theme = normalize_ui_theme(&self.ui_theme);
+    }
+
+    fn sync_provider_order(&mut self) {
+        self.provider_order
+            .retain(|id| self.provider_profiles.contains_key(id));
+
+        let mut missing: Vec<String> = self
+            .provider_profiles
+            .keys()
+            .filter(|id| !self.provider_order.iter().any(|existing| existing == *id))
+            .cloned()
+            .collect();
+        missing.sort();
+        self.provider_order.extend(missing);
     }
 }
 

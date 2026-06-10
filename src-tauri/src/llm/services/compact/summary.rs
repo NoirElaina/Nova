@@ -3,9 +3,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tauri::AppHandle;
 
-use crate::llm::providers::anthropic::types::{
-    AnthropicContentBlock, AnthropicMessage, AnthropicMessageContent, AnthropicRequest,
-    AnthropicResponse,
+use crate::llm::providers::adapters::anthropic::types::{
+    AnthropicContentBlock, AnthropicMessage, AnthropicMessageContent, AnthropicRequest, AnthropicResponse,
 };
 use crate::llm::types::{Content, ContentBlock, Message, Role};
 
@@ -251,7 +250,7 @@ async fn summarize_with_anthropic(app: &AppHandle, user_prompt: &str) -> Result<
             AnthropicContentBlock::Text { text } => Some(text.trim()),
             _ => None,
         })
-        .filter(|text| !text.is_empty())
+        .filter(|text: &&str| !text.is_empty())
         .collect::<Vec<_>>()
         .join("\n");
 
@@ -348,7 +347,7 @@ pub(crate) async fn summarize_messages_for_compact(
     messages: &[Message],
 ) -> Result<String, String> {
     let settings = crate::command::settings::get_settings(app.clone())?;
-    let provider_protocol = settings.active_provider_protocol();
+    let provider_protocol = settings.active_provider_api_format();
     let mut working_messages = strip_images_to_placeholders(messages);
 
     for attempt in 0..=MAX_SUMMARY_RETRIES {

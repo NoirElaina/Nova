@@ -1,22 +1,19 @@
 pub(crate) mod prompt;
 pub(crate) mod types;
 
-use reqwest::Client;
 use serde_json::Value;
 use std::collections::BTreeMap;
-use tauri::AppHandle;
+use reqwest::RequestBuilder;
 
-use crate::llm::providers::stream_runner::{run_streaming, Delta, ReadyToolCall, StreamParser};
-use crate::llm::providers::{ProviderTurnError, ProviderTurnResult};
+use crate::llm::providers::adapters::ApiAdapter;
+use crate::llm::providers::stream_runner::{Delta, ReadyToolCall};
+use crate::llm::providers::{ProviderPromptEstimate, ProviderTurnError};
 use crate::llm::types::{AgentMode, Message};
-use crate::llm::utils::error_event::emit_backend_error;
 
-use super::sse_utils::truncate_for_log;
+use super::super::sse_utils::truncate_for_log;
 use types::{
     ResponsesOutputItem, ResponsesReasoningSummaryPart, ResponsesResponse, ResponsesStreamEvent,
 };
-
-pub struct ResponsesProvider;
 
 #[derive(Debug, Default)]
 struct PendingFunctionCall {
@@ -30,13 +27,13 @@ struct PendingReasoning {
     summary: String,
 }
 
-struct ResponsesStreamParser {
+pub struct ResponsesAdapter {
     pending_fn_calls: BTreeMap<usize, PendingFunctionCall>,
     pending_reasoning: BTreeMap<usize, PendingReasoning>,
 }
 
-impl ResponsesStreamParser {
-    fn new() -> Self {
+impl ResponsesAdapter {
+    pub fn new() -> Self {
         Self {
             pending_fn_calls: BTreeMap::new(),
             pending_reasoning: BTreeMap::new(),
@@ -133,9 +130,31 @@ fn completed_stop_reason(response: ResponsesResponse) -> (Option<types::Response
     (response.usage, format!("responses.{}", status))
 }
 
-impl StreamParser for ResponsesStreamParser {
+impl ApiAdapter for ResponsesAdapter {
     fn provider_name(&self) -> &'static str {
         "responses"
+    }
+
+    fn build_request(
+        &mut self,
+        mut builder: RequestBuilder,
+        app: &tauri::AppHandle,
+        messages: &[Message],
+        agent_mode: AgentMode,
+        conversation_id: Option<&str>,
+    ) -> Result<RequestBuilder, String> {
+        let settings = crate::command::settings::get_settings(app.clone()).map_err(|e| e.to_string())?;
+        let profile = settings.active_provider_profile();
+
+        let request = prompt::build_request(app, messages, agent_mode, conversation_id).map_err(|e| e.message)?.request;
+
+        builder = builder.header("content-type", "application/json");
+
+        if !profile.api_key.is_empty() {
+            builder = builder.header("Authorization", format!("Bearer {}", profile.api_key));
+        }
+
+        Ok(builder.json(&request))
     }
 
     fn parse_event(&mut self, data: &str) -> Result<Vec<Delta>, String> {
@@ -324,87 +343,12 @@ impl StreamParser for ResponsesStreamParser {
     }
 }
 
-impl ResponsesProvider {
-    pub async fn send_request(
-        &self,
-        app: &AppHandle,
-        messages: &[Message],
-        agent_mode: AgentMode,
-        conversation_id: Option<&str>,
-    ) -> Result<ProviderTurnResult, ProviderTurnError> {
-        let settings =
-            crate::command::settings::get_settings(app.clone()).map_err(ProviderTurnError::new)?;
-        let profile = settings.active_provider_profile();
-
-        let request = prompt::build_request(app, messages, agent_mode, conversation_id)?.request;
-
-        let client = Client::new();
-
-        let mut url = profile.base_url.trim_end_matches('/').to_string();
-        if !url.ends_with("/v1/responses") && !url.ends_with("/responses") {
-            if url.ends_with("/v1") {
-                url = format!("{}/responses", url);
-            } else {
-                url = format!("{}/v1/responses", url);
-            }
-        }
-
-        let mut req_builder = client.post(&url).header("content-type", "application/json");
-
-        if !profile.api_key.is_empty() {
-            req_builder =
-                req_builder.header("Authorization", format!("Bearer {}", profile.api_key));
-        }
-
-        if let Ok(wire) = serde_json::to_string(&request) {
-            crate::llm::utils::turn_log::log_wire_request(app, conversation_id, &url, &wire);
-        }
-
-        let resp = tokio::select! {
-            res = req_builder.json(&request).send() => res,
-            _ = async {
-                loop {
-                    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-                    if crate::llm::cancellation::is_cancelled(conversation_id) { break; }
-                }
-            } => {
-                return Ok(ProviderTurnResult {
-                    messages: Vec::new(),
-                    stop_reason: Some("cancelled".into()),
-                    input_tokens: None,
-                    output_tokens: None,
-                    prevent_continuation: false,
-                });
-            }
-        };
-
-        match resp {
-            Ok(res) => {
-                if !res.status().is_success() {
-                    let status = res.status();
-                    let error_text = res.text().await.unwrap_or_default();
-                    let msg = format!("API Error [{}] {} => {}", status, url, error_text);
-                    emit_backend_error(
-                        app,
-                        "llm.providers.responses",
-                        msg.clone(),
-                        Some("http.non_success"),
-                    );
-                    return Err(ProviderTurnError::new(msg));
-                }
-                let mut parser = ResponsesStreamParser::new();
-                run_streaming(&mut parser, app, res, conversation_id).await
-            }
-            Err(e) => {
-                let msg = e.to_string();
-                emit_backend_error(
-                    app,
-                    "llm.providers.responses",
-                    msg.clone(),
-                    Some("http.request"),
-                );
-                Err(ProviderTurnError::new(msg))
-            }
-        }
-    }
+pub fn estimate_prompt_tokens(
+    app: &tauri::AppHandle,
+    messages: &[Message],
+    agent_mode: AgentMode,
+    conversation_id: Option<&str>,
+) -> Result<ProviderPromptEstimate, ProviderTurnError> {
+    prompt::build_request(app, messages, agent_mode, conversation_id)
+        .map(|built| built.estimate)
 }

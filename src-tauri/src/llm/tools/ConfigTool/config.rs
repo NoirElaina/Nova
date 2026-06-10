@@ -71,7 +71,7 @@ async fn execute_with_app(app: &AppHandle, input: Value) -> Result<ToolOutcome, 
     };
     let active_provider = settings.active_provider_key();
     let active_profile = settings.active_provider_profile();
-    let active_protocol = settings.active_provider_protocol();
+    let active_protocol = settings.active_provider_api_format();
     let active_custom_model_count = settings
         .custom_models
         .get(&active_provider)

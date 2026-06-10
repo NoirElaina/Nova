@@ -44,7 +44,7 @@ pub fn load_embedding_config(app: &AppHandle) -> Result<EmbeddingConfig, String>
         return Err("RAG embedding model is not configured".to_string());
     }
 
-    let protocol = settings.active_provider_protocol();
+    let protocol = settings.active_provider_api_format();
     if protocol == "anthropic" {
         return Err("RAG embeddings require an OpenAI-compatible provider profile".to_string());
     }

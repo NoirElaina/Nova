@@ -56,15 +56,15 @@ fn normalize_provider_key(provider: &str) -> String {
     }
 }
 
-fn normalize_provider_protocol(protocol: &str) -> String {
-    match protocol.trim().to_ascii_lowercase().as_str() {
+fn normalize_provider_api_format(api_format: &str) -> String {
+    match api_format.trim().to_ascii_lowercase().as_str() {
         "anthropic" | "claude" => "anthropic".to_string(),
         "openai_responses" | "responses" => "openai_responses".to_string(),
         _ => "openai".to_string(),
     }
 }
 
-fn infer_provider_protocol(provider_key: &str) -> String {
+fn infer_provider_api_format(provider_key: &str) -> String {
     match provider_key.trim().to_ascii_lowercase().as_str() {
         "anthropic" | "claude" => "anthropic".to_string(),
         _ => "openai".to_string(),
@@ -93,8 +93,9 @@ pub struct ProviderProfile {
     // UI 展示名。
     pub display_name: String,
     #[serde(default)]
-    // 协议类型：openai / anthropic。profile key 只负责选择配置。
-    pub protocol: String,
+    #[serde(alias = "protocol")]
+    // 接口格式：openai / anthropic / openai_responses。
+    pub api_format: String,
     #[serde(default)]
     // provider API key。
     pub api_key: String,
@@ -194,15 +195,15 @@ impl AppSettings {
             .unwrap_or_default()
     }
 
-    pub fn active_provider_protocol(&self) -> String {
+    pub fn active_provider_api_format(&self) -> String {
         let key = self.active_provider_key();
         let profile = self.provider_profiles.get(&key);
-        let raw_protocol = profile
-            .map(|profile| profile.protocol.trim())
-            .filter(|protocol| !protocol.is_empty())
+        let raw_api_format = profile
+            .map(|profile| profile.api_format.trim())
+            .filter(|api_format| !api_format.is_empty())
             .map(str::to_string)
-            .unwrap_or_else(|| infer_provider_protocol(&key));
-        normalize_provider_protocol(&raw_protocol)
+            .unwrap_or_else(|| infer_provider_api_format(&key));
+        normalize_provider_api_format(&raw_api_format)
     }
 
     pub fn normalize_for_runtime(&mut self) {
@@ -213,10 +214,10 @@ impl AppSettings {
         self.provider_profiles.entry(key.clone()).or_default();
 
         for (profile_key, profile) in self.provider_profiles.iter_mut() {
-            if profile.protocol.trim().is_empty() {
-                profile.protocol = infer_provider_protocol(profile_key);
+            if profile.api_format.trim().is_empty() {
+                profile.api_format = infer_provider_api_format(profile_key);
             } else {
-                profile.protocol = normalize_provider_protocol(&profile.protocol);
+                profile.api_format = normalize_provider_api_format(&profile.api_format);
             }
             profile.display_name = profile.display_name.trim().to_string();
             profile.stop_sequences = profile

@@ -1,21 +1,18 @@
 pub(crate) mod prompt;
 pub(crate) mod types;
 
-use reqwest::Client;
-use tauri::AppHandle;
+use reqwest::RequestBuilder;
 
-use crate::llm::providers::stream_runner::{run_streaming, Delta, ReadyToolCall, StreamParser};
-use crate::llm::providers::{ProviderTurnError, ProviderTurnResult};
+use crate::llm::providers::adapters::ApiAdapter;
+use crate::llm::providers::stream_runner::{Delta, ReadyToolCall};
+use crate::llm::providers::{ProviderPromptEstimate, ProviderTurnError};
 use crate::llm::tools;
 use crate::llm::types::{AgentMode, Message};
-use crate::llm::utils::error_event::emit_backend_error;
 
-use super::sse_utils::truncate_for_log;
+use super::super::sse_utils::truncate_for_log;
 use types::{StreamContentBlock, StreamDelta, StreamEvent};
 
-pub struct AnthropicProvider;
-
-struct AnthropicStreamParser {
+pub struct AnthropicAdapter {
     current_tool_id: Option<String>,
     current_tool_name: Option<String>,
     current_tool_input: String,
@@ -25,8 +22,8 @@ struct AnthropicStreamParser {
     pending_stop_reason: Option<String>,
 }
 
-impl AnthropicStreamParser {
-    fn new() -> Self {
+impl AnthropicAdapter {
+    pub fn new() -> Self {
         Self {
             current_tool_id: None,
             current_tool_name: None,
@@ -39,9 +36,34 @@ impl AnthropicStreamParser {
     }
 }
 
-impl StreamParser for AnthropicStreamParser {
+impl ApiAdapter for AnthropicAdapter {
     fn provider_name(&self) -> &'static str {
         "anthropic"
+    }
+
+    fn build_request(
+        &mut self,
+        builder: RequestBuilder,
+        app: &tauri::AppHandle,
+        messages: &[Message],
+        agent_mode: AgentMode,
+        conversation_id: Option<&str>,
+    ) -> Result<RequestBuilder, String> {
+        let settings = crate::command::settings::get_settings(app.clone()).map_err(|e| e.to_string())?;
+        let profile = settings.active_provider_profile();
+        let api_key = profile.api_key;
+
+        if api_key.is_empty() {
+            return Err("API error: No API key configured. Please set it in Settings.".to_string());
+        }
+
+        let request = prompt::build_request(app, messages, agent_mode, conversation_id).map_err(|e| e.message)?.request;
+
+        Ok(builder
+            .header("x-api-key", &api_key)
+            .header("anthropic-version", "2023-06-01")
+            .header("content-type", "application/json")
+            .json(&request))
     }
 
     fn parse_event(&mut self, data: &str) -> Result<Vec<Delta>, String> {
@@ -185,94 +207,12 @@ impl StreamParser for AnthropicStreamParser {
     }
 }
 
-impl AnthropicProvider {
-    pub async fn send_request(
-        &self,
-        app: &AppHandle,
-        messages: &[Message],
-        agent_mode: AgentMode,
-        conversation_id: Option<&str>,
-    ) -> Result<ProviderTurnResult, ProviderTurnError> {
-        let settings =
-            crate::command::settings::get_settings(app.clone()).map_err(ProviderTurnError::new)?;
-        let profile = settings.active_provider_profile();
-        let api_key = profile.api_key;
-
-        if api_key.is_empty() {
-            return Err(ProviderTurnError::new(
-                "API error: No API key configured. Please set it in Settings.".to_string(),
-            ));
-        }
-
-        let request = prompt::build_request(app, messages, agent_mode, conversation_id)?.request;
-
-        let client = Client::new();
-        let mut url = profile.base_url.trim_end_matches('/').to_string();
-        if !url.ends_with("/v1/messages") && !url.ends_with("/messages") {
-            if url.ends_with("/v1") {
-                url = format!("{}/messages", url);
-            } else {
-                url = format!("{}/v1/messages", url);
-            }
-        }
-
-        if let Ok(wire) = serde_json::to_string(&request) {
-            crate::llm::utils::turn_log::log_wire_request(app, conversation_id, &url, &wire);
-        }
-
-        let resp = tokio::select! {
-            res = client
-                .post(&url)
-                .header("x-api-key", &api_key)
-                .header("anthropic-version", "2023-06-01")
-                .header("content-type", "application/json")
-                .json(&request)
-                .send() => res,
-            _ = async {
-                loop {
-                    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-                    if crate::llm::cancellation::is_cancelled(conversation_id) { break; }
-                }
-            } => {
-                return Ok(ProviderTurnResult {
-                    messages: Vec::new(),
-                    stop_reason: Some("cancelled".into()),
-                    input_tokens: None,
-                    output_tokens: None,
-                    prevent_continuation: false,
-                });
-            }
-        };
-
-        match resp {
-            Ok(res) => {
-                if !res.status().is_success() {
-                    let status = res.status();
-                    let error_text = res.text().await.unwrap_or_default();
-                    eprintln!("API Error: {}", error_text);
-                    let msg = format!("API Error [{}] {} => {}", status, url, error_text);
-                    emit_backend_error(
-                        app,
-                        "llm.providers.anthropic",
-                        msg.clone(),
-                        Some("http.non_success"),
-                    );
-                    return Err(ProviderTurnError::new(msg));
-                }
-
-                let mut parser = AnthropicStreamParser::new();
-                run_streaming(&mut parser, app, res, conversation_id).await
-            }
-            Err(e) => {
-                let msg = e.to_string();
-                emit_backend_error(
-                    app,
-                    "llm.providers.anthropic",
-                    msg.clone(),
-                    Some("http.request"),
-                );
-                Err(ProviderTurnError::new(msg))
-            }
-        }
-    }
+pub fn estimate_prompt_tokens(
+    app: &tauri::AppHandle,
+    messages: &[Message],
+    agent_mode: AgentMode,
+    conversation_id: Option<&str>,
+) -> Result<ProviderPromptEstimate, ProviderTurnError> {
+    prompt::build_request(app, messages, agent_mode, conversation_id)
+        .map(|built| built.estimate)
 }

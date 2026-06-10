@@ -3,7 +3,7 @@ use tracing::info;
 
 use std::collections::HashSet;
 
-use crate::llm::providers::LlmProvider;
+use crate::llm::providers::LlmClient;
 use crate::llm::query_engine::ChatMessageEvent;
 use crate::llm::services::compact;
 use crate::llm::types::{AgentMode, Content, ContentBlock, Message, Role};
@@ -603,9 +603,7 @@ pub async fn send_chat_message(
     }
     // println!("current_messages:{:?}", current_messages);
 
-    // 2. 根据设置选择模型提供方（Anthropic/OpenAI）。
-    // Provider 实例封装了底层调用细节。
-    let provider = LlmProvider::new(&app)?;
+    let mut provider = LlmClient::new(&app)?;
 
     // 3. 主循环：调用 provider.send_request（流式），并根据 tool 执行情况决定是否继续下一步。
     //    - 如果发生工具调用，结果会被“注入”到 current_messages 继续下一轮。

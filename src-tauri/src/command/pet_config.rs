@@ -44,10 +44,11 @@ pub async fn fetch_pet(
 
 #[derive(Serialize, Deserialize)]
 pub struct LocalPetMeta {
-    id: String,
-    display_name: String,
-    cell_size: String,
-    atlas_size: String,
+    pub id: String,
+    pub display_name: String,
+    pub cell_size: String,
+    pub atlas_size: String,
+    pub row_frame_counts: Vec<u32>,
 }
 
 #[tauri::command]
@@ -58,6 +59,7 @@ pub async fn download_pet(
     download_url: String,
     cell_size: String,
     atlas_size: String,
+    row_frame_counts: Vec<u32>,
 ) -> Result<String, String> {
     let pet_dir = app
         .path()
@@ -108,6 +110,7 @@ pub async fn download_pet(
         display_name,
         cell_size,
         atlas_size,
+        row_frame_counts,
     };
     let meta_json =
         serde_json::to_string_pretty(&meta).map_err(|e| e.to_string())?;

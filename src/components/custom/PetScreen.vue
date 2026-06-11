@@ -177,6 +177,7 @@ async function downloadPet(pet: Pet) {
       downloadUrl: pet.downloadUrl,
       cellSize: pet.validationReport?.cellSize ?? '192x208',
       atlasSize: pet.validationReport?.atlasSize ?? '1536x1872',
+      rowFrameCounts: [6, 8, 8, 4, 5, 8, 6, 6, 6],
     })
     await loadLocalPets()
   } catch (e) {
@@ -191,6 +192,7 @@ interface LocalPet {
   display_name: string
   cell_size: string
   atlas_size: string
+  row_frame_counts: number[]
 }
 
 const localPets = ref<LocalPet[]>([])
@@ -337,6 +339,7 @@ onMounted(() => {
               :spritesheet-url="pet.spritesheetUrl"
               :cell-size="pet.validationReport?.cellSize ?? ''"
               :atlas-size="pet.validationReport?.atlasSize ?? ''"
+              :frame-count="6"
               :fps="5"
             />
           </div>

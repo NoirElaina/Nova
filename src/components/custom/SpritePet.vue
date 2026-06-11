@@ -7,6 +7,7 @@ const props = defineProps<{
   cellSize: string
   atlasSize: string
   fps?: number
+  frameCount?: number
 }>()
 
 const frame = ref(0)
@@ -38,13 +39,12 @@ const atlas = computed(() => {
 
 
 const totalFrames = computed(() => {
-  const cols = Math.floor(atlas.value.width / cell.value.width)
-  const rows = Math.floor(atlas.value.height / cell.value.height)
-  return Math.max(cols * rows, 1)
+  return props.frameCount || Math.floor(atlas.value.width / cell.value.width) || 1
 })
 
 const backgroundPosition = computed(() => {
-  return `${-(frame.value * cell.value.width)}px 0px`
+  const safeFrame = frame.value % totalFrames.value
+  return `${-(safeFrame * cell.value.width)}px 0px`
 })
 
 const style = computed(() => ({
@@ -86,6 +86,10 @@ watch(
     stop()
   }
 )
+
+watch(totalFrames, () => {
+  frame.value = 0
+})
 
 onUnmounted(() => {
   stop()

@@ -85,6 +85,8 @@ impl ApiAdapter for AnthropicAdapter {
                 deltas.push(Delta::Usage {
                     input: Some(message.usage.input_tokens),
                     output: Some(message.usage.output_tokens),
+                    cache_read: Some(message.usage.cache_read_input_tokens),
+                    cache_creation: Some(message.usage.cache_creation_input_tokens),
                 });
             }
 
@@ -166,6 +168,16 @@ impl ApiAdapter for AnthropicAdapter {
                             None
                         },
                         output: Some(usage.output_tokens),
+                        cache_read: if usage.cache_read_input_tokens > 0 {
+                            Some(usage.cache_read_input_tokens)
+                        } else {
+                            None
+                        },
+                        cache_creation: if usage.cache_creation_input_tokens > 0 {
+                            Some(usage.cache_creation_input_tokens)
+                        } else {
+                            None
+                        },
                     });
                 }
             }

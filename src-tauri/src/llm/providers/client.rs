@@ -13,6 +13,7 @@ use crate::llm::utils::error_event::emit_backend_error;
 pub struct LlmClient {
     adapter: Box<dyn ApiAdapter>,
     base_url: String,
+    model: String,
 }
 
 // 桥接 ApiAdapter 到 StreamParser 以便复用 run_streaming
@@ -52,6 +53,7 @@ impl LlmClient {
         Ok(Self {
             adapter,
             base_url: profile.base_url.clone(),
+            model: profile.model.clone(),
         })
     }
 
@@ -130,6 +132,9 @@ impl LlmClient {
                     stop_reason: Some("cancelled".into()),
                     input_tokens: None,
                     output_tokens: None,
+                    cache_read_tokens: None,
+                    cache_creation_tokens: None,
+                    cost: None,
                     prevent_continuation: false,
                 });
             }
@@ -154,7 +159,7 @@ impl LlmClient {
                 let mut parser = AdapterStreamParser {
                     adapter: self.adapter.as_mut(),
                 };
-                run_streaming(&mut parser, app, res, conversation_id).await
+                run_streaming(&mut parser, app, res, conversation_id, &self.model).await
             }
             Err(e) => {
                 let msg = e.to_string();

@@ -4,6 +4,7 @@ pub mod sse_utils;
 pub mod stream_runner;
 
 use crate::llm::types::Message;
+use crate::llm::utils::pricing::TurnCostBreakdown;
 
 #[derive(Debug, Clone)]
 pub struct ProviderTurnResult {
@@ -11,6 +12,9 @@ pub struct ProviderTurnResult {
     pub stop_reason: Option<String>,
     pub input_tokens: Option<u32>,
     pub output_tokens: Option<u32>,
+    pub cache_read_tokens: Option<u32>,
+    pub cache_creation_tokens: Option<u32>,
+    pub cost: Option<TurnCostBreakdown>,
     pub prevent_continuation: bool,
 }
 

@@ -22,6 +22,14 @@ const emit = defineEmits<{
 
 const animatingReaction = ref<'up' | 'down' | null>(null);
 
+const formatUsd = (value?: string) => {
+  const amount = Number.parseFloat(value ?? '');
+  if (!Number.isFinite(amount) || amount <= 0) return '';
+  if (amount < 0.0001) return `$${amount.toPrecision(2)}`;
+  if (amount < 0.01) return `$${amount.toFixed(5)}`;
+  return `$${amount.toFixed(4)}`;
+};
+
 const triggerReaction = (value: 'up' | 'down') => {
   animatingReaction.value = value;
   emit('react', { index: props.index, value });
@@ -50,7 +58,7 @@ const triggerReaction = (value: 'up' | 'down') => {
             <path d="M21 12c0 1.66-4 3-9 3s-9-1.34-9-3"></path>
             <path d="M3 5v14c0 1.66 4 3 9 3s9-1.34 9-3V5"></path>
           </svg>
-          本次 {{ ((message.cost?.inputTokens ?? 0) + (message.cost?.outputTokens ?? 0)) || (message.tokenUsage ?? 0) }} · 会话 {{ conversationTokenUsage }}
+          本次 {{ ((message.cost?.inputTokens ?? 0) + (message.cost?.outputTokens ?? 0)) || (message.tokenUsage ?? 0) }} · 会话 {{ conversationTokenUsage }}<template v-if="formatUsd(message.cost?.totalCostUsd)"> · {{ formatUsd(message.cost?.totalCostUsd) }}</template>
         </span>
       </div>
       <details

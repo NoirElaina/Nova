@@ -86,9 +86,29 @@ const totalToolCalls = computed(() =>
   assistantMessages.value.reduce((sum, message) => sum + (message.cost?.toolCalls ?? 0), 0),
 );
 
-const totalToolDurationMs = computed(() =>
-  assistantMessages.value.reduce((sum, message) => sum + (message.cost?.toolDurationMs ?? 0), 0),
+
+const totalCacheReadTokens = computed(() =>
+  assistantMessages.value.reduce((sum, message) => sum + (message.cost?.cacheReadTokens ?? 0), 0),
 );
+
+const totalCacheCreationTokens = computed(() =>
+  assistantMessages.value.reduce((sum, message) => sum + (message.cost?.cacheCreationTokens ?? 0), 0),
+);
+
+const totalCostUsd = computed(() => {
+  let total = 0;
+  for (const message of assistantMessages.value) {
+    const cost = parseFloat(message.cost?.totalCostUsd ?? '0');
+    if (!isNaN(cost)) total += cost;
+  }
+  return total;
+});
+
+const formatCost = (value: number) => {
+  if (value <= 0) return '$0.00';
+  if (value < 0.01) return '$' + value.toFixed(4);
+  return '$' + value.toFixed(2);
+};
 
 const latestAssistantCost = computed(() => {
   if (props.assistantTurnCost) {
@@ -105,17 +125,8 @@ const latestAssistantCost = computed(() => {
   return null;
 });
 
-const completedTools = computed(() =>
-  props.entries.filter((entry) => entry.status === 'completed').length,
-);
 
-const failedTools = computed(() =>
-  props.entries.filter((entry) => entry.status === 'error').length,
-);
 
-const cancelledTools = computed(() =>
-  props.entries.filter((entry) => entry.status === 'cancelled').length,
-);
 
 const formatNumber = (value: number) => value.toLocaleString('en-US');
 const formatDuration = (value: number) =>
@@ -331,27 +342,23 @@ onBeforeUnmount(() => {
         <div class="usage-value">{{ formatNumber(totalOutputTokens) }}</div>
       </div>
       <div class="usage-card">
-        <div class="usage-label">Tool Calls</div>
-        <div class="usage-value">{{ formatNumber(totalToolCalls) }}</div>
+        <div class="usage-label">总费用</div>
+        <div class="usage-value">{{ formatCost(totalCostUsd) }}</div>
       </div>
     </div>
 
-    <div class="mt-4 grid grid-cols-2 gap-3 lg:grid-cols-4">
+    <div class="mt-4 grid grid-cols-2 gap-3 lg:grid-cols-3">
       <div class="usage-card">
-        <div class="usage-label">Tool 耗时</div>
-        <div class="usage-value">{{ formatDuration(totalToolDurationMs) }}</div>
+        <div class="usage-label">Tool Calls</div>
+        <div class="usage-value">{{ formatNumber(totalToolCalls) }}</div>
       </div>
       <div class="usage-card">
-        <div class="usage-label">已完成工具</div>
-        <div class="usage-value">{{ formatNumber(completedTools) }}</div>
+        <div class="usage-label">Cache Read</div>
+        <div class="usage-value">{{ formatNumber(totalCacheReadTokens) }}</div>
       </div>
       <div class="usage-card">
-        <div class="usage-label">失败工具</div>
-        <div class="usage-value">{{ formatNumber(failedTools) }}</div>
-      </div>
-      <div class="usage-card">
-        <div class="usage-label">取消工具</div>
-        <div class="usage-value">{{ formatNumber(cancelledTools) }}</div>
+        <div class="usage-label">Cache Write</div>
+        <div class="usage-value">{{ formatNumber(totalCacheCreationTokens) }}</div>
       </div>
     </div>
 
@@ -376,6 +383,26 @@ onBeforeUnmount(() => {
         <div>
           <div class="usage-label">工具耗时</div>
           <div class="usage-detail">{{ formatDuration(latestAssistantCost.toolDurationMs) }}</div>
+        </div>
+        <div>
+          <div class="usage-label">费用</div>
+          <div class="usage-detail">{{ formatCost(parseFloat(latestAssistantCost.totalCostUsd ?? '0')) }}</div>
+        </div>
+        <div>
+          <div class="usage-label">Input 费用</div>
+          <div class="usage-detail">{{ formatCost(parseFloat(latestAssistantCost.inputCostUsd ?? '0')) }}</div>
+        </div>
+        <div>
+          <div class="usage-label">Output 费用</div>
+          <div class="usage-detail">{{ formatCost(parseFloat(latestAssistantCost.outputCostUsd ?? '0')) }}</div>
+        </div>
+        <div>
+          <div class="usage-label">Cache Read</div>
+          <div class="usage-detail">{{ formatNumber(latestAssistantCost.cacheReadTokens ?? 0) }}</div>
+        </div>
+        <div>
+          <div class="usage-label">Cache Write</div>
+          <div class="usage-detail">{{ formatNumber(latestAssistantCost.cacheCreationTokens ?? 0) }}</div>
         </div>
       </div>
       <div

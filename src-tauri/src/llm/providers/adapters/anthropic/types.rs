@@ -94,6 +94,10 @@ pub(crate) struct AnthropicTool {
 pub(crate) struct AnthropicUsage {
     pub(crate) input_tokens: u32,
     pub(crate) output_tokens: u32,
+    #[serde(default)]
+    pub(crate) cache_read_input_tokens: u32,
+    #[serde(default)]
+    pub(crate) cache_creation_input_tokens: u32,
 }
 
 #[derive(Debug, Deserialize)]
@@ -190,4 +194,8 @@ pub(crate) struct StreamUsage {
     pub(crate) output_tokens: u32,
     #[serde(default)]
     pub(crate) input_tokens: u32,
+    #[serde(default)]
+    pub(crate) cache_read_input_tokens: u32,
+    #[serde(default)]
+    pub(crate) cache_creation_input_tokens: u32,
 }

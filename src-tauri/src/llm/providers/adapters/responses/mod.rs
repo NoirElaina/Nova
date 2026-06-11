@@ -296,9 +296,16 @@ impl ApiAdapter for ResponsesAdapter {
             ResponsesStreamEvent::Completed { response } => {
                 let (usage, status) = completed_stop_reason(response);
                 if let Some(usage) = usage {
+                    let cache_read = usage.cache_read_input_tokens.or_else(|| {
+                        usage
+                            .input_tokens_details
+                            .and_then(|details| details.cached_tokens)
+                    });
                     deltas.push(Delta::Usage {
                         input: usage.input_tokens,
                         output: usage.output_tokens,
+                        cache_read,
+                        cache_creation: usage.cache_creation_input_tokens,
                     });
                 }
                 deltas.push(Delta::Stop {

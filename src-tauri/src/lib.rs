@@ -144,7 +144,8 @@ pub fn run() {
             command::lsp::lsp_hover,
             command::workspace::workspace_list_directory,
             command::workspace::workspace_read_text_file,
-            command::workspace::workspace_set_root
+            command::workspace::workspace_set_root,
+            command::pet_config::fetch_pet
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application");

@@ -273,6 +273,14 @@ pub(crate) struct ResponsesResponse {
 pub(crate) struct ResponsesUsage {
     pub(crate) input_tokens: Option<u32>,
     pub(crate) output_tokens: Option<u32>,
+    pub(crate) input_tokens_details: Option<ResponsesInputTokensDetails>,
+    pub(crate) cache_read_input_tokens: Option<u32>,
+    pub(crate) cache_creation_input_tokens: Option<u32>,
+}
+
+#[derive(Debug, Deserialize)]
+pub(crate) struct ResponsesInputTokensDetails {
+    pub(crate) cached_tokens: Option<u32>,
 }
 
 #[derive(Debug, Deserialize)]

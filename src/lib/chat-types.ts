@@ -1,6 +1,15 @@
 export interface TurnCost {
   inputTokens: number;
   outputTokens: number;
+  cacheReadTokens?: number;
+  cacheCreationTokens?: number;
+  billableInputTokens?: number;
+  inputCostUsd?: string;
+  outputCostUsd?: string;
+  cacheReadCostUsd?: string;
+  cacheCreationCostUsd?: string;
+  totalCostUsd?: string;
+  pricingModel?: string;
   toolCalls: number;
   toolDurationMs: number;
   toolSummary?: ToolTurnSummary;

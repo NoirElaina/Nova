@@ -69,6 +69,14 @@ pub(crate) struct OpenAiUsage {
     pub(crate) completion_tokens: Option<u32>,
     #[serde(default)]
     pub(crate) total_tokens: Option<u32>,
+    #[serde(default)]
+    pub(crate) prompt_tokens_details: Option<OpenAiPromptTokensDetails>,
+}
+
+#[derive(Debug, Deserialize)]
+pub(crate) struct OpenAiPromptTokensDetails {
+    #[serde(default)]
+    pub(crate) cached_tokens: Option<u32>,
 }
 
 #[derive(Debug, Deserialize)]

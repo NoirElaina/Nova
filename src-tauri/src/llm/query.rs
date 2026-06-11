@@ -9,6 +9,7 @@ use crate::llm::services::compact;
 use crate::llm::types::{AgentMode, Content, ContentBlock, Message, Role};
 use crate::llm::utils::context_assembler::{self, AssembleOptions};
 use crate::llm::utils::error_event::emit_backend_error;
+use crate::llm::utils::pricing::TurnCostBreakdown;
 
 mod state_machine;
 
@@ -34,6 +35,9 @@ fn emit_token_usage_event(
     conversation_id: Option<&str>,
     input_tokens: Option<u32>,
     output_tokens: Option<u32>,
+    cache_read_tokens: Option<u32>,
+    cache_creation_tokens: Option<u32>,
+    cost: Option<&TurnCostBreakdown>,
     source: &str,
 ) {
     let total_tokens = match (input_tokens, output_tokens) {
@@ -46,7 +50,10 @@ fn emit_token_usage_event(
     let payload = serde_json::json!({
         "inputTokens": input_tokens,
         "outputTokens": output_tokens,
+        "cacheReadTokens": cache_read_tokens,
+        "cacheCreationTokens": cache_creation_tokens,
         "totalTokens": total_tokens,
+        "cost": cost,
         "source": source,
     });
 
@@ -854,6 +861,9 @@ pub async fn send_chat_message(
             conversation_id.as_deref(),
             input_tokens,
             provider_result.output_tokens,
+            provider_result.cache_read_tokens,
+            provider_result.cache_creation_tokens,
+            provider_result.cost.as_ref(),
             input_token_source,
         );
         emit_token_debug_event(

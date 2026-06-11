@@ -259,7 +259,7 @@ watch(
 </script>
 
 <template>
-  <aside ref="sidebarRef" class="w-[225px] flex-shrink-0 flex flex-col bg-[#f4f7fb] dark:bg-[#1f1f1f] border-r border-[#dfe6ee] dark:border-[#333] transition-all duration-300">
+  <aside ref="sidebarRef" class="w-[225px] shrink-0 flex flex-col bg-[#f4f7fb] dark:bg-[#1f1f1f] border-r border-[#dfe6ee] dark:border-[#333] transition-all duration-300">
     <div class="flex flex-1 flex-col gap-0.5 overflow-y-auto px-2 py-2 custom-scrollbar">
       <!-- Top Actions -->
       <Button variant="ghost" :class="[sidebarItemClass, sidebarItemIdleClass]" @click="emit('new-chat')">
@@ -280,7 +280,7 @@ watch(
         @click="emit('change-main-view', 'custom')"
       >
         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" class="text-[#64748b]"><path d="M12 20.5V20m0-16v-.5m0 0a2.5 2.5 0 100 5 2.5 2.5 0 000-5zm0 16a2.5 2.5 0 100-5 2.5 2.5 0 000 5zm-8.5-8H4m16 0h-.5m0 0a2.5 2.5 0 10-5 0 2.5 2.5 0 005 0zm-16 0a2.5 2.5 0 105 0 2.5 2.5 0 00-5 0z" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>
-        <span>自定义</span>
+        <span>宠物</span>
       </Button>
       <Button
         variant="ghost"

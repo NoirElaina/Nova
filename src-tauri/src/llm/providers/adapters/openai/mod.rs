@@ -82,6 +82,10 @@ impl ApiAdapter for OpenAiAdapter {
             deltas.push(Delta::Usage {
                 input: usage.prompt_tokens,
                 output,
+                cache_read: usage
+                    .prompt_tokens_details
+                    .and_then(|details| details.cached_tokens),
+                cache_creation: None,
             });
         }
 

@@ -18,6 +18,7 @@ use crate::llm::query_engine::ChatMessageEvent;
 use crate::llm::tools;
 use crate::llm::types::{ContentBlock, Message, Role};
 use crate::llm::utils::error_event::emit_backend_error;
+use crate::llm::utils::pricing::{self, TokenUsageBreakdown, TurnCostBreakdown};
 
 // ─────────────────────────────────────────────
 // Delta — 协议无关的流语义事件
@@ -49,6 +50,8 @@ pub enum Delta {
     Usage {
         input: Option<u32>,
         output: Option<u32>,
+        cache_read: Option<u32>,
+        cache_creation: Option<u32>,
     },
     /// 流结束信号，附带可选 stop_reason。
     Stop { reason: Option<String> },
@@ -153,6 +156,7 @@ pub async fn run_streaming<P: StreamParser>(
     app: &AppHandle,
     response: reqwest::Response,
     conversation_id: Option<&str>,
+    model: &str,
 ) -> Result<ProviderTurnResult, ProviderTurnError> {
     let provider = parser.provider_name();
     let mut stream = response.bytes_stream();
@@ -175,6 +179,8 @@ pub async fn run_streaming<P: StreamParser>(
     // token 用量。
     let mut current_input_tokens: Option<u32> = None;
     let mut current_output_tokens: Option<u32> = None;
+    let mut current_cache_read_tokens: Option<u32> = None;
+    let mut current_cache_creation_tokens: Option<u32> = None;
 
     // ── 主循环 ──────────────────────────────────────────────────────
     loop {
@@ -192,6 +198,16 @@ pub async fn run_streaming<P: StreamParser>(
                 stop_reason: Some("cancelled".into()),
                 input_tokens: current_input_tokens,
                 output_tokens: current_output_tokens,
+                cache_read_tokens: current_cache_read_tokens,
+                cache_creation_tokens: current_cache_creation_tokens,
+                cost: current_turn_cost(
+                    provider,
+                    model,
+                    current_input_tokens,
+                    current_output_tokens,
+                    current_cache_read_tokens,
+                    current_cache_creation_tokens,
+                ),
                 prevent_continuation: false,
             });
         }
@@ -304,6 +320,8 @@ pub async fn run_streaming<P: StreamParser>(
                     &mut last_stop_reason,
                     &mut current_input_tokens,
                     &mut current_output_tokens,
+                    &mut current_cache_read_tokens,
+                    &mut current_cache_creation_tokens,
                 )
                 .await
                 {
@@ -337,6 +355,8 @@ pub async fn run_streaming<P: StreamParser>(
             &mut last_stop_reason,
             &mut current_input_tokens,
             &mut current_output_tokens,
+            &mut current_cache_read_tokens,
+            &mut current_cache_creation_tokens,
         )
         .await
         {
@@ -461,6 +481,16 @@ pub async fn run_streaming<P: StreamParser>(
         stop_reason: final_stop_reason,
         input_tokens: current_input_tokens,
         output_tokens: current_output_tokens,
+        cache_read_tokens: current_cache_read_tokens,
+        cache_creation_tokens: current_cache_creation_tokens,
+        cost: current_turn_cost(
+            provider,
+            model,
+            current_input_tokens,
+            current_output_tokens,
+            current_cache_read_tokens,
+            current_cache_creation_tokens,
+        ),
         prevent_continuation,
     })
 }
@@ -523,6 +553,8 @@ async fn process_delta(
     last_stop_reason: &mut Option<String>,
     current_input_tokens: &mut Option<u32>,
     current_output_tokens: &mut Option<u32>,
+    current_cache_read_tokens: &mut Option<u32>,
+    current_cache_creation_tokens: &mut Option<u32>,
 ) -> Result<(), String> {
     match delta {
         Delta::Text(text) => {
@@ -707,12 +739,23 @@ async fn process_delta(
             }
         }
 
-        Delta::Usage { input, output } => {
+        Delta::Usage {
+            input,
+            output,
+            cache_read,
+            cache_creation,
+        } => {
             if let Some(v) = input {
                 *current_input_tokens = Some(v);
             }
             if let Some(v) = output {
                 *current_output_tokens = Some(v);
+            }
+            if let Some(v) = cache_read {
+                *current_cache_read_tokens = Some(v);
+            }
+            if let Some(v) = cache_creation {
+                *current_cache_creation_tokens = Some(v);
             }
         }
 
@@ -758,6 +801,26 @@ async fn process_delta(
         }
     }
     Ok(())
+}
+
+fn current_turn_cost(
+    provider: &str,
+    model: &str,
+    input_tokens: Option<u32>,
+    output_tokens: Option<u32>,
+    cache_read_tokens: Option<u32>,
+    cache_creation_tokens: Option<u32>,
+) -> Option<TurnCostBreakdown> {
+    if model.trim().is_empty() {
+        return None;
+    }
+    let usage = TokenUsageBreakdown {
+        input_tokens,
+        output_tokens,
+        cache_read_tokens,
+        cache_creation_tokens,
+    };
+    pricing::calculate_for_model(&model, &usage, pricing::cache_billing_for_provider(provider))
 }
 
 /// 工具结果是否表示需要用户输入（type == "needs_user_input"）。

@@ -12,6 +12,7 @@ import type {
   ContextCompactSummary,
   ContextUsage,
   ToolExecutionEntry,
+  TurnCost,
 } from "../../../lib/chat-types";
 import { estimateTokens } from "../utils/session-memory";
 import { buildToolTurnSummary } from "../utils/tool-activity-summary";
@@ -50,7 +51,10 @@ type PersistToolExecutionLog = (
 type TokenUsagePayload = {
   inputTokens?: number;
   outputTokens?: number;
+  cacheReadTokens?: number;
+  cacheCreationTokens?: number;
   totalTokens?: number;
+  cost?: Partial<TurnCost>;
   source?: string;
 };
 
@@ -72,6 +76,59 @@ function parseTokenUsagePayload(raw?: string): TokenUsagePayload | null {
   } catch {
     return null;
   }
+}
+
+function addDecimalStrings(left?: string, right?: string): string | undefined {
+  if (!left && !right) return undefined;
+  const a = parseDecimalString(left ?? "0");
+  const b = parseDecimalString(right ?? "0");
+  if (!a || !b) return right ?? left;
+  const scale = Math.max(a.scale, b.scale);
+  const total =
+    a.units * 10n ** BigInt(scale - a.scale) +
+    b.units * 10n ** BigInt(scale - b.scale);
+  return formatDecimalUnits(total, scale);
+}
+
+function parseDecimalString(value: string): { units: bigint; scale: number } | null {
+  const trimmed = value.trim();
+  if (!/^\d+(?:\.\d+)?$/.test(trimmed)) return null;
+  const [whole, fraction = ""] = trimmed.split(".");
+  return {
+    units: BigInt(`${whole}${fraction}`),
+    scale: fraction.length,
+  };
+}
+
+function formatDecimalUnits(units: bigint, scale: number): string {
+  if (scale === 0) return units.toString();
+  const divisor = 10n ** BigInt(scale);
+  const whole = units / divisor;
+  let fraction = (units % divisor).toString().padStart(scale, "0");
+  fraction = fraction.replace(/0+$/, "");
+  return fraction ? `${whole}.${fraction}` : whole.toString();
+}
+
+function mergeUsageCost(previous: TurnCost | undefined, incoming: TokenUsagePayload): Partial<TurnCost> {
+  const cost = incoming.cost;
+  return {
+    cacheReadTokens:
+      (previous?.cacheReadTokens ?? 0) +
+      Math.max(0, incoming.cacheReadTokens ?? cost?.cacheReadTokens ?? 0),
+    cacheCreationTokens:
+      (previous?.cacheCreationTokens ?? 0) +
+      Math.max(0, incoming.cacheCreationTokens ?? cost?.cacheCreationTokens ?? 0),
+    billableInputTokens: cost?.billableInputTokens ?? previous?.billableInputTokens,
+    inputCostUsd: addDecimalStrings(previous?.inputCostUsd, cost?.inputCostUsd),
+    outputCostUsd: addDecimalStrings(previous?.outputCostUsd, cost?.outputCostUsd),
+    cacheReadCostUsd: addDecimalStrings(previous?.cacheReadCostUsd, cost?.cacheReadCostUsd),
+    cacheCreationCostUsd: addDecimalStrings(
+      previous?.cacheCreationCostUsd,
+      cost?.cacheCreationCostUsd,
+    ),
+    totalCostUsd: addDecimalStrings(previous?.totalCostUsd, cost?.totalCostUsd),
+    pricingModel: cost?.pricingModel ?? previous?.pricingModel,
+  };
 }
 
 function parseContextUsagePayload(raw?: string): ContextUsage | null {
@@ -271,6 +328,7 @@ export function createChatStreamOperations(deps: StreamOpsDeps) {
       activeRuntimeRefs.currentToolDurationMs.value,
       activeRuntimeRefs.currentContextCompacts.value,
       toolSummary,
+      activeRuntimeRefs.assistantTurnCost.value,
     );
     activeRuntimeRefs.assistantTurnCost.value = cost;
 
@@ -328,6 +386,7 @@ export function createChatStreamOperations(deps: StreamOpsDeps) {
       activeRuntimeRefs.currentToolDurationMs.value,
       activeRuntimeRefs.currentContextCompacts.value,
       toolSummary,
+      activeRuntimeRefs.assistantTurnCost.value,
     );
 
     const assistantMessage: ChatMessage = {
@@ -624,6 +683,15 @@ export function createChatStreamOperations(deps: StreamOpsDeps) {
         state.currentOutputTokens += nextOutputTokens;
         state.assistantTokenUsage = state.currentOutputTokens;
       }
+      const usageCost = mergeUsageCost(state.assistantTurnCost, usage ?? {});
+      state.assistantTurnCost = {
+        ...usageCost,
+        inputTokens: state.currentInputTokens,
+        outputTokens: state.currentOutputTokens,
+        toolCalls: state.currentToolCalls,
+        toolDurationMs: state.currentToolDurationMs,
+        contextCompacts: state.currentContextCompacts,
+      };
       return;
     }
 

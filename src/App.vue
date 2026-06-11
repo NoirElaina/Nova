@@ -7,7 +7,7 @@ import WelcomeScreen from "./components/chat/WelcomeScreen.vue";
 import ChatScreen from "./components/chat/ChatScreen.vue";
 import ExecutionTracePopover from "./components/chat/files/ExecutionTracePopover.vue";
 import WorkspaceDrawer from "./components/chat/WorkspaceDrawer.vue";
-import CustomScreen from "./components/custom/CustomScreen.vue";
+import CustomScreen from "./components/custom/PetScreen.vue";
 import HooksConfigScreen from "./components/hooks/HooksConfigScreen.vue";
 import AgentConfigScreen from "./components/agent/AgentConfigScreen.vue";
 import AgentMarketScreen from "./components/agent/AgentMarketScreen.vue";

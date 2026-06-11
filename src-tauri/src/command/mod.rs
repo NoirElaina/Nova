@@ -26,3 +26,5 @@ pub mod cron;
 pub mod browser;
 // 主工作区文件树只读命令入口。
 pub mod workspace;
+// 宠物功能
+pub mod pet_config;

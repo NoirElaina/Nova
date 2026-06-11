@@ -17,6 +17,9 @@ pub mod session_restore;
 // 提供 get_context_window_tokens / get_max_output_tokens，未命中时返回保守默认值。
 pub mod model_context;
 
+// 模型价格与每轮 token 成本计算。使用 windowTokens/models.json 的内置价格数据。
+pub mod pricing;
+
 // 上下文组装入口：整合会话恢复与可选扩展上下文。
 pub mod context_assembler;
 

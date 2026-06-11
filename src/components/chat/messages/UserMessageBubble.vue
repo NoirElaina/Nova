@@ -86,22 +86,18 @@ const formatFileSize = (bytes?: number) => {
 
 <template>
   <div
-    class="ml-auto flex max-w-full flex-row-reverse gap-2.5 items-start"
+    class="ml-auto flex max-w-full items-start"
     :class="isEditing ? 'w-full max-w-[calc(100%-2.5rem)]' : 'max-w-[86%] sm:max-w-[78%] lg:max-w-[66%]'"
   >
-    <div class="w-7 h-7 rounded-full flex items-center justify-center shrink-0 bg-[#111827] text-white text-[11px] font-medium mt-0.5">你</div>
     <div class="flex max-w-full flex-col items-end min-w-0" :class="{ 'flex-1': isEditing }">
-      <div class="flex items-center gap-2 mb-1">
-        <p class="text-[11px] text-[#64748b]">你</p>
-        <span v-if="typeof message.tokenUsage === 'number'" class="token-badge">
+      <span v-if="typeof message.tokenUsage === 'number'" class="token-badge">
           <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
             <ellipse cx="12" cy="5" rx="9" ry="3"></ellipse>
             <path d="M21 12c0 1.66-4 3-9 3s-9-1.34-9-3"></path>
             <path d="M3 5v14c0 1.66 4 3 9 3s9-1.34 9-3V5"></path>
           </svg>
           本次 {{ message.tokenUsage ?? 0 }}
-        </span>
-      </div>
+      </span>
       <div
         :class="
           isEditing

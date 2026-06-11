@@ -8,6 +8,7 @@ pub mod lsp;
 pub mod mcp;
 pub mod mcp_tools;
 pub mod memory_dir;
+pub mod model_fetch;
 pub mod rag;
 pub mod search;
 pub mod shell_sessions;

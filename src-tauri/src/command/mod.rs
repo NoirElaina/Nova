@@ -2,6 +2,8 @@
 pub mod settings;
 // 设置中的敏感字段加密/解密。
 pub mod settings_secrets;
+// 动态模型获取相关命令入口。
+pub mod model_fetch;
 // 会话历史与 compact 相关命令入口。
 pub mod history;
 // 会话文件变更审查与回退命令入口。

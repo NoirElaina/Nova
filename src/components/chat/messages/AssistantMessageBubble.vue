@@ -42,25 +42,8 @@ const triggerReaction = (value: 'up' | 'down') => {
 </script>
 
 <template>
-  <div class="flex gap-3.5 w-full max-w-[85%]">
-    <div class="w-7 h-7 rounded-full flex items-center justify-center shrink-0 bg-[#111827] text-white mt-0.5 text-[11px] font-medium">
-      N
-    </div>
+  <div class="w-full max-w-[85%]">
     <div class="min-w-0 flex-1 text-[0.95rem] leading-relaxed break-words text-[#1a1a1a] dark:text-[#ececec]">
-      <div class="flex items-center gap-2 mb-1">
-        <p class="text-[11px] text-[#64748b]">Nova</p>
-        <span
-          v-if="((message.cost?.inputTokens ?? 0) + (message.cost?.outputTokens ?? 0) > 0) || (message.tokenUsage && message.tokenUsage > 0) || (conversationTokenUsage && conversationTokenUsage > 0)"
-          class="token-badge"
-        >
-          <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
-            <ellipse cx="12" cy="5" rx="9" ry="3"></ellipse>
-            <path d="M21 12c0 1.66-4 3-9 3s-9-1.34-9-3"></path>
-            <path d="M3 5v14c0 1.66 4 3 9 3s9-1.34 9-3V5"></path>
-          </svg>
-          本次 {{ ((message.cost?.inputTokens ?? 0) + (message.cost?.outputTokens ?? 0)) || (message.tokenUsage ?? 0) }} · 会话 {{ conversationTokenUsage }}<template v-if="formatUsd(message.cost?.totalCostUsd)"> · {{ formatUsd(message.cost?.totalCostUsd) }}</template>
-        </span>
-      </div>
       <details
         v-if="message.reasoning?.trim()"
         class="reasoning-panel"
@@ -77,6 +60,17 @@ const triggerReaction = (value: 'up' | 'down') => {
         :items="message.cost.contextCompacts"
       />
       <MarkdownRenderer :content="message.content" />
+      <div
+        v-if="((message.cost?.inputTokens ?? 0) + (message.cost?.outputTokens ?? 0) > 0) || (message.tokenUsage && message.tokenUsage > 0) || (conversationTokenUsage && conversationTokenUsage > 0)"
+        class="token-badge mt-2"
+      >
+        <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+          <ellipse cx="12" cy="5" rx="9" ry="3"></ellipse>
+          <path d="M21 12c0 1.66-4 3-9 3s-9-1.34-9-3"></path>
+          <path d="M3 5v14c0 1.66 4 3 9 3s9-1.34 9-3V5"></path>
+        </svg>
+        本次 {{ ((message.cost?.inputTokens ?? 0) + (message.cost?.outputTokens ?? 0)) || (message.tokenUsage ?? 0) }} · 会话 {{ conversationTokenUsage }}<template v-if="formatUsd(message.cost?.totalCostUsd)"> · {{ formatUsd(message.cost?.totalCostUsd) }}</template>
+      </div>
       <div class="msg-toolbar">
         <Button variant="ghost" size="icon-sm" class="msg-icon-btn" :class="{ 'is-copied': copied }" aria-label="Copy assistant message" @click="emit('copy', index)">
           <svg v-if="!copied" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
@@ -174,6 +168,7 @@ const triggerReaction = (value: 'up' | 'down') => {
   color: #047857;
   border: 1px solid #a7f3d0;
   background: #ecfdf5;
+  margin-top: 8px;
   padding: 3px 6px;
   border-radius: 6px;
   font-family: monospace;

@@ -124,6 +124,7 @@ pub fn run() {
             command::cron::delete_scheduled_task,
             command::settings::get_model_window_tokens,
             command::settings::estimate_text_tokens,
+            command::model_fetch::fetch_available_models,
             command::browser::browser_navigate_window,
             command::browser::browser_reload_window,
             command::browser::browser_eval_window_script,

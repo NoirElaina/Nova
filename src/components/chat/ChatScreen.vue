@@ -417,25 +417,8 @@ defineExpose({
           ref="liveAssistantRef"
           class="flex w-full justify-start group"
         >
-          <div class="flex gap-3.5 w-full max-w-[85%]">
-            <div class="w-7 h-7 rounded-full flex items-center justify-center shrink-0 bg-[#111827] text-white mt-0.5 text-[11px] font-medium">
-              N
-            </div>
+          <div class="w-full max-w-[85%]">
             <div class="min-w-0 flex-1 text-[0.95rem] leading-relaxed break-words text-[#1a1a1a] dark:text-[#ececec]">
-              <div class="flex items-center gap-2 mb-1">
-                <p class="text-[11px] text-[#64748b]">Nova</p>
-                <span
-                  v-if="streamingTokenUsage() > 0 || streamingConversationTokenUsage() > 0"
-                  class="token-badge"
-                >
-                  <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
-                    <ellipse cx="12" cy="5" rx="9" ry="3"></ellipse>
-                    <path d="M21 12c0 1.66-4 3-9 3s-9-1.34-9-3"></path>
-                    <path d="M3 5v14c0 1.66 4 3 9 3s9-1.34 9-3V5"></path>
-                  </svg>
-                  本次 {{ streamingTokenUsage() }} · 会话 {{ streamingConversationTokenUsage() }}
-                </span>
-              </div>
               <details
                 v-if="hasStreamingReasoning()"
                 class="reasoning-panel mt-2"
@@ -470,6 +453,17 @@ defineExpose({
                 v-if="isGenerating"
                 class="inline-block w-1.5 h-[1em] bg-current ml-1 align-middle animate-pulse opacity-70"
               ></span>
+              <div
+                v-if="streamingTokenUsage() > 0 || streamingConversationTokenUsage() > 0"
+                class="token-badge mt-2"
+              >
+                <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+                  <ellipse cx="12" cy="5" rx="9" ry="3"></ellipse>
+                  <path d="M21 12c0 1.66-4 3-9 3s-9-1.34-9-3"></path>
+                  <path d="M3 5v14c0 1.66 4 3 9 3s9-1.34 9-3V5"></path>
+                </svg>
+                本次 {{ streamingTokenUsage() }} · 会话 {{ streamingConversationTokenUsage() }}
+              </div>
             </div>
           </div>
         </div>
@@ -496,8 +490,8 @@ defineExpose({
       </svg>
     </button>
 
-    <div class="w-full bg-transparent px-4 pt-4 pb-6">
-      <div class="w-full max-w-[760px] mx-auto">
+    <div class="w-full bg-transparent px-4 pt-6 pb-6">
+      <div class="w-full max-w-[900px] mx-auto">
         <AskUserInputDialog
           v-if="pendingQuestion"
           :request="pendingQuestion"

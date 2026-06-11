@@ -146,7 +146,10 @@ pub fn run() {
             command::workspace::workspace_list_directory,
             command::workspace::workspace_read_text_file,
             command::workspace::workspace_set_root,
-            command::pet_config::fetch_pet
+            command::pet_config::fetch_pet,
+            command::pet_config::download_pet,
+            command::pet_config::list_local_pets,
+            command::pet_config::get_pet_spritesheet
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application");

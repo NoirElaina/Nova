@@ -13,6 +13,9 @@ const frame = ref(0)
 let timer: number | null = null
 
 const cell = computed(() => {
+  if (!props.cellSize) {
+    return { width: 192, height: 208 }
+  }
   const [w, h] = props.cellSize.split('x').map(Number)
 
   return {
@@ -22,6 +25,9 @@ const cell = computed(() => {
 })
 
 const atlas = computed(() => {
+  if (!props.atlasSize) {
+    return { width: 1536, height: 1872 }
+  }
   const [w, h] = props.atlasSize.split('x').map(Number)
 
   return {
@@ -31,7 +37,11 @@ const atlas = computed(() => {
 })
 
 
-const totalFrames = 6
+const totalFrames = computed(() => {
+  const cols = Math.floor(atlas.value.width / cell.value.width)
+  const rows = Math.floor(atlas.value.height / cell.value.height)
+  return Math.max(cols * rows, 1)
+})
 
 const backgroundPosition = computed(() => {
   return `${-(frame.value * cell.value.width)}px 0px`

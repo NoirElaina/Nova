@@ -68,8 +68,6 @@ const query = ref<FetchPetRequest>({
 
 const sortOptions = [
   { label: 'Liked', value: 'popular' },
-  { label: 'Newest', value: 'newest' },
-  { label: 'Viewed', value: 'viewed' },
   { label: 'Discussed', value: 'discussed' },
   { label: 'Random', value: 'random' },
 ]
@@ -167,37 +165,85 @@ function nextPage() {
   loadPets()
 }
 
-onMounted(loadPets)
+const downloadingId = ref<string | null>(null)
+
+async function downloadPet(pet: Pet) {
+  if (downloadingId.value) return
+  downloadingId.value = pet.id
+  try {
+    await invoke<string>('download_pet', {
+      petId: pet.id,
+      displayName: pet.displayName,
+      downloadUrl: pet.downloadUrl,
+      cellSize: pet.validationReport?.cellSize ?? '192x208',
+      atlasSize: pet.validationReport?.atlasSize ?? '1536x1872',
+    })
+    await loadLocalPets()
+  } catch (e) {
+    console.error('Download failed:', e)
+  } finally {
+    downloadingId.value = null
+  }
+}
+
+interface LocalPet {
+  id: string
+  display_name: string
+  cell_size: string
+  atlas_size: string
+}
+
+const localPets = ref<LocalPet[]>([])
+const localSpritesheets = ref<Record<string, string>>({})
+
+async function loadLocalPets() {
+  try {
+    localPets.value = await invoke<LocalPet[]>('list_local_pets')
+    for (const pet of localPets.value) {
+      if (!localSpritesheets.value[pet.id]) {
+        const dataUrl = await invoke<string>('get_pet_spritesheet', { petId: pet.id })
+        localSpritesheets.value[pet.id] = dataUrl
+      }
+    }
+  } catch (e) {
+    console.error('Failed to load local pets:', e)
+  }
+}
+
+onMounted(() => {
+  loadPets()
+  loadLocalPets()
+})
 </script>
 
 <template>
-  <div class="h-full overflow-y-auto bg-[#faf9f6] px-6 py-6">
+  <div class="h-full overflow-y-auto bg-[#faf9f6] px-6 pt-16 pb-6">
 
-    <div class="mb-6">
-      <h1 class="text-3xl font-bold text-[#111827]">
+    <div class="mb-3 flex items-center gap-3">
+      <h1 class="text-xl font-bold text-[#111827]">
         Codex Pets
       </h1>
 
-      <p class="mt-2 text-sm text-[#6b7280]">
+      <p class="text-xs text-[#6b7280]">
         Discover and collect animated pets
       </p>
     </div>
 
-    <div class="mb-6 flex gap-3">
+    <div class="mb-3 flex gap-2">
       <input
         v-model="keyword"
         placeholder="Search pets..."
-        class="flex-1 rounded-xl border border-[#e7e2d8] bg-white px-4 py-3 outline-none"
+        class="flex-1 rounded-lg border border-[#e7e2d8] bg-white px-3 py-1.5 text-sm outline-none"
       >
 
       <button
-        class="rounded-xl bg-black px-6 py-3 text-white"
+        class="rounded-lg bg-black px-4 py-1.5 text-sm text-white"
       >
         Find
       </button>
     </div>
 
-    <div class="mb-4 flex flex-wrap gap-3">
+    <div class="mb-3 flex flex-wrap gap-2">
 
       <div
         class="flex overflow-hidden rounded-full border border-[#e7e2d8] bg-white"
@@ -205,7 +251,7 @@ onMounted(loadPets)
         <button
           v-for="item in sortOptions"
           :key="item.value"
-          class="px-4 py-2 text-sm"
+          class="px-3 py-1 text-xs"
           :class="
             query.sort === item.value
               ? 'bg-black text-white'
@@ -223,7 +269,7 @@ onMounted(loadPets)
         <button
           v-for="item in kindOptions"
           :key="item.value"
-          class="px-4 py-2 text-sm"
+          class="px-3 py-1 text-xs"
           :class="
             query.kind === item.value
               ? 'bg-black text-white'
@@ -236,7 +282,7 @@ onMounted(loadPets)
       </div>
 
       <select
-        class="rounded-xl border border-[#e7e2d8] bg-white px-4"
+        class="rounded-lg border border-[#e7e2d8] bg-white px-3 py-1 text-xs"
         :value="query.tag"
         @change="changeTag(($event.target as HTMLSelectElement).value)"
       >
@@ -251,7 +297,7 @@ onMounted(loadPets)
     </div>
 
     <div
-      class="mb-6 flex items-center justify-between text-sm text-[#6b7280]"
+      class="mb-4 flex items-center justify-between text-xs text-[#6b7280]"
     >
       <div>
         {{ total.toLocaleString() }} pets
@@ -289,8 +335,8 @@ onMounted(loadPets)
           <div class="flex justify-center">
             <SpritePet
               :spritesheet-url="pet.spritesheetUrl"
-              :cell-size="pet.validationReport.cellSize"
-              :atlas-size="pet.validationReport.atlasSize"
+              :cell-size="pet.validationReport?.cellSize ?? ''"
+              :atlas-size="pet.validationReport?.atlasSize ?? ''"
               :fps="5"
             />
           </div>
@@ -319,10 +365,24 @@ onMounted(loadPets)
             </span>
           </div>
 
-          <div class="mt-4 flex gap-4 text-sm text-[#6b7280]">
-            <span>👁 {{ pet.viewCount }}</span>
-            <span>♡ {{ pet.likeCount }}</span>
-            <span>⬇ {{ pet.downloadCount }}</span>
+          <div class="mt-4 flex items-center justify-between text-sm text-[#6b7280]">
+            <div class="flex gap-4">
+              <span>👁 {{ pet.viewCount }}</span>
+              <span>♡ {{ pet.likeCount }}</span>
+              <span>⬇ {{ pet.downloadCount }}</span>
+            </div>
+            <button
+              :disabled="downloadingId === pet.id"
+              class="inline-flex items-center gap-1 rounded-lg bg-black px-3 py-1.5 text-xs text-white transition hover:bg-gray-800 disabled:opacity-50"
+              @click="downloadPet(pet)"
+            >
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+                <polyline points="7 10 12 15 17 10"/>
+                <line x1="12" y1="15" x2="12" y2="3"/>
+              </svg>
+              {{ downloadingId === pet.id ? 'Saving...' : 'Download' }}
+            </button>
           </div>
         </div>
       </article>

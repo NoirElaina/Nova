@@ -37,7 +37,7 @@ fn apply_patch_tool() -> Tool {
             "properties": {
                 "patch": {
                     "type": "string",
-                    "description": "Patch text using *** Begin Patch / *** Update File / *** Add File / *** Delete File / @@ hunks / *** End Patch. Every file path in patch headers must be absolute."
+                    "description": "Patch text using *** Begin Patch / *** Update File / *** Add File / *** Delete File / @@ hunks / *** End Patch. Every file path in patch headers must be absolute. Hunk headers MUST use unified diff format: @@ -oldStart,oldCount +newStart,newCount @@. Example:\n*** Begin Patch\n*** Update File: /path/to/file.rs\n@@ -10,3 +10,4 @@\n line10\n+inserted line\n line11\n line12\n*** End Patch"
                 }
             },
             "required": ["patch"]
@@ -61,8 +61,8 @@ fn multi_edit_tool() -> Tool {
                         "additionalProperties": false,
                         "properties": {
                             "path": { "type": "string", "description": "Absolute file path. Relative paths and ~ are rejected." },
-                            "old_string": { "type": "string", "description": "Exact string to replace" },
-                            "new_string": { "type": "string", "description": "Replacement string" },
+                            "old_string": { "type": "string", "description": "Exact string to find, including whitespace and indentation. Must match the file content character-for-character." },
+                            "new_string": { "type": "string", "description": "Replacement string. Use empty string to delete." },
                             "expected_replacements": {
                                 "type": "integer",
                                 "minimum": 1,

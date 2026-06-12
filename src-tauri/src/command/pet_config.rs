@@ -155,6 +155,21 @@ pub async fn list_local_pets(app: AppHandle) -> Result<Vec<LocalPetMeta>, String
 }
 
 #[tauri::command]
+pub async fn delete_local_pet(app: AppHandle, pet_id: String) -> Result<(), String> {
+    let pet_dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|e: tauri::Error| e.to_string())?
+        .join("pet")
+        .join(&pet_id);
+
+    if pet_dir.exists() {
+        std::fs::remove_dir_all(&pet_dir).map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
+#[tauri::command]
 pub async fn get_pet_spritesheet(app: AppHandle, pet_id: String) -> Result<String, String> {
     let pet_dir = app
         .path()

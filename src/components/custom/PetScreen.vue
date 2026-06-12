@@ -213,6 +213,16 @@ async function launchPet(pet: LocalPet) {
   }
 }
 
+async function deletePet(pet: LocalPet) {
+  try {
+    await invoke('delete_local_pet', { petId: pet.id })
+    delete localSpritesheets.value[pet.id]
+    localPets.value = localPets.value.filter(p => p.id !== pet.id)
+  } catch (e) {
+    console.error('Failed to delete pet:', e)
+  }
+}
+
 async function loadLocalPets() {
   try {
     localPets.value = await invoke<LocalPet[]>('list_local_pets')
@@ -442,29 +452,37 @@ onMounted(() => {
     </div>
 
     <div v-if="showMyPets && localPets.length > 0" class="fixed inset-0 z-50 flex items-center justify-center bg-black/30" @click.self="showMyPets = false">
-      <div class="w-[480px] max-w-[90vw] rounded-2xl border border-[#e7e2d8] bg-white p-5 shadow-2xl">
-        <div class="mb-4 flex items-center justify-between">
+      <div class="max-h-[80vh] w-[640px] max-w-[90vw] overflow-y-auto rounded-2xl border border-[#e7e2d8] bg-white p-5 shadow-2xl">
+        <div class="sticky top-0 z-10 mb-4 flex items-center justify-between bg-white pb-2">
           <h3 class="text-sm font-semibold text-[#111827]">选择要放置到桌面的宠物</h3>
           <button class="text-xs text-[#6b7280] hover:text-[#111827]" @click="showMyPets = false">关闭</button>
         </div>
         <div class="grid grid-cols-3 gap-3">
-          <button
+          <div
             v-for="pet in localPets"
             :key="pet.id"
-            class="group flex flex-col items-center gap-2 rounded-xl border border-[#e7e2d8] p-3 transition hover:-translate-y-1 hover:border-black hover:shadow-lg"
-            @click="launchPet(pet)"
+            class="group relative flex flex-col items-center gap-2 rounded-xl border border-[#e7e2d8] p-3 transition hover:-translate-y-1 hover:border-black hover:shadow-lg"
           >
-            <div class="flex justify-center">
-              <SpritePet
-                :spritesheet-url="localSpritesheets[pet.id] ?? ''"
-                :cell-size="pet.cell_size"
-                :atlas-size="pet.atlas_size"
-                :row-frame-counts="pet.row_frame_counts"
-                :fps="5"
-              />
-            </div>
-            <span class="text-xs text-[#6b7280]">{{ pet.display_name }}</span>
-          </button>
+            <button
+              class="absolute -top-1.5 -right-1.5 z-10 flex h-5 w-5 items-center justify-center rounded-full bg-red-500 text-[10px] text-white opacity-0 shadow transition-opacity hover:bg-red-600 group-hover:opacity-100"
+              title="删除宠物"
+              @click.stop="deletePet(pet)"
+            >
+              ✕
+            </button>
+            <button class="flex flex-col items-center gap-2" @click="launchPet(pet)">
+              <div class="flex justify-center">
+                <SpritePet
+                  :spritesheet-url="localSpritesheets[pet.id] ?? ''"
+                  :cell-size="pet.cell_size"
+                  :atlas-size="pet.atlas_size"
+                  :row-frame-counts="pet.row_frame_counts"
+                  :fps="5"
+                />
+              </div>
+              <span class="text-xs text-[#6b7280]">{{ pet.display_name }}</span>
+            </button>
+          </div>
         </div>
       </div>
     </div>

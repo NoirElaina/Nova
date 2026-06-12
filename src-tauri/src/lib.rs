@@ -149,6 +149,7 @@ pub fn run() {
             command::pet_config::fetch_pet,
             command::pet_config::download_pet,
             command::pet_config::list_local_pets,
+            command::pet_config::delete_local_pet,
             command::pet_config::get_pet_spritesheet,
             command::pet_config::launch_desktop_pet,
             command::pet_config::close_desktop_pet,

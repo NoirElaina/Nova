@@ -16,11 +16,8 @@ interface PetConfig {
 const config = ref<PetConfig | null>(null)
 const currentRow = ref(0)
 const currentFrame = ref(0)
-let timer: number | null = null
-let stateTimer: number | null = null
-
-const STATES = ['Idle','Run R','Run L','Wave','Jump','Fail','Wait','Run','Review']
-const STATE_ICONS = ['💤','➡️','⬅️','👋','⬆️','❌','⏳','🏃','🔍']
+let timer = 0
+let stateTimer = 0
 
 function render() {
   if (!config.value) return
@@ -46,29 +43,74 @@ function startAnimation() {
     currentFrame.value++
     if (currentFrame.value >= maxFrames) currentFrame.value = 0
     render()
-  }, 200)
+  }, 300)
 }
 
 function stopAnimation() {
-  if (timer) { clearInterval(timer); timer = null }
+  if (timer) { clearInterval(timer); timer = 0 }
   currentFrame.value = 0
 }
 
 function startRandomStates() {
   stopRandomStates()
   if (!config.value || config.value.row_frame_counts.length <= 1) return
-  stateTimer = window.setInterval(() => {
-    const total = config.value!.row_frame_counts.length
-    let next: number
-    do {
-      next = Math.floor(Math.random() * total)
-    } while (next === currentRow.value && total > 1)
-    switchState(next)
-  }, 3000 + Math.random() * 4000)
+
+  function scheduleNext() {
+    const delay = 5000 + Math.random() * 15000
+    stateTimer = window.setTimeout(() => {
+      if (!config.value) return
+      const total = config.value.row_frame_counts.length
+      const r = Math.random()
+
+      let next: number
+      if (r < 0.5) {
+        next = 0
+      } else if (r < 0.7) {
+        next = 3
+      } else if (r < 0.85) {
+        next = 4
+      } else {
+        const others = [1, 2, 5, 6, 7, 8].filter(i => i < total)
+        next = others[Math.floor(Math.random() * others.length)] ?? 0
+      }
+
+      switchState(next)
+
+      const duration = (config.value!.row_frame_counts[next] || 6) * 200 + 500
+      stateTimer = window.setTimeout(() => {
+        if (next !== 0) {
+          switchState(0)
+        }
+        scheduleNext()
+      }, duration)
+    }, delay)
+  }
+
+  scheduleNext()
 }
 
+const showContextMenu = ref<{ x: number; y: number } | null>(null)
+
 function stopRandomStates() {
-  if (stateTimer) { clearInterval(stateTimer); stateTimer = null }
+  if (stateTimer) { clearTimeout(stateTimer); stateTimer = 0 }
+}
+
+async function closePet() {
+  try {
+    await invoke('close_desktop_pet')
+  } catch (e) { console.warn(e) }
+}
+
+function onContextMenu(e: MouseEvent) {
+  e.preventDefault()
+  showContextMenu.value = { x: e.clientX, y: e.clientY }
+}
+
+function onMouseDown(e: MouseEvent) {
+  const target = e.target as HTMLElement
+  if (!target.closest('.pet-context-menu')) {
+    showContextMenu.value = null
+  }
 }
 
 function switchState(row: number) {
@@ -114,7 +156,7 @@ onMounted(async () => {
   const container = document.getElementById('pet-container')
   if (container) {
     container.addEventListener('mousedown', async (e: MouseEvent) => {
-      if ((e.target as HTMLElement).classList.contains('state-btn')) return
+      if ((e.target as HTMLElement).classList.contains('close-btn')) return
       try {
         await getCurrentWindow().startDragging()
       } catch (err) { console.warn(err) }
@@ -132,25 +174,22 @@ onUnmounted(() => {
 <template>
   <div
     id="pet-container"
-    class="flex h-screen w-screen cursor-grab items-center justify-center bg-transparent select-none active:cursor-grabbing"
+    class="flex h-screen w-screen items-center justify-center bg-transparent select-none"
+    @contextmenu.prevent="onContextMenu"
+    @mousedown="onMouseDown"
   >
     <div id="pet-sprite" class="bg-no-repeat" />
     <div
-      class="fixed bottom-1 left-1/2 flex gap-0.5 rounded-lg bg-black/65 p-0.5 opacity-0 transition-opacity hover:opacity-100"
-      :class="{ 'opacity-100': false }"
-      style="transform: translateX(-50%)"
-      @mouseenter="($event.currentTarget as HTMLElement).style.opacity = '1'"
-      @mouseleave="($event.currentTarget as HTMLElement).style.opacity = '0'"
+      v-if="showContextMenu"
+      class="pet-context-menu fixed z-50 rounded-lg border border-gray-200 bg-white py-1 shadow-lg"
+      :style="{ left: showContextMenu.x + 'px', top: showContextMenu.y + 'px' }"
+      @click.stop
     >
       <button
-        v-for="(state, i) in STATES.slice(0, config?.row_frame_counts.length ?? 0)"
-        :key="state"
-        class="flex h-6 w-6 items-center justify-center rounded text-xs text-white transition-colors"
-        :class="currentRow === i ? 'bg-white/50' : 'bg-white/12 hover:bg-white/30'"
-        :title="state"
-        @click.stop="switchState(i)"
+        class="close-btn w-full px-4 py-1.5 text-left text-sm text-red-600 hover:bg-red-50"
+        @click="closePet"
       >
-        {{ STATE_ICONS[i] }}
+        关闭宠物
       </button>
     </div>
   </div>

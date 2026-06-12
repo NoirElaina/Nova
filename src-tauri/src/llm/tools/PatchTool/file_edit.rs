@@ -1,5 +1,5 @@
 use crate::llm::services::file_changes::{
-    apply_patch_change, multi_edit_change, patch_paths, FileEditResult, MultiEditRequest,
+    apply_patch_change, patch_paths, FileEditResult,
 };
 use crate::llm::tools::{
     app_tool, AppExecuteFuture, ToolFailure, ToolOutcome, ToolPermissionDescriptor,
@@ -18,19 +18,13 @@ pub(super) fn registrations() -> Vec<ToolRegistration> {
             false,
             Some(apply_patch_permission),
         ),
-        app_tool(
-            multi_edit_tool,
-            multi_edit_with_app,
-            false,
-            Some(multi_edit_permission),
-        ),
     ]
 }
 
 fn apply_patch_tool() -> Tool {
     Tool {
         name: "apply_patch".into(),
-        description: "Apply a structured multi-file patch to absolute file paths. All writes go through Nova's file-change review service and produce a review record.".into(),
+        description: "Use the `apply_patch` tool to edit files. This is a FREEFORM tool — pass the raw patch string directly, do not wrap it in JSON. Format:\n*** Begin Patch\n*** Update File: /absolute/path\n@@ -start,count +start,count @@\n unchanged line\n-removed line\n+added line\n*** Add File: /absolute/path\n+line content\n*** Delete File: /absolute/path\n*** Move to: /old/path -> /new/path\n*** End Patch\nHunk headers MUST use unified diff format: @@ -oldStart,oldCount +newStart,newCount @@. Do NOT use Chinese line numbers like @@ 第3行. All file paths must be absolute.".to_string(),
         input_schema: json!({
             "type": "object",
             "additionalProperties": false,
@@ -41,39 +35,6 @@ fn apply_patch_tool() -> Tool {
                 }
             },
             "required": ["patch"]
-        }),
-    }
-}
-
-fn multi_edit_tool() -> Tool {
-    Tool {
-        name: "multi_edit".into(),
-        description: "Apply multiple exact string replacements to absolute file paths. All writes go through Nova's file-change review service and produce a review record.".into(),
-        input_schema: json!({
-            "type": "object",
-            "additionalProperties": false,
-            "properties": {
-                "edits": {
-                    "type": "array",
-                    "minItems": 1,
-                    "items": {
-                        "type": "object",
-                        "additionalProperties": false,
-                        "properties": {
-                            "path": { "type": "string", "description": "Absolute file path. Relative paths and ~ are rejected." },
-                            "old_string": { "type": "string", "description": "Exact string to find, including whitespace and indentation. Must match the file content character-for-character." },
-                            "new_string": { "type": "string", "description": "Replacement string. Use empty string to delete." },
-                            "expected_replacements": {
-                                "type": "integer",
-                                "minimum": 1,
-                                "description": "Exact number of occurrences to replace. Defaults to 1."
-                            }
-                        },
-                        "required": ["path", "old_string", "new_string"]
-                    }
-                }
-            },
-            "required": ["edits"]
         }),
     }
 }
@@ -95,23 +56,6 @@ fn apply_patch_with_app(
     })
 }
 
-fn multi_edit_with_app(
-    app: AppHandle,
-    conversation_id: Option<String>,
-    input: Value,
-) -> AppExecuteFuture {
-    Box::pin(async move {
-        let edits = match parse_multi_edits(&input) {
-            Ok(edits) => edits,
-            Err(error) => return Err(ToolFailure::invalid_input(error)),
-        };
-        match multi_edit_change(&app, conversation_id.as_deref(), edits).await {
-            Ok(result) => result_json(result),
-            Err(error) => Err(ToolFailure::new(error)),
-        }
-    })
-}
-
 fn apply_patch_permission(input: &Value) -> Option<ToolPermissionDescriptor> {
     let patch = input
         .get("patch")
@@ -126,21 +70,6 @@ fn apply_patch_permission(input: &Value) -> Option<ToolPermissionDescriptor> {
             needs_approval: false,
         }),
     }
-}
-
-fn multi_edit_permission(input: &Value) -> Option<ToolPermissionDescriptor> {
-    let paths = input
-        .get("edits")
-        .and_then(Value::as_array)
-        .map(|edits| {
-            edits
-                .iter()
-                .filter_map(|edit| edit.get("path").and_then(Value::as_str))
-                .map(str::to_string)
-                .collect::<Vec<_>>()
-        })
-        .unwrap_or_default();
-    describe_paths_permission("multi_edit", "批量编辑", paths)
 }
 
 fn describe_paths_permission(
@@ -206,48 +135,6 @@ fn describe_paths_permission(
         warning,
         needs_approval,
     })
-}
-
-fn parse_multi_edits(input: &Value) -> Result<Vec<MultiEditRequest>, String> {
-    let edits = input
-        .get("edits")
-        .and_then(Value::as_array)
-        .ok_or_else(|| "multi_edit requires edits".to_string())?;
-
-    edits
-        .iter()
-        .enumerate()
-        .map(|(index, edit)| {
-            let path = required_string(edit, "path")
-                .map_err(|error| format!("edits[{}].{}", index, error))?;
-            let old_string = required_string(edit, "old_string")
-                .map_err(|error| format!("edits[{}].{}", index, error))?;
-            let new_string = edit
-                .get("new_string")
-                .and_then(Value::as_str)
-                .ok_or_else(|| format!("edits[{}].new_string is required", index))?
-                .to_string();
-            let expected_replacements = edit
-                .get("expected_replacements")
-                .and_then(Value::as_u64)
-                .unwrap_or(1) as usize;
-            Ok(MultiEditRequest {
-                path,
-                old_string,
-                new_string,
-                expected_replacements,
-            })
-        })
-        .collect()
-}
-
-fn required_string(input: &Value, key: &str) -> Result<String, String> {
-    input
-        .get(key)
-        .and_then(Value::as_str)
-        .map(str::to_string)
-        .filter(|value| !value.is_empty())
-        .ok_or_else(|| format!("{} is required", key))
 }
 
 fn result_json(result: FileEditResult) -> Result<ToolOutcome, ToolFailure> {

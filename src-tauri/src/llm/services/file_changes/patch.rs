@@ -8,6 +8,7 @@ enum PatchOperation {
     Add { path: String, content: String },
     Delete { path: String },
     Update { path: String, hunks: Vec<PatchHunk> },
+    Move { from: String, to: String },
 }
 
 #[derive(Debug, Clone)]
@@ -30,6 +31,7 @@ pub fn patch_paths(patch: &str) -> Result<Vec<String>, String> {
                 PatchOperation::Add { path, .. }
                 | PatchOperation::Delete { path }
                 | PatchOperation::Update { path, .. } => path,
+                PatchOperation::Move { from, .. } => from,
             })
             .collect()
     })
@@ -103,6 +105,23 @@ fn patch_to_drafts(patch: &str) -> Result<Vec<FileChangeDraft>, String> {
                     .map_err(|error| format!("{}: {}", path, error))?;
                 pending.insert(target, Some(next));
             }
+            PatchOperation::Move { from, to } => {
+                let source = resolve_tool_path(&from)?;
+                let dest = resolve_tool_path(&to)?;
+                let content = match pending.get(&source) {
+                    Some(Some(c)) => Some(c.clone()),
+                    Some(None) => return Err(format!("Cannot move deleted file: {}", from)),
+                    None => Some(
+                        std::fs::read_to_string(&source)
+                            .map_err(|error| format!("Error reading {}: {}", from, error))?,
+                    ),
+                };
+                if !originals.contains_key(&source) {
+                    originals.insert(source.clone(), content.clone());
+                }
+                pending.insert(source, None);
+                pending.insert(dest, content);
+            }
         }
     }
 
@@ -168,6 +187,12 @@ fn parse_patch(patch: &str) -> Result<Vec<PatchOperation>, String> {
             continue;
         }
 
+        if let Some((from, to)) = parse_move_to(line) {
+            operations.push(PatchOperation::Move { from, to });
+            index += 1;
+            continue;
+        }
+
         if let Some(path) = line.strip_prefix("*** Update File: ") {
             index += 1;
             let mut hunks = Vec::new();
@@ -185,6 +210,10 @@ fn parse_patch(patch: &str) -> Result<Vec<PatchOperation>, String> {
                     && !is_patch_boundary(lines[index])
                 {
                     let raw = lines[index];
+                    if raw == "*** End of File" {
+                        index += 1;
+                        break;
+                    }
                     let line = if let Some(text) = raw.strip_prefix(' ') {
                         PatchLine::Context(text.to_string())
                     } else if let Some(text) = raw.strip_prefix('+') {
@@ -223,6 +252,13 @@ fn is_patch_boundary(line: &str) -> bool {
         || line.starts_with("*** Add File: ")
         || line.starts_with("*** Update File: ")
         || line.starts_with("*** Delete File: ")
+        || line.starts_with("*** Move to: ")
+}
+
+fn parse_move_to(line: &str) -> Option<(String, String)> {
+    let rest = line.strip_prefix("*** Move to: ")?;
+    let (from, to) = rest.split_once(" -> ")?;
+    Some((from.trim().to_string(), to.trim().to_string()))
 }
 
 fn apply_hunks(original: &str, hunks: &[PatchHunk]) -> Result<String, String> {

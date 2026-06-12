@@ -118,8 +118,3 @@
     @apply bg-background text-foreground;
   }
 }
-
-body.pet-overlay,
-body.pet-overlay #app {
-  background: transparent !important;
-}

@@ -30,3 +30,5 @@ pub mod browser;
 pub mod workspace;
 // 宠物功能
 pub mod pet_config;
+// 内置工具路径查询
+pub mod tool_path;

@@ -12,14 +12,16 @@
 
 # 文件搜索（优先使用 rg）
 - 搜索文件内容时，**必须优先使用 `rg`（ripgrep）**，不要用 `grep`。rg 速度快、支持正则、默认递归、自动忽略 .gitignore 中的文件。
-- Nova 内置了 rg，首次使用时调用 `get_tool_path(name="rg")` 获取 rg 的完整路径，然后在 `execute_bash` 中使用该路径。
+- Nova 内置了 rg，完整路径为：`{{RG_PATH}}`
+- 在 `execute_bash` 中直接使用该路径执行，例如：`"{{RG_PATH}}" "pattern" /path/to/dir`
+- **重要**：不要使用 `which`、`where`、`Get-Command` 等命令查找 rg，直接使用上面的路径。
 - 常用 rg 命令：
-  - 搜索内容：`"<rg路径>" "pattern" /path/to/dir`
-  - 指定文件类型：`"<rg路径>" "pattern" -t ts` 或 `"<rg路径>" "pattern" -g "*.vue"`
-  - 带上下文：`"<rg路径>" "pattern" -C 3`（前后各3行）
-  - 列出匹配文件：`"<rg路径>" -l "pattern"`
-  - 搜索文件名：`"<rg路径>" --files | "<rg路径>" "pattern"` 或 `find . -name "*pattern*"`
-  - 排除目录：`"<rg路径>" "pattern" --glob '!node_modules'`
+  - 搜索内容：`"{{RG_PATH}}" "pattern" /path/to/dir`
+  - 指定文件类型：`"{{RG_PATH}}" "pattern" -t ts` 或 `"{{RG_PATH}}" "pattern" -g "*.vue"`
+  - 带上下文：`"{{RG_PATH}}" "pattern" -C 3`（前后各3行）
+  - 列出匹配文件：`"{{RG_PATH}}" -l "pattern"`
+  - 搜索文件名：`"{{RG_PATH}}" --files | "{{RG_PATH}}" "pattern"` 或 `find . -name "*pattern*"`
+  - 排除目录：`"{{RG_PATH}}" "pattern" --glob '!node_modules'`
 - Windows 上如果 rg 不可用，回退到 PowerShell：`Get-ChildItem -Recurse | Select-String "pattern"`
 - Linux/macOS 上如果 rg 不可用，回退到 `grep -rn "pattern" /path`
 - 读取文件内容用 `cat`（Linux/macOS）或 `Get-Content`（Windows）
@@ -31,8 +33,7 @@
 - `execute_bash` 与 `execute_powershell` 复用当前会话的持久终端，首次启动位于 `{{NOVA_WORKSPACE}}`，工作目录和环境会在同一会话内保留；这些命令会显示在终端标签页。
 - `reset_shell_session` 会把当前会话的终端重置回 `{{NOVA_WORKSPACE}}`。
 - 在 Windows 上执行 PowerShell 任务时优先使用 `execute_powershell`，它运行 PowerShell 7。避免交互式 TUI 程序。
-- 代码诊断、定义跳转、引用、符号和 hover 优先使用内置 `lsp_status` / `lsp_diagnostics` / `lsp_definition` / `lsp_references` / `lsp_symbols` / `lsp_hover`；这些是 Nova 原生 LSP 工具，不依赖 MCP，也不要把 MCP 当作核心 LSP 路径。
-- MCP 仅用于外部服务扩展，例如第三方数据源、远程工具和插件能力；本地文件编辑、LSP、终端和 Nova Browser 都走内置工具。
+- MCP 仅用于外部服务扩展，例如第三方数据源、远程工具和插件能力；本地文件编辑、终端和 Nova Browser 都走内置工具。
 - Nova Browser 是内置独立浏览器窗口，不是外部 MCP 浏览器。浏览器工具可自动打开或聚焦 Browser 标签页和浏览器窗口。
 - 使用浏览器自动化时，通常先调用 `nova_browser_snapshot` 获取当前页面和元素 ref，再用 `nova_browser_click` / `nova_browser_type` 操作元素。
 - 用户要求浏览器注释或选择页面元素时，让用户在 Nova Browser 中完成选择；选中的内容会作为上下文加入后续输入。

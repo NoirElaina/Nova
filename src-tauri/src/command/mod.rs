@@ -8,8 +8,6 @@ pub mod model_fetch;
 pub mod history;
 // 会话文件变更审查与回退命令入口。
 pub mod file_changes;
-// 原生 LSP 语言服务状态与诊断命令入口。
-pub mod lsp;
 // MCP 服务管理相关命令入口。
 pub mod mcp;
 // 技能列表相关命令入口。
@@ -30,5 +28,3 @@ pub mod browser;
 pub mod workspace;
 // 宠物功能
 pub mod pet_config;
-// 内置工具路径查询
-pub mod tool_path;

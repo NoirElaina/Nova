@@ -1,6 +1,7 @@
 use std::path::PathBuf;
 
 use tauri::AppHandle;
+use tauri::Manager;
 
 use crate::llm::services::skills::list_skill_summaries_with_app;
 use crate::llm::types::AgentMode;
@@ -88,6 +89,20 @@ pub fn load_system_prompt(
     // 将 workspace 路径注入提示词。
     let ws = crate::command::workspace::workspace_root_for_conversation(app, conversation_id)?;
     let prompt = prompt.replace("{{NOVA_WORKSPACE}}", &ws.display().to_string());
+
+    // 将 rg 完整路径注入提示词。
+    let rg_path = app
+        .path()
+        .resource_dir()
+        .ok()
+        .map(|dir| {
+            dir.join("bin")
+                .join(if cfg!(target_os = "windows") { "rg.exe" } else { "rg" })
+                .display()
+                .to_string()
+        })
+        .unwrap_or_default();
+    let prompt = prompt.replace("{{RG_PATH}}", &rg_path);
 
     let prompt_with_memory = format!("{}{}", prompt, GLOBAL_MEMORY_SECTION);
 

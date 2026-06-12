@@ -15,7 +15,7 @@ const categoryCatalog: ToolCategory[] = [
   { key: "shell", label: "执行命令" },
   { key: "search", label: "搜索代码" },
   { key: "web", label: "访问网页" },
-  { key: "task", label: "任务编排" },
+  { key: "goal", label: "目标管理" },
   { key: "mcp", label: "MCP 工具" },
   { key: "other", label: "其他工具" },
 ];
@@ -52,8 +52,7 @@ function categorizeTool(toolName: string): ToolCategory {
   if (
     lower.includes("grep") ||
     lower.includes("glob") ||
-    lower.includes("search") ||
-    lower.includes("lsp")
+    lower.includes("search")
   ) {
     return categoryCatalog[3];
   }
@@ -68,8 +67,7 @@ function categorizeTool(toolName: string): ToolCategory {
   }
 
   if (
-    lower.includes("task") ||
-    lower.includes("todo") ||
+    lower.includes("goal") ||
     lower.includes("plan")
   ) {
     return categoryCatalog[5];

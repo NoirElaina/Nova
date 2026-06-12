@@ -137,12 +137,6 @@ pub fn run() {
             command::browser::load_browser_tab_state,
             command::browser::save_browser_tab_state,
             command::browser::clear_browser_tab_state,
-            command::lsp::lsp_status,
-            command::lsp::lsp_diagnostics,
-            command::lsp::lsp_definition,
-            command::lsp::lsp_references,
-            command::lsp::lsp_symbols,
-            command::lsp::lsp_hover,
             command::workspace::workspace_list_directory,
             command::workspace::workspace_read_text_file,
             command::workspace::workspace_set_root,
@@ -153,8 +147,7 @@ pub fn run() {
             command::pet_config::get_pet_spritesheet,
             command::pet_config::launch_desktop_pet,
             command::pet_config::close_desktop_pet,
-            command::pet_config::get_pet_window_config,
-            command::tool_path::get_tool_path
+            command::pet_config::get_pet_window_config
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application");

@@ -2,7 +2,9 @@ use base64::{engine::general_purpose::STANDARD, Engine};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::io::Read;
-use tauri::{AppHandle, Manager};
+use std::sync::{Mutex, OnceLock};
+use tauri::{AppHandle, Emitter, Manager};
+use tauri::webview::WebviewWindowBuilder;
 use zip::ZipArchive;
 
 #[tauri::command]
@@ -169,4 +171,120 @@ pub async fn get_pet_spritesheet(app: AppHandle, pet_id: String) -> Result<Strin
     let bytes = std::fs::read(&spritesheet_path).map_err(|e| e.to_string())?;
     let b64 = STANDARD.encode(&bytes);
     Ok(format!("data:image/webp;base64,{b64}"))
+}
+
+#[derive(Serialize, Deserialize, Clone)]
+pub struct PetWindowConfig {
+    pub cell_width: u32,
+    pub cell_height: u32,
+    pub atlas_width: u32,
+    pub atlas_height: u32,
+    pub row_frame_counts: Vec<u32>,
+    pub spritesheet_url: String,
+}
+
+static PET_WINDOW_CONFIG: OnceLock<Mutex<Option<PetWindowConfig>>> = OnceLock::new();
+
+fn pet_config_mutex() -> &'static Mutex<Option<PetWindowConfig>> {
+    PET_WINDOW_CONFIG.get_or_init(|| Mutex::new(None))
+}
+
+#[tauri::command]
+pub async fn get_pet_window_config() -> Result<Option<PetWindowConfig>, String> {
+    let guard = pet_config_mutex().lock().map_err(|e| e.to_string())?;
+    Ok(guard.clone())
+}
+
+#[tauri::command]
+pub async fn launch_desktop_pet(
+    app: AppHandle,
+    pet_id: String,
+    cell_size: String,
+    atlas_size: String,
+    row_frame_counts: Vec<u32>,
+) -> Result<(), String> {
+    let pet_dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|e: tauri::Error| e.to_string())?
+        .join("pet")
+        .join(&pet_id);
+
+    let spritesheet_path = pet_dir.join("spritesheet.webp");
+    if !spritesheet_path.exists() {
+        return Err(format!("Spritesheet not found: {pet_id}"));
+    }
+
+    let bytes = std::fs::read(&spritesheet_path).map_err(|e| e.to_string())?;
+    let b64 = STANDARD.encode(&bytes);
+    let data_url = format!("data:image/webp;base64,{b64}");
+
+    let (cw, ch) = parse_size(&cell_size, 192, 208);
+    let (aw, ah) = parse_size(&atlas_size, 1536, 1872);
+
+    let config = PetWindowConfig {
+        cell_width: cw,
+        cell_height: ch,
+        atlas_width: aw,
+        atlas_height: ah,
+        row_frame_counts,
+        spritesheet_url: data_url,
+    };
+
+    {
+        let mut guard = pet_config_mutex().lock().map_err(|e| e.to_string())?;
+        *guard = Some(config);
+    }
+
+    let label = "nova-pet-window";
+
+    if let Some(existing) = app.get_webview_window(label) {
+        existing.show().map_err(|e| e.to_string())?;
+        existing.set_focus().map_err(|e| e.to_string())?;
+
+        let config_clone = {
+            let guard = pet_config_mutex().lock().map_err(|e| e.to_string())?;
+            guard.clone()
+        };
+        if let Some(cfg) = config_clone {
+            existing.emit("pet-window-update", cfg).map_err(|e: tauri::Error| e.to_string())?;
+        }
+        return Ok(());
+    }
+
+    let pet_url = format!("index.html?petId={}", pet_id);
+
+    WebviewWindowBuilder::new(&app, label, tauri::WebviewUrl::App(pet_url.into()))
+        .title("Desktop Pet")
+        .inner_size(cw as f64 + 40.0, ch as f64 + 40.0)
+        .resizable(false)
+        .decorations(false)
+        .transparent(true)
+        .always_on_top(true)
+        .skip_taskbar(true)
+        .position(800.0, 400.0)
+        .build()
+        .map_err(|e| e.to_string())?;
+
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn close_desktop_pet(app: AppHandle) -> Result<(), String> {
+    let label = "nova-pet-window";
+    if let Some(window) = app.get_webview_window(label) {
+        window.close().map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
+fn parse_size(s: &str, default_w: u32, default_h: u32) -> (u32, u32) {
+    let parts: Vec<&str> = s.split('x').collect();
+    if parts.len() == 2 {
+        let w = parts[0].parse().unwrap_or(default_w);
+        let h = parts[1].parse().unwrap_or(default_h);
+        (w, h)
+    } else {
+        (default_w, default_h)
+    }
 }

@@ -1,4 +1,3 @@
-```vue
 <script setup lang="ts">
 import { computed, onUnmounted, ref, watch } from 'vue'
 
@@ -8,6 +7,8 @@ const props = defineProps<{
   atlasSize: string
   fps?: number
   frameCount?: number
+  row?: number
+  rowFrameCounts?: number[]
 }>()
 
 const frame = ref(0)
@@ -18,7 +19,6 @@ const cell = computed(() => {
     return { width: 192, height: 208 }
   }
   const [w, h] = props.cellSize.split('x').map(Number)
-
   return {
     width: Number.isFinite(w) ? w : 192,
     height: Number.isFinite(h) ? h : 208,
@@ -30,21 +30,26 @@ const atlas = computed(() => {
     return { width: 1536, height: 1872 }
   }
   const [w, h] = props.atlasSize.split('x').map(Number)
-
   return {
     width: Number.isFinite(w) ? w : 1536,
     height: Number.isFinite(h) ? h : 1872,
   }
 })
 
+const currentRow = computed(() => props.row ?? 0)
 
 const totalFrames = computed(() => {
+  if (props.rowFrameCounts && props.rowFrameCounts[currentRow.value] !== undefined) {
+    return props.rowFrameCounts[currentRow.value]
+  }
   return props.frameCount || Math.floor(atlas.value.width / cell.value.width) || 1
 })
 
 const backgroundPosition = computed(() => {
   const safeFrame = frame.value % totalFrames.value
-  return `${-(safeFrame * cell.value.width)}px 0px`
+  const x = -(safeFrame * cell.value.width)
+  const y = -(currentRow.value * cell.value.height)
+  return `${x}px ${y}px`
 })
 
 const style = computed(() => ({
@@ -58,14 +63,11 @@ const style = computed(() => ({
 
 function start() {
   if (timer !== null) return
-
   const fps = props.fps ?? 5
   const interval = Math.floor(1000 / fps)
-
   timer = window.setInterval(() => {
     frame.value++
-
-    if (frame.value >= totalFrames) {
+    if (frame.value >= totalFrames.value) {
       frame.value = 0
     }
   }, interval)
@@ -76,12 +78,11 @@ function stop() {
     clearInterval(timer)
     timer = null
   }
-
   frame.value = 0
 }
 
 watch(
-  () => props.spritesheetUrl,
+  () => [props.spritesheetUrl, props.row],
   () => {
     stop()
   }
@@ -104,4 +105,3 @@ onUnmounted(() => {
     @mouseleave="stop"
   />
 </template>
-```

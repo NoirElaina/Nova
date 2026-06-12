@@ -197,6 +197,21 @@ interface LocalPet {
 
 const localPets = ref<LocalPet[]>([])
 const localSpritesheets = ref<Record<string, string>>({})
+const showMyPets = ref(false)
+
+async function launchPet(pet: LocalPet) {
+  try {
+    await invoke('launch_desktop_pet', {
+      petId: pet.id,
+      cellSize: pet.cell_size,
+      atlasSize: pet.atlas_size,
+      rowFrameCounts: pet.row_frame_counts,
+    })
+    showMyPets.value = false
+  } catch (e) {
+    console.error('Failed to launch pet:', e)
+  }
+}
 
 async function loadLocalPets() {
   try {
@@ -229,6 +244,17 @@ onMounted(() => {
       <p class="text-xs text-[#6b7280]">
         Discover and collect animated pets
       </p>
+
+      <div class="ml-auto">
+        <button
+          class="inline-flex items-center gap-1.5 rounded-lg border border-[#e7e2d8] bg-white px-3 py-1.5 text-xs text-[#111827] transition hover:bg-[#f3f1ed]"
+          @click="showMyPets = !showMyPets"
+        >
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 0 0 0-7.78z"/></svg>
+          我的宠物
+          <span v-if="localPets.length" class="rounded-full bg-black px-1.5 py-0.5 text-[10px] text-white">{{ localPets.length }}</span>
+        </button>
+      </div>
     </div>
 
     <div class="mb-3 flex gap-2">
@@ -413,6 +439,34 @@ onMounted(() => {
       >
         Next
       </button>
+    </div>
+
+    <div v-if="showMyPets && localPets.length > 0" class="fixed inset-0 z-50 flex items-center justify-center bg-black/30" @click.self="showMyPets = false">
+      <div class="w-[480px] max-w-[90vw] rounded-2xl border border-[#e7e2d8] bg-white p-5 shadow-2xl">
+        <div class="mb-4 flex items-center justify-between">
+          <h3 class="text-sm font-semibold text-[#111827]">选择要放置到桌面的宠物</h3>
+          <button class="text-xs text-[#6b7280] hover:text-[#111827]" @click="showMyPets = false">关闭</button>
+        </div>
+        <div class="grid grid-cols-3 gap-3">
+          <button
+            v-for="pet in localPets"
+            :key="pet.id"
+            class="group flex flex-col items-center gap-2 rounded-xl border border-[#e7e2d8] p-3 transition hover:-translate-y-1 hover:border-black hover:shadow-lg"
+            @click="launchPet(pet)"
+          >
+            <div class="flex justify-center">
+              <SpritePet
+                :spritesheet-url="localSpritesheets[pet.id] ?? ''"
+                :cell-size="pet.cell_size"
+                :atlas-size="pet.atlas_size"
+                :row-frame-counts="pet.row_frame_counts"
+                :fps="5"
+              />
+            </div>
+            <span class="text-xs text-[#6b7280]">{{ pet.display_name }}</span>
+          </button>
+        </div>
+      </div>
     </div>
 
   </div>

@@ -8,6 +8,7 @@ import ChatScreen from "./components/chat/ChatScreen.vue";
 import ExecutionTracePopover from "./components/chat/files/ExecutionTracePopover.vue";
 import WorkspaceDrawer from "./components/chat/WorkspaceDrawer.vue";
 import CustomScreen from "./components/custom/PetScreen.vue";
+import PetOverlay from "./components/custom/PetOverlay.vue";
 import HooksConfigScreen from "./components/hooks/HooksConfigScreen.vue";
 import AgentConfigScreen from "./components/agent/AgentConfigScreen.vue";
 import AgentMarketScreen from "./components/agent/AgentMarketScreen.vue";
@@ -74,6 +75,13 @@ const {
 } = useChatController();
 
 void chatScreenRef;
+
+const isPetWindow = new URLSearchParams(window.location.search).has('petId')
+
+if (isPetWindow) {
+  document.body.style.background = 'transparent'
+  document.getElementById('app')!.style.background = 'transparent'
+}
 
 const isDrawerOpen = ref(false);
 const activeWorkspaceTab = ref<WorkspaceTabId>("workspace");
@@ -195,7 +203,11 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <div class="flex h-screen bg-[#fcfcfc] dark:bg-[#1a1a1a] text-[#1a1a1a] dark:text-[#ececec] overflow-hidden font-sans">
+  <template v-if="isPetWindow">
+    <PetOverlay />
+  </template>
+
+  <div v-else class="flex h-screen bg-[#fcfcfc] dark:bg-[#1a1a1a] text-[#1a1a1a] dark:text-[#ececec] overflow-hidden font-sans">
     <GlobalToastHost />
 
     <SettingsScreen

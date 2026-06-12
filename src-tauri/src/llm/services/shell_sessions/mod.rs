@@ -251,7 +251,7 @@ fn spawn_stream_reader<R>(
 fn make_shell_command() -> Command {
     let mut command = Command::new(PWSH_PATH);
     command
-        .args(["-NoLogo", "-NonInteractive", "-NoExit", "-Command", "-"])
+        .args(["-NoProfile", "-NoLogo", "-NonInteractive", "-NoExit", "-Command", "-"])
         .creation_flags(CREATE_NO_WINDOW)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())

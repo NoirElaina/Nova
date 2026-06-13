@@ -5,10 +5,18 @@ use tauri::AppHandle;
 
 #[derive(Debug, Clone)]
 enum PatchOperation {
-    Add { path: String, content: String },
-    Delete { path: String },
-    Update { path: String, hunks: Vec<PatchHunk> },
-    Move { from: String, to: String },
+    Add {
+        path: String,
+        content: String,
+    },
+    Delete {
+        path: String,
+    },
+    Update {
+        path: String,
+        move_to: Option<String>,
+        hunks: Vec<PatchHunk>,
+    },
 }
 
 #[derive(Debug, Clone)]
@@ -27,11 +35,14 @@ pub fn patch_paths(patch: &str) -> Result<Vec<String>, String> {
     parse_patch(patch).map(|operations| {
         operations
             .into_iter()
-            .map(|operation| match operation {
-                PatchOperation::Add { path, .. }
-                | PatchOperation::Delete { path }
-                | PatchOperation::Update { path, .. } => path,
-                PatchOperation::Move { from, .. } => from,
+            .flat_map(|operation| match operation {
+                PatchOperation::Add { path, .. } | PatchOperation::Delete { path } => {
+                    vec![path]
+                }
+                PatchOperation::Update { path, move_to, .. } => match move_to {
+                    Some(new_path) => vec![path, new_path],
+                    None => vec![path],
+                },
             })
             .collect()
     })
@@ -82,7 +93,11 @@ fn patch_to_drafts(patch: &str) -> Result<Vec<FileChangeDraft>, String> {
                 }
                 pending.insert(target, None);
             }
-            PatchOperation::Update { path, hunks } => {
+            PatchOperation::Update {
+                path,
+                move_to,
+                hunks,
+            } => {
                 let target = resolve_tool_path(&path)?;
                 if !originals.contains_key(&target) {
                     originals.insert(
@@ -103,24 +118,25 @@ fn patch_to_drafts(patch: &str) -> Result<Vec<FileChangeDraft>, String> {
                 };
                 let next = apply_hunks(&current, &hunks)
                     .map_err(|error| format!("{}: {}", path, error))?;
-                pending.insert(target, Some(next));
-            }
-            PatchOperation::Move { from, to } => {
-                let source = resolve_tool_path(&from)?;
-                let dest = resolve_tool_path(&to)?;
-                let content = match pending.get(&source) {
-                    Some(Some(c)) => Some(c.clone()),
-                    Some(None) => return Err(format!("Cannot move deleted file: {}", from)),
-                    None => Some(
-                        std::fs::read_to_string(&source)
-                            .map_err(|error| format!("Error reading {}: {}", from, error))?,
-                    ),
-                };
-                if !originals.contains_key(&source) {
-                    originals.insert(source.clone(), content.clone());
+
+                match move_to {
+                    Some(new_path) => {
+                        let dest = resolve_tool_path(&new_path)?;
+                        if dest != target
+                            && (dest.exists() || pending.get(&dest).is_some_and(Option::is_some))
+                        {
+                            return Err(format!("Move target already exists: {}", new_path));
+                        }
+                        // 旧路径标记为删除
+                        pending.insert(target, None);
+                        // 新路径写入更新后的内容
+                        originals.entry(dest.clone()).or_insert(None);
+                        pending.insert(dest, Some(next));
+                    }
+                    None => {
+                        pending.insert(target, Some(next));
+                    }
                 }
-                pending.insert(source, None);
-                pending.insert(dest, content);
             }
         }
     }
@@ -136,7 +152,7 @@ fn patch_to_drafts(patch: &str) -> Result<Vec<FileChangeDraft>, String> {
 }
 
 fn parse_patch(patch: &str) -> Result<Vec<PatchOperation>, String> {
-    let normalized = patch.replace("\r\n", "\n");
+    let normalized = patch.trim().replace("\r\n", "\n");
     let mut lines = normalized.split('\n').collect::<Vec<_>>();
     if lines.last() == Some(&"") {
         lines.pop();
@@ -187,14 +203,19 @@ fn parse_patch(patch: &str) -> Result<Vec<PatchOperation>, String> {
             continue;
         }
 
-        if let Some((from, to)) = parse_move_to(line) {
-            operations.push(PatchOperation::Move { from, to });
-            index += 1;
-            continue;
-        }
-
         if let Some(path) = line.strip_prefix("*** Update File: ") {
             index += 1;
+
+            // 可选的 "*** Move to: <new path>"，紧跟在 Update File 之后，
+            // 只携带一个新路径（不是 "from -> to" 的形式）。
+            let mut move_to = None;
+            if index < lines.len() {
+                if let Some(new_path) = lines[index].strip_prefix("*** Move to: ") {
+                    move_to = Some(new_path.trim().to_string());
+                    index += 1;
+                }
+            }
+
             let mut hunks = Vec::new();
             while index < lines.len() && !is_patch_boundary(lines[index]) {
                 if !lines[index].starts_with("@@") {
@@ -203,6 +224,7 @@ fn parse_patch(patch: &str) -> Result<Vec<PatchOperation>, String> {
                         lines[index]
                     ));
                 }
+                // "@@" 后面跟的描述文字只是注释，不参与匹配，直接跳过整行。
                 index += 1;
                 let mut hunk_lines = Vec::new();
                 while index < lines.len()
@@ -236,6 +258,7 @@ fn parse_patch(patch: &str) -> Result<Vec<PatchOperation>, String> {
             }
             operations.push(PatchOperation::Update {
                 path: path.trim().to_string(),
+                move_to,
                 hunks,
             });
             continue;
@@ -253,12 +276,6 @@ fn is_patch_boundary(line: &str) -> bool {
         || line.starts_with("*** Update File: ")
         || line.starts_with("*** Delete File: ")
         || line.starts_with("*** Move to: ")
-}
-
-fn parse_move_to(line: &str) -> Option<(String, String)> {
-    let rest = line.strip_prefix("*** Move to: ")?;
-    let (from, to) = rest.split_once(" -> ")?;
-    Some((from.trim().to_string(), to.trim().to_string()))
 }
 
 fn apply_hunks(original: &str, hunks: &[PatchHunk]) -> Result<String, String> {
@@ -324,7 +341,14 @@ fn find_subsequence(haystack: &[String], needle: &[String]) -> Option<usize> {
     if needle.is_empty() || needle.len() > haystack.len() {
         return None;
     }
+    // 标准化：忽略行尾空白和换行符差异
+    let normalize = |s: &str| s.trim_end().replace("\r", "");
     haystack
         .windows(needle.len())
-        .position(|window| window == needle)
+        .position(|window| {
+            window
+                .iter()
+                .zip(needle.iter())
+                .all(|(h, n)| normalize(h) == normalize(n))
+        })
 }

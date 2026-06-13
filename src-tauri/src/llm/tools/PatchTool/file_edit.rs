@@ -24,14 +24,14 @@ pub(super) fn registrations() -> Vec<ToolRegistration> {
 fn apply_patch_tool() -> Tool {
     Tool {
         name: "apply_patch".into(),
-        description: "Use the `apply_patch` tool to edit files. This is a FREEFORM tool — pass the raw patch string directly, do not wrap it in JSON. Format:\n*** Begin Patch\n*** Update File: /absolute/path\n@@ -start,count +start,count @@\n unchanged line\n-removed line\n+added line\n*** Add File: /absolute/path\n+line content\n*** Delete File: /absolute/path\n*** Move to: /old/path -> /new/path\n*** End Patch\nHunk headers MUST use unified diff format: @@ -oldStart,oldCount +newStart,newCount @@. Do NOT use Chinese line numbers like @@ 第3行. All file paths must be absolute.".to_string(),
+        description: "Edit files using patch format. Pass patch text as the 'patch' parameter.\n\nFormat:\n*** Begin Patch\n*** Add File: /absolute/path/to/file\n+line1\n+line2\n*** Update File: /absolute/path/to/file\n@@\n context line\n+added line\n-removed line\n@@\n next context\n*** Delete File: /absolute/path/to/file\n*** End Patch\n\nRules:\n- Paths must be absolute\n- @@ is a section separator (no line numbers needed)\n- Lines starting with space = context (must match file exactly)\n- Lines starting with + = add\n- Lines starting with - = remove\n- Context lines before +/- lines determine where to apply changes".to_string(),
         input_schema: json!({
             "type": "object",
             "additionalProperties": false,
             "properties": {
                 "patch": {
                     "type": "string",
-                    "description": "Patch text using *** Begin Patch / *** Update File / *** Add File / *** Delete File / @@ hunks / *** End Patch. Every file path in patch headers must be absolute. Hunk headers MUST use unified diff format: @@ -oldStart,oldCount +newStart,newCount @@. Example:\n*** Begin Patch\n*** Update File: /path/to/file.rs\n@@ -10,3 +10,4 @@\n line10\n+inserted line\n line11\n line12\n*** End Patch"
+                    "description": "Patch text starting with *** Begin Patch and ending with *** End Patch"
                 }
             },
             "required": ["patch"]

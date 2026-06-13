@@ -90,6 +90,16 @@ pub fn load_system_prompt(
     let ws = crate::command::workspace::workspace_root_for_conversation(app, conversation_id)?;
     let prompt = prompt.replace("{{NOVA_WORKSPACE}}", &ws.display().to_string());
 
+    // 将平台信息注入提示词。
+    let platform = if cfg!(target_os = "windows") {
+        "Windows"
+    } else if cfg!(target_os = "macos") {
+        "macOS"
+    } else {
+        "Linux"
+    };
+    let prompt = prompt.replace("{{NOVA_PLATFORM}}", platform);
+
     // 将 rg 完整路径注入提示词。
     let rg_path = app
         .path()

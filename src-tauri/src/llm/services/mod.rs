@@ -4,7 +4,6 @@ pub mod cron_schedule;
 pub mod file_changes;
 pub mod hooks;
 pub mod live_turns;
-pub mod lsp;
 pub mod mcp;
 pub mod mcp_tools;
 pub mod memory_dir;

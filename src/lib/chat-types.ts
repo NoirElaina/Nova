@@ -1,6 +1,7 @@
 export interface TurnCost {
   inputTokens: number;
   outputTokens: number;
+  totalInputTokens?: number;
   cacheReadTokens?: number;
   cacheCreationTokens?: number;
   billableInputTokens?: number;

@@ -40,18 +40,20 @@ fn emit_token_usage_event(
     cost: Option<&TurnCostBreakdown>,
     source: &str,
 ) {
-    let total_tokens = match (input_tokens, output_tokens) {
-        (Some(input), Some(output)) => input.checked_add(output),
-        (Some(input), None) => Some(input),
-        (None, Some(output)) => Some(output),
-        (None, None) => None,
-    };
+    // 根据 Anthropic 文档：
+    // total_input = input_tokens + cache_read_tokens + cache_creation_tokens
+    // total_all = total_input + output_tokens
+    let total_input = input_tokens.unwrap_or(0)
+        + cache_read_tokens.unwrap_or(0)
+        + cache_creation_tokens.unwrap_or(0);
+    let total_tokens = total_input.checked_add(output_tokens.unwrap_or(0));
 
     let payload = serde_json::json!({
         "inputTokens": input_tokens,
         "outputTokens": output_tokens,
         "cacheReadTokens": cache_read_tokens,
         "cacheCreationTokens": cache_creation_tokens,
+        "totalInputTokens": total_input,
         "totalTokens": total_tokens,
         "cost": cost,
         "source": source,
@@ -877,11 +879,15 @@ pub async fn send_chat_message(
         );
 
         // 若 provider 返回了实际 input_tokens，用真实值刷新上下文用量显示。
+        // 根据 Anthropic 文档：total_input = input_tokens + cache_read + cache_creation
         if let Some(actual_input) = provider_result.input_tokens {
+            let total_input = actual_input
+                + provider_result.cache_read_tokens.unwrap_or(0)
+                + provider_result.cache_creation_tokens.unwrap_or(0);
             emit_context_usage_event(
                 &app,
                 conversation_id.as_deref(),
-                actual_input,
+                total_input,
                 window_tokens as u32,
                 "actual",
             );

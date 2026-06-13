@@ -657,10 +657,13 @@ export function createChatStreamOperations(deps: StreamOpsDeps) {
 
     if (payload.type === "token-usage") {
       const usage = parseTokenUsagePayload(payload.text);
+      // 根据 Anthropic 文档：totalInput = inputTokens + cacheRead + cacheCreation
       const nextInputTokens =
-        typeof usage?.inputTokens === "number" && usage.inputTokens > 0
-          ? usage.inputTokens
-          : 0;
+        typeof usage?.totalInputTokens === "number" && usage.totalInputTokens > 0
+          ? usage.totalInputTokens
+          : typeof usage?.inputTokens === "number" && usage.inputTokens > 0
+            ? usage.inputTokens
+            : 0;
       const nextOutputTokens =
         typeof usage?.outputTokens === "number" && usage.outputTokens > 0
           ? usage.outputTokens

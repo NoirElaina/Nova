@@ -11,7 +11,6 @@ Nova is a local desktop coding assistant for real project execution, controllabl
 - Browser annotation flow: users can select elements in the Nova Browser and add the captured page context back into the chat input.
 - Workspace drawer: review agent output, token usage, session files, terminal activity, project files, and browser state without leaving the conversation.
 - Modular tool registry: built-in tools self-describe registration, permissions, app execution, and post-processing so new tools can be mounted with one entry in `src-tauri/src/llm/tools/mod.rs`.
-- Native LSP tools: diagnostics, definitions, references, symbols, hover, and language-server status are handled by Nova's backend instead of MCP.
 - Multi-provider model access: switch providers and models with isolated per-provider profiles.
 - Agent modes: `Agent`, `Plan`, and `Auto` modes are available from the input area.
 - MCP connectivity: register MCP servers, attach encrypted HTTP request headers for authenticated endpoints, inspect tools/resources, and invoke MCP tools through explicit tool names such as `mcp__server__tool`.
@@ -28,7 +27,7 @@ Nova is a local desktop coding assistant for real project execution, controllabl
 
 The right-side workspace drawer is the main companion panel for a conversation.
 
-- Workspace: browse and open files from the current conversation's workspace root, resize or hide the file tree, switch that conversation's root, and view native LSP status/diagnostics.
+- Workspace: browse and open files from the current conversation's workspace root, resize or hide the file tree, and switch that conversation's root.
 - Review: inspect agent changes and execution context.
 - Usage: view token and cost trends without altering chart animations.
 - Files: inspect files uploaded into the current session.
@@ -49,11 +48,38 @@ Nova Browser is intentionally not rendered as an embedded page inside the main c
 
 - Built-in tools are mounted through the central registry in `src-tauri/src/llm/tools/mod.rs`.
 - Each tool module owns its own registration metadata instead of spreading behavior across global `match` branches.
-- New tools can be scaffolded from `src-tauri/src/llm/tools/NewToolTemplate/`.
-- Code edits should use `apply_patch` by default; `multi_edit` is available for atomic exact replacements, while `write_file` is mainly for new or generated files.
+- Code edits use `apply_patch` with a simplified format: `@@` as section separator (no line numbers needed), context lines for matching.
 - MCP tools are exposed as explicit names like `mcp__playwright__browser_navigate` instead of a generic dispatcher tool.
 - Shell tools use conversation-scoped persistent sessions, start in the conversation workspace root, and support foreground timeouts plus background processes.
-- LSP tools are built in as `lsp_status`, `lsp_diagnostics`, `lsp_definition`, `lsp_references`, `lsp_symbols`, and `lsp_hover`; they do not require an MCP language-server bridge.
+- rg (ripgrep) is built-in and its path is injected directly into the system prompt via `{{RG_PATH}}`.
+
+### Available Tools
+
+| Category | Tools |
+|----------|-------|
+| Terminal | `execute_bash`, `execute_powershell`, `reset_shell_session` |
+| File Editing | `apply_patch` |
+| Search | `web_search`, `web_fetch`, rg (via bash) |
+| Browser | `nova_browser_navigate`, `nova_browser_click`, `nova_browser_type`, `nova_browser_snapshot`, `nova_browser_reset` |
+| Desktop Control | `computer_use` |
+| Planning | `enter_plan_mode`, `exit_plan_mode`, `plan_for_approval` |
+| Goal Management | `create_goal`, `update_goal`, `get_goal` |
+| Scheduled Tasks | `CronCreate`, `CronDelete`, `CronList` |
+| Knowledge Base | `rag_tool`, `remember_global_memory` |
+| Skills | `Skill` |
+| MCP | `mcp_auth`, `list_mcp_resources`, `read_mcp_resource` |
+| Config | `config_tool` |
+| Other | `ask_user_question`, `tool_search`, `Sleep` |
+
+## Token Calculation
+
+Token usage is calculated following the Anthropic API specification:
+
+- `input_tokens`: Fresh input tokens (not from cache)
+- `cache_read_input_tokens`: Tokens read from prompt cache
+- `cache_creation_input_tokens`: Tokens written to prompt cache
+- `total_input = input_tokens + cache_read_input_tokens + cache_creation_input_tokens`
+- `total_tokens = total_input + output_tokens`
 
 ## Agent Turn Flow
 

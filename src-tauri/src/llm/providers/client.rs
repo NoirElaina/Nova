@@ -1,3 +1,4 @@
+use std::time::Duration;
 use reqwest::Client;
 use tauri::AppHandle;
 
@@ -14,6 +15,7 @@ pub struct LlmClient {
     adapter: Box<dyn ApiAdapter>,
     base_url: String,
     model: String,
+    http_client: Client,
 }
 
 // 桥接 ApiAdapter 到 StreamParser 以便复用 run_streaming
@@ -50,10 +52,19 @@ impl LlmClient {
             _ => Box::new(OpenAiAdapter::new()),
         };
 
+       let http_client = Client::builder()
+            .timeout(Duration::from_secs(300))
+            .connect_timeout(Duration::from_secs(10))
+            .pool_max_idle_per_host(4)
+            .pool_idle_timeout(Duration::from_secs(90))
+            .build()
+            .map_err(|e| format!("Failed to create HTTP client: {}", e))?;
+
         Ok(Self {
             adapter,
             base_url: profile.base_url.clone(),
             model: profile.model.clone(),
+            http_client,
         })
     }
 
@@ -64,7 +75,6 @@ impl LlmClient {
         agent_mode: AgentMode,
         conversation_id: Option<&str>,
     ) -> Result<ProviderTurnResult, ProviderTurnError> {
-        let client = Client::new();
         let mut url = self.base_url.trim_end_matches('/').to_string();
 
         let provider_name = self.adapter.provider_name();
@@ -97,7 +107,7 @@ impl LlmClient {
             }
         }
 
-        let builder = client.post(&url);
+        let builder = self.http_client.post(&url);
         let req_builder =
             self.adapter
                 .build_request(builder, app, messages, agent_mode, conversation_id)?;
@@ -122,7 +132,7 @@ impl LlmClient {
         let cancel_token = cancellation::get_token(conversation_id);
 
         let resp = tokio::select! {
-            res = client.execute(request) => res,
+            res = self.http_client.execute(request) => res,
             _ = cancel_token.cancelled() => {
                 return Ok(ProviderTurnResult {
                     messages: Vec::new(),

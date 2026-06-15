@@ -284,12 +284,11 @@ impl ApiAdapter for ResponsesAdapter {
                             signature: String::new(),
                         });
                     }
-                    return Ok(deltas);
-                }
-
-                let pending = self.pending_fn_calls.remove(&output_index);
-                if let Some(ready) = ready_tool_call(output_index, item, pending)? {
-                    deltas.push(Delta::ToolsReady(vec![ready]));
+                } else {
+                    let pending = self.pending_fn_calls.remove(&output_index);
+                    if let Some(ready) = ready_tool_call(output_index, item, pending)? {
+                        deltas.push(Delta::ToolsReady(vec![ready]));
+                    }
                 }
             }
 

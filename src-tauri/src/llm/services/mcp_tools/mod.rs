@@ -19,14 +19,9 @@ pub fn parse_mcp_tool_name(name: &str) -> Option<(String, String)> {
     Some((server.to_string(), tool.to_string()))
 }
 
-pub fn dynamic_tool_read_only(name: &str) -> Option<bool> {
-    let (_server_name, tool_name) = parse_mcp_tool_name(name)?;
-    let tool_lower = tool_name.to_ascii_lowercase();
-    Some(
-        ["read", "list", "search", "get", "fetch", "glob", "grep"]
-            .iter()
-            .any(|kw| tool_lower.contains(kw)),
-    )
+pub fn dynamic_tool_read_only(_name: &str) -> Option<bool> {
+    // MCP 外部工具一律不标记为只读，避免误判导致并发执行副作用工具
+    None
 }
 
 pub(crate) async fn execute_dynamic_with_app(

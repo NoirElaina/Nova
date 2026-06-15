@@ -1,9 +1,113 @@
+use aes_gcm::aead::Aead;
+use aes_gcm::{Aes256Gcm, KeyInit, Nonce};
 use base64::{engine::general_purpose::STANDARD, Engine as _};
+use rand::RngCore;
+use std::sync::OnceLock;
+use tauri::{AppHandle, Manager};
 use tracing::warn;
 
 use crate::command::settings::AppSettings;
 
-const SECRET_PREFIX: &str = "nova:dpapi:v1:";
+/// ?????????
+const SECRET_PREFIX: &str = "nova:v2:";
+/// ? DPAPI ?????????????????????
+const LEGACY_DPAPI_PREFIX: &str = "nova:dpapi:v1:";
+/// ???????
+const MASTER_KEY_FILENAME: &str = "master_key";
+/// AES-256-GCM nonce ???12 ?? / 96 ???
+const NONCE_LEN: usize = 12;
+/// AES-256 ?????32 ?? / 256 ???
+const KEY_LEN: usize = 32;
+
+/// ?????????????????????
+static MASTER_KEY: OnceLock<[u8; KEY_LEN]> = OnceLock::new();
+
+/// ???????????????????????????
+pub fn init_master_key(app: &AppHandle) -> Result<(), String> {
+    let key = load_or_create_master_key(app)?;
+    MASTER_KEY
+        .set(key)
+        .map_err(|_| "Master key already initialized".to_string())
+}
+
+/// ??????????????? init_master_key?
+fn get_master_key() -> Result<[u8; KEY_LEN], String> {
+    MASTER_KEY
+        .get()
+        .copied()
+        .ok_or_else(|| "Master key not initialized; call init_master_key first".to_string())
+}
+
+/// ? app data ????????????????????
+fn load_or_create_master_key(app: &AppHandle) -> Result<[u8; KEY_LEN], String> {
+    let data_dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|e| format!("Failed to get app data directory: {}", e))?;
+    let key_path = data_dir.join(MASTER_KEY_FILENAME);
+
+    if key_path.exists() {
+        let key_b64 = std::fs::read_to_string(&key_path)
+            .map_err(|e| format!("Failed to read master key file: {}", e))?;
+        let key_bytes = STANDARD
+            .decode(key_b64.trim())
+            .map_err(|e| format!("Corrupt master key file: {}", e))?;
+        let key: [u8; KEY_LEN] = key_bytes
+            .try_into()
+            .map_err(|_| "Master key file is wrong size".to_string())?;
+        return Ok(key);
+    }
+
+    // ?????????????????
+    std::fs::create_dir_all(&data_dir)
+        .map_err(|e| format!("Failed to create app data directory: {}", e))?;
+
+    let mut key = [0u8; KEY_LEN];
+    rand::rngs::OsRng.fill_bytes(&mut key);
+    let key_b64 = STANDARD.encode(key);
+    std::fs::write(&key_path, &key_b64)
+        .map_err(|e| format!("Failed to write master key file: {}", e))?;
+    Ok(key)
+}
+
+/// AES-256-GCM ???
+/// ?????nonce(12 bytes) + ciphertext + tag??? base64 ???
+fn aes_encrypt(plaintext: &[u8]) -> Result<Vec<u8>, String> {
+    let key = get_master_key()?;
+    let cipher = Aes256Gcm::new_from_slice(&key)
+        .map_err(|e| format!("AES key init failed: {}", e))?;
+
+    let mut nonce_bytes = [0u8; NONCE_LEN];
+    rand::rngs::OsRng.fill_bytes(&mut nonce_bytes);
+    let nonce = Nonce::from_slice(&nonce_bytes);
+
+    let ciphertext = cipher
+        .encrypt(nonce, plaintext)
+        .map_err(|e| format!("AES encryption failed: {}", e))?;
+
+    let mut out = Vec::with_capacity(NONCE_LEN + ciphertext.len());
+    out.extend_from_slice(&nonce_bytes);
+    out.extend(ciphertext);
+    Ok(out)
+}
+
+/// AES-256-GCM ???
+/// ?????nonce(12 bytes) + ciphertext + tag??? base64 ???
+fn aes_decrypt(blob: &[u8]) -> Result<Vec<u8>, String> {
+    if blob.len() < NONCE_LEN {
+        return Err("Encrypted payload too short".to_string());
+    }
+    let key = get_master_key()?;
+    let cipher = Aes256Gcm::new_from_slice(&key)
+        .map_err(|e| format!("AES key init failed: {}", e))?;
+
+    let (nonce_bytes, ciphertext) = blob.split_at(NONCE_LEN);
+    let nonce = Nonce::from_slice(nonce_bytes);
+
+    cipher
+        .decrypt(nonce, ciphertext)
+        .map_err(|e| format!("AES decryption failed: {}", e))
+}
 
 pub fn encrypt_provider_api_keys(settings: &mut AppSettings) -> Result<(), String> {
     for (provider, profile) in settings.provider_profiles.iter_mut() {
@@ -20,19 +124,30 @@ pub fn encrypt_provider_api_keys(settings: &mut AppSettings) -> Result<(), Strin
 pub fn decrypt_provider_api_keys(settings: &mut AppSettings) {
     for (provider, profile) in settings.provider_profiles.iter_mut() {
         let api_key = profile.api_key.trim();
-        if !is_encrypted_secret_value(api_key) {
+        if api_key.is_empty() {
             continue;
         }
-        match decrypt_secret_value(api_key) {
-            Ok(plain) => profile.api_key = plain,
-            Err(error) => {
-                warn!(
-                    provider = %provider,
-                    error = %error,
-                    "failed to decrypt provider API key"
-                );
-                profile.api_key.clear();
+        if api_key.starts_with(SECRET_PREFIX) {
+            match decrypt_secret_value(api_key) {
+                Ok(plain) => profile.api_key = plain,
+                Err(error) => {
+                    warn!(
+                        provider = %provider,
+                        error = %error,
+                        "failed to decrypt provider API key"
+                    );
+                    profile.api_key.clear();
+                }
             }
+            continue;
+        }
+        if api_key.starts_with(LEGACY_DPAPI_PREFIX) {
+            warn!(
+                provider = %provider,
+                "legacy DPAPI-encrypted API key detected; please re-enter your API key"
+            );
+            profile.api_key.clear();
+            continue;
         }
     }
 }
@@ -49,7 +164,7 @@ pub fn is_encrypted_secret_value(value: &str) -> bool {
 }
 
 pub fn encrypt_secret_value(value: &str) -> Result<String, String> {
-    let protected = platform::protect(value.as_bytes())?;
+    let protected = aes_encrypt(value.as_bytes())?;
     Ok(format!("{}{}", SECRET_PREFIX, STANDARD.encode(protected)))
 }
 
@@ -60,122 +175,7 @@ pub fn decrypt_secret_value(value: &str) -> Result<String, String> {
     let protected = STANDARD
         .decode(encoded)
         .map_err(|error| format!("invalid encrypted API key payload: {}", error))?;
-    let plain = platform::unprotect(&protected)?;
-    String::from_utf8(plain).map_err(|error| format!("decrypted API key is not UTF-8: {}", error))
-}
-
-#[cfg(target_os = "windows")]
-mod platform {
-    use std::ffi::c_void;
-    use std::ptr::null_mut;
-    use std::slice;
-
-    const CRYPTPROTECT_UI_FORBIDDEN: u32 = 0x1;
-    const OPTIONAL_ENTROPY: &[u8] = b"nova.settings.provider_api_key.v1";
-
-    #[repr(C)]
-    struct DataBlob {
-        cb_data: u32,
-        pb_data: *mut u8,
-    }
-
-    #[link(name = "Crypt32")]
-    extern "system" {
-        fn CryptProtectData(
-            data_in: *mut DataBlob,
-            data_descr: *const u16,
-            optional_entropy: *mut DataBlob,
-            reserved: *mut c_void,
-            prompt_struct: *mut c_void,
-            flags: u32,
-            data_out: *mut DataBlob,
-        ) -> i32;
-
-        fn CryptUnprotectData(
-            data_in: *mut DataBlob,
-            data_descr: *mut *mut u16,
-            optional_entropy: *mut DataBlob,
-            reserved: *mut c_void,
-            prompt_struct: *mut c_void,
-            flags: u32,
-            data_out: *mut DataBlob,
-        ) -> i32;
-    }
-
-    #[link(name = "Kernel32")]
-    extern "system" {
-        fn LocalFree(memory: *mut c_void) -> *mut c_void;
-    }
-
-    pub fn protect(bytes: &[u8]) -> Result<Vec<u8>, String> {
-        crypt_data(bytes, true)
-    }
-
-    pub fn unprotect(bytes: &[u8]) -> Result<Vec<u8>, String> {
-        crypt_data(bytes, false)
-    }
-
-    fn crypt_data(bytes: &[u8], protect: bool) -> Result<Vec<u8>, String> {
-        let mut input = blob_from_slice(bytes)?;
-        let mut entropy = blob_from_slice(OPTIONAL_ENTROPY)?;
-        let mut output = DataBlob {
-            cb_data: 0,
-            pb_data: null_mut(),
-        };
-
-        let ok = unsafe {
-            if protect {
-                CryptProtectData(
-                    &mut input,
-                    std::ptr::null(),
-                    &mut entropy,
-                    null_mut(),
-                    null_mut(),
-                    CRYPTPROTECT_UI_FORBIDDEN,
-                    &mut output,
-                )
-            } else {
-                CryptUnprotectData(
-                    &mut input,
-                    null_mut(),
-                    &mut entropy,
-                    null_mut(),
-                    null_mut(),
-                    CRYPTPROTECT_UI_FORBIDDEN,
-                    &mut output,
-                )
-            }
-        };
-
-        if ok == 0 {
-            return Err(std::io::Error::last_os_error().to_string());
-        }
-
-        let data =
-            unsafe { slice::from_raw_parts(output.pb_data, output.cb_data as usize) }.to_vec();
-        unsafe {
-            LocalFree(output.pb_data.cast::<c_void>());
-        }
-        Ok(data)
-    }
-
-    fn blob_from_slice(bytes: &[u8]) -> Result<DataBlob, String> {
-        let len =
-            u32::try_from(bytes.len()).map_err(|_| "secret payload is too large".to_string())?;
-        Ok(DataBlob {
-            cb_data: len,
-            pb_data: bytes.as_ptr() as *mut u8,
-        })
-    }
-}
-
-#[cfg(not(target_os = "windows"))]
-mod platform {
-    pub fn protect(_bytes: &[u8]) -> Result<Vec<u8>, String> {
-        Err("API key encryption currently requires Windows DPAPI".to_string())
-    }
-
-    pub fn unprotect(_bytes: &[u8]) -> Result<Vec<u8>, String> {
-        Err("API key decryption currently requires Windows DPAPI".to_string())
-    }
+    let plain = aes_decrypt(&protected)?;
+    String::from_utf8(plain)
+        .map_err(|error| format!("decrypted API key is not UTF-8: {}", error))
 }

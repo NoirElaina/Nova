@@ -8,9 +8,8 @@
 // 添加新 provider 只需实现 `StreamParser`，不需要写任何 SSE 循环或 emit 代码。
 
 use futures_util::StreamExt;
-use std::time::Duration;
 use tauri::{AppHandle, Emitter};
-use tokio::time::timeout;
+use tokio_util::sync::CancellationToken;
 
 use super::sse_utils::{extract_sse_data, find_sse_event_delimiter, truncate_for_log};
 use crate::llm::providers::{ProviderTurnError, ProviderTurnResult};
@@ -157,6 +156,7 @@ pub async fn run_streaming<P: StreamParser>(
     response: reqwest::Response,
     conversation_id: Option<&str>,
     model: &str,
+    cancel_token: CancellationToken,
 ) -> Result<ProviderTurnResult, ProviderTurnError> {
     let provider = parser.provider_name();
     let mut stream = response.bytes_stream();
@@ -184,38 +184,36 @@ pub async fn run_streaming<P: StreamParser>(
 
     // ── 主循环 ──────────────────────────────────────────────────────
     loop {
-        // 每轮先检查取消标记。
-        if crate::llm::cancellation::is_cancelled(conversation_id) {
-            // 把已流式输出的部分内容封装成 partial assistant 消息返回，
-            // 确保 turn_snapshot 与 UI 历史（conversation_messages）保持一致。
-            let partial_messages = build_partial_cancelled_messages(
-                &mut assistant_output,
-                &mut tool_result_blocks,
-                &mut additional_context_messages,
-            );
-            return Ok(ProviderTurnResult {
-                messages: partial_messages,
-                stop_reason: Some("cancelled".into()),
-                input_tokens: current_input_tokens,
-                output_tokens: current_output_tokens,
-                cache_read_tokens: current_cache_read_tokens,
-                cache_creation_tokens: current_cache_creation_tokens,
-                cost: current_turn_cost(
-                    provider,
-                    model,
-                    current_input_tokens,
-                    current_output_tokens,
-                    current_cache_read_tokens,
-                    current_cache_creation_tokens,
-                ),
-                prevent_continuation: false,
-            });
-        }
-
-        // 200ms 超时轮询下一 chunk，避免永久阻塞。
-        let next_chunk = match timeout(Duration::from_millis(200), stream.next()).await {
-            Ok(v) => v,
-            Err(_) => continue,
+        // 取消信号即时响应：token.cancelled() 在 request_cancel 调用 token.cancel() 后立刻返回，
+        // 无需轮询等待。
+        let next_chunk = tokio::select! {
+            chunk = stream.next() => chunk,
+            _ = cancel_token.cancelled() => {
+                // 把已流式输出的部分内容封装成 partial assistant 消息返回，
+                // 确保 turn_snapshot 与 UI 历史（conversation_messages）保持一致。
+                let partial_messages = build_partial_cancelled_messages(
+                    &mut assistant_output,
+                    &mut tool_result_blocks,
+                    &mut additional_context_messages,
+                );
+                return Ok(ProviderTurnResult {
+                    messages: partial_messages,
+                    stop_reason: Some("cancelled".into()),
+                    input_tokens: current_input_tokens,
+                    output_tokens: current_output_tokens,
+                    cache_read_tokens: current_cache_read_tokens,
+                    cache_creation_tokens: current_cache_creation_tokens,
+                    cost: current_turn_cost(
+                        provider,
+                        model,
+                        current_input_tokens,
+                        current_output_tokens,
+                        current_cache_read_tokens,
+                        current_cache_creation_tokens,
+                    ),
+                    prevent_continuation: false,
+                });
+            }
         };
 
         // 流结束。

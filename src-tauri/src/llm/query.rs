@@ -30,6 +30,11 @@ fn clamp_i64_to_u32(value: i64) -> u32 {
     }
 }
 
+// 发送 token 用量到前端
+// 作用：每次 LLM 请求完成后，把 token 用量通过事件发送给前端 UI 显示。
+// 计算逻辑：total_input = input + cache_read + cache_creation; total_tokens = total_input + output
+// 发送的数据：inputTokens, outputTokens, cacheReadTokens, cacheCreationTokens, totalInputTokens, totalTokens
+// 前端收到后：更新"本次 X · 会话 Y"的显示。
 fn emit_token_usage_event(
     app: &AppHandle,
     conversation_id: Option<&str>,
@@ -78,6 +83,11 @@ fn emit_token_usage_event(
     .ok();
 }
 
+
+// 对比"本地估算值"和"API 返回真实值"的差异，输出到 stderr 日志。
+// 作用：调试 token 估算准确性，如果差异太大说明估算逻辑需要优化。
+// 输出内容：estimatedInputTokens, actualInputTokens, inputDelta, inputDeltaPercent, toolCount
+// 用途：纯开发者调试日志，不影响前端 UI。
 fn emit_token_debug_event(
     app: &AppHandle,
     conversation_id: Option<&str>,
@@ -136,6 +146,12 @@ fn emit_token_debug_event(
     .ok();
 }
 
+
+// 当上下文太长需要压缩时，发送压缩结果给前端。
+// 作用：通知前端上下文压缩已执行，显示节省了多少 token。
+// 参数：level（压缩级别）、reason（原因）、before_tokens/after_tokens（压缩前后 token 数）
+// 逻辑：saved_tokens = before - after，如果没省到 token 就不发事件
+// 前端收到后：显示"上下文已压缩，节省了 X token"的通知。
 fn emit_context_compact_event(
     app: &AppHandle,
     conversation_id: Option<&str>,
@@ -189,6 +205,10 @@ fn emit_context_compact_event(
     .ok();
 }
 
+// 更新前端的上下文进度条（"243/1.0M 个令牌"那个）。
+// 作用：发送当前上下文使用量给前端，更新进度条显示。
+// 发送的数据：usedTokens（已用 token）、windowTokens（窗口大小）、responseReserveTokens（预留 8000）
+// 调用时机：请求前用估算值，请求后用 API 返回的真实值覆盖。
 fn emit_context_usage_event(
     app: &AppHandle,
     conversation_id: Option<&str>,
@@ -223,6 +243,10 @@ fn emit_context_usage_event(
     .ok();
 }
 
+// 从消息内容中提取纯文本
+// 作用：把 Content::Text 或 Content::Blocks 统一转成纯文本字符串。
+// 处理逻辑：Content::Text 直接 trim 返回；Content::Blocks 只取 Text 类块，跳过图片/工具调用，用 \n 拼接
+// 用途：后续 strip_injected_context 需要扫描文本内容来移除动态注入的上下文（如 RAG、MCP 目录）。
 fn text_from_content(content: &Content) -> String {
     match content {
         Content::Text(text) => text.trim().to_string(),
@@ -245,6 +269,14 @@ fn text_from_content(content: &Content) -> String {
     }
 }
 
+// 获取最新用户消息的纯文本
+// 作用：从消息列表中找到最新的用户消息，提取纯文本（去掉附件标记）。
+// 处理逻辑：
+// 1. 倒序遍历找到最新的 Role::User 消息
+// 2. 调用 text_from_content 提取文本
+// 3. 去掉 [Attached Documents] 之后的内容（前端附加的文件标记）
+// 4. trim 后返回
+// 用途：用于 Session RAG 搜索 — 用用户的最新问题作为查询关键词，检索相关文档片段注入上下文。
 fn latest_user_query_text(messages: &[Message]) -> Option<String> {
     messages.iter().rev().find_map(|message| {
         if message.role != Role::User {
@@ -268,6 +300,10 @@ fn latest_user_query_text(messages: &[Message]) -> Option<String> {
     })
 }
 
+// 截断字符串到指定长度
+// 作用：限制日志/错误消息的长度，避免输出过长。
+// 处理逻辑：取前 limit 个字符，如果超出则加 "..." 后缀。
+// 用途：日志输出、错误消息、调试信息等场景。
 fn truncate_chars(input: &str, limit: usize) -> String {
     let mut chars = input.chars();
     let snippet: String = chars.by_ref().take(limit).collect();
@@ -278,6 +314,14 @@ fn truncate_chars(input: &str, limit: usize) -> String {
     }
 }
 
+// 构建 Session RAG 上下文消息
+// 作用：用用户最新问题检索会话文档库，返回相关片段注入上下文。
+// 处理逻辑：
+// 1. 检查 conversation_id 是否有效
+// 2. 用 latest_user_query_text 提取查询关键词（至少 2 个字符）
+// 3. 调用 rag_search_conversation_documents 检索（最多 5 条）
+// 4. 格式化为带标记的上下文消息返回
+// 用途：让 AI 能访问用户之前上传的文档内容。
 async fn build_session_rag_context_message(
     app: &AppHandle,
     conversation_id: Option<&str>,
@@ -330,6 +374,13 @@ async fn build_session_rag_context_message(
     }))
 }
 
+// 构建 MCP 服务器上下文消息
+// 作用：获取已连接的 MCP 服务器列表，注入到上下文让 AI 知道有哪些外部工具可用。
+// 处理逻辑：
+// 1. 调用 connected_server_catalog 获取已连接服务器列表
+// 2. 如果没有服务器则返回 None
+// 3. 格式化为带标记的上下文消息，包含服务器名称、类型、工具数量
+// 用途：让 AI 知道可以调用哪些 MCP 工具，但不直接暴露工具细节。
 async fn build_mcp_server_context_message(app: &AppHandle) -> Option<Message> {
     let statuses = crate::llm::services::mcp_tools::connected_server_catalog(app).await;
     if statuses.is_empty() {
@@ -356,6 +407,10 @@ async fn build_mcp_server_context_message(app: &AppHandle) -> Option<Message> {
     })
 }
 
+// 判断是否是会话开始回合
+// 作用：检查消息列表是否是新会话的第一轮对话。
+// 判断标准：没有 assistant 消息，且 user 消息不超过 1 条。
+// 用途：决定是否注入 session_start_hooks（会话开始时的初始化上下文）。
 fn is_session_start_turn(messages: &[Message]) -> bool {
     let assistant_count = messages
         .iter()
@@ -470,21 +525,27 @@ pub async fn send_chat_message(
     messages: Vec<Message>,
     agent_mode: AgentMode,
 ) -> Result<(), String> {
+    // 提取用户最新问题，用于 Session RAG 检索相关文档片段
     let rag_query = latest_user_query_text(&messages);
+    // 判断是否是会话第一轮，决定是否注入 session_start_hooks
     let session_start_turn = is_session_start_turn(&messages);
     // 记录前端传入消息数量，用于之后从 turn_messages 中定位"本轮新消息"起始位置。
     let frontend_msg_count = messages.len();
     let mut turn_messages = messages;
 
+    // 执行用户提交钩子，可能追加额外上下文（如用户配置的提示前缀）
     let prompt_submit_hook =
         crate::llm::services::hooks::run_user_prompt_submit_hooks(&app, conversation_id.as_deref());
+    // 钩子返回错误时直接中断，不继续执行
     if let Some(error) = prompt_submit_hook.override_error {
         return Err(error);
     }
+    // 钩子产生的额外消息追加到对话列表（如用户配置的提示前缀）
     if !prompt_submit_hook.additional_messages.is_empty() {
         turn_messages.extend(prompt_submit_hook.additional_messages);
     }
 
+    // 如果是会话第一轮，执行会话开始钩子，注入初始化上下文（如用户偏好、项目规则等）
     if session_start_turn {
         let session_start_hook =
             crate::llm::services::hooks::run_session_start_hooks(&app, conversation_id.as_deref());
@@ -525,7 +586,6 @@ pub async fn send_chat_message(
     } else {
         return Err("send_chat_message requires conversation_id".to_string());
     };
-    // println!("{:?}", working_messages);
 
     // 1. 每轮都先组装请求前的全局记忆。
     // 正常 agent 流只信任新设计下的 turn snapshot：
@@ -653,16 +713,6 @@ pub async fn send_chat_message(
             current_messages = context_editing.messages;
         }
 
-        // println!(
-        //     "model: {}, window_tokens: {}, context_editing_applied: {}, cleared_tool_pairs: {}, original_tokens: {}, edited_tokens: {}",
-        //     &model,
-        //     window_tokens,
-        //     context_editing.applied,
-        //     context_editing.cleared_tool_pairs,
-        //     context_editing.original_estimated_tokens,
-        //     context_editing.edited_estimated_tokens
-        // );
-
         // 请求 provider 前先估算当前 prompt 占用，并通知前端更新 context window UI。
         // 这是本地估算值，不参与模型调用；provider 返回真实 usage 后会再用 actual 数据校正。
 
@@ -748,45 +798,15 @@ pub async fn send_chat_message(
                     conversation_id.as_deref(),
                 );
                 let error_text = error_hook.override_error.unwrap_or_else(|| e.clone());
-                // 出错直接通知前端 stop(error) 并返回错误。
-                // 同时上报后端错误事件用于统一监控。
+                // 出错直接通知前端并终止回合，走统一的 TurnOutcome::error 路径。
+                // 错误详情通过 emit_backend_error 上报，stop 事件不再重复透传原始文本。
                 emit_backend_error(
                     &app,
                     "llm.query_engine",
                     error_text.clone(),
                     Some("provider.send_request"),
                 );
-                // 通知前端当前回合以错误状态结束。
-                crate::llm::services::live_turns::mark_terminal(
-                    conversation_id.as_deref(),
-                    "error",
-                );
-                app.emit(
-                    "chat-stream",
-                    ChatMessageEvent {
-                        // 事件类型为 stop。
-                        r#type: "stop".into(),
-                        // 错误文案统一走 backend-error 事件，这里不再透传原始错误文本。
-                        text: None,
-                        // 以下字段在 stop 事件中均为空。
-                        tool_use_id: None,
-                        tool_use_name: None,
-                        tool_use_input: None,
-                        tool_result: None,
-                        tool_is_error: None,
-                        token_usage: None,
-                        // 停止原因标记为 provider_error。
-                        stop_reason: Some("provider_error".into()),
-                        // 回合状态标记为 error。
-                        turn_state: Some("error".into()),
-                        // 透传会话 ID，便于前端路由到正确会话。
-                        conversation_id: conversation_id.clone(),
-                    },
-                )
-                // 忽略 emit 错误，保证主错误路径返回。
-                .ok();
-                // 将 provider 错误返回给上层调用方。
-                return Err(error_text);
+                break TurnOutcome::error(error_text);
             }
         };
 
@@ -929,24 +949,15 @@ pub async fn send_chat_message(
                 msg.clone(),
                 Some("provider_result"),
             );
-            app.emit(
-                "chat-stream",
-                ChatMessageEvent {
-                    r#type: "stop".into(),
-                    text: Some(msg.clone()),
-                    tool_use_id: None,
-                    tool_use_name: None,
-                    tool_use_input: None,
-                    tool_result: None,
-                    tool_is_error: None,
-                    token_usage: None,
-                    stop_reason: Some("provider_error".into()),
-                    turn_state: Some("error".into()),
-                    conversation_id: conversation_id.clone(),
-                },
-            )
-            .ok();
-            return Err(msg);
+            // 保存 partial snapshot：provider 返回了 tool_use 但缺少对应的 ToolResult，
+            // current_messages 已包含 provider 输出，保存以避免下轮上下文丢失。
+            if let Some(conv_id) = conversation_id.as_deref() {
+                let mut snapshot = current_messages.clone();
+                strip_injected_context(&mut snapshot);
+                let _ =
+                    crate::llm::history::save_turn_snapshot(&app, conv_id, &snapshot).await;
+            }
+            break TurnOutcome::error(msg);
         }
 
         // 若返回需要用户输入，终止当前回合并告诉前端。
@@ -1006,6 +1017,34 @@ pub async fn send_chat_message(
         }
     };
 
+    // Error 路径：跳过 session_end_hooks 和完整 snapshot 保存，
+    // 因为回合未正常完成，partial snapshot 已在循环内保存。
+    if matches!(final_outcome.turn_state, state_machine::TurnState::Error) {
+        crate::llm::services::live_turns::mark_terminal(
+            conversation_id.as_deref(),
+            final_outcome.turn_state.as_event_state(),
+        );
+        app.emit(
+            "chat-stream",
+            ChatMessageEvent {
+                r#type: "stop".into(),
+                text: None,
+                tool_use_id: None,
+                tool_use_name: None,
+                tool_use_input: None,
+                tool_result: None,
+                tool_is_error: None,
+                token_usage: None,
+                stop_reason: Some(final_outcome.stop_reason.clone()),
+                turn_state: Some(final_outcome.turn_state.as_event_state().to_string()),
+                conversation_id: conversation_id.clone(),
+            },
+        )
+        .ok();
+        return Err(final_outcome.stop_reason);
+    }
+
+    // 非 Error 路径：执行 session_end_hooks、保存完整 snapshot、发送 stop 事件。
     let session_end_hook = crate::llm::services::hooks::run_session_end_hooks(
         &app,
         &final_outcome.stop_reason,

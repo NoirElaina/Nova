@@ -1,7 +1,7 @@
 use reqwest::Client;
 use tauri::AppHandle;
 
-use crate::llm::cancellation::is_cancelled;
+use crate::llm::cancellation;
 use crate::llm::providers::adapters::{
     anthropic::AnthropicAdapter, openai::OpenAiAdapter, responses::ResponsesAdapter, ApiAdapter,
 };
@@ -119,14 +119,11 @@ impl LlmClient {
             }
         }
 
+        let cancel_token = cancellation::get_token(conversation_id);
+
         let resp = tokio::select! {
             res = client.execute(request) => res,
-            _ = async {
-                loop {
-                    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-                    if is_cancelled(conversation_id) { break; }
-                }
-            } => {
+            _ = cancel_token.cancelled() => {
                 return Ok(ProviderTurnResult {
                     messages: Vec::new(),
                     stop_reason: Some("cancelled".into()),
@@ -145,7 +142,6 @@ impl LlmClient {
                 if !res.status().is_success() {
                     let status = res.status();
                     let error_text = res.text().await.unwrap_or_default();
-                    eprintln!("API Error: {}", error_text);
                     let msg = format!("API Error [{}] {} => {}", status, url, error_text);
                     emit_backend_error(
                         app,
@@ -159,7 +155,7 @@ impl LlmClient {
                 let mut parser = AdapterStreamParser {
                     adapter: self.adapter.as_mut(),
                 };
-                run_streaming(&mut parser, app, res, conversation_id, &self.model).await
+                run_streaming(&mut parser, app, res, conversation_id, &self.model, cancel_token).await
             }
             Err(e) => {
                 let msg = e.to_string();

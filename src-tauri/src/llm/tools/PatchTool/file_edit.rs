@@ -24,17 +24,15 @@ pub(super) fn registrations() -> Vec<ToolRegistration> {
 fn apply_patch_tool() -> Tool {
     Tool {
         name: "apply_patch".into(),
-        description: "Edit files using patch format. Pass patch text as the 'patch' parameter.\n\nFormat:\n*** Begin Patch\n*** Add File: /absolute/path/to/file\n+line1\n+line2\n*** Update File: /absolute/path/to/file\n@@\n context line\n+added line\n-removed line\n@@\n next context\n*** Delete File: /absolute/path/to/file\n*** End Patch\n\nRules:\n- Paths must be absolute\n- @@ is a section separator (no line numbers needed)\n- Lines starting with space = context (must match file exactly)\n- Lines starting with + = add\n- Lines starting with - = remove\n- Context lines before +/- lines determine where to apply changes".to_string(),
+        description: "FREEFORM tool -- pass raw patch string directly.\n\nFormat:\n*** Begin Patch\n*** Add File: /absolute/path/to/file\n+line1\n+line2\n*** Update File: /absolute/path/to/file\n@@\n context line\n+added line\n-removed line\n@@\n next context\n*** Delete File: /absolute/path/to/file\n*** End Patch\n\nRules:\n- Paths must be absolute\n- @@ is a section separator (no line numbers needed)\n- Lines starting with space = context (must match file exactly)\n- Lines starting with + = add\n- Lines starting with - = remove\n- Every Add File line must start with +".to_string(),
         input_schema: json!({
             "type": "object",
-            "additionalProperties": false,
             "properties": {
                 "patch": {
                     "type": "string",
-                    "description": "Patch text starting with *** Begin Patch and ending with *** End Patch"
+                    "description": "Raw patch text **MUST** starting with *** Begin Patch and ending with *** End Patch"
                 }
-            },
-            "required": ["patch"]
+            }
         }),
     }
 }
@@ -45,9 +43,10 @@ fn apply_patch_with_app(
     input: Value,
 ) -> AppExecuteFuture {
     Box::pin(async move {
-        let patch = match input.get("patch").and_then(Value::as_str) {
-            Some(patch) => patch,
-            None => return Err(ToolFailure::invalid_input("apply_patch requires patch")),
+        let patch = match &input {
+            Value::String(s) => s.as_str(),
+            Value::Object(obj) => obj.get("patch").and_then(Value::as_str).unwrap_or(""),
+            _ => return Err(ToolFailure::invalid_input("apply_patch requires raw patch text or {patch: ...}")),
         };
         match apply_patch_change(&app, conversation_id.as_deref(), patch).await {
             Ok(result) => result_json(result),
@@ -57,10 +56,11 @@ fn apply_patch_with_app(
 }
 
 fn apply_patch_permission(input: &Value) -> Option<ToolPermissionDescriptor> {
-    let patch = input
-        .get("patch")
-        .and_then(Value::as_str)
-        .unwrap_or_default();
+    let patch = match input {
+        Value::String(s) => s.as_str(),
+        Value::Object(obj) => obj.get("patch").and_then(Value::as_str).unwrap_or(""),
+        _ => "",
+    };
     match patch_paths(patch) {
         Ok(paths) => describe_paths_permission("apply_patch", "文件补丁", paths),
         Err(error) => Some(ToolPermissionDescriptor {

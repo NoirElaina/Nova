@@ -241,7 +241,7 @@ fn validate_tool_input(name: &str, input: &Value) -> Result<(), String> {
     if let Some(tool) = find_tool_definition(name) {
         let validator = jsonschema::validator_for(&tool.input_schema)
             .map_err(|error| format!("Tool schema validation failed for '{}': {}", name, error))?;
-        let errors = validator.iter_errors(input).take(4).collect::<Vec<_>>();
+        let errors: Vec<_> = validator.iter_errors(input).collect();
         if errors.is_empty() {
             return Ok(());
         }

@@ -8,6 +8,8 @@ pub enum TurnState {
     Cancelled,
     // 回合被 stop hook 明确阻断。
     StopHookPrevented,
+    // 回合因 provider 错误或内部一致性校验失败而终止。
+    Error,
 }
 
 impl TurnState {
@@ -22,6 +24,8 @@ impl TurnState {
             Self::Cancelled => "cancelled",
             // StopHookPrevented -> stop_hook_prevented。
             Self::StopHookPrevented => "stop_hook_prevented",
+            // Error -> error。
+            Self::Error => "error",
         }
     }
 }
@@ -72,6 +76,16 @@ impl TurnOutcome {
             stop_reason: stop_reason.into(),
             // 标记为 StopHookPrevented。
             turn_state: TurnState::StopHookPrevented,
+        }
+    }
+
+    pub fn error(stop_reason: impl Into<String>) -> Self {
+        // 构造 error 结果并保存 stop_reason（含错误详情，供 Err() 返回）。
+        Self {
+            // 将入参统一转换为 String。
+            stop_reason: stop_reason.into(),
+            // 标记为 Error。
+            turn_state: TurnState::Error,
         }
     }
 }

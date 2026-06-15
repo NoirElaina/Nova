@@ -51,7 +51,7 @@ pub(crate) async fn execute_dynamic_with_app(
 pub async fn connected_server_catalog(
     app: &AppHandle,
 ) -> Vec<crate::llm::services::mcp::McpServerStatus> {
-    let mut statuses = match crate::llm::services::mcp::get_mcp_server_statuses(app.clone()).await {
+    let statuses = match crate::llm::services::mcp::get_mcp_server_statuses(app.clone()).await {
         Ok(v) => v,
         Err(_) => return Vec::new(),
     };
@@ -60,14 +60,18 @@ pub async fn connected_server_catalog(
     let has_connected = statuses
         .iter()
         .any(|s| s.enabled && s.status == "connected");
+
     if has_enabled && !has_connected {
-        let _ = crate::llm::services::mcp::reload_all_mcp_servers(app.clone()).await;
-        statuses = match crate::llm::services::mcp::get_mcp_server_statuses(app.clone()).await {
-            Ok(v) => v,
-            Err(_) => return Vec::new(),
-        };
+        // 后台触发重连，不阻塞当前查询路径。
+        // 重连可能耗时 30s（MCP_CONNECT_TIMEOUT），若在此等待会导致用户消息卡住。
+        // 重连完成后下一轮查询自然获取到已连接的服务器。
+        let app_clone = app.clone();
+        tokio::spawn(async move {
+            let _ = crate::llm::services::mcp::reload_all_mcp_servers(app_clone).await;
+        });
     }
 
+    // 只返回已连接的服务器，不等待重连结果。
     statuses
         .into_iter()
         .filter(|s| s.enabled && s.status == "connected")

@@ -1,7 +1,7 @@
 import { createApp } from "vue";
 import App from "./App.vue";
 import BrowserWindowShell from "./components/chat/workspace/BrowserWindowShell.vue";
-import "./mian.css"
+import "./main.css"
 import { installBackendErrorToastListener, installGlobalErrorToastHandlers } from "./lib/toast";
 import { applyUiTheme, getStoredUiTheme } from "./lib/ui-preferences";
 

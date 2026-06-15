@@ -101,12 +101,17 @@ fn server_type(config: &McpServerConfig) -> String {
     }
 }
 
-fn get_mcp_settings_path(app: &AppHandle) -> PathBuf {
-    app.path().app_data_dir().unwrap().join("mcp_servers.json")
+fn get_mcp_settings_path(app: &AppHandle) -> Result<PathBuf, String> {
+    app.path()
+        .app_data_dir()
+        .map(|dir| dir.join("mcp_servers.json"))
+        .map_err(|e| format!("Failed to get app data directory: {}", e))
 }
 
 fn load_persisted_servers(app: &AppHandle) -> Vec<PersistedServer> {
-    let path = get_mcp_settings_path(app);
+    let Ok(path) = get_mcp_settings_path(app) else {
+        return Vec::new();
+    };
     if !path.exists() {
         return Vec::new();
     }
@@ -154,7 +159,7 @@ fn load_persisted_servers(app: &AppHandle) -> Vec<PersistedServer> {
 }
 
 fn save_persisted_servers(app: &AppHandle, servers: &[PersistedServer]) -> Result<(), String> {
-    let path = get_mcp_settings_path(app);
+    let path = get_mcp_settings_path(app)?;
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
     }

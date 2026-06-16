@@ -101,10 +101,7 @@ async fn execute_async(
                 "command timed out",
                 &result,
             ))),
-            Ok(result) if result.exit_code.unwrap_or(1) != 0 => Err(ToolFailure::new(
-                shell_failure_text("command exited with non-zero status", &result),
-            )),
-            Ok(result) => Ok(ToolOutcome::json(shell_success_json(result))),
+            Ok(result) => Ok(ToolOutcome::json(shell_result_json(result))),
             Err(e) => Err(ToolFailure::new(format!(
                 "Failed to execute PowerShell command: {}",
                 e
@@ -121,9 +118,9 @@ async fn execute_async(
     }
 }
 
-fn shell_success_json(result: ShellExecutionResult) -> Value {
+fn shell_result_json(result: ShellExecutionResult) -> Value {
     json!({
-        "ok": true,
+        "ok": result.exit_code.unwrap_or(1) == 0,
         "stdout": result.stdout,
         "stderr": result.stderr,
         "exitCode": result.exit_code,

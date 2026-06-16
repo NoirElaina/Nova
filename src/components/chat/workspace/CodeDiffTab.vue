@@ -225,7 +225,7 @@ onBeforeUnmount(() => {
       </svg>
       <div>
         <div class="text-sm font-medium text-[#111827] dark:text-[#f8fafc]">暂无可审查变更</div>
-        <p class="mt-1 text-xs">AI 使用 apply_patch、multi_edit 或 write_file 后会出现在这里。</p>
+        <p class="mt-1 text-xs">AI 使用 apply_patch 后会出现在这里。</p>
       </div>
     </div>
 

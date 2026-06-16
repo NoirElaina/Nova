@@ -53,6 +53,7 @@ type TokenUsagePayload = {
   outputTokens?: number;
   cacheReadTokens?: number;
   cacheCreationTokens?: number;
+  totalInputTokens?: number;
   totalTokens?: number;
   cost?: Partial<TurnCost>;
   source?: string;

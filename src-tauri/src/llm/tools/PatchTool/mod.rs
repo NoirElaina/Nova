@@ -1,7 +1,7 @@
-mod file_edit;
+mod apply_patch;
 
 use super::ToolRegistration;
 
 pub(crate) fn registrations() -> Vec<ToolRegistration> {
-    file_edit::registrations()
+    apply_patch::registrations()
 }

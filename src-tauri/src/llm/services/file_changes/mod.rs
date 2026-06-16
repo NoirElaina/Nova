@@ -9,14 +9,52 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use tauri::AppHandle;
 use tokio::sync::Mutex;
 
-mod editing;
-mod patch;
-
-pub use editing::{multi_edit_change, write_file_change, FileEditResult, MultiEditRequest};
-pub use patch::{apply_patch_change, patch_paths};
+/// Read file as UTF-8 string, stripping BOM (\u{FEFF}) if present.
+///
+/// PowerShell `Get-Content` strips BOM by default, but `std::fs::read_to_string`
+/// preserves it. Using this helper ensures the AI and apply_patch see the same
+/// content, preventing context matching failures on BOM-prefixed files.
+pub(crate) fn read_file_utf8(path: &std::path::Path) -> Result<String, String> {
+    let content = std::fs::read_to_string(path)
+        .map_err(|e| format!("Error reading {}: {}", path.display(), e))?;
+    Ok(content
+        .strip_prefix('\u{FEFF}')
+        .unwrap_or(&content)
+        .to_string())
+}
 
 #[derive(Debug, Clone)]
-pub(super) struct FileChangeDraft {
+pub struct FileEditResult {
+    pub files: Vec<String>,
+    pub change_batch_id: Option<String>,
+}
+
+pub(crate) async fn commit_drafts(
+    app: &AppHandle,
+    conversation_id: Option<&str>,
+    tool_name: &str,
+    drafts: Vec<FileChangeDraft>,
+) -> Result<FileEditResult, String> {
+    let files = drafts
+        .iter()
+        .filter(|draft| draft.before != draft.after)
+        .map(|draft| path_for_display(&draft.path))
+        .collect::<Vec<_>>();
+    let change_batch_id = commit_change_batch(app, conversation_id, tool_name, drafts).await?;
+    let files = if change_batch_id.is_some() {
+        files
+    } else {
+        Vec::new()
+    };
+
+    Ok(FileEditResult {
+        files,
+        change_batch_id,
+    })
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct FileChangeDraft {
     pub path: PathBuf,
     pub before: Option<String>,
     pub after: Option<String>,
@@ -148,7 +186,7 @@ fn build_batch(
     })
 }
 
-pub(super) async fn commit_change_batch(
+pub(crate) async fn commit_change_batch(
     app: &AppHandle,
     conversation_id: Option<&str>,
     tool_name: &str,

@@ -10,7 +10,7 @@ import {
 import * as echarts from 'echarts/core';
 import type { ECharts, EChartsCoreOption } from 'echarts/core';
 import { CanvasRenderer } from 'echarts/renderers';
-import type { ChatMessage, ToolExecutionEntry, TurnCost } from '../../../lib/chat-types';
+import type { ChatMessage, ToolExecutionEntry, TurnCost } from '../../../../lib/chat-types';
 
 echarts.use([LineChart, GridComponent, TooltipComponent, CanvasRenderer]);
 

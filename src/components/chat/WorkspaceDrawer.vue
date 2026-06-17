@@ -5,7 +5,6 @@ import type { ChatMessage, ToolExecutionEntry, TurnCost } from '../../lib/chat-t
 import type { RagDocumentMeta } from '../../features/chat/services/chat-api';
 import CodeDiffTab from './workspace/CodeDiffTab.vue';
 import FilesTab from './workspace/FilesTab.vue';
-import UsageTab from './workspace/UsageTab.vue';
 import BrowserTab from './workspace/BrowserTab.vue';
 import WorkspaceOverviewTab from './workspace/WorkspaceOverviewTab.vue';
 
@@ -15,7 +14,7 @@ const emit = defineEmits<{
   (e: 'close'): void;
 }>();
 
-type TabId = 'workspace' | 'diff' | 'usage' | 'files' | 'terminal' | 'browser';
+type TabId = 'workspace' | 'diff' | 'files' | 'terminal' | 'browser';
 
 const props = defineProps<{
   open: boolean;
@@ -35,7 +34,6 @@ const activeTab = ref<TabId>('workspace');
 const tabs: { id: TabId; label: string }[] = [
   { id: 'workspace', label: '工作区' },
   { id: 'diff', label: '审查' },
-  { id: 'usage', label: '用量' },
   { id: 'files', label: '文件' },
   { id: 'terminal', label: '终端' },
   { id: 'browser', label: '浏览器' },
@@ -103,13 +101,6 @@ watch(
           <CodeDiffTab
             v-else-if="activeTab === 'diff'"
             :conversationId="conversationId ?? null"
-          />
-
-          <UsageTab
-            v-else-if="activeTab === 'usage'"
-            :entries="entries"
-            :messages="messages"
-            :assistantTurnCost="assistantTurnCost"
           />
 
           <FilesTab

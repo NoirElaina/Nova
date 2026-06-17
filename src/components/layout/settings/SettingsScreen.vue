@@ -14,15 +14,22 @@ import RagTab     from './tabs/RagTab.vue'
 import SkillTab   from './tabs/SkillTab.vue'
 import MemoryTab  from './tabs/MemoryTab.vue'
 import DataTab    from './tabs/DataTab.vue'
+import UsageTab   from './tabs/UsageTab.vue'
 import AboutTab   from './tabs/AboutTab.vue'
 
 type MainView = 'chat' | 'settings'
+
+const props = defineProps<{
+  messages?: any[]
+  entries?: any[]
+  assistantTurnCost?: any
+}>()
 
 const emit = defineEmits<{
   (e: 'change-main-view', view: MainView): void
 }>()
 
-type Tab = 'general' | 'model' | 'mcp' | 'rag' | 'skill' | 'memory' | 'data' | 'about'
+type Tab = 'general' | 'model' | 'mcp' | 'rag' | 'skill' | 'memory' | 'data' | 'usage' | 'about'
 const activeTab = ref<Tab>('general')
 const uiLanguage = ref<UiLanguage>(getStoredUiLanguage())
 
@@ -42,6 +49,7 @@ const tabs: { id: Tab; icon: string }[] = [
   { id: 'skill', icon: 'M9.813 15.904A3 3 0 1012.087 18M5.143 4.567a3 3 0 103.707 3.707M18.36 5.143a3 3 0 10-3.707 3.707' },
   { id: 'memory', icon: 'M9 12h6M9 16h6M9 8h6M6 3h12a2 2 0 012 2v14a2 2 0 01-2 2H6a2 2 0 01-2-2V5a2 2 0 012-2z' },
   { id: 'data', icon: 'M4 7v10c0 2.21 3.582 4 8 4s8-1.79 8-4V7M4 7c0 2.21 3.582 4 8 4s8-1.79 8-4M4 7c0-2.21 3.582-4 8-4s8 1.79 8 4' },
+  { id: 'usage', icon: 'M16 8v8m-4-5v5m-4-2v2m-2 4h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z' },
   { id: 'about', icon: 'M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z' },
 ]
 
@@ -53,6 +61,7 @@ const tabLabel: Record<Tab, { zh: string; en: string }> = {
   skill:   { zh: '技能',   en: 'Skills' },
   memory:  { zh: '记忆',   en: 'Memory' },
   data:    { zh: '数据',   en: 'Data' },
+  usage:   { zh: '用量',   en: 'Usage' },
   about:   { zh: '关于',   en: 'About' },
 }
 
@@ -151,6 +160,12 @@ onUnmounted(() => {
         <SkillTab   v-else-if="activeTab === 'skill'" />
         <MemoryTab  v-else-if="activeTab === 'memory'" />
         <DataTab    v-else-if="activeTab === 'data'" />
+        <UsageTab
+          v-else-if="activeTab === 'usage'"
+          :messages="props.messages || []"
+          :entries="props.entries || []"
+          :assistantTurnCost="props.assistantTurnCost"
+        />
         <AboutTab   v-else-if="activeTab === 'about'" />
       </div>
     </main>

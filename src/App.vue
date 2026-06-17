@@ -219,6 +219,9 @@ onBeforeUnmount(() => {
 
     <SettingsScreen
       v-if="mainView === 'settings'"
+      :messages="messages"
+      :entries="toolExecutionLogs"
+      :assistantTurnCost="assistantTurnCost"
       @change-main-view="handleChangeMainView"
     />
 

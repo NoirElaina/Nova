@@ -79,8 +79,15 @@ void chatScreenRef;
 const isPetWindow = new URLSearchParams(window.location.search).has('petId')
 
 if (isPetWindow) {
+  document.documentElement.style.background = 'transparent'
+  document.documentElement.style.backgroundColor = 'transparent'
   document.body.style.background = 'transparent'
-  document.getElementById('app')!.style.background = 'transparent'
+  document.body.style.backgroundColor = 'transparent'
+  const appEl = document.getElementById('app')
+  if (appEl) {
+    appEl.style.background = 'transparent'
+    appEl.style.backgroundColor = 'transparent'
+  }
 }
 
 const isDrawerOpen = ref(false);

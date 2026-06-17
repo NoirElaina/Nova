@@ -1,11 +1,17 @@
-//export function tokenCountWithEstimation(messages: readonly Message[]): number {
+use once_cell::sync::Lazy;
+use tiktoken_rs::cl100k_base;
+
+// 使用 Lazy 避免每次计算时重复加载词表（加载词表有一定开销）
+static BPE: Lazy<tiktoken_rs::CoreBPE> = Lazy::new(|| {
+    cl100k_base().expect("Failed to load cl100k_base tokenizer")
+});
+
 pub fn tokenCountWithEstimation(messages: &[crate::llm::types::Message]) -> usize {
-    // For simplicity, we use a very rough estimation: 1 token ~= 4 characters in English.
-    // This is a common heuristic but can vary based on the actual content and language.
-    // 遍历所有消息并累加文本字符数。
-    let char_count: usize = messages.iter().map(|m| m.content.text.chars().count()).sum();
-    // 使用 4 字符约等于 1 token 的经验规则估算 token 数。
-    char_count / 4
+    // 使用 tiktoken-rs 提供的真实分词器来计算 token 数量
+    // 采用 cl100k_base 词表 (GPT-4 / Claude 主流词表兼容)
+    messages.iter().map(|m| {
+        BPE.encode_with_special_tokens(&m.content.text).len()
+    }).sum()
 }
 
 

@@ -51,6 +51,7 @@ const emit = defineEmits<{
 
 const chatAreaRef = ref<HTMLElement | null>(null);
 const liveAssistantRef = ref<HTMLElement | null>(null);
+const reasoningScrollRef = ref<HTMLElement | null>(null);
 const reactionMap = ref<Record<number, 'up' | 'down' | undefined>>({});
 const copiedMap = ref<Record<string, boolean>>({});
 const showScrollToBottom = ref(false);
@@ -97,14 +98,7 @@ const retryFromAssistant = (assistantIndex: number) => {
 };
 
 const buildAssistantCopyText = (message: ChatMessage) => {
-  const sections = [];
-  if (message.reasoning?.trim()) {
-    sections.push(`AI 思考过程\n${message.reasoning.trim()}`);
-  }
-  if (message.content?.trim()) {
-    sections.push(message.content.trim());
-  }
-  return sections.join('\n\n');
+  return message.content?.trim() || '';
 };
 
 const scrollToBottom = async () => {
@@ -251,6 +245,10 @@ watch(
       await nextTick();
       updateScrollToBottomVisibility();
       updateActiveUserMessage();
+      // 思考内容更新时，自动把思考内容区滚到底部
+      if (reasoningScrollRef.value) {
+        reasoningScrollRef.value.scrollTop = reasoningScrollRef.value.scrollHeight;
+      }
     },
   );
 
@@ -419,14 +417,19 @@ defineExpose({
         >
           <div class="w-full max-w-[85%]">
             <div class="min-w-0 flex-1 text-[0.95rem] leading-relaxed break-words text-[#1a1a1a] dark:text-[#ececec]">
-              <details
+              <div
                 v-if="hasStreamingReasoning()"
                 class="reasoning-panel mt-2"
-                open
               >
-                <summary>AI 思考过程</summary>
-                <MarkdownRenderer :content="props.assistantReasoning || ''" />
-              </details>
+                <div class="reasoning-panel-header">
+                  <span class="reasoning-arrow-live">▾</span>
+                  <span>AI 思考过程</span>
+                  <span class="reasoning-live-badge">流式输入中…</span>
+                </div>
+                <div ref="reasoningScrollRef" class="reasoning-live-scroll">
+                  <MarkdownRenderer :content="props.assistantReasoning || ''" />
+                </div>
+              </div>
               <ContextCompactNotice
                 v-if="props.contextCompacts && props.contextCompacts.length > 0"
                 :items="props.contextCompacts"
@@ -620,8 +623,53 @@ defineExpose({
   border: 1px solid #e5e7eb;
   background: #fafafa;
   border-radius: 10px;
-  padding: 8px 10px;
+  overflow: hidden;
   box-shadow: 0 1px 2px rgba(15, 23, 42, 0.035);
+}
+
+.reasoning-panel-header {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 7px 10px;
+  font-size: 11px;
+  color: #64748b;
+  font-weight: 500;
+  border-bottom: 1px solid #f0f0f0;
+}
+
+.reasoning-arrow-live {
+  font-size: 9px;
+  opacity: 0.6;
+}
+
+.reasoning-live-badge {
+  margin-left: auto;
+  font-size: 10px;
+  font-family: monospace;
+  color: #2563eb;
+  opacity: 0.75;
+  animation: live-fade 1.4s ease-in-out infinite;
+}
+
+.reasoning-live-scroll {
+  max-height: 200px;
+  overflow-y: auto;
+  padding: 6px 10px 10px;
+  scroll-behavior: auto;
+}
+
+.reasoning-live-scroll::-webkit-scrollbar {
+  width: 4px;
+}
+
+.reasoning-live-scroll::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.reasoning-live-scroll::-webkit-scrollbar-thumb {
+  background: rgba(100, 116, 139, 0.28);
+  border-radius: 4px;
 }
 
 .reasoning-panel summary {
@@ -689,7 +737,7 @@ defineExpose({
 }
 
 .reasoning-panel :deep(.markdown-body) {
-  margin-top: 8px;
+  margin-top: 4px;
 }
 
 .dark .reasoning-panel {
@@ -697,8 +745,22 @@ defineExpose({
   background: #1f2937;
 }
 
-.dark .reasoning-panel summary {
+.dark .reasoning-panel-header {
   color: #cbd5e1;
+  border-bottom-color: #2d3748;
+}
+
+.dark .reasoning-live-badge {
+  color: #93c5fd;
+}
+
+.dark .reasoning-live-scroll::-webkit-scrollbar-thumb {
+  background: rgba(148, 163, 184, 0.25);
+}
+
+@keyframes live-fade {
+  0%, 100% { opacity: 0.55; }
+  50% { opacity: 1; }
 }
 
 </style>

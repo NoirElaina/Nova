@@ -275,6 +275,7 @@ pub async fn launch_desktop_pet(
         .resizable(false)
         .decorations(false)
         .transparent(true)
+        .shadow(false)
         .always_on_top(true)
         .skip_taskbar(true)
         .position(800.0, 400.0)

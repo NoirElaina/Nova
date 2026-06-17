@@ -144,12 +144,8 @@ fn normalize_embedding_endpoint(raw_base_url: &str) -> Result<String, String> {
     let path = url.path().trim_end_matches('/').to_string();
     let next_path = if path.ends_with("/v1/embeddings") || path.ends_with("/embeddings") {
         path
-    } else if path.ends_with("/v1/chat/completions") {
-        path.trim_end_matches("/chat/completions").to_string() + "/embeddings"
     } else if path.ends_with("/chat/completions") {
         path.trim_end_matches("/chat/completions").to_string() + "/embeddings"
-    } else if path.ends_with("/v1/responses") {
-        path.trim_end_matches("/responses").to_string() + "/embeddings"
     } else if path.ends_with("/responses") {
         path.trim_end_matches("/responses").to_string() + "/embeddings"
     } else if path.ends_with("/v1") {

@@ -9,6 +9,7 @@ use serde::Serialize;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::{Child, ChildStdin, Command};
 use tokio::sync::{mpsc, Mutex as AsyncMutex};
+use tokio_util::sync::CancellationToken;
 use tracing::{info, warn};
 
 #[cfg(target_os = "windows")]
@@ -359,6 +360,18 @@ async fn ensure_session_alive(session: &mut ShellSession) -> Result<(), String> 
     Ok(())
 }
 
+async fn kill_session_tree(session: &mut ShellSession) {
+    #[cfg(target_os = "windows")]
+    if let Some(pid) = session.child.id() {
+        let _ = std::process::Command::new("taskkill")
+            .args(["/PID", &pid.to_string(), "/T", "/F"])
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status();
+    }
+    let _ = session.child.kill().await;
+}
+
 async fn restart_session(
     session: &mut ShellSession,
     cwd_override: Option<&str>,
@@ -370,7 +383,7 @@ async fn restart_session(
     for pid in background_pids {
         kill_pid(pid);
     }
-    let _ = session.child.kill().await;
+    kill_session_tree(session).await;
     *session = spawn_session(cwd.as_deref()).await?;
     Ok(())
 }
@@ -381,9 +394,9 @@ fn trim_trailing_newline(text: String) -> String {
 
 async fn execute_wrapped_command(
     session: &mut ShellSession,
-    conversation_id: Option<&str>,
     script: &str,
     timeout_ms: u64,
+    cancel_token: CancellationToken,
 ) -> Result<ShellExecutionResult, String> {
     ensure_session_alive(session).await?;
 
@@ -419,22 +432,6 @@ async fn execute_wrapped_command(
             break;
         }
 
-        if crate::llm::cancellation::is_cancelled(conversation_id) {
-            warn!("shell command cancelled; restarting session");
-            restart_session(session, None).await?;
-            session.last_known_cwd = cwd_before;
-            return Ok(ShellExecutionResult {
-                stdout: trim_trailing_newline(stdout),
-                stderr: trim_trailing_newline(stderr),
-                exit_code: None,
-                cwd: display_cwd_opt(session.last_known_cwd.clone()),
-                timed_out: false,
-                cancelled: true,
-                background: false,
-                pid: None,
-            });
-        }
-
         let now = tokio::time::Instant::now();
         if now >= timeout_at {
             warn!("shell command timed out; restarting session");
@@ -452,10 +449,28 @@ async fn execute_wrapped_command(
             });
         }
 
-        let remaining = timeout_at
-            .saturating_duration_since(now)
-            .min(Duration::from_millis(100));
-        let maybe_event = tokio::time::timeout(remaining, session.events.recv()).await;
+        let remaining = timeout_at.saturating_duration_since(now);
+
+        let maybe_event = tokio::select! {
+            biased;
+            _ = cancel_token.cancelled() => {
+                warn!("shell command cancelled; restarting session");
+                restart_session(session, None).await?;
+                session.last_known_cwd = cwd_before;
+                return Ok(ShellExecutionResult {
+                    stdout: trim_trailing_newline(stdout),
+                    stderr: trim_trailing_newline(stderr),
+                    exit_code: None,
+                    cwd: display_cwd_opt(session.last_known_cwd.clone()),
+                    timed_out: false,
+                    cancelled: true,
+                    background: false,
+                    pid: None,
+                });
+            }
+            result = tokio::time::timeout(remaining, session.events.recv()) => result,
+        };
+
         let event = match maybe_event {
             Ok(Some(event)) => event,
             Ok(None) => {
@@ -563,17 +578,13 @@ pub async fn run_foreground(
     timeout_ms: Option<u64>,
     initial_cwd: Option<&str>,
 ) -> Result<ShellExecutionResult, String> {
+    let cancel_token = crate::llm::cancellation::get_token(conversation_id);
     let handle = get_or_create_handle(conversation_id, initial_cwd).await?;
     let mut session = handle.inner.lock().await;
     let command_id = "{command_id}";
     let script = build_foreground_wrapper(command_id, command);
-    execute_wrapped_command(
-        &mut session,
-        conversation_id,
-        &script,
-        normalized_timeout_ms(timeout_ms),
-    )
-    .await
+    execute_wrapped_command(&mut session, &script, normalized_timeout_ms(timeout_ms), cancel_token)
+        .await
 }
 
 pub async fn run_background(
@@ -581,17 +592,14 @@ pub async fn run_background(
     command: &str,
     initial_cwd: Option<&str>,
 ) -> Result<ShellExecutionResult, String> {
+    let cancel_token = crate::llm::cancellation::get_token(conversation_id);
     let handle = get_or_create_handle(conversation_id, initial_cwd).await?;
     let mut session = handle.inner.lock().await;
     let command_id = "{command_id}";
     let script = build_background_wrapper(command_id, command);
-    let mut result = execute_wrapped_command(
-        &mut session,
-        conversation_id,
-        &script,
-        normalized_timeout_ms(Some(30_000)),
-    )
-    .await?;
+    let mut result =
+        execute_wrapped_command(&mut session, &script, normalized_timeout_ms(Some(30_000)), cancel_token)
+            .await?;
 
     let payload: serde_json::Value = serde_json::from_str(result.stdout.trim())
         .map_err(|error| format!("Invalid background shell response: {}", error))?;
@@ -681,7 +689,7 @@ pub async fn close_session(conversation_id: Option<&str>) {
         for pid in pids {
             kill_pid(pid);
         }
-        let _ = session.child.kill().await;
+        kill_session_tree(&mut session).await;
         info!(conversation_scope = %key, "shell session closed");
     }
 }
@@ -700,7 +708,7 @@ pub async fn close_all_sessions() {
         for pid in pids {
             kill_pid(pid);
         }
-        let _ = session.child.kill().await;
+        kill_session_tree(&mut session).await;
         info!(conversation_scope = %key, "shell session closed during global cleanup");
     }
 }

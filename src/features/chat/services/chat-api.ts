@@ -261,14 +261,6 @@ export async function getShellSessionStatus(
   });
 }
 
-export async function resetShellSessionForConversation(
-  conversationId: string | null,
-): Promise<void> {
-  await invoke("reset_shell_session_for_conversation", {
-    conversationId,
-  });
-}
-
 export async function executeShellCommandForConversation(
   conversationId: string | null,
   command: string,

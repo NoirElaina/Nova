@@ -221,13 +221,13 @@ Nova/
 
 | 类别 | 工具 |
 |------|------|
-| 终端 | `Bash` · `reset_shell_session` |
+| 终端 | `Bash` |
 | 文件编辑 | `Read` · `Write` · `Edit` |
 | 搜索 | `Grep` · `Glob` · `web_search` · `web_fetch` |
 | 浏览器 | `nova_browser_navigate` · `nova_browser_click` · `nova_browser_type` · `nova_browser_snapshot` · `nova_browser_reset` |
 | 桌面控制 | `computer_use` |
 | 规划 | `enter_plan_mode` · `exit_plan_mode` |
-| 目标管理 | `ask_user_question` · `Sleep` |
+| 交互 | `ask_user_question` |
 | 定时任务 | `CronCreate` · `CronDelete` · `CronList` |
 | 知识库 | `rag_tool` · `remember_global_memory` |
 | 技能 | `Skill` |

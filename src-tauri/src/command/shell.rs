@@ -27,23 +27,6 @@ pub async fn get_shell_session_status(
 }
 
 #[tauri::command]
-pub async fn reset_shell_session_for_conversation(
-    app: AppHandle,
-    conversation_id: Option<String>,
-) -> Result<(), String> {
-    let workspace_root = crate::command::workspace::workspace_root_string_for_conversation(
-        &app,
-        conversation_id.as_deref(),
-    )?;
-    report_backend_result(
-        &app,
-        "command.shell.reset_shell_session",
-        shell_sessions::reset_session(conversation_id.as_deref(), Some(&workspace_root)).await,
-        Some("reset_shell_session"),
-    )
-}
-
-#[tauri::command]
 pub async fn execute_shell_command_for_conversation(
     app: AppHandle,
     conversation_id: Option<String>,

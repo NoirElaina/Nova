@@ -5,7 +5,6 @@ import type { ToolExecutionEntry } from "../../../lib/chat-types";
 import { emitToast } from "../../../lib/toast";
 import {
   getShellSessionStatus,
-  resetShellSessionForConversation,
   type ShellSessionStatus,
 } from "../../../features/chat/services/chat-api";
 
@@ -18,16 +17,12 @@ const props = defineProps<{
 const rootRef = ref<HTMLElement | null>(null);
 const isOpen = ref(false);
 const isLoading = ref(false);
-const isResetting = ref(false);
 const status = ref<ShellSessionStatus | null>(null);
 let refreshTimer: ReturnType<typeof setInterval> | undefined;
 
 const isShellToolName = (toolName: string) => {
   const normalized = toolName.trim().toLowerCase();
-  return (
-    normalized === "bash" ||
-    normalized === "reset_shell_session"
-  );
+  return normalized === "bash";
 };
 
 const hasRunningShellTool = computed(() =>
@@ -91,21 +86,6 @@ const togglePanel = () => {
 
 const closePanel = () => {
   isOpen.value = false;
-};
-
-const resetSession = async () => {
-  if (!props.conversationId || isResetting.value) return;
-  isResetting.value = true;
-  try {
-    await resetShellSessionForConversation(props.conversationId);
-    await loadStatus();
-    emitToast({ variant: "success", source: "shell-session", message: "终端会话已重置。" });
-  } catch (error) {
-    console.error("Failed to reset shell session:", error);
-    emitToast({ variant: "error", source: "shell-session", message: "重置终端会话失败。" });
-  } finally {
-    isResetting.value = false;
-  }
 };
 
 const onPointerDownDocument = (event: MouseEvent) => {
@@ -211,18 +191,8 @@ onBeforeUnmount(() => {
         </div>
 
         <p class="text-[11px] leading-relaxed text-[#64748b] dark:text-[#cbd5e1]">
-          这里展示的是 Bash 复用的持久终端会话；普通 Sleep、MCP 等工具不会占用它。
+          这里展示的是 Bash 复用的持久终端会话；普通 MCP 等工具不会占用它。
         </p>
-
-        <Button
-          variant="outline"
-          size="sm"
-          class="w-full h-8 rounded-lg border-[#cbd5e1] text-[#334155] hover:bg-[#f1f5f9] dark:border-[#475569] dark:text-[#e2e8f0] dark:hover:bg-[#334155]"
-          :disabled="!conversationId || isResetting"
-          @click="resetSession"
-        >
-          {{ isResetting ? "正在重置..." : "重置终端会话" }}
-        </Button>
       </div>
     </div>
   </div>

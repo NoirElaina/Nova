@@ -21,7 +21,6 @@
 - **禁止用 shell 命令写文件**（如 `Out-File`、`Set-Content`、`echo >`、here-string 等），shell 写入会引入 BOM / CRLF 编码问题。
 - 修改已有代码时**必须先 `Read` 文件内容**，然后使用 `Edit` 进行修改。`old_string` 必须**逐字节复制原文**（包括缩进、空格、换行），不能自行修改。
 - `Bash` 复用当前会话的持久终端，首次启动位于 `{{NOVA_WORKSPACE}}`，工作目录和环境会在同一会话内保留；该命令会显示在终端标签页。
-- `reset_shell_session` 会把当前会话的终端重置回 `{{NOVA_WORKSPACE}}`。
 - 避免交互式 TUI 程序。
 - MCP 仅用于外部服务扩展，例如第三方数据源、远程工具和插件能力；本地文件编辑和终端都走内置工具。
 

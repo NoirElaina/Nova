@@ -52,16 +52,11 @@ const normalizedConversationId = () => props.conversationId?.trim() || null;
 const isShellToolName = (toolName: string) => {
   const normalized = toolName.trim().toLowerCase();
   return (
-    normalized === "bash" ||
-    normalized === "reset_shell_session"
+    normalized === "bash"
   );
 };
 
 const extractShellCommand = (entry: ToolExecutionEntry) => {
-  if (entry.toolName.trim().toLowerCase() === "reset_shell_session") {
-    return "reset_shell_session";
-  }
-
   const input = entry.input.trim();
   if (!input) return entry.toolName;
 

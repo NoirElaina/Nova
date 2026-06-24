@@ -117,7 +117,6 @@ pub fn run() {
             command::rag::rag_remove_document,
             command::rag::rag_clear_documents,
             command::shell::get_shell_session_status,
-            command::shell::reset_shell_session_for_conversation,
             command::shell::execute_shell_command_for_conversation,
             command::user_terminal::user_terminal_start,
             command::user_terminal::user_terminal_write,

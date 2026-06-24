@@ -25,7 +25,38 @@ pub(super) fn registration() -> ToolRegistration {
 pub fn tool() -> Tool {
     Tool {
         name: "CronCreate".into(),
-        description: "Schedule a recurring or one-shot prompt task.".into(),
+        description: r##"Schedule a prompt to be enqueued at a future time. Use for both recurring schedules and one-shot reminders.
+
+Uses standard 5-field cron in the user's local timezone: minute hour day-of-month month day-of-week. "0 9 * * *" means 9am local — no timezone conversion needed.
+
+## One-shot tasks (recurring: false)
+
+For "remind me at X" or "at <time>, do Y" requests — fire once then auto-delete.
+Pin minute/hour/day-of-month/month to specific values.
+
+## Recurring jobs (recurring: true, the default)
+
+For "every N minutes" / "every hour" / "weekdays at 9am" requests:
+  "*/5 * * * *" (every 5 min), "0 * * * *" (hourly), "0 9 * * 1-5" (weekdays at 9am local)
+
+## Avoid the :00 and :30 minute marks when the task allows it
+
+When the user's request is approximate, pick a minute that is NOT 0 or 30:
+  "every morning around 9" → "57 8 * * *" or "3 9 * * *" (not "0 9 * * *")
+  "hourly" → "7 * * * *" (not "0 * * * *")
+
+Only use minute 0 or 30 when the user names that exact time and clearly means it.
+
+## Durability
+
+By default (durable: false) the job lives only in this Nova session. Pass durable: true to write to disk so the job survives restarts. Only use durable: true when the user explicitly asks for the task to persist.
+
+## Runtime behavior
+
+Jobs only fire while Nova is running. Durable jobs persist and resume on next launch. Recurring tasks auto-expire after 7 days.
+
+Returns a job ID you can pass to CronDelete."##
+            .into(),
         input_schema: json!({
             "type": "object",
             "properties": {

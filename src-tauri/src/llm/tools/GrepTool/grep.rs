@@ -19,8 +19,14 @@ pub fn tool() -> Tool {
 - `path`: file or directory to search in. Defaults to the workspace root if not specified.
 - `glob`: optional file filter pattern (e.g. `"*.rs"`, `"*.{ts,tsx}"`).
 - `output_mode`: `"content"` (matching lines with line numbers), `"files_with_matches"` (file paths only, default), or `"count"` (match counts per file).
+- `-A`: number of lines to show after each match (rg -A).
+- `-B`: number of lines to show before each match (rg -B).
+- `-C`: number of lines to show before and after each match (rg -C).
 - `-i`: set to true for case-insensitive search.
-- `head_limit`: limit output to the first N lines/entries. Defaults to 250."#
+- `-n`: show line numbers in output (rg -n). Defaults to true when output_mode is "content".
+- `multiline`: enable multiline mode where `.` matches newlines and patterns can span lines (rg -U --multiline-dotall).
+- `head_limit`: limit output to the first N lines/entries. Defaults to 250.
+- `offset`: skip first N lines/entries before applying head_limit."#
             .into(),
         input_schema: json!({
             "type": "object",
@@ -42,13 +48,37 @@ pub fn tool() -> Tool {
                     "enum": ["content", "files_with_matches", "count"],
                     "description": "Output mode. Defaults to \"files_with_matches\"."
                 },
+                "-A": {
+                    "type": "integer",
+                    "description": "Number of lines to show after each match (rg -A). Requires output_mode: \"content\"."
+                },
+                "-B": {
+                    "type": "integer",
+                    "description": "Number of lines to show before each match (rg -B). Requires output_mode: \"content\"."
+                },
+                "-C": {
+                    "type": "integer",
+                    "description": "Number of lines to show before and after each match (rg -C). Requires output_mode: \"content\"."
+                },
                 "-i": {
                     "type": "boolean",
                     "description": "Case insensitive search (rg -i)"
                 },
+                "-n": {
+                    "type": "boolean",
+                    "description": "Show line numbers in output (rg -n). Requires output_mode: \"content\". Defaults to true."
+                },
+                "multiline": {
+                    "type": "boolean",
+                    "description": "Enable multiline mode where . matches newlines and patterns can span lines (rg -U --multiline-dotall). Default: false."
+                },
                 "head_limit": {
                     "type": "integer",
                     "description": "Limit output to the first N lines/entries. Defaults to 250."
+                },
+                "offset": {
+                    "type": "integer",
+                    "description": "Skip first N lines/entries before applying head_limit. Defaults to 0."
                 }
             },
             "required": ["pattern"]
@@ -60,14 +90,12 @@ const DEFAULT_HEAD_LIMIT: usize = 250;
 const MAX_OUTPUT_BYTES: usize = 512 * 1024;
 
 fn find_rg_path(app: &AppHandle) -> String {
-    // Try NOVA_RG_PATH env var first.
     if let Ok(val) = std::env::var("NOVA_RG_PATH") {
         let trimmed = val.trim().to_string();
         if !trimmed.is_empty() && PathBuf::from(&trimmed).exists() {
             return trimmed;
         }
     }
-    // Try resource dir bundled rg binary.
     if let Ok(resource_dir) = app.path().resource_dir() {
         let bundled = resource_dir.join("bin").join(
             if cfg!(target_os = "windows") {
@@ -80,7 +108,6 @@ fn find_rg_path(app: &AppHandle) -> String {
             return bundled.display().to_string();
         }
     }
-    // Fallback to "rg" on PATH.
     "rg".to_string()
 }
 
@@ -121,11 +148,42 @@ async fn execute_async(
         .and_then(Value::as_bool)
         .unwrap_or(false);
 
+    let show_line_numbers = input
+        .get("-n")
+        .and_then(Value::as_bool)
+        .unwrap_or(output_mode == "content");
+
     let head_limit = input
         .get("head_limit")
         .and_then(|v| v.as_u64())
         .map(|v| v as usize)
         .unwrap_or(DEFAULT_HEAD_LIMIT);
+
+    let offset = input
+        .get("offset")
+        .and_then(|v| v.as_u64())
+        .map(|v| v as usize)
+        .unwrap_or(0);
+
+    let context_before = input
+        .get("-B")
+        .and_then(|v| v.as_u64())
+        .map(|v| v as usize);
+
+    let context_after = input
+        .get("-A")
+        .and_then(|v| v.as_u64())
+        .map(|v| v as usize);
+
+    let context = input
+        .get("-C")
+        .and_then(|v| v.as_u64())
+        .map(|v| v as usize);
+
+    let multiline = input
+        .get("multiline")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
 
     let file_glob = input.get("glob").and_then(Value::as_str);
 
@@ -138,7 +196,9 @@ async fn execute_async(
 
     match output_mode {
         "content" => {
-            cmd.arg("--line-number");
+            if show_line_numbers {
+                cmd.arg("--line-number");
+            }
         }
         "count" => {
             cmd.arg("--count");
@@ -150,6 +210,24 @@ async fn execute_async(
 
     if case_insensitive {
         cmd.arg("-i");
+    }
+
+    if let Some(n) = context {
+        cmd.arg("-C");
+        cmd.arg(n.to_string());
+    }
+    if let Some(n) = context_before {
+        cmd.arg("-B");
+        cmd.arg(n.to_string());
+    }
+    if let Some(n) = context_after {
+        cmd.arg("-A");
+        cmd.arg(n.to_string());
+    }
+
+    if multiline {
+        cmd.arg("-U");
+        cmd.arg("--multiline-dotall");
     }
 
     if let Some(g) = file_glob {
@@ -181,21 +259,35 @@ async fn execute_async(
 
     let lines: Vec<&str> = stdout.lines().collect();
     let total = lines.len();
-    let limited: Vec<&str> = lines.iter().take(head_limit).copied().collect();
+
+    // Apply offset first, then head_limit.
+    let after_offset = if offset > 0 && offset < total {
+        &lines[offset..]
+    } else {
+        &lines[..]
+    };
+
+    let limited: Vec<&str> = after_offset.iter().take(head_limit).copied().collect();
     let mut result = limited.join("\n");
 
-    if total > head_limit {
+    if total > head_limit + offset {
         result.push_str(&format!(
-            "\n\n... ({} total results, showing first {})",
-            total, head_limit
+            "\n\n... ({} total results, showing {}-{})",
+            total,
+            offset + 1,
+            (offset + limited.len()).min(total)
         ));
     }
 
     if result.len() > MAX_OUTPUT_BYTES {
-        let truncated = &result[..MAX_OUTPUT_BYTES];
+        let mut boundary = MAX_OUTPUT_BYTES;
+        while !result.is_char_boundary(boundary) {
+            boundary -= 1;
+        }
         result = format!(
             "{}\n\n... (output truncated at {} bytes)",
-            truncated, MAX_OUTPUT_BYTES
+            &result[..boundary],
+            MAX_OUTPUT_BYTES
         );
     }
 

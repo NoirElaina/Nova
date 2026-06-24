@@ -1,7 +1,6 @@
-mod tool_search;
-
+mod write;
 use super::ToolRegistration;
 
 pub(crate) fn registrations() -> Vec<ToolRegistration> {
-    vec![tool_search::registration()]
+    vec![write::registration()]
 }

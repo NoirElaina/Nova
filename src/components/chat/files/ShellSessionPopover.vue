@@ -25,8 +25,7 @@ let refreshTimer: ReturnType<typeof setInterval> | undefined;
 const isShellToolName = (toolName: string) => {
   const normalized = toolName.trim().toLowerCase();
   return (
-    normalized === "execute_bash" ||
-    normalized === "execute_powershell" ||
+    normalized === "bash" ||
     normalized === "reset_shell_session"
   );
 };
@@ -212,7 +211,7 @@ onBeforeUnmount(() => {
         </div>
 
         <p class="text-[11px] leading-relaxed text-[#64748b] dark:text-[#cbd5e1]">
-          这里展示的是 execute_bash / execute_powershell 复用的持久终端会话；普通 Sleep、MCP 等工具不会占用它。
+          这里展示的是 Bash 复用的持久终端会话；普通 Sleep、MCP 等工具不会占用它。
         </p>
 
         <Button

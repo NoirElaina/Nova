@@ -12,7 +12,7 @@ use tokio::sync::Mutex;
 /// Read file as UTF-8 string, stripping BOM (\u{FEFF}) if present.
 ///
 /// PowerShell `Get-Content` strips BOM by default, but `std::fs::read_to_string`
-/// preserves it. Using this helper ensures the AI and apply_patch see the same
+/// preserves it. Using this helper ensures the AI and file editing tools see the same
 /// content, preventing context matching failures on BOM-prefixed files.
 pub(crate) fn read_file_utf8(path: &std::path::Path) -> Result<String, String> {
     let content = std::fs::read_to_string(path)

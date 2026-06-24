@@ -1,7 +1,6 @@
-mod apply_patch;
-
+mod glob;
 use super::ToolRegistration;
 
 pub(crate) fn registrations() -> Vec<ToolRegistration> {
-    apply_patch::registrations()
+    vec![glob::registration()]
 }

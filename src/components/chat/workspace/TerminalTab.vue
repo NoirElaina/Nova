@@ -52,8 +52,7 @@ const normalizedConversationId = () => props.conversationId?.trim() || null;
 const isShellToolName = (toolName: string) => {
   const normalized = toolName.trim().toLowerCase();
   return (
-    normalized === "execute_bash" ||
-    normalized === "execute_powershell" ||
+    normalized === "bash" ||
     normalized === "reset_shell_session"
   );
 };

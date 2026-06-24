@@ -1,7 +1,6 @@
-mod plan_for_approval;
-
+mod edit;
 use super::ToolRegistration;
 
 pub(crate) fn registrations() -> Vec<ToolRegistration> {
-    vec![plan_for_approval::registration()]
+    vec![edit::registration()]
 }

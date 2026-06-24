@@ -221,19 +221,18 @@ Nova/
 
 | 类别 | 工具 |
 |------|------|
-| 终端 | `execute_bash` · `execute_powershell` · `reset_shell_session` |
-| 文件编辑 | `apply_patch` |
-| 搜索 | `web_search` · `web_fetch` · rg (via bash) |
+| 终端 | `Bash` · `reset_shell_session` |
+| 文件编辑 | `Read` · `Write` · `Edit` |
+| 搜索 | `Grep` · `Glob` · `web_search` · `web_fetch` |
 | 浏览器 | `nova_browser_navigate` · `nova_browser_click` · `nova_browser_type` · `nova_browser_snapshot` · `nova_browser_reset` |
 | 桌面控制 | `computer_use` |
-| 规划 | `enter_plan_mode` · `exit_plan_mode` · `plan_for_approval` |
-| 目标管理 | `create_goal` · `update_goal` · `get_goal` |
+| 规划 | `enter_plan_mode` · `exit_plan_mode` |
+| 目标管理 | `ask_user_question` · `Sleep` |
 | 定时任务 | `CronCreate` · `CronDelete` · `CronList` |
 | 知识库 | `rag_tool` · `remember_global_memory` |
 | 技能 | `Skill` |
 | MCP | `mcp_auth` · `list_mcp_resources` · `read_mcp_resource` |
 | 配置 | `config_tool` |
-| 其他 | `ask_user_question` · `tool_search` · `Sleep` |
 
 ### 记忆系统
 

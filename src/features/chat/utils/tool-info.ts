@@ -27,7 +27,7 @@ export function summarizeToolInfo(toolName: string, rawInput: string): string | 
 
   const lower = (toolName || "").toLowerCase();
 
-  if (lower.includes("bash") || lower.includes("powershell") || lower.includes("shell")) {
+  if (lower === "bash" || lower.includes("shell")) {
     const command = readStringField(parsed, ["command", "cmd", "script"]);
     if (!command) return "shell action";
     const first = command.split(/\s+/).filter(Boolean)[0] || "unknown";
@@ -57,13 +57,26 @@ export function summarizeToolInfo(toolName: string, rawInput: string): string | 
   }
 
   if (
+    lower === "read" ||
+    lower === "write" ||
+    lower === "edit" ||
     lower.includes("file_read") ||
     lower.includes("write_file") ||
     lower.includes("file_edit") ||
     lower.includes("replace_string")
   ) {
-    const path = readStringField(parsed, ["path", "filePath", "uri"]);
+    const path = readStringField(parsed, ["file_path", "path", "filePath", "uri"]);
     return path ? `path=${truncateText(path, 64)}` : "file operation";
+  }
+
+  if (lower === "glob") {
+    const pattern = readStringField(parsed, ["pattern"]);
+    return pattern ? `pattern=${truncateText(pattern, 48)}` : "glob";
+  }
+
+  if (lower === "grep") {
+    const pattern = readStringField(parsed, ["pattern"]);
+    return pattern ? `pattern=${truncateText(pattern, 48)}` : "grep";
   }
 
   if (lower.startsWith("mcp__")) {

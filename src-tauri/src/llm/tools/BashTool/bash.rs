@@ -7,14 +7,13 @@ use crate::llm::types::Tool;
 use serde_json::{json, Value};
 use tauri::AppHandle;
 
-// 返回 BashTool 的注册信息。
 pub(super) fn registration() -> ToolRegistration {
     app_tool(tool, execute_with_app_boxed, false, Some(permission))
 }
 
 fn permission(input: &Value) -> Option<ToolPermissionDescriptor> {
     crate::llm::utils::permissions::describe_shell_command_permission(
-        "execute_bash",
+        "Bash",
         "终端命令",
         input,
     )
@@ -22,14 +21,40 @@ fn permission(input: &Value) -> Option<ToolPermissionDescriptor> {
 
 pub fn tool() -> Tool {
     Tool {
-        name: "execute_bash".into(),
-        description: "Execute a shell command in a conversation-scoped persistent shell session. The session keeps its working directory and environment between calls. Use background=true for long-running tasks. Interactive TUI programs are not supported.".into(),
+        name: "Bash".into(),
+        description: r#"Execute a bash/zsh/pwsh command in a conversation-scoped persistent shell session. The session keeps its working directory and environment between calls.
+
+- `command`: the command to execute (required).
+- `description`: a short (3-5 word) description of what this command does in active voice. Helps the user understand what's happening.
+- `timeout`: optional timeout in milliseconds (max 600000). Defaults to 120000.
+- `run_in_background`: set to true to run the command in the background. The shell session stays alive for subsequent calls.
+- `dangerouslyDisableSandbox`: set to true to disable sandboxing.
+
+On Windows this runs PowerShell 7 (pwsh). On Linux/macOS it runs sh. Interactive TUI programs are not supported."#
+            .into(),
         input_schema: json!({
             "type": "object",
             "properties": {
-                "command": { "type": "string", "description": "The command to execute" },
-                "timeout_ms": { "type": "integer", "description": "Optional foreground timeout in milliseconds. Defaults to 300000 and is capped at 1800000." },
-                "background": { "type": "boolean", "description": "When true, start the command in the background and return its pid immediately." }
+                "command": {
+                    "type": "string",
+                    "description": "The command to execute"
+                },
+                "description": {
+                    "type": "string",
+                    "description": "Clear, concise description of what this command does in active voice"
+                },
+                "timeout": {
+                    "type": "integer",
+                    "description": "Optional timeout in milliseconds (max 600000)"
+                },
+                "run_in_background": {
+                    "type": "boolean",
+                    "description": "Set to true to run this command in the background."
+                },
+                "dangerouslyDisableSandbox": {
+                    "type": "boolean",
+                    "description": "Set this to true to dangerously override sandbox mode and run commands without sandboxing."
+                }
             },
             "required": ["command"]
         }),
@@ -53,9 +78,11 @@ async fn execute_async(
         Some(v) if !v.trim().is_empty() => v.to_string(),
         _ => return Err(ToolFailure::invalid_input("Missing 'command' argument")),
     };
-    let timeout_ms = input.get("timeout_ms").and_then(|value| value.as_u64());
+    let timeout_ms = input
+        .get("timeout")
+        .and_then(|value| value.as_u64());
     let background = input
-        .get("background")
+        .get("run_in_background")
         .and_then(|value| value.as_bool())
         .unwrap_or(false);
 

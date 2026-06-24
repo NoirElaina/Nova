@@ -24,17 +24,15 @@ function categorizeTool(toolName: string): ToolCategory {
   const lower = (toolName || "").toLowerCase();
 
   if (
-    lower.includes("file_read") ||
-    lower.includes("read_file") ||
+    lower.includes("read") ||
     lower.includes("readmcpresource")
   ) {
     return categoryCatalog[0];
   }
 
   if (
-    lower.includes("write_file") ||
-    lower.includes("file_edit") ||
-    lower.includes("replace") ||
+    lower.includes("write") ||
+    lower.includes("edit") ||
     lower.includes("remember") ||
     lower.includes("config")
   ) {
@@ -42,8 +40,7 @@ function categorizeTool(toolName: string): ToolCategory {
   }
 
   if (
-    lower.includes("bash") ||
-    lower.includes("powershell") ||
+    lower === "bash" ||
     lower.includes("shell")
   ) {
     return categoryCatalog[2];

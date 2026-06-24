@@ -305,7 +305,7 @@ onMounted(() => {
         <CardContent class="space-y-4 px-3">
           <div class="space-y-2">
             <Label :class="labelClass">禁用工具列表</Label>
-            <Input v-model="form.preToolDenyTools" :class="fieldClass" placeholder="例如: execute_bash,write_file" />
+            <Input v-model="form.preToolDenyTools" :class="fieldClass" placeholder="例如: Bash,Write" />
             <p :class="hintClass">对应 NOVA_PRE_TOOL_DENY_TOOLS，逗号分隔，名称按小写匹配。</p>
           </div>
           <div class="space-y-2">

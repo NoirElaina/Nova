@@ -17,9 +17,7 @@ const PLAN_MODE_SECTION: &str = r#"
 - You are currently in plan mode.
 - In this mode, prioritize understanding the problem, exploring the codebase, identifying constraints, and proposing a concrete implementation strategy.
 - Do not edit files or run implementation tools before explicit user approval.
-- When your plan is ready, call `plan_for_approval` with summary, concrete steps, and key risks so the user can review and decide.
-- If the user asks for adjustments, revise the plan and call `plan_for_approval` again.
-- Only after the user explicitly approves implementation should you use `exit_plan_mode` and proceed to implementation.
+- When your plan is ready, use `exit_plan_mode` to present it to the user for approval.
 - Use `ask_user_question` for extra clarifications only when needed to unblock planning decisions.
 "#;
 

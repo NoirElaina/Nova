@@ -3,6 +3,7 @@ import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { LineChart } from 'echarts/charts';
 import {
   GridComponent,
+  LegendComponent,
   TooltipComponent,
   type GridComponentOption,
   type TooltipComponentOption,
@@ -12,7 +13,7 @@ import type { ECharts, EChartsCoreOption } from 'echarts/core';
 import { CanvasRenderer } from 'echarts/renderers';
 import type { ChatMessage, ToolExecutionEntry, TurnCost } from '../../../../lib/chat-types';
 
-echarts.use([LineChart, GridComponent, TooltipComponent, CanvasRenderer]);
+echarts.use([LineChart, GridComponent, LegendComponent, TooltipComponent, CanvasRenderer]);
 
 const props = defineProps<{
   entries: ToolExecutionEntry[];
@@ -27,6 +28,7 @@ const assistantMessages = computed(() =>
 );
 
 type TokenTurnPoint = {
+  timestamp: number;
   index: number;
   inputTokens: number;
   outputTokens: number;
@@ -34,14 +36,27 @@ type TokenTurnPoint = {
   cumulativeTokens: number;
 };
 
-type TokenRange = 5 | 8 | 'all';
+type TokenRange = 1 | 7 | 14 | 30 | 'all';
 
-const selectedTokenRange = ref<TokenRange>(8);
+const selectedTokenRange = ref<TokenRange>('all');
 const tokenRangeOptions: { label: string; value: TokenRange }[] = [
-  { label: '最近 5 轮', value: 5 },
-  { label: '最近 8 轮', value: 8 },
+  { label: '今天', value: 1 },
+  { label: '7 天', value: 7 },
+  { label: '14 天', value: 14 },
+  { label: '30 天', value: 30 },
   { label: '全部', value: 'all' },
 ];
+
+const dateFilteredTokenPoints = computed<TokenTurnPoint[]>(() => {
+  if (selectedTokenRange.value === 'all') return tokenTurnPoints.value;
+  const now = Date.now();
+  const cutoff = now - selectedTokenRange.value * 24 * 60 * 60 * 1000;
+  return tokenTurnPoints.value.filter((p) => p.timestamp >= cutoff);
+});
+
+const visibleTokenTurnPoints = computed(() => {
+  return dateFilteredTokenPoints.value;
+});
 
 const tokenTurnPoints = computed<TokenTurnPoint[]>(() => {
   let cumulativeTokens = 0;
@@ -55,6 +70,7 @@ const tokenTurnPoints = computed<TokenTurnPoint[]>(() => {
       const totalTokens = inputTokens + outputTokens;
       cumulativeTokens += totalTokens;
       return {
+        timestamp: Date.now(),
         index: index + 1,
         inputTokens,
         outputTokens,
@@ -63,13 +79,6 @@ const tokenTurnPoints = computed<TokenTurnPoint[]>(() => {
       };
     })
     .filter((point) => point.totalTokens > 0);
-});
-
-const visibleTokenTurnPoints = computed(() => {
-  if (selectedTokenRange.value === 'all') {
-    return tokenTurnPoints.value;
-  }
-  return tokenTurnPoints.value.slice(-selectedTokenRange.value);
 });
 
 const totalInputTokens = computed(() =>
@@ -139,16 +148,7 @@ const formatCompactNumber = (value: number) => {
   return `${value}`;
 };
 
-const visibleInputTokens = computed(() =>
-  visibleTokenTurnPoints.value.reduce((sum, point) => sum + point.inputTokens, 0),
-);
-
-const visibleOutputTokens = computed(() =>
-  visibleTokenTurnPoints.value.reduce((sum, point) => sum + point.outputTokens, 0),
-);
-
 const perTurnValues = computed(() => visibleTokenTurnPoints.value.map((point) => point.totalTokens));
-const cumulativeValues = computed(() => visibleTokenTurnPoints.value.map((point) => point.cumulativeTokens));
 const perTurnMax = computed(() => Math.max(...perTurnValues.value, 1));
 const latestTokenTurn = computed(() => visibleTokenTurnPoints.value[visibleTokenTurnPoints.value.length - 1] ?? null);
 const averageTurnTokens = computed(() =>
@@ -157,154 +157,196 @@ const averageTurnTokens = computed(() =>
     : 0,
 );
 
-const turnLabels = computed(() => visibleTokenTurnPoints.value.map((point) => `第 ${point.index} 轮`));
-const perTurnChartRef = ref<HTMLElement | null>(null);
-const cumulativeChartRef = ref<HTMLElement | null>(null);
-let perTurnChart: ECharts | null = null;
-let cumulativeChart: ECharts | null = null;
+const inputTokenValues = computed(() => visibleTokenTurnPoints.value.map((p) => p.inputTokens));
+const outputTokenValues = computed(() => visibleTokenTurnPoints.value.map((p) => p.outputTokens));
+const cacheCreationValues = computed(() =>
+  assistantMessages.value.slice(
+    Math.max(0, assistantMessages.value.length - (selectedTokenRange.value === 'all' ? assistantMessages.value.length : selectedTokenRange.value))
+  ).map((m) => m.cost?.cacheCreationTokens ?? 0)
+);
+const cacheReadValues = computed(() =>
+  assistantMessages.value.slice(
+    Math.max(0, assistantMessages.value.length - (selectedTokenRange.value === 'all' ? assistantMessages.value.length : selectedTokenRange.value))
+  ).map((m) => m.cost?.cacheReadTokens ?? 0)
+);
 
-const tooltipFormatter = (params: unknown) => {
-  const item = Array.isArray(params) ? params[0] : params;
-  const point = item as { axisValueLabel?: string; value?: number; marker?: string; seriesName?: string };
-  return `
-    <div class="usage-echart-tooltip">
-      <div class="usage-echart-tooltip__title">${point.axisValueLabel ?? ''}</div>
-      <div>${point.marker ?? ''}${point.seriesName ?? 'Token'}：<b>${formatNumber(Number(point.value ?? 0))}</b></div>
-    </div>
-  `;
-};
+const costValues = computed(() =>
+  visibleTokenTurnPoints.value.map((_, i) => {
+    let total = 0;
+    for (let j = 0; j <= i; j++) {
+      const cost = parseFloat(assistantMessages.value[j]?.cost?.totalCostUsd ?? '0');
+      if (!isNaN(cost)) total += cost;
+    }
+    return total;
+  })
+);
 
-const buildChartOption = (
-  title: string,
-  values: number[],
-  color: string,
-  areaColor: string,
-): UsageChartOption => ({
-  animation: true,
-  animationDuration: 700,
-  animationEasing: 'cubicOut',
-  grid: {
-    left: 8,
-    right: 12,
-    top: 18,
-    bottom: 26,
-    containLabel: false,
-  },
-  tooltip: {
-    trigger: 'axis',
-    appendToBody: true,
-    borderWidth: 0,
-    backgroundColor: 'rgba(32, 28, 23, 0.92)',
-    textStyle: {
-      color: '#fff',
-      fontSize: 12,
+const turnLabels = computed(() => visibleTokenTurnPoints.value.map((point) => {
+  const d = new Date(point.timestamp);
+  const mm = String(d.getMonth() + 1).padStart(2, '0');
+  const dd = String(d.getDate()).padStart(2, '0');
+  const hh = String(d.getHours()).padStart(2, '0');
+  const mi = String(d.getMinutes()).padStart(2, '0');
+  return `${mm}-${dd} ${hh}:${mi}`;
+}));
+const trendChartRef = ref<HTMLElement | null>(null);
+let trendChart: ECharts | null = null;
+
+const buildTrendOption = (): UsageChartOption => {
+  const labels = turnLabels.value;
+  return {
+    animation: true,
+    animationDuration: 600,
+    animationEasing: 'cubicOut',
+    grid: {
+      left: 10,
+      right: 50,
+      top: 20,
+      bottom: 62,
+      containLabel: false,
     },
-    padding: [8, 10],
-    axisPointer: {
-      type: 'line',
-      lineStyle: {
-        color,
-        width: 1,
-        type: 'dashed',
-        opacity: 0.7,
-      },
+    legend: {
+      data: ['Prompt', 'Output', 'Cache Write', 'Cache Hit', '累计成本'],
+      bottom: 12,
+      textStyle: { color: '#8b816f', fontSize: 11 },
+      itemWidth: 10,
+      itemHeight: 10,
+      itemGap: 16,
     },
-    formatter: tooltipFormatter,
-  },
-  xAxis: {
-    type: 'category',
-    boundaryGap: false,
-    data: turnLabels.value,
-    axisTick: { show: false },
-    axisLine: { lineStyle: { color: 'rgba(201, 188, 170, 0.75)' } },
-    axisLabel: {
-      color: '#8b816f',
-      fontSize: 10,
-      hideOverlap: true,
-      interval: 'auto',
+    tooltip: {
+      trigger: 'axis',
+      appendToBody: true,
+      borderWidth: 0,
+      backgroundColor: 'rgba(32, 28, 23, 0.94)',
+      textStyle: { color: '#fff', fontSize: 12 },
+      padding: [10, 12],
     },
-  },
-  yAxis: {
-    type: 'value',
-    min: 0,
-    splitNumber: 3,
-    axisLabel: {
-      color: '#9a8f80',
-      fontSize: 10,
-      formatter: (value: number) => formatCompactNumber(value),
+    xAxis: {
+      type: 'category',
+      boundaryGap: false,
+      data: labels,
+      axisTick: { show: false },
+      axisLine: { lineStyle: { color: 'rgba(201, 188, 170, 0.75)' } },
+      axisLabel: { color: '#8b816f', fontSize: 10, hideOverlap: true, interval: 'auto' },
     },
-    splitLine: {
-      lineStyle: {
-        color: 'rgba(226, 216, 201, 0.65)',
-        type: 'dashed',
+    yAxis: [
+      {
+        type: 'value',
+        min: 0,
+        splitNumber: 3,
+        axisLabel: { color: '#9a8f80', fontSize: 10, formatter: (v: number) => formatCompactNumber(v) },
+        splitLine: { lineStyle: { color: 'rgba(226, 216, 201, 0.55)', type: 'dashed' } },
       },
-    },
-  },
-  series: [
-    {
-      name: title,
-      type: 'line',
-      data: values,
-      smooth: true,
-      showSymbol: values.length <= 12,
-      symbol: 'circle',
-      symbolSize: 7,
-      lineStyle: {
-        color,
-        width: 2.5,
-        shadowColor: areaColor,
-        shadowBlur: 10,
+      {
+        type: 'value',
+        min: 0,
+        splitNumber: 3,
+        axisLabel: { color: '#9a8f80', fontSize: 10, formatter: (v: number) => `$${v.toFixed(2)}` },
+        splitLine: { show: false },
       },
-      itemStyle: {
-        color,
-        borderColor: '#fff',
-        borderWidth: 1.5,
-      },
-      areaStyle: {
-        color: areaColor,
-        opacity: 0.38,
-      },
-      emphasis: {
-        focus: 'series',
-        scale: true,
-        itemStyle: {
-          borderWidth: 2.5,
-          shadowBlur: 12,
-          shadowColor: areaColor,
+    ],
+    series: [
+      {
+        name: 'Prompt',
+        type: 'line',
+        yAxisIndex: 0,
+        data: inputTokenValues.value,
+        smooth: true,
+        showSymbol: labels.length <= 12,
+        symbol: 'circle',
+        symbolSize: 5,
+        lineStyle: { color: '#3b82f6', width: 2 },
+        itemStyle: { color: '#3b82f6' },
+        areaStyle: {
+          color: new echarts.graphic.LinearGradient(0, 0, 0, 1, [
+            { offset: 0, color: 'rgba(59,130,246,0.18)' },
+            { offset: 1, color: 'rgba(59,130,246,0)' },
+          ]),
         },
       },
-    },
-  ],
-});
+      {
+        name: 'Output',
+        type: 'line',
+        yAxisIndex: 0,
+        data: outputTokenValues.value,
+        smooth: true,
+        showSymbol: labels.length <= 12,
+        symbol: 'circle',
+        symbolSize: 5,
+        lineStyle: { color: '#22c55e', width: 2 },
+        itemStyle: { color: '#22c55e' },
+        areaStyle: {
+          color: new echarts.graphic.LinearGradient(0, 0, 0, 1, [
+            { offset: 0, color: 'rgba(34,197,94,0.18)' },
+            { offset: 1, color: 'rgba(34,197,94,0)' },
+          ]),
+        },
+      },
+      {
+        name: 'Cache Write',
+        type: 'line',
+        yAxisIndex: 0,
+        data: cacheCreationValues.value,
+        smooth: true,
+        showSymbol: false,
+        lineStyle: { color: '#f97316', width: 1.5 },
+        itemStyle: { color: '#f97316' },
+        areaStyle: {
+          color: new echarts.graphic.LinearGradient(0, 0, 0, 1, [
+            { offset: 0, color: 'rgba(249,115,22,0.14)' },
+            { offset: 1, color: 'rgba(249,115,22,0)' },
+          ]),
+        },
+      },
+      {
+        name: 'Cache Hit',
+        type: 'line',
+        yAxisIndex: 0,
+        data: cacheReadValues.value,
+        smooth: true,
+        showSymbol: false,
+        lineStyle: { color: '#a855f7', width: 1.5 },
+        itemStyle: { color: '#a855f7' },
+        areaStyle: {
+          color: new echarts.graphic.LinearGradient(0, 0, 0, 1, [
+            { offset: 0, color: 'rgba(168,85,247,0.14)' },
+            { offset: 1, color: 'rgba(168,85,247,0)' },
+          ]),
+        },
+      },
+      {
+        name: '累计成本',
+        type: 'line',
+        yAxisIndex: 1,
+        data: costValues.value,
+        smooth: true,
+        showSymbol: false,
+        lineStyle: { color: '#f43f5e', width: 2, type: 'dashed' },
+        itemStyle: { color: '#f43f5e' },
+        areaStyle: undefined,
+      },
+    ],
+  };
+};
 
 const renderCharts = async () => {
   await nextTick();
-  if (!perTurnChartRef.value || !cumulativeChartRef.value || visibleTokenTurnPoints.value.length === 0) {
-    return;
-  }
-
-  perTurnChart ??= echarts.init(perTurnChartRef.value);
-  cumulativeChart ??= echarts.init(cumulativeChartRef.value);
-  perTurnChart.setOption(buildChartOption('每轮 Token', perTurnValues.value, '#a86f38', 'rgba(168, 111, 56, 0.35)'), true);
-  cumulativeChart.setOption(
-    buildChartOption('累计 Token', cumulativeValues.value, '#3d7f72', 'rgba(61, 127, 114, 0.34)'),
-    true,
-  );
-  perTurnChart.resize();
-  cumulativeChart.resize();
+  trendChart?.dispose();
+  trendChart = null;
+  if (!trendChartRef.value || visibleTokenTurnPoints.value.length === 0) return;
+  trendChart = echarts.init(trendChartRef.value);
+  trendChart.setOption(buildTrendOption(), true);
+  trendChart.resize();
 };
 
 const resizeCharts = () => {
-  perTurnChart?.resize();
-  cumulativeChart?.resize();
+  trendChart?.resize();
 };
 
 watch(
   () => [
     selectedTokenRange.value,
     visibleTokenTurnPoints.value.length,
-    perTurnValues.value.join(','),
-    cumulativeValues.value.join(','),
   ],
   () => {
     void renderCharts();
@@ -319,15 +361,52 @@ onMounted(() => {
 
 onBeforeUnmount(() => {
   window.removeEventListener('resize', resizeCharts);
-  perTurnChart?.dispose();
-  cumulativeChart?.dispose();
-  perTurnChart = null;
-  cumulativeChart = null;
+  trendChart?.dispose();
+  trendChart = null;
 });
 </script>
 
 <template>
   <div class="h-full overflow-y-auto px-4 py-4">
+    <!-- Chart -- top, largest -->
+    <div class="usage-chart-card mb-4">
+      <div class="usage-chart-header">
+        <div class="usage-chart-metrics-new">
+          <div class="usage-metric-block">
+            <span class="usage-metric-label">最新</span>
+            <strong class="usage-metric-value">{{ formatCompactNumber(latestTokenTurn?.totalTokens ?? 0) }}</strong>
+          </div>
+          <div class="usage-metric-block">
+            <span class="usage-metric-label">峰值</span>
+            <strong class="usage-metric-value">{{ formatCompactNumber(perTurnMax) }}</strong>
+          </div>
+          <div class="usage-metric-block">
+            <span class="usage-metric-label">平均</span>
+            <strong class="usage-metric-value">{{ formatCompactNumber(averageTurnTokens) }}</strong>
+          </div>
+        </div>
+        <div class="flex items-center gap-3">
+          <div class="usage-range-toggle" aria-label="区间">
+            <button
+              v-for="option in tokenRangeOptions"
+              :key="String(option.value)"
+              type="button"
+              :class="{ active: selectedTokenRange === option.value }"
+              @click="selectedTokenRange = option.value"
+            >
+              {{ option.label }}
+            </button>
+          </div>
+          <div class="usage-trends-pill">{{ visibleTokenTurnPoints.length }}/{{ tokenTurnPoints.length }} 次</div>
+        </div>
+      </div>
+      <div class="usage-chart-frame">
+        <div v-if="visibleTokenTurnPoints.length > 0" ref="trendChartRef" class="usage-echart usage-echart--large" />
+        <div v-else class="usage-chart-empty">还没有足够的 token 数据。</div>
+      </div>
+    </div>
+
+    <!-- Stat cards -->
     <div class="grid grid-cols-2 gap-3 lg:grid-cols-4">
       <div class="usage-card">
         <div class="usage-label">总 Tokens</div>
@@ -363,7 +442,7 @@ onBeforeUnmount(() => {
     </div>
 
     <div class="mt-4 rounded-xl border border-[#e7e2d7] bg-white/80 p-4 dark:border-[#333] dark:bg-[#252525]">
-      <div class="text-sm font-medium text-[#1a1a1a] dark:text-[#ececec]">最近一轮</div>
+      <div class="text-sm font-medium text-[#1a1a1a] dark:text-[#ececec]">最近一次</div>
       <div
         v-if="latestAssistantCost"
         class="mt-3 grid grid-cols-2 gap-3 lg:grid-cols-4"
@@ -412,87 +491,6 @@ onBeforeUnmount(() => {
         还没有可展示的用量数据。
       </div>
     </div>
-
-    <div class="usage-trends-panel">
-      <div class="usage-trends-header">
-        <div>
-          <div class="usage-trends-title">Token 趋势</div>
-          <div class="usage-trends-subtitle">按 assistant 回合统计，展示单轮消耗与会话累计消耗。</div>
-        </div>
-        <div class="usage-trends-actions">
-          <div class="usage-range-toggle" aria-label="Token 趋势区间">
-            <button
-              v-for="option in tokenRangeOptions"
-              :key="String(option.value)"
-              type="button"
-              :class="{ active: selectedTokenRange === option.value }"
-              @click="selectedTokenRange = option.value"
-            >
-              {{ option.label }}
-            </button>
-          </div>
-          <div class="usage-trends-pill">{{ visibleTokenTurnPoints.length }}/{{ tokenTurnPoints.length }} 轮</div>
-        </div>
-      </div>
-
-      <div v-if="visibleTokenTurnPoints.length > 0" class="usage-trend-grid">
-        <div class="usage-chart-card usage-chart-card--turn">
-          <div class="usage-chart-header">
-            <div>
-              <div class="usage-chart-kicker">每轮消耗</div>
-              <div class="usage-chart-title">单轮 Token</div>
-            </div>
-            <div class="usage-chart-metrics">
-              <div>
-                <span>最新</span>
-                <strong>{{ formatCompactNumber(latestTokenTurn?.totalTokens ?? 0) }}</strong>
-              </div>
-              <div>
-                <span>峰值</span>
-                <strong>{{ formatCompactNumber(perTurnMax) }}</strong>
-              </div>
-            </div>
-          </div>
-          <div class="usage-chart-frame">
-            <div ref="perTurnChartRef" class="usage-echart" />
-            <div class="usage-chart-caption">
-              <span>第 {{ visibleTokenTurnPoints[0]?.index ?? 0 }} 轮</span>
-              <span>平均 {{ formatCompactNumber(averageTurnTokens) }}</span>
-              <span>第 {{ latestTokenTurn?.index ?? 0 }} 轮</span>
-            </div>
-          </div>
-        </div>
-
-        <div class="usage-chart-card usage-chart-card--total">
-          <div class="usage-chart-header">
-            <div>
-              <div class="usage-chart-kicker">总量趋势</div>
-              <div class="usage-chart-title">累计 Token</div>
-            </div>
-            <div class="usage-chart-metrics">
-              <div>
-                <span>区间 Prompt</span>
-                <strong>{{ formatCompactNumber(visibleInputTokens) }}</strong>
-              </div>
-              <div>
-                <span>区间输出</span>
-                <strong>{{ formatCompactNumber(visibleOutputTokens) }}</strong>
-              </div>
-            </div>
-          </div>
-          <div class="usage-chart-frame">
-            <div ref="cumulativeChartRef" class="usage-echart" />
-            <div class="usage-chart-caption">
-              <span>第 {{ visibleTokenTurnPoints[0]?.index ?? 0 }} 轮</span>
-              <span>总计 {{ formatCompactNumber(totalTokens) }}</span>
-              <span>当前</span>
-            </div>
-          </div>
-        </div>
-      </div>
-
-      <div v-else class="usage-chart-empty">还没有足够的 token 数据。</div>
-    </div>
   </div>
 </template>
 
@@ -536,56 +534,8 @@ onBeforeUnmount(() => {
   color: #ececec;
 }
 
-.usage-trends-panel {
-  margin-top: 16px;
-  border: 1px solid #e5e7eb;
-  border-radius: 20px;
-  background:
-    radial-gradient(circle at 12% 0%, rgba(148, 163, 184, 0.12), transparent 34%),
-    linear-gradient(180deg, rgba(255, 255, 255, 0.96), rgba(248, 250, 252, 0.82));
-  padding: 16px;
-}
-
-.dark .usage-trends-panel {
-  border-color: #333;
-  background:
-    radial-gradient(circle at 12% 0%, rgba(148, 163, 184, 0.14), transparent 34%),
-    linear-gradient(180deg, rgba(40, 40, 40, 0.96), rgba(31, 31, 31, 0.9));
-}
-
-.usage-trends-header {
-  display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: 16px;
-  margin-bottom: 14px;
-}
-
-.usage-trends-actions {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  justify-content: flex-end;
-  gap: 8px;
-}
-
-.usage-trends-title {
-  color: #1a1a1a;
-  font-size: 16px;
-  font-weight: 680;
-  letter-spacing: -0.01em;
-}
-
-.usage-trends-subtitle {
-  margin-top: 4px;
-  color: #8b816f;
-  font-size: 12px;
-}
-
 .usage-trends-pill {
   flex-shrink: 0;
-  border: 1px solid #e1d8c8;
-  border-radius: 999px;
   background: rgba(255, 255, 255, 0.72);
   color: #7d725f;
   font-size: 12px;
@@ -628,14 +578,6 @@ onBeforeUnmount(() => {
   color: #fffaf0;
 }
 
-.dark .usage-trends-title {
-  color: #ececec;
-}
-
-.dark .usage-trends-subtitle {
-  color: #a99f90;
-}
-
 .dark .usage-trends-pill {
   border-color: #46413a;
   background: rgba(255, 255, 255, 0.05);
@@ -661,17 +603,6 @@ onBeforeUnmount(() => {
   color: #1f1f1d;
 }
 
-.usage-trend-grid {
-  display: grid;
-  gap: 12px;
-}
-
-@media (min-width: 1024px) {
-  .usage-trend-grid {
-    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
-  }
-}
-
 .usage-chart-card {
   position: relative;
   overflow: hidden;
@@ -680,22 +611,6 @@ onBeforeUnmount(() => {
   background: rgba(255, 255, 255, 0.72);
   padding: 15px 16px 12px;
   box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.75);
-}
-
-.usage-chart-card::before {
-  content: "";
-  position: absolute;
-  inset: 0;
-  pointer-events: none;
-  opacity: 0.55;
-}
-
-.usage-chart-card--turn::before {
-  background: linear-gradient(135deg, rgba(177, 112, 52, 0.13), transparent 42%);
-}
-
-.usage-chart-card--total::before {
-  background: linear-gradient(135deg, rgba(63, 127, 114, 0.13), transparent 42%);
 }
 
 .dark .usage-chart-card {
@@ -736,10 +651,48 @@ onBeforeUnmount(() => {
   color: #a99f90;
 }
 
-.usage-chart-caption,
 .usage-chart-empty {
   color: #8b816f;
   font-size: 11px;
+}
+
+.usage-chart-metrics-new {
+  display: flex;
+  gap: 6px;
+}
+
+.usage-metric-block {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  padding: 4px 10px;
+  border: 1px solid #e5e7eb;
+  border-radius: 8px;
+  background: #f9fafb;
+}
+
+.usage-metric-label {
+  color: #6b7280;
+  font-size: 11px;
+}
+
+.usage-metric-value {
+  color: #111827;
+  font-size: 15px;
+  font-weight: 700;
+}
+
+.dark .usage-metric-block {
+  border-color: #374151;
+  background: #1f2937;
+}
+
+.dark .usage-metric-label {
+  color: #9ca3af;
+}
+
+.dark .usage-metric-value {
+  color: #f3f4f6;
 }
 
 .usage-chart-metrics {
@@ -772,18 +725,7 @@ onBeforeUnmount(() => {
   line-height: 1;
 }
 
-.dark .usage-chart-metrics > div {
-  border-color: rgba(70, 65, 58, 0.8);
-  background: rgba(255, 255, 255, 0.04);
-}
 
-.dark .usage-chart-metrics span {
-  color: #a99f90;
-}
-
-.dark .usage-chart-metrics strong {
-  color: #ececec;
-}
 
 .usage-chart-frame {
   position: relative;
@@ -796,10 +738,8 @@ onBeforeUnmount(() => {
   height: 142px;
 }
 
-.usage-chart-caption {
-  display: flex;
-  justify-content: space-between;
-  margin-top: -2px;
+.usage-echart--large {
+  height: 320px;
 }
 
 .usage-chart-empty {
@@ -810,8 +750,6 @@ onBeforeUnmount(() => {
   text-align: center;
 }
 
-.dark .usage-chart-subtitle,
-.dark .usage-chart-caption,
 .dark .usage-chart-empty {
   color: #a99f90;
 }

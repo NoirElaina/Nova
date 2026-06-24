@@ -75,6 +75,7 @@ export interface ChatMessage {
   attachments?: ChatAttachment[];
   tokenUsage?: number;
   cost?: TurnCost;
+  createdAt?: number;
 }
 
 export interface UploadedDocumentFile extends ChatAttachment {

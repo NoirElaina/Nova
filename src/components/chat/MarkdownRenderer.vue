@@ -174,30 +174,53 @@ const rendered = computed(() => renderMarkdown(props.content || ''))
   border-collapse: collapse;
   margin: 0.8em 0;
   font-size: 13px;
-  display: block;
-  overflow-x: auto;
+  display: table;
+  width: 100%;
   max-width: 100%;
+  overflow-x: auto;
+}
+
+.md-body thead {
+  border-bottom: 2px solid #d1d5db;
 }
 
 .md-body th {
-  background: #fbf7ef;
+  background: #f3f4f6;
   font-weight: 600;
   color: #111827;
   padding: 8px 12px;
-  border: 1px solid #e7ded2;
+  border: none;
   text-align: left;
-  white-space: nowrap;
 }
 
 .md-body td {
   padding: 7px 12px;
-  border: 1px solid #e7ded2;
-  color: #334155;
-  white-space: nowrap;
+  border: none;
+  border-bottom: 1px solid #e5e7eb;
+  color: #374151;
 }
 
-.md-body tr:nth-child(even) td {
-  background: #fdfaf5;
+.md-body tbody tr:hover td {
+  background: #f9fafb;
+}
+
+/* dark mode table */
+.dark .md-body th {
+  background: #1f2937;
+  color: #f9fafb;
+}
+
+.dark .md-body thead {
+  border-bottom-color: #374151;
+}
+
+.dark .md-body td {
+  border-bottom-color: #1f2937;
+  color: #d1d5db;
+}
+
+.dark .md-body tbody tr:hover td {
+  background: #111827;
 }
 
 .md-body hr {

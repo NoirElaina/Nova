@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import InputArea from '../layout/InputArea.vue';
+import EnvironmentBar from './EnvironmentBar.vue';
 import type {
   AgentMode,
   ContextCompactSummary,
@@ -39,6 +40,8 @@ const handleSend = (msg: string) => {
     </h1>
 
     <div class="w-full max-w-[42rem] flex flex-col">
+      <EnvironmentBar />
+
       <InputArea
         :isGenerating="isGenerating"
         :agentMode="agentMode"

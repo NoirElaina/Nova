@@ -55,3 +55,7 @@ export async function setWorkspaceRoot(
     path,
   });
 }
+
+export async function setDefaultWorkspaceRoot(path: string): Promise<string> {
+  return invoke<string>('set_default_workspace_root', { path });
+}

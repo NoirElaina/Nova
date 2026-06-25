@@ -93,7 +93,42 @@ fn write_workspace_store(
     std::fs::write(&path, text).map_err(|error| format!("保存工作区配置失败: {}", error))
 }
 
+#[derive(Deserialize, Serialize)]
+struct DefaultWorkspaceConfig {
+    root: String,
+}
+
+fn default_workspace_config_path(app: &AppHandle) -> Result<PathBuf, String> {
+    app.path()
+        .app_data_dir()
+        .map(|path| path.join("default_workspace.json"))
+        .map_err(|error| format!("无法读取应用数据目录: {}", error))
+}
+
+fn read_default_workspace_config(app: &AppHandle) -> Result<Option<PathBuf>, String> {
+    let path = default_workspace_config_path(app)?;
+    if !path.exists() {
+        return Ok(None);
+    }
+    let text = std::fs::read_to_string(&path)
+        .map_err(|error| format!("读取默认工作区配置失败: {}", error))?;
+    let config: DefaultWorkspaceConfig = serde_json::from_str(&text)
+        .map_err(|error| format!("解析默认工作区配置失败: {}", error))?;
+    if config.root.trim().is_empty() {
+        return Ok(None);
+    }
+    Ok(Some(PathBuf::from(config.root)))
+}
+
 pub fn default_workspace_root(app: &AppHandle) -> Result<PathBuf, String> {
+    if let Some(custom) = read_default_workspace_config(app)? {
+        if custom.is_dir() {
+            return custom
+                .canonicalize()
+                .map_err(|error| format!("无法解析默认工作区目录: {}", error));
+        }
+    }
+
     let root = app
         .path()
         .app_data_dir()
@@ -307,6 +342,39 @@ fn entry_from_path(root: &Path, path: PathBuf) -> Option<WorkspaceEntry> {
 }
 
 #[tauri::command]
+pub fn get_workspace_root(app: AppHandle) -> Result<String, String> {
+    workspace_root_string_for_conversation(&app, None)
+}
+
+#[tauri::command]
+pub fn set_default_workspace_root(app: AppHandle, path: String) -> Result<String, String> {
+    let trimmed = path.trim();
+    if trimmed.is_empty() {
+        return Err("请选择有效的工作区目录".to_string());
+    }
+    let canonical = PathBuf::from(trimmed)
+        .canonicalize()
+        .map_err(|error| format!("无法解析工作区目录: {}", error))?;
+    if !canonical.is_dir() {
+        return Err("工作区必须是目录".to_string());
+    }
+
+    let config_path = default_workspace_config_path(&app)?;
+    if let Some(parent) = config_path.parent() {
+        std::fs::create_dir_all(parent)
+            .map_err(|error| format!("创建工作区配置目录失败: {}", error))?;
+    }
+    let text = serde_json::to_string_pretty(&DefaultWorkspaceConfig {
+        root: display_path_string(&canonical),
+    })
+    .map_err(|error| format!("序列化工作区配置失败: {}", error))?;
+    std::fs::write(&config_path, text)
+        .map_err(|error| format!("保存工作区配置失败: {}", error))?;
+
+    Ok(display_path_string(&canonical))
+}
+
+#[tauri::command]
 pub fn workspace_list_directory(
     app: AppHandle,
     conversation_id: Option<String>,
@@ -385,4 +453,69 @@ pub fn workspace_read_text_file(
         content,
         size: metadata.len(),
     })
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkspaceContextInfo {
+    workspace_root: String,
+    workspace_name: String,
+    git_branch: Option<String>,
+    git_worktree: Option<String>,
+}
+
+#[tauri::command]
+pub fn get_workspace_context(app: AppHandle) -> Result<WorkspaceContextInfo, String> {
+    let root = default_workspace_root(&app)?;
+    let root_str = display_path_string(&root);
+    let workspace_name = root
+        .file_name()
+        .map(|n| n.to_string_lossy().to_string())
+        .unwrap_or_else(|| "workspace".to_string());
+
+    let git_branch = get_git_branch(&root);
+    let git_worktree = get_git_worktree(&root);
+
+    Ok(WorkspaceContextInfo {
+        workspace_root: root_str,
+        workspace_name,
+        git_branch,
+        git_worktree,
+    })
+}
+
+fn get_git_branch(root: &Path) -> Option<String> {
+    let output = std::process::Command::new("git")
+        .args(["rev-parse", "--abbrev-ref", "HEAD"])
+        .current_dir(root)
+        .output()
+        .ok()?;
+    if output.status.success() {
+        let branch = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        if !branch.is_empty() {
+            return Some(branch);
+        }
+    }
+    None
+}
+
+fn get_git_worktree(root: &Path) -> Option<String> {
+    let output = std::process::Command::new("git")
+        .args(["rev-parse", "--show-toplevel"])
+        .current_dir(root)
+        .output()
+        .ok()?;
+    if output.status.success() {
+        let toplevel = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        let root_canonical = root.canonicalize().ok()?;
+        let toplevel_canonical = PathBuf::from(&toplevel).canonicalize().ok()?;
+        if root_canonical != toplevel_canonical {
+            return Some(
+                root.file_name()
+                    .map(|n| n.to_string_lossy().to_string())
+                    .unwrap_or_else(|| "worktree".to_string()),
+            );
+        }
+    }
+    None
 }

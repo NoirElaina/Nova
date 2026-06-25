@@ -504,9 +504,6 @@ defineExpose({
           @remove-upload="handleRemoveUpload"
         />
       </div>
-      <div class="text-center text-[0.7rem] text-muted-foreground mt-2">
-        Nova can make mistakes. Please verify important information.
-      </div>
     </div>
   </div>
 </template>

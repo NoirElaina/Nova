@@ -225,7 +225,8 @@ onBeforeUnmount(() => {
       </svg>
       <div>
         <div class="text-sm font-medium text-[#111827] dark:text-[#f8fafc]">暂无可审查变更</div>
-        <p class="mt-1 text-xs">AI 使用 Write / Edit 后会出现在这里。</p>
+        <p class="mt-1 text-xs">把工作区目录初始化为 Git 仓库后，AI 回合的 Write / Edit 改动会以快照形式展示在这里，并可回退到本轮开始那一刻。</p>
+        <p class="mt-1 text-xs opacity-80">非 Git 目录只能在回复底部的「修改卡片」查看本轮改动，没有回退能力。</p>
       </div>
     </div>
 

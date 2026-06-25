@@ -1,13 +1,21 @@
-use serde::{Deserialize, Serialize};
-use similar::{ChangeTag, TextDiff};
-use sqlx::{Row, SqlitePool};
-use std::collections::BTreeSet;
-use std::fs;
-use std::path::PathBuf;
-use std::sync::OnceLock;
+// 文件变更审查：基于 git 快照
+//
+// 设计：
+// - 每轮 AI 回合开始时调用 create_turn_snapshot 在工作区当前状态拍一个隐藏 ref 快照。
+// - 回合正常结束时再拍一个结束快照，用 git diff 计算本轮改动，写一条 batch 进 SQLite。
+// - file_change_batches 表新增 snapshot_sha（起点）/end_snapshot_sha（结束）两列。
+// - 审查页 diff 不再存 before/after 正文，统一从 git 快照 diff 得出。
+// - 回退 batch = git read-tree + clean 到起点快照，工作区回到本轮开始那一刻。
+
+use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
+
+use sqlx::{Row, SqlitePool};
 use tauri::AppHandle;
-use tokio::sync::Mutex;
+
+pub use crate::llm::services::git_snapshot::{
+    FileChangeBatch, FileChangeBatchSummary, FileChangeEntry, FileDiffLine,
+};
 
 /// Read file as UTF-8 string, stripping BOM (\u{FEFF}) if present.
 ///
@@ -23,287 +31,235 @@ pub(crate) fn read_file_utf8(path: &std::path::Path) -> Result<String, String> {
         .to_string())
 }
 
-#[derive(Debug, Clone)]
-pub struct FileEditResult {
-    pub files: Vec<String>,
-    pub change_batch_id: Option<String>,
-}
-
-pub(crate) async fn commit_drafts(
-    app: &AppHandle,
-    conversation_id: Option<&str>,
-    tool_name: &str,
-    drafts: Vec<FileChangeDraft>,
-) -> Result<FileEditResult, String> {
-    let files = drafts
-        .iter()
-        .filter(|draft| draft.before != draft.after)
-        .map(|draft| path_for_display(&draft.path))
-        .collect::<Vec<_>>();
-    let change_batch_id = commit_change_batch(app, conversation_id, tool_name, drafts).await?;
-    let files = if change_batch_id.is_some() {
-        files
-    } else {
-        Vec::new()
-    };
-
-    Ok(FileEditResult {
-        files,
-        change_batch_id,
-    })
-}
-
-#[derive(Debug, Clone)]
-pub(crate) struct FileChangeDraft {
-    pub path: PathBuf,
-    pub before: Option<String>,
-    pub after: Option<String>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct FileDiffLine {
-    pub kind: String,
-    pub old_line: Option<usize>,
-    pub new_line: Option<usize>,
-    pub text: String,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct FileChangeEntry {
-    pub path: String,
-    pub absolute_path: String,
-    pub change_type: String,
-    pub before: Option<String>,
-    pub after: Option<String>,
-    pub diff: Vec<FileDiffLine>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct FileChangeBatch {
-    pub id: String,
-    pub conversation_id: String,
-    pub tool_name: String,
-    pub created_at: u64,
-    pub reverted: bool,
-    pub reverted_at: Option<u64>,
-    pub files: Vec<FileChangeEntry>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct FileChangeBatchSummary {
-    pub id: String,
-    pub conversation_id: String,
-    pub tool_name: String,
-    pub created_at: u64,
-    pub reverted: bool,
-    pub reverted_at: Option<u64>,
-    pub file_count: usize,
-    pub additions: usize,
-    pub deletions: usize,
-    pub paths: Vec<String>,
-}
-
-static FILE_CHANGE_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
-const MAX_STORED_BATCHES: usize = 200;
-
-fn file_change_lock() -> &'static Mutex<()> {
-    FILE_CHANGE_LOCK.get_or_init(|| Mutex::new(()))
-}
-
 fn now_millis() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
-        .map(|duration| duration.as_millis() as u64)
+        .map(|d| d.as_millis() as u64)
         .unwrap_or(0)
 }
 
 fn normalize_conversation_id(conversation_id: Option<&str>) -> Result<String, String> {
     conversation_id
         .map(str::trim)
-        .filter(|value| !value.is_empty())
+        .filter(|v| !v.is_empty())
         .map(str::to_string)
         .ok_or_else(|| "conversation_id is required for file change review".to_string())
 }
 
-pub fn resolve_tool_path(raw_path: &str) -> Result<PathBuf, String> {
+pub fn resolve_tool_path(raw_path: &str) -> Result<std::path::PathBuf, String> {
     crate::llm::utils::paths::resolve_absolute_path_for_write(raw_path, "path")
 }
 
-fn path_for_display(path: &PathBuf) -> String {
-    path.display().to_string()
-}
-
-fn change_type(before: &Option<String>, after: &Option<String>) -> String {
-    match (before, after) {
-        (None, Some(_)) => "added",
-        (Some(_), None) => "deleted",
-        _ => "modified",
+/// Write/Edit 工具专用：堆文件并返回受影响的 *display* 路径。
+/// 不再写 SQLite、不再有写文件前/失败回滚——回退完全交给 git 快照。
+pub fn write_file_simple(
+    target: &Path,
+    content: &str,
+) -> Result<String, String> {
+    if let Some(parent) = target.parent() {
+        std::fs::create_dir_all(parent)
+            .map_err(|e| format!("创建目录失败 {}: {}", target.display(), e))?;
     }
-    .to_string()
+    std::fs::write(target, content)
+        .map_err(|e| format!("写入文件失败 {}: {}", target.display(), e))?;
+    Ok(target.display().to_string())
 }
 
-fn build_entry(draft: FileChangeDraft) -> FileChangeEntry {
-    let diff = diff_lines(draft.before.as_deref(), draft.after.as_deref());
-    FileChangeEntry {
-        path: path_for_display(&draft.path),
-        absolute_path: draft.path.display().to_string(),
-        change_type: change_type(&draft.before, &draft.after),
-        before: draft.before,
-        after: draft.after,
-        diff,
+// 回合开始：在工作区拍一个起点快照。失败（无 git / 无改动）时静默忽略，不阻断回合。
+pub async fn create_turn_snapshot(
+    app: &AppHandle,
+    conversation_id: Option<&str>,
+) {
+    let Ok(conv_id) = normalize_conversation_id(conversation_id) else {
+        return;
+    };
+    let Ok(repo_root) =
+        crate::command::workspace::workspace_root_for_conversation(app, Some(&conv_id))
+    else {
+        return;
+    };
+    if crate::llm::services::git_snapshot::ensure_repo(&repo_root).is_err() {
+        return;
+    }
+    let ref_name = format!("turn-start-{conv_id}-{}", now_millis());
+    if let Ok(Some(sha)) =
+        crate::llm::services::git_snapshot::create_snapshot(&repo_root, &ref_name)
+    {
+        persist_pending_snapshot(app, &conv_id, &sha).await.ok();
     }
 }
 
-fn build_batch(
+async fn persist_pending_snapshot(
+    app: &AppHandle,
     conversation_id: &str,
-    tool_name: &str,
-    drafts: Vec<FileChangeDraft>,
-) -> Option<FileChangeBatch> {
-    let mut seen = BTreeSet::new();
-    let files = drafts
-        .into_iter()
-        .filter(|draft| draft.before != draft.after)
-        .filter(|draft| seen.insert(draft.path.clone()))
-        .map(build_entry)
-        .collect::<Vec<_>>();
+    sha: &str,
+) -> Result<(), String> {
+    let id = uuid::Uuid::new_v4().to_string();
+    let pool = crate::llm::history::get_pool_with_schema(app).await?;
+    sqlx::query(
+        r#"
+        INSERT INTO conversation_change_snapshots (id, conversation_id, snapshot_sha, created_at)
+        VALUES (?, ?, ?, ?)
+        "#,
+    )
+    .bind(&id)
+    .bind(conversation_id)
+    .bind(sha)
+    .bind(now_millis() as i64)
+    .execute(&pool)
+    .await
+    .map_err(|e| e.to_string())?;
+    Ok(())
+}
 
-    if files.is_empty() {
+/// 拉最近一个未消费的起点快照 SHA（FIFO），标记 used 后返回 SHA 供回合收尾 diff 用。
+async fn take_pending_snapshot_sha(
+    app: &AppHandle,
+    conversation_id: &str,
+) -> Result<Option<String>, String> {
+    let pool = crate::llm::history::get_pool_with_schema(app).await?;
+    let row = sqlx::query(
+        r#"
+        SELECT id, snapshot_sha FROM conversation_change_snapshots
+        WHERE conversation_id = ? AND consumed_at IS NULL
+        ORDER BY created_at ASC, id ASC
+        LIMIT 1
+        "#,
+    )
+    .bind(conversation_id)
+    .fetch_optional(&pool)
+    .await
+    .map_err(|e| e.to_string())?;
+    let Some(row) = row else {
+        return Ok(None);
+    };
+    let id: String = row.get("id");
+    let sha: String = row.get("snapshot_sha");
+    sqlx::query(
+        "UPDATE conversation_change_snapshots SET consumed_at = ? WHERE id = ?",
+    )
+    .bind(now_millis() as i64)
+    .bind(&id)
+    .execute(&pool)
+    .await
+    .map_err(|e| e.to_string())?;
+    Ok(Some(sha))
+}
+
+/// 回合收尾：拍结束快照，对比起点快照，写一条 batch。
+/// 仅在确有改动时返回 batch_id。
+pub async fn record_turn_changes(
+    app: &AppHandle,
+    conversation_id: Option<&str>,
+) -> Option<String> {
+    let conv_id = normalize_conversation_id(conversation_id).ok()?;
+    let repo_root = crate::command::workspace::workspace_root_for_conversation(app, Some(&conv_id)).ok()?;
+    if crate::llm::services::git_snapshot::ensure_repo(&repo_root).is_err() {
         return None;
     }
 
-    Some(FileChangeBatch {
-        id: uuid::Uuid::new_v4().to_string(),
-        conversation_id: conversation_id.to_string(),
-        tool_name: tool_name.to_string(),
-        created_at: now_millis(),
-        reverted: false,
-        reverted_at: None,
-        files,
-    })
-}
+    let start_sha = take_pending_snapshot_sha(app, &conv_id).await.ok().flatten()?;
 
-pub(crate) async fn commit_change_batch(
-    app: &AppHandle,
-    conversation_id: Option<&str>,
-    tool_name: &str,
-    drafts: Vec<FileChangeDraft>,
-) -> Result<Option<String>, String> {
-    let conversation_id = normalize_conversation_id(conversation_id)?;
-    let Some(batch) = build_batch(&conversation_id, tool_name, drafts) else {
-        return Ok(None);
-    };
-    let batch_id = batch.id.clone();
-    let _guard = file_change_lock().lock().await;
-    let pool = crate::llm::history::get_pool_with_schema(app).await?;
-    validate_batch_current_state(&batch)?;
-    apply_batch_after(&batch)?;
-    if let Err(error) = persist_batch(&pool, &batch).await {
-        rollback_batch_after(&batch)?;
-        return Err(error);
+    let end_ref = format!("turn-end-{conv_id}-{}", now_millis());
+    let end_sha = crate::llm::services::git_snapshot::create_snapshot(&repo_root, &end_ref)
+        .ok()?
+        .unwrap_or_default();
+
+    let (files, additions, deletions) =
+        match crate::llm::services::git_snapshot::diff_snapshots(
+            &repo_root,
+            Some(&start_sha),
+            if end_sha.is_empty() { None } else { Some(&end_sha) },
+        ) {
+            Ok(v) if !v.0.is_empty() => v,
+            Ok(_) => return None,
+            Err(_) => return None,
+        };
+
+    let batch_id = uuid::Uuid::new_v4().to_string();
+    if let Err(err) = persist_batch(
+        app,
+        &conv_id,
+        &batch_id,
+        &start_sha,
+        if end_sha.is_empty() { None } else { Some(&end_sha) },
+        &files,
+        additions,
+        deletions,
+    )
+    .await
+    {
+        eprintln!("[file_changes] record_turn_changes 写库失败: {err}");
+        return None;
     }
-    Ok(Some(batch_id))
+    Some(batch_id)
 }
 
-async fn persist_batch(pool: &SqlitePool, batch: &FileChangeBatch) -> Result<(), String> {
-    let mut tx = pool.begin().await.map_err(|error| error.to_string())?;
+/// 仅消费掉当前待用起点快照，不生成 batch（用于回合异常终止）。
+pub async fn discard_pending_snapshot(app: &AppHandle, conversation_id: Option<&str>) {
+    let Ok(conv_id) = normalize_conversation_id(conversation_id) else {
+        return;
+    };
+    let _ = take_pending_snapshot_sha(app, &conv_id).await;
+}
+
+async fn persist_batch(
+    app: &AppHandle,
+    conversation_id: &str,
+    batch_id: &str,
+    snapshot_sha: &str,
+    end_snapshot_sha: Option<&str>,
+    files: &[FileChangeEntry],
+    additions: usize,
+    deletions: usize,
+) -> Result<(), String> {
+    let pool = crate::llm::history::get_pool_with_schema(app).await?;
+    let mut tx = pool.begin().await.map_err(|e| e.to_string())?;
     sqlx::query(
         r#"
         INSERT INTO file_change_batches (
-            id,
-            conversation_id,
-            tool_name,
-            created_at,
-            reverted,
-            reverted_at
-        ) VALUES (?, ?, ?, ?, ?, ?)
+            id, conversation_id, tool_name, created_at,
+            reverted, reverted_at,
+            snapshot_sha, end_snapshot_sha
+        ) VALUES (?, ?, ?, ?, 0, NULL, ?, ?)
         "#,
     )
-    .bind(&batch.id)
-    .bind(&batch.conversation_id)
-    .bind(&batch.tool_name)
-    .bind(batch.created_at as i64)
-    .bind(if batch.reverted { 1_i64 } else { 0_i64 })
-    .bind(batch.reverted_at.map(|value| value as i64))
+    .bind(batch_id)
+    .bind(conversation_id)
+    .bind("AI 回合")
+    .bind(now_millis() as i64)
+    .bind(snapshot_sha)
+    .bind(end_snapshot_sha)
     .execute(&mut *tx)
     .await
-    .map_err(|error| error.to_string())?;
+    .map_err(|e| e.to_string())?;
 
-    for (index, file) in batch.files.iter().enumerate() {
+    for (index, file) in files.iter().enumerate() {
         let diff_json = serde_json::to_string(&file.diff)
-            .map_err(|error| format!("序列化文件 diff 失败: {}", error))?;
-        let (additions, deletions) = diff_counts(&file.diff);
+            .map_err(|e| format!("序列化 diff 失败: {}", e))?;
         sqlx::query(
             r#"
             INSERT INTO file_change_files (
-                batch_id,
-                file_order,
-                path,
-                absolute_path,
-                change_type,
-                before_text,
-                after_text,
-                diff_json,
-                additions,
-                deletions
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                batch_id, file_order, path, absolute_path,
+                change_type, before_text, after_text, diff_json,
+                additions, deletions
+            ) VALUES (?, ?, ?, ?, ?, NULL, NULL, ?, ?, ?)
             "#,
         )
-        .bind(&batch.id)
+        .bind(batch_id)
         .bind(index as i64)
         .bind(&file.path)
         .bind(&file.absolute_path)
         .bind(&file.change_type)
-        .bind(&file.before)
-        .bind(&file.after)
         .bind(diff_json)
         .bind(additions as i64)
         .bind(deletions as i64)
         .execute(&mut *tx)
         .await
-        .map_err(|error| error.to_string())?;
+        .map_err(|e| e.to_string())?;
     }
 
-    trim_old_batches(&mut tx, &batch.conversation_id).await?;
-    tx.commit().await.map_err(|error| error.to_string())?;
-    Ok(())
-}
-
-async fn trim_old_batches(
-    tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
-    conversation_id: &str,
-) -> Result<(), String> {
-    let stale_ids = sqlx::query_scalar::<_, String>(
-        r#"
-        SELECT id
-        FROM file_change_batches
-        WHERE conversation_id = ?
-        ORDER BY created_at DESC, id DESC
-        LIMIT -1 OFFSET ?
-        "#,
-    )
-    .bind(conversation_id)
-    .bind(MAX_STORED_BATCHES as i64)
-    .fetch_all(&mut **tx)
-    .await
-    .map_err(|error| error.to_string())?;
-
-    for id in stale_ids {
-        sqlx::query("DELETE FROM file_change_files WHERE batch_id = ?")
-            .bind(&id)
-            .execute(&mut **tx)
-            .await
-            .map_err(|error| error.to_string())?;
-        sqlx::query("DELETE FROM file_change_batches WHERE id = ?")
-            .bind(&id)
-            .execute(&mut **tx)
-            .await
-            .map_err(|error| error.to_string())?;
-    }
-
+    tx.commit().await.map_err(|e| e.to_string())?;
     Ok(())
 }
 
@@ -313,7 +269,7 @@ pub async fn list_change_batches(
 ) -> Result<Vec<FileChangeBatchSummary>, String> {
     let Some(conversation_id) = conversation_id
         .map(str::trim)
-        .filter(|value| !value.is_empty())
+        .filter(|v| !v.is_empty())
         .map(str::to_string)
     else {
         return Ok(Vec::new());
@@ -322,12 +278,8 @@ pub async fn list_change_batches(
     let rows = sqlx::query(
         r#"
         SELECT
-            b.id,
-            b.conversation_id,
-            b.tool_name,
-            b.created_at,
-            b.reverted,
-            b.reverted_at,
+            b.id, b.conversation_id, b.tool_name, b.created_at,
+            b.reverted, b.reverted_at,
             COUNT(f.id) AS file_count,
             COALESCE(SUM(f.additions), 0) AS additions,
             COALESCE(SUM(f.deletions), 0) AS deletions
@@ -341,27 +293,27 @@ pub async fn list_change_batches(
     .bind(&conversation_id)
     .fetch_all(&pool)
     .await
-    .map_err(|error| error.to_string())?;
+    .map_err(|e| e.to_string())?;
 
     let mut summaries = Vec::with_capacity(rows.len());
     for row in rows {
-        let id = row.get::<String, _>("id");
+        let id: String = row.get("id");
+        let id_for_paths = id.clone();
         summaries.push(FileChangeBatchSummary {
-            paths: load_batch_paths(&pool, &id).await?,
             id,
-            conversation_id: row.get::<String, _>("conversation_id"),
-            tool_name: row.get::<String, _>("tool_name"),
+            conversation_id: row.get("conversation_id"),
+            tool_name: row.get("tool_name"),
             created_at: row.get::<i64, _>("created_at").max(0) as u64,
             reverted: row.get::<i64, _>("reverted") != 0,
             reverted_at: row
                 .get::<Option<i64>, _>("reverted_at")
-                .map(|value| value.max(0) as u64),
+                .map(|v| v.max(0) as u64),
             file_count: row.get::<i64, _>("file_count").max(0) as usize,
             additions: row.get::<i64, _>("additions").max(0) as usize,
             deletions: row.get::<i64, _>("deletions").max(0) as usize,
+            paths: load_batch_paths(&pool, &id_for_paths).await.unwrap_or_default(),
         });
     }
-
     Ok(summaries)
 }
 
@@ -372,7 +324,7 @@ async fn load_batch_paths(pool: &SqlitePool, batch_id: &str) -> Result<Vec<Strin
     .bind(batch_id)
     .fetch_all(pool)
     .await
-    .map_err(|error| error.to_string())
+    .map_err(|e| e.to_string())
 }
 
 pub async fn get_change_batch(
@@ -380,243 +332,159 @@ pub async fn get_change_batch(
     conversation_id: Option<&str>,
     batch_id: &str,
 ) -> Result<FileChangeBatch, String> {
-    let conversation_id = normalize_conversation_id(conversation_id)?;
     let pool = crate::llm::history::get_pool_with_schema(app).await?;
-    load_change_batch(&pool, &conversation_id, batch_id).await
-}
-
-async fn load_change_batch(
-    pool: &SqlitePool,
-    conversation_id: &str,
-    batch_id: &str,
-) -> Result<FileChangeBatch, String> {
+    let conversation_id = normalize_conversation_id(conversation_id)?;
     let batch_row = sqlx::query(
         r#"
-        SELECT id, conversation_id, tool_name, created_at, reverted, reverted_at
+        SELECT id, conversation_id, tool_name, created_at, reverted, reverted_at, snapshot_sha, end_snapshot_sha
         FROM file_change_batches
         WHERE conversation_id = ? AND id = ?
         "#,
     )
-    .bind(conversation_id)
+    .bind(&conversation_id)
     .bind(batch_id)
-    .fetch_optional(pool)
+    .fetch_optional(&pool)
     .await
-    .map_err(|error| error.to_string())?
+    .map_err(|e| e.to_string())?
     .ok_or_else(|| "找不到审查记录".to_string())?;
 
+    let snapshot_sha: Option<String> = batch_row.get("snapshot_sha");
+    let end_snapshot_sha: Option<String> = batch_row.get("end_snapshot_sha");
+
+    // 优先：直接从 file_change_files 读已存的 diff。这样即便工作区已变化仍能查看。
     let file_rows = sqlx::query(
         r#"
-        SELECT path, absolute_path, change_type, before_text, after_text, diff_json
+        SELECT path, absolute_path, change_type, diff_json
         FROM file_change_files
         WHERE batch_id = ?
         ORDER BY file_order ASC
         "#,
     )
     .bind(batch_id)
-    .fetch_all(pool)
+    .fetch_all(&pool)
     .await
-    .map_err(|error| error.to_string())?;
+    .map_err(|e| e.to_string())?;
 
     let mut files = Vec::with_capacity(file_rows.len());
     for row in file_rows {
-        let diff_json = row.get::<String, _>("diff_json");
+        let diff_json: String = row.get("diff_json");
         let diff = serde_json::from_str::<Vec<FileDiffLine>>(&diff_json)
-            .map_err(|error| format!("解析文件 diff 失败: {}", error))?;
+            .map_err(|e| format!("解析 diff 失败: {}", e))?;
         files.push(FileChangeEntry {
-            path: row.get::<String, _>("path"),
-            absolute_path: row.get::<String, _>("absolute_path"),
-            change_type: row.get::<String, _>("change_type"),
-            before: row.get::<Option<String>, _>("before_text"),
-            after: row.get::<Option<String>, _>("after_text"),
+            path: row.get("path"),
+            absolute_path: row.get("absolute_path"),
+            change_type: row.get("change_type"),
+            before: None,
+            after: None,
             diff,
         });
     }
 
+    // 退化路径：库里没存 diff_json（理论不会发生），则用 git 重新 diff 两个快照。
+    if files.is_empty() {
+        if let (Some(start), Some(end)) = (snapshot_sha.as_deref(), end_snapshot_sha.as_deref()) {
+            let root = crate::command::workspace::workspace_root_for_conversation(
+                app,
+                Some(&conversation_id),
+            )?;
+            if let Ok((repo_files, _, _)) =
+                crate::llm::services::git_snapshot::diff_snapshots(&root, Some(start), Some(end))
+            {
+                files = repo_files;
+            }
+        }
+    }
+
     Ok(FileChangeBatch {
-        id: batch_row.get::<String, _>("id"),
-        conversation_id: batch_row.get::<String, _>("conversation_id"),
-        tool_name: batch_row.get::<String, _>("tool_name"),
+        id: batch_row.get("id"),
+        conversation_id: batch_row.get("conversation_id"),
+        tool_name: batch_row.get("tool_name"),
         created_at: batch_row.get::<i64, _>("created_at").max(0) as u64,
         reverted: batch_row.get::<i64, _>("reverted") != 0,
         reverted_at: batch_row
             .get::<Option<i64>, _>("reverted_at")
-            .map(|value| value.max(0) as u64),
+            .map(|v| v.max(0) as u64),
         files,
     })
 }
 
+/// 回退一次 AI 回合：git read-tree + clean 把工作区拉回起点快照那一刻。
 pub async fn revert_change_batch(
     app: &AppHandle,
     conversation_id: Option<&str>,
     batch_id: &str,
 ) -> Result<FileChangeBatch, String> {
     let conversation_id = normalize_conversation_id(conversation_id)?;
-    let _guard = file_change_lock().lock().await;
     let pool = crate::llm::history::get_pool_with_schema(app).await?;
-    let mut batch = load_change_batch(&pool, &conversation_id, batch_id).await?;
-    apply_revert(&mut batch)?;
-    sqlx::query("UPDATE file_change_batches SET reverted = 1, reverted_at = ? WHERE conversation_id = ? AND id = ?")
-        .bind(batch.reverted_at.map(|value| value as i64))
-        .bind(&conversation_id)
-        .bind(batch_id)
-        .execute(&pool)
-        .await
-        .map_err(|error| error.to_string())?;
-    Ok(batch)
-}
+    let row = sqlx::query(
+        r#"SELECT id, conversation_id, tool_name, created_at, reverted, reverted_at, snapshot_sha
+           FROM file_change_batches WHERE conversation_id = ? AND id = ?"#,
+    )
+    .bind(&conversation_id)
+    .bind(batch_id)
+    .fetch_optional(&pool)
+    .await
+    .map_err(|e| e.to_string())?
+    .ok_or_else(|| "找不到审查记录".to_string())?;
 
-fn apply_revert(batch: &mut FileChangeBatch) -> Result<(), String> {
-    if batch.reverted {
+    if row.get::<i64, _>("reverted") != 0 {
         return Err("这次变更已经回退过了".to_string());
     }
+    let snapshot_sha: Option<String> = row.get("snapshot_sha");
 
-    for file in &batch.files {
-        let target = absolute_path_from_change_entry(file)?;
-        match &file.after {
-            Some(expected) => {
-                let current = fs::read_to_string(&target)
-                    .map_err(|error| format!("读取当前文件失败 {}: {}", file.path, error))?;
-                if &current != expected {
-                    return Err(format!("文件已被后续修改，不能安全回退: {}", file.path));
-                }
-            }
-            None => {
-                if target.exists() {
-                    return Err(format!("文件已被后续重新创建，不能安全回退: {}", file.path));
-                }
-            }
-        }
+    if let Some(sha) = snapshot_sha.as_deref() {
+        let root =
+            crate::command::workspace::workspace_root_for_conversation(app, Some(&conversation_id))?;
+        crate::llm::services::git_snapshot::revert_to_snapshot(&root, sha)?;
+    } else {
+        return Err("此 batch 未关联 git 快照，无法回退".to_string());
     }
 
-    for file in batch.files.iter().rev() {
-        let target = absolute_path_from_change_entry(file)?;
-        match &file.before {
-            Some(content) => {
-                if let Some(parent) = target.parent() {
-                    fs::create_dir_all(parent)
-                        .map_err(|error| format!("创建目录失败 {}: {}", file.path, error))?;
-                }
-                fs::write(&target, content)
-                    .map_err(|error| format!("写回文件失败 {}: {}", file.path, error))?;
-            }
-            None => {
-                if target.exists() {
-                    fs::remove_file(&target)
-                        .map_err(|error| format!("删除新增文件失败 {}: {}", file.path, error))?;
-                }
-            }
-        }
-    }
+    let now = now_millis() as i64;
+    sqlx::query(
+        "UPDATE file_change_batches SET reverted = 1, reverted_at = ? WHERE conversation_id = ? AND id = ?",
+    )
+    .bind(now)
+    .bind(&conversation_id)
+    .bind(batch_id)
+    .execute(&pool)
+    .await
+    .map_err(|e| e.to_string())?;
 
-    batch.reverted = true;
-    batch.reverted_at = Some(now_millis());
-    Ok(())
+    get_change_batch(app, Some(&conversation_id), batch_id).await
 }
 
-fn validate_batch_current_state(batch: &FileChangeBatch) -> Result<(), String> {
-    for file in &batch.files {
-        let target = absolute_path_from_change_entry(file)?;
-        match &file.before {
-            Some(expected) => {
-                let current = fs::read_to_string(&target)
-                    .map_err(|error| format!("读取当前文件失败 {}: {}", file.path, error))?;
-                if &current != expected {
-                    return Err(format!("文件在写入前已变化，拒绝覆盖: {}", file.path));
-                }
-            }
-            None => {
-                if target.exists() {
-                    return Err(format!("新增文件已存在，拒绝覆盖: {}", file.path));
-                }
-            }
-        }
-    }
-    Ok(())
+/// 会话删除时连带清理。
+pub async fn delete_changes_for_conversation(app: &AppHandle, conversation_id: &str) {
+    let pool = match crate::llm::history::get_pool_with_schema(app).await {
+        Ok(p) => p,
+        Err(_) => return,
+    };
+    let _ = sqlx::query(
+        "DELETE FROM file_change_files WHERE batch_id IN (SELECT id FROM file_change_batches WHERE conversation_id = ?)",
+    )
+    .bind(conversation_id)
+    .execute(&pool)
+    .await;
+    let _ = sqlx::query("DELETE FROM file_change_batches WHERE conversation_id = ?")
+        .bind(conversation_id)
+        .execute(&pool)
+        .await;
+    let _ = sqlx::query("DELETE FROM conversation_change_snapshots WHERE conversation_id = ?")
+        .bind(conversation_id)
+        .execute(&pool)
+        .await;
 }
 
-fn apply_batch_after(batch: &FileChangeBatch) -> Result<(), String> {
-    let mut applied = Vec::<FileChangeEntry>::new();
-    for file in &batch.files {
-        if let Err(error) = apply_file_snapshot(file, &file.after) {
-            let rollback_error = rollback_applied(&applied).err();
-            return Err(match rollback_error {
-                Some(rollback_error) => format!("{}；回滚失败: {}", error, rollback_error),
-                None => error,
-            });
-        }
-        applied.push(file.clone());
-    }
-    Ok(())
-}
-
-fn rollback_batch_after(batch: &FileChangeBatch) -> Result<(), String> {
-    rollback_applied(&batch.files)
-}
-
-fn rollback_applied(files: &[FileChangeEntry]) -> Result<(), String> {
-    for file in files.iter().rev() {
-        apply_file_snapshot(file, &file.before)?;
-    }
-    Ok(())
-}
-
-fn apply_file_snapshot(file: &FileChangeEntry, snapshot: &Option<String>) -> Result<(), String> {
-    let target = absolute_path_from_change_entry(file)?;
-    match snapshot {
-        Some(content) => {
-            if let Some(parent) = target.parent() {
-                fs::create_dir_all(parent)
-                    .map_err(|error| format!("创建目录失败 {}: {}", file.path, error))?;
-            }
-            fs::write(&target, content)
-                .map_err(|error| format!("写入文件失败 {}: {}", file.path, error))
-        }
-        None => {
-            if target.exists() {
-                fs::remove_file(&target)
-                    .map_err(|error| format!("删除文件失败 {}: {}", file.path, error))?;
-            }
-            Ok(())
-        }
-    }
-}
-
-fn absolute_path_from_change_entry(file: &FileChangeEntry) -> Result<PathBuf, String> {
-    let target = PathBuf::from(&file.absolute_path);
-    if !target.is_absolute() {
-        return Err(format!("文件审查记录不是绝对路径: {}", file.path));
-    }
-    Ok(target)
-}
-
-fn diff_lines(before: Option<&str>, after: Option<&str>) -> Vec<FileDiffLine> {
-    TextDiff::from_lines(before.unwrap_or_default(), after.unwrap_or_default())
-        .iter_all_changes()
-        .map(|change| FileDiffLine {
-            kind: match change.tag() {
-                ChangeTag::Delete => "remove",
-                ChangeTag::Insert => "add",
-                ChangeTag::Equal => "context",
-            }
-            .to_string(),
-            old_line: change.old_index().map(|index| index + 1),
-            new_line: change.new_index().map(|index| index + 1),
-            text: change
-                .value()
-                .trim_end_matches(&['\r', '\n'][..])
-                .to_string(),
-        })
-        .collect()
-}
-
-fn diff_counts(diff: &[FileDiffLine]) -> (usize, usize) {
-    diff.iter().fold((0, 0), |(additions, deletions), line| {
-        if line.kind == "add" {
-            (additions + 1, deletions)
-        } else if line.kind == "remove" {
-            (additions, deletions + 1)
-        } else {
-            (additions, deletions)
-        }
-    })
+/// 全局清空（hard reset 应用数据时用）。
+pub async fn delete_all_changes(app: &AppHandle) {
+    let pool = match crate::llm::history::get_pool_with_schema(app).await {
+        Ok(p) => p,
+        Err(_) => return,
+    };
+    let _ = sqlx::query("DELETE FROM file_change_files").execute(&pool).await;
+    let _ = sqlx::query("DELETE FROM file_change_batches").execute(&pool).await;
+    let _ = sqlx::query("DELETE FROM conversation_change_snapshots")
+        .execute(&pool)
+        .await;
 }

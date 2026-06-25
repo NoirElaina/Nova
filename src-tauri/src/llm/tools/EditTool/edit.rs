@@ -1,4 +1,4 @@
-use crate::llm::services::file_changes::{commit_drafts, read_file_utf8, resolve_tool_path, FileChangeDraft};
+use crate::llm::services::file_changes::{read_file_utf8, resolve_tool_path, write_file_simple};
 use crate::llm::tools::{
     app_tool, AppExecuteFuture, ToolFailure, ToolOutcome, ToolPermissionDescriptor, ToolRegistration,
 };
@@ -57,8 +57,8 @@ fn permission(input: &Value) -> Option<ToolPermissionDescriptor> {
 }
 
 async fn execute_async(
-    app: &AppHandle,
-    conversation_id: Option<&str>,
+    _app: &AppHandle,
+    _conversation_id: Option<&str>,
     input: Value,
 ) -> Result<ToolOutcome, ToolFailure> {
     let file_path = input
@@ -91,8 +91,7 @@ async fn execute_async(
         return Err(ToolFailure::invalid_input("old_string must not be empty"));
     }
 
-    let target = resolve_tool_path(file_path)
-        .map_err(|e| ToolFailure::invalid_input(e))?;
+    let target = resolve_tool_path(file_path).map_err(ToolFailure::invalid_input)?;
 
     if !target.exists() {
         return Err(ToolFailure::new(format!(
@@ -126,29 +125,14 @@ async fn execute_async(
         original.replacen(old_string, new_string, 1)
     };
 
-    let draft = FileChangeDraft {
-        before: Some(original),
-        path: target,
-        after: Some(modified),
-    };
+    write_file_simple(&target, &modified).map_err(ToolFailure::new)?;
 
-    match commit_drafts(app, conversation_id, "Edit", vec![draft]).await {
-        Ok(result) => {
-            let replaced_count = if replace_all {
-                occurrences
-            } else {
-                1
-            };
-            Ok(ToolOutcome::json(json!({
-                "ok": true,
-                "file_path": file_path,
-                "occurrences_replaced": replaced_count,
-                "changed_files": result.files.len(),
-                "change_batch_id": result.change_batch_id
-            })))
-        }
-        Err(error) => Err(ToolFailure::new(error)),
-    }
+    let replaced_count = if replace_all { occurrences } else { 1 };
+    Ok(ToolOutcome::json(json!({
+        "ok": true,
+        "file_path": file_path,
+        "occurrences_replaced": replaced_count
+    })))
 }
 
 fn count_matches(haystack: &str, needle: &str) -> usize {

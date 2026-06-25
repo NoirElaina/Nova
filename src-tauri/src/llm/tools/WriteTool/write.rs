@@ -1,4 +1,4 @@
-use crate::llm::services::file_changes::{commit_drafts, read_file_utf8, resolve_tool_path, FileChangeDraft};
+use crate::llm::services::file_changes::{resolve_tool_path, write_file_simple};
 use crate::llm::tools::{
     app_tool, AppExecuteFuture, ToolFailure, ToolOutcome, ToolPermissionDescriptor, ToolRegistration,
 };
@@ -55,8 +55,8 @@ fn resolve_path(raw: &str) -> Result<PathBuf, String> {
 }
 
 async fn execute_async(
-    app: &AppHandle,
-    conversation_id: Option<&str>,
+    _app: &AppHandle,
+    _conversation_id: Option<&str>,
     input: Value,
 ) -> Result<ToolOutcome, ToolFailure> {
     let file_path = input
@@ -69,31 +69,17 @@ async fn execute_async(
         .and_then(Value::as_str)
         .ok_or_else(|| ToolFailure::invalid_input("Missing required parameter: content"))?;
 
-    let target = resolve_path(file_path)
-        .map_err(|e| ToolFailure::invalid_input(e))?;
+    let target = resolve_path(file_path).map_err(|e| ToolFailure::invalid_input(e))?;
+    let existed = target.exists();
 
-    let before = if target.exists() {
-        Some(read_file_utf8(&target)
-            .map_err(|e| ToolFailure::new(format!("Error reading {}: {}", file_path, e)))?)
-    } else {
-        None
-    };
+    let path = write_file_simple(&target, content).map_err(ToolFailure::new)?;
 
-    let draft = FileChangeDraft {
-        before,
-        path: target,
-        after: Some(content.to_string()),
-    };
-
-    match commit_drafts(app, conversation_id, "Write", vec![draft]).await {
-        Ok(result) => Ok(ToolOutcome::json(json!({
-            "ok": true,
-            "file_path": file_path,
-            "changed_files": result.files.len(),
-            "change_batch_id": result.change_batch_id
-        }))),
-        Err(error) => Err(ToolFailure::new(error)),
-    }
+    Ok(ToolOutcome::json(json!({
+        "ok": true,
+        "file_path": file_path,
+        "created": !existed,
+        "path": path
+    })))
 }
 
 fn execute_with_app_boxed(

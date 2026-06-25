@@ -27,6 +27,11 @@ const DANGEROUS_COMMAND_PATTERNS: &[&str] = &[
     "git reset --hard",
     "git clean -fd",
     "git clean -fdx",
+    // 删整个仓库元数据会毁掉审查/回退能力，始终拦截。
+    "rm -rf .git",
+    "rm -rf /.git",
+    "rmdir /s /q .git",
+    "remove-item -recurse -force .git",
 ];
 
 // Path prefixes that should never be written without explicit override.
@@ -57,6 +62,9 @@ const PROTECTED_PATH_CONTAINS: &[&str] = &[
     "/.config/git",
     "\\.git\\config",
     "/.git/config",
+    // 整个 .git 目录都受保护，任何写入删除都拦截。
+    "\\.git\\",
+    "/.git/",
 ];
 
 const DEFAULT_PERMISSION_SCOPE: &str = "__global__";

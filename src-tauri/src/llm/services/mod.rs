@@ -2,6 +2,7 @@ pub mod browser_sessions;
 pub mod compact;
 pub mod cron_schedule;
 pub mod file_changes;
+pub mod git_snapshot;
 pub mod hooks;
 pub mod live_turns;
 pub mod mcp;

@@ -146,7 +146,6 @@ pub fn run() {
             command::workspace::set_default_workspace_root,
             command::workspace::workspace_list_directory,
             command::workspace::workspace_read_text_file,
-            command::workspace::workspace_set_root,
             command::workspace::get_workspace_context,
             command::usage::get_usage_stats,
             command::usage::list_token_usage,

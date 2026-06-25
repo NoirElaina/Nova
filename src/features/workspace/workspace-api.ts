@@ -46,16 +46,6 @@ export async function readWorkspaceTextFile(
   });
 }
 
-export async function setWorkspaceRoot(
-  conversationId: string | null,
-  path: string,
-): Promise<WorkspaceDirectoryListing> {
-  return invoke<WorkspaceDirectoryListing>('workspace_set_root', {
-    conversationId,
-    path,
-  });
-}
-
 export async function setDefaultWorkspaceRoot(path: string): Promise<string> {
   return invoke<string>('set_default_workspace_root', { path });
 }

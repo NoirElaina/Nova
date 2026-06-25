@@ -214,43 +214,6 @@ pub fn clear_conversation_workspaces(app: &AppHandle) -> Result<(), String> {
     write_workspace_store(app, &ConversationWorkspaceStore::default())
 }
 
-fn set_workspace_root_for_conversation(
-    app: &AppHandle,
-    conversation_id: Option<&str>,
-    path: String,
-) -> Result<PathBuf, String> {
-    let conversation_id = normalize_conversation_id(conversation_id)
-        .ok_or_else(|| "当前会话尚未创建，不能更换会话工作区".to_string())?;
-    let root = validate_workspace_root(path)?;
-
-    let _guard = workspace_store_lock()
-        .lock()
-        .map_err(|_| "工作区配置锁已损坏".to_string())?;
-    let mut store = read_workspace_store(app)?;
-    store
-        .roots
-        .insert(conversation_id, display_path_string(&root));
-    write_workspace_store(app, &store)?;
-
-    Ok(root)
-}
-
-fn validate_workspace_root(path: String) -> Result<PathBuf, String> {
-    let trimmed = path.trim();
-    if trimmed.is_empty() {
-        return Err("请选择有效的工作区目录".to_string());
-    }
-
-    let canonical = PathBuf::from(trimmed)
-        .canonicalize()
-        .map_err(|error| format!("无法解析工作区目录: {}", error))?;
-    if !canonical.is_dir() {
-        return Err("工作区必须是目录".to_string());
-    }
-
-    Ok(canonical)
-}
-
 fn normalize_relative_path(path: Option<String>) -> Result<PathBuf, String> {
     let Some(raw_path) = path else {
         return Ok(PathBuf::new());
@@ -413,16 +376,6 @@ fn list_directory_for_root(
         relative_path,
         entries,
     })
-}
-
-#[tauri::command]
-pub fn workspace_set_root(
-    app: AppHandle,
-    conversation_id: Option<String>,
-    path: String,
-) -> Result<WorkspaceDirectoryListing, String> {
-    let root = set_workspace_root_for_conversation(&app, conversation_id.as_deref(), path)?;
-    list_directory_for_root(root, None)
 }
 
 #[tauri::command]

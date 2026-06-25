@@ -1,27 +1,26 @@
 <script setup lang="ts">
-import { onMounted, ref, computed } from 'vue';
-import { invoke } from '@tauri-apps/api/core';
+import { ref, computed, watch } from 'vue';
 import { open as openDialog } from '@tauri-apps/plugin-dialog';
-import { setDefaultWorkspaceRoot } from '../../features/workspace/workspace-api';
 import { emitToast } from '../../lib/toast';
+import { getWorkspaceGitStatus } from '../../features/chat/services/chat-api';
 
-const workspaceRoot = ref('');
-const workspaceName = ref('Nova');
+const props = defineProps<{
+  workspacePath?: string;
+}>();
+
+const emit = defineEmits<{
+  (e: 'update:workspacePath', path: string): void;
+}>();
+
 const isChangingWorkspace = ref(false);
+const gitBranch = ref<string | null>(null);
+const gitWorktree = ref<string | null>(null);
 
-const loadWorkspaceInfo = async () => {
-  try {
-    const root = await invoke<string>('get_workspace_root');
-    workspaceRoot.value = root;
-    const parts = root.replace(/\\/g, '/').split('/');
-    workspaceName.value = parts[parts.length - 1] || 'Nova';
-  } catch {
-    workspaceName.value = 'Nova';
-  }
-};
-
-onMounted(() => {
-  loadWorkspaceInfo();
+const workspaceName = computed(() => {
+  const path = props.workspacePath?.trim();
+  if (!path) return 'Nova';
+  const parts = path.replace(/\\/g, '/').split('/');
+  return parts[parts.length - 1] || 'Nova';
 });
 
 const displayName = computed(() => {
@@ -29,6 +28,36 @@ const displayName = computed(() => {
   if (name.length > 20) return name.slice(0, 18) + '…';
   return name;
 });
+
+async function refreshGitStatus(path: string) {
+  const trimmed = path.trim();
+  if (!trimmed) {
+    gitBranch.value = null;
+    gitWorktree.value = null;
+    return;
+  }
+  try {
+    const status = await getWorkspaceGitStatus(trimmed);
+    gitBranch.value = status.initialized ? status.branch ?? null : null;
+    gitWorktree.value = status.initialized ? status.worktree ?? null : null;
+  } catch (err) {
+    console.error('Failed to query git status:', err);
+    gitBranch.value = null;
+    gitWorktree.value = null;
+  }
+}
+
+watch(
+  () => props.workspacePath,
+  (path) => {
+    if (path) void refreshGitStatus(path);
+    else {
+      gitBranch.value = null;
+      gitWorktree.value = null;
+    }
+  },
+  { immediate: true },
+);
 
 const handleChangeWorkspace = async () => {
   if (isChangingWorkspace.value) return;
@@ -42,8 +71,7 @@ const handleChangeWorkspace = async () => {
     if (!path || typeof path !== 'string') return;
 
     isChangingWorkspace.value = true;
-    await setDefaultWorkspaceRoot(path);
-    await loadWorkspaceInfo();
+    emit('update:workspacePath', path);
     emitToast({ variant: 'success', source: 'workspace', message: '工作区已切换。' });
   } catch (error) {
     console.error('Failed to change workspace root:', error);
@@ -72,7 +100,7 @@ const handleChangeWorkspace = async () => {
     <button
       type="button"
       class="inline-flex items-center gap-1.5 rounded-md px-2 py-1 hover:bg-black/5 dark:hover:bg-white/8 transition-colors"
-      :title="workspaceRoot"
+      :title="workspacePath"
       :disabled="isChangingWorkspace"
       @click="handleChangeWorkspace"
     >
@@ -82,9 +110,10 @@ const handleChangeWorkspace = async () => {
       <span>{{ displayName }}</span>
     </button>
 
-    <span class="text-[#d1d5db] dark:text-[#4b5563]">|</span>
+    <span v-if="gitBranch || gitWorktree" class="text-[#d1d5db] dark:text-[#4b5563]">|</span>
 
     <button
+      v-if="gitBranch"
       type="button"
       class="inline-flex items-center gap-1.5 rounded-md px-2 py-1 hover:bg-black/5 dark:hover:bg-white/8 transition-colors"
       title="Git 分支"
@@ -95,16 +124,17 @@ const handleChangeWorkspace = async () => {
         <circle cx="6" cy="18" r="3"/>
         <path d="M18 9a9 9 0 0 1-9 9"/>
       </svg>
-      <span>main</span>
+      <span>{{ gitBranch }}</span>
     </button>
 
     <button
+      v-if="gitWorktree"
       type="button"
       class="inline-flex items-center gap-1.5 rounded-md px-2 py-1 hover:bg-black/5 dark:hover:bg-white/8 transition-colors"
       title="Worktree"
     >
       <span class="inline-block w-2.5 h-2.5 rounded-sm bg-[#a3a3a3] dark:bg-[#6b7280]"/>
-      <span>worktree</span>
+      <span>{{ gitWorktree }}</span>
     </button>
 
     <button

@@ -15,6 +15,7 @@ defineProps<{
   contextUsage?: ContextUsage;
   contextCompacts?: ContextCompactSummary[];
   contextTokens?: number;
+  workspacePath?: string;
 }>();
 
 const emit = defineEmits<{
@@ -22,6 +23,7 @@ const emit = defineEmits<{
   (e: 'mode-change', mode: AgentMode): void;
   (e: 'upload-files', files: PendingUploadFile[]): void;
   (e: 'remove-upload', index: number): void;
+  (e: 'update:workspacePath', path: string): void;
 }>();
 
 const handleSend = (msg: string) => {
@@ -40,7 +42,10 @@ const handleSend = (msg: string) => {
     </h1>
 
     <div class="w-full max-w-[42rem] flex flex-col">
-      <EnvironmentBar />
+      <EnvironmentBar
+        :workspacePath="workspacePath"
+        @update:workspacePath="emit('update:workspacePath', $event)"
+      />
 
       <InputArea
         :isGenerating="isGenerating"

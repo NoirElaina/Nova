@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { onBeforeUnmount, onMounted, ref } from 'vue';
+import { computed, onBeforeUnmount, onMounted, ref } from 'vue';
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { Button } from "@/components/ui/button";
 import Sidebar from "./components/layout/Sidebar.vue";
@@ -48,6 +48,7 @@ const {
   currentTurnToolExecutionLogs,
   conversations,
   activeConversationId,
+  activeWorkspacePath,
   conversationFiles,
   pendingUploads,
   currentContextUsage,
@@ -77,6 +78,12 @@ const {
 
 void chatScreenRef;
 
+const activeWorkspaceName = computed(() => {
+  const path = activeWorkspacePath.value?.trim();
+  if (!path) return '';
+  const parts = path.replace(/\\/g, '/').split('/');
+  return parts[parts.length - 1] || '';
+});
 const isPetWindow = new URLSearchParams(window.location.search).has('petId')
 
 if (isPetWindow) {
@@ -254,6 +261,11 @@ onBeforeUnmount(() => {
             >
               <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2" ry="2"/><line x1="9" y1="3" x2="9" y2="21"/></svg>
             </Button>
+            <span
+              v-if="activeWorkspacePath"
+              class="text-[12px] text-[#64748b] dark:text-[#9ca3af] truncate max-w-[260px]"
+              :title="activeWorkspacePath"
+            >{{ activeWorkspaceName }}</span>
           </div>
 
           <div v-if="mainView === 'chat'" class="flex items-center gap-2 pointer-events-auto">
@@ -299,15 +311,17 @@ onBeforeUnmount(() => {
         />
 
         <template v-else>
-          <WelcomeScreen 
-            v-if="messages.length === 0" 
+          <WelcomeScreen
+            v-if="messages.length === 0"
             :isGenerating="isGenerating"
             :agentMode="agentMode"
             :pendingUploads="pendingUploads"
             :contextUsage="currentContextUsage"
             :contextCompacts="currentContextCompacts"
             :contextTokens="currentContextTokens"
-            @send="handleSendMessage" 
+            :workspacePath="activeWorkspacePath"
+            @update:workspacePath="activeWorkspacePath = $event"
+            @send="handleSendMessage"
             @mode-change="handleAgentModeChange"
             @upload-files="handleUploadFiles"
             @remove-upload="handleRemovePendingUpload"

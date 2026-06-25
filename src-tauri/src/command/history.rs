@@ -13,12 +13,13 @@ pub use crate::llm::commands::types::{
 pub async fn create_conversation(
     app: AppHandle,
     title: Option<String>,
+    workspace_path: Option<String>,
 ) -> Result<ConversationMeta, String> {
-    // 直接转发到 history 服务创建会话。
+    // 直接转发到 history 服务创建会话；workspace_path 为空时由 history 用内置默认工作区。
     report_backend_result(
         &app,
         "command.history.create_conversation",
-        history::create_conversation(&app, title).await,
+        history::create_conversation(&app, title, workspace_path).await,
         None,
     )
 }

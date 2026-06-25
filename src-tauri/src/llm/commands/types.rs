@@ -31,6 +31,8 @@ pub struct ConversationMeta {
     pub updated_at: i64,
     // 置顶时间（unix 秒），为空表示未置顶。
     pub pinned_at: Option<i64>,
+    // 该会话绑定的项目工作区目录绝对路径，为空表示用内置默认工作区。
+    pub workspace_path: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]

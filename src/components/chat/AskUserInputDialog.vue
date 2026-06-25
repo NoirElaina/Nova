@@ -168,6 +168,8 @@ function submitAnswers() {
       <button type="button" class="ask-skip-btn" title="跳过" @click="emit('skip')">跳过</button>
     </div>
 
+    <div v-if="request.context" class="ask-context">{{ request.context }}</div>
+
     <div v-if="currentQuestion" class="ask-body">
       <div class="ask-question-text">{{ currentQuestion.question }}</div>
 
@@ -284,6 +286,26 @@ function submitAnswers() {
 .dark .ask-skip-btn:hover {
   background: #27272a;
   color: #d4d4d8;
+}
+
+.ask-context {
+  margin-bottom: 8px;
+  padding: 8px 10px;
+  border-radius: 8px;
+  background: #f8fafc;
+  border: 1px solid #e2e8f0;
+  color: #0f172a;
+  font-size: 12.5px;
+  line-height: 1.55;
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+
+.dark .ask-context {
+  background: #111827;
+  border-color: #1f2937;
+  color: #e2e8f0;
 }
 
 .ask-body {

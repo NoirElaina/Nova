@@ -47,6 +47,8 @@ export function useChatController() {
   const assistantTurnCost = ref<TurnCost | undefined>(undefined);
   const conversations = ref<ConversationMeta[]>([]);
   const activeConversationId = ref("");
+  /** 当前工作区路径（前端状态）。空字符串表示使用后端默认工作区。 */
+  const activeWorkspacePath = ref("");
   const conversationFiles = ref<RagDocumentMeta[]>([]);
   const pendingUploads = ref<PendingUploadFile[]>([]);
   const pendingQuestion = ref<NeedsUserInputPayload | null>(null);
@@ -155,6 +157,7 @@ export function useChatController() {
 
   const conversationOps = createConversationOperations({
     activeConversationId,
+    activeWorkspacePath,
     agentMode,
     planMode,
     isGenerating,
@@ -260,12 +263,7 @@ export function useChatController() {
     }
 
     await conversationOps.refreshConversations();
-    if (conversations.value.length === 0) {
-      const id = await conversationOps.createNewConversation();
-      if (id) {
-        await conversationOps.loadConversation(id);
-      }
-    } else {
+    if (conversations.value.length > 0) {
       await conversationOps.loadConversation(conversations.value[0].id);
     }
 
@@ -312,6 +310,7 @@ export function useChatController() {
     toolExecutionLogs,
     conversations,
     activeConversationId,
+    activeWorkspacePath,
     pendingQuestion,
     pendingPermissionRequestId,
     pendingUploads,

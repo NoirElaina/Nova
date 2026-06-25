@@ -110,10 +110,42 @@ pub fn get_conversation_repo_status(
     conversation_id: Option<&str>,
 ) -> Result<GitRepoStatus, String> {
     let repo_root = crate::command::workspace::workspace_root_for_conversation(app, conversation_id)?;
-    Ok(GitRepoStatus {
-        initialized: crate::llm::services::git_snapshot::is_repo_initialized(&repo_root),
-        path: crate::command::workspace::display_path_string(&repo_root),
-    })
+    Ok(repo_status_for_root(&repo_root))
+}
+
+/// 基于显式路径查询 git 状态。供 EnvironmentBar 在无会话时使用。
+pub fn get_repo_status_by_path(workspace_path: &str) -> Result<GitRepoStatus, String> {
+    let trimmed = workspace_path.trim();
+    if trimmed.is_empty() {
+        return Err("工作区路径为空".to_string());
+    }
+    let root = std::path::PathBuf::from(trimmed)
+        .canonicalize()
+        .map_err(|e| format!("无法解析工作区路径: {}", e))?;
+    if !root.is_dir() {
+        return Err("工作区路径不是目录".to_string());
+    }
+    Ok(repo_status_for_root(&root))
+}
+
+fn repo_status_for_root(root: &std::path::Path) -> GitRepoStatus {
+    let initialized = crate::llm::services::git_snapshot::is_repo_initialized(root);
+    let branch = if initialized {
+        crate::llm::services::git_snapshot::current_branch(root)
+    } else {
+        None
+    };
+    let worktree = if initialized {
+        crate::llm::services::git_snapshot::current_worktree_name(root)
+    } else {
+        None
+    };
+    GitRepoStatus {
+        initialized,
+        path: crate::command::workspace::display_path_string(root),
+        branch,
+        worktree,
+    }
 }
 
 #[derive(Debug, Clone, serde::Serialize)]
@@ -121,6 +153,8 @@ pub fn get_conversation_repo_status(
 pub struct GitRepoStatus {
     pub initialized: bool,
     pub path: String,
+    pub branch: Option<String>,
+    pub worktree: Option<String>,
 }
 
 async fn persist_pending_snapshot(

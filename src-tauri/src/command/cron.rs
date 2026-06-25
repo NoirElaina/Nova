@@ -48,7 +48,7 @@ async fn create_bound_conversation_for_task(
     prompt: &str,
 ) -> Result<String, String> {
     let title = build_scheduled_conversation_title(cron, prompt);
-    let conversation = crate::llm::history::create_conversation(app, Some(title)).await?;
+    let conversation = crate::llm::history::create_conversation(app, Some(title), None).await?;
     Ok(conversation.id)
 }
 

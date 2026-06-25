@@ -187,9 +187,13 @@ export async function exportRenderedConversationPdf(
   });
 }
 
-export async function createConversation(seedTitle?: string): Promise<ConversationMeta> {
+export async function createConversation(
+  seedTitle?: string,
+  workspacePath?: string,
+): Promise<ConversationMeta> {
   return invoke<ConversationMeta>("create_conversation", {
     title: seedTitle?.trim() ? buildConversationTitle(seedTitle) : undefined,
+    workspacePath: workspacePath?.trim() ? workspacePath.trim() : undefined,
   });
 }
 
@@ -346,6 +350,8 @@ export async function revertFileChange(
 export type GitRepoStatus = {
   initialized: boolean;
   path: string;
+  branch?: string | null;
+  worktree?: string | null;
 };
 
 export type InitGitRepoResult = {
@@ -359,6 +365,13 @@ export async function getGitRepoStatus(
   conversationId: string | null,
 ): Promise<GitRepoStatus> {
   return invoke<GitRepoStatus>("get_git_repo_status", { conversationId });
+}
+
+/** 基于显式工作区路径查询 git 状态。供 EnvironmentBar 在无会话时使用。 */
+export async function getWorkspaceGitStatus(
+  workspacePath: string,
+): Promise<GitRepoStatus> {
+  return invoke<GitRepoStatus>("get_workspace_git_status", { workspacePath });
 }
 
 /**

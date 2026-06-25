@@ -29,6 +29,40 @@ pub fn is_repo_initialized(root: &Path) -> bool {
     root.join(".git").exists()
 }
 
+/// 返回当前分支名（detached HEAD 时返回短 SHA）。仓库未初始化或查询失败返回 None。
+pub fn current_branch(root: &Path) -> Option<String> {
+    if !is_repo_initialized(root) {
+        return None;
+    }
+    let name = run_git(root, &["rev-parse", "--abbrev-ref", "HEAD"]).ok()?;
+    let trimmed = name.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    if trimmed == "HEAD" {
+        // detached HEAD，回退到短 SHA。
+        run_git(root, &["rev-parse", "--short", "HEAD"])
+            .ok()
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+    } else {
+        Some(trimmed.to_string())
+    }
+}
+
+/// 当前路径是 git worktree（而非主仓库）时返回 worktree 名（取目录名）。主仓库或未初始化返回 None。
+pub fn current_worktree_name(root: &Path) -> Option<String> {
+    if !is_repo_initialized(root) {
+        return None;
+    }
+    let common = run_git(root, &["rev-parse", "--git-common-dir"]).ok()?;
+    let current = run_git(root, &["rev-parse", "--git-dir"]).ok()?;
+    if common.trim() == current.trim() {
+        return None; // 主仓库
+    }
+    root.file_name().map(|n| n.to_string_lossy().to_string())
+}
+
 /// 显式把 target_root 初始化为 git 仓库。已是仓库则啥也不做；不是则 `git init`。
 /// 默认流程不再自动调用本函数——必须由用户在审查页点击「初始化 Git」按钮触发，
 /// 避免在用户工作目录里偷偷创建 `.git`。

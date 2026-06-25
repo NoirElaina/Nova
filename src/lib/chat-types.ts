@@ -130,6 +130,8 @@ export interface ConversationMeta {
   title: string;
   updatedAt: number;
   pinnedAt?: number | null;
+  /** 会话所属工作区路径；会话创建后不可变。 */
+  workspacePath?: string | null;
 }
 
 export interface ScheduledTask {

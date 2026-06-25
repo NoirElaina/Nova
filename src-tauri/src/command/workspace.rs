@@ -1,7 +1,7 @@
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 use std::collections::HashMap;
 use std::path::{Component, Path, PathBuf};
-use std::sync::{Mutex, OnceLock};
+use std::sync::{RwLock, OnceLock};
 use std::time::UNIX_EPOCH;
 use tauri::{AppHandle, Manager};
 
@@ -37,16 +37,32 @@ pub struct WorkspaceFileContent {
 
 const MAX_TEXT_FILE_BYTES: u64 = 1024 * 1024;
 
-#[derive(Debug, Serialize, Deserialize, Default)]
-struct ConversationWorkspaceStore {
-    #[serde(default)]
-    roots: HashMap<String, String>,
+// 会话工作区路径的进程内缓存。
+// 数据库 conversations.workspace_path 是唯一事实来源；该缓存仅供同步热路径读取。
+// 工作区路径在会话创建后不可变，故缓存不会过期。
+static CONVERSATION_WORKSPACE_CACHE: OnceLock<RwLock<HashMap<String, String>>> = OnceLock::new();
+
+fn conversation_workspace_cache() -> &'static RwLock<HashMap<String, String>> {
+    CONVERSATION_WORKSPACE_CACHE.get_or_init(|| RwLock::new(HashMap::new()))
 }
 
-static WORKSPACE_STORE_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+// 将单个会话的工作区路径写入缓存。由 create_conversation 调用。
+pub fn cache_conversation_workspace(conversation_id: &str, workspace_path: &str) {
+    if let Ok(mut cache) = conversation_workspace_cache().write() {
+        cache.insert(conversation_id.to_string(), workspace_path.to_string());
+    }
+}
 
-fn workspace_store_lock() -> &'static Mutex<()> {
-    WORKSPACE_STORE_LOCK.get_or_init(|| Mutex::new(()))
+// 从数据库批量刷新缓存。由 list_conversations 调用。
+pub async fn refresh_workspace_cache(entries: &[(String, Option<String>)]) {
+    if let Ok(mut cache) = conversation_workspace_cache().write() {
+        cache.clear();
+        for (id, path) in entries {
+            if let Some(p) = path.as_deref().map(str::trim).filter(|p| !p.is_empty()) {
+                cache.insert(id.clone(), p.to_string());
+            }
+        }
+    }
 }
 
 fn normalize_conversation_id(conversation_id: Option<&str>) -> Option<String> {
@@ -56,79 +72,8 @@ fn normalize_conversation_id(conversation_id: Option<&str>) -> Option<String> {
         .map(str::to_string)
 }
 
-fn workspace_store_path(app: &AppHandle) -> Result<PathBuf, String> {
-    app.path()
-        .app_data_dir()
-        .map(|path| path.join("conversation_workspaces.json"))
-        .map_err(|error| format!("无法读取应用数据目录: {}", error))
-}
-
-fn read_workspace_store(app: &AppHandle) -> Result<ConversationWorkspaceStore, String> {
-    let path = workspace_store_path(app)?;
-    if !path.exists() {
-        return Ok(ConversationWorkspaceStore::default());
-    }
-
-    let text =
-        std::fs::read_to_string(&path).map_err(|error| format!("读取工作区配置失败: {}", error))?;
-    if text.trim().is_empty() {
-        return Ok(ConversationWorkspaceStore::default());
-    }
-
-    serde_json::from_str(&text).map_err(|error| format!("解析工作区配置失败: {}", error))
-}
-
-fn write_workspace_store(
-    app: &AppHandle,
-    store: &ConversationWorkspaceStore,
-) -> Result<(), String> {
-    let path = workspace_store_path(app)?;
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)
-            .map_err(|error| format!("创建工作区配置目录失败: {}", error))?;
-    }
-
-    let text = serde_json::to_string_pretty(store)
-        .map_err(|error| format!("序列化工作区配置失败: {}", error))?;
-    std::fs::write(&path, text).map_err(|error| format!("保存工作区配置失败: {}", error))
-}
-
-#[derive(Deserialize, Serialize)]
-struct DefaultWorkspaceConfig {
-    root: String,
-}
-
-fn default_workspace_config_path(app: &AppHandle) -> Result<PathBuf, String> {
-    app.path()
-        .app_data_dir()
-        .map(|path| path.join("default_workspace.json"))
-        .map_err(|error| format!("无法读取应用数据目录: {}", error))
-}
-
-fn read_default_workspace_config(app: &AppHandle) -> Result<Option<PathBuf>, String> {
-    let path = default_workspace_config_path(app)?;
-    if !path.exists() {
-        return Ok(None);
-    }
-    let text = std::fs::read_to_string(&path)
-        .map_err(|error| format!("读取默认工作区配置失败: {}", error))?;
-    let config: DefaultWorkspaceConfig = serde_json::from_str(&text)
-        .map_err(|error| format!("解析默认工作区配置失败: {}", error))?;
-    if config.root.trim().is_empty() {
-        return Ok(None);
-    }
-    Ok(Some(PathBuf::from(config.root)))
-}
-
+// 内置默认工作区目录：app_data/workspace。新会话未指定工作区时使用。
 pub fn default_workspace_root(app: &AppHandle) -> Result<PathBuf, String> {
-    if let Some(custom) = read_default_workspace_config(app)? {
-        if custom.is_dir() {
-            return custom
-                .canonicalize()
-                .map_err(|error| format!("无法解析默认工作区目录: {}", error));
-        }
-    }
-
     let root = app
         .path()
         .app_data_dir()
@@ -140,6 +85,7 @@ pub fn default_workspace_root(app: &AppHandle) -> Result<PathBuf, String> {
         .map_err(|error| format!("无法解析默认工作区目录: {}", error))
 }
 
+// 解析会话的工作区根目录（同步，读缓存）。缓存未命中时回退到内置默认工作区。
 pub fn workspace_root_for_conversation(
     app: &AppHandle,
     conversation_id: Option<&str>,
@@ -148,15 +94,16 @@ pub fn workspace_root_for_conversation(
         return default_workspace_root(app);
     };
 
-    let _guard = workspace_store_lock()
-        .lock()
-        .map_err(|_| "工作区配置锁已损坏".to_string())?;
-    let store = read_workspace_store(app)?;
-    let Some(root) = store.roots.get(&conversation_id) else {
+    let cached = conversation_workspace_cache()
+        .read()
+        .ok()
+        .and_then(|cache| cache.get(&conversation_id).cloned());
+
+    let Some(root) = cached else {
         return default_workspace_root(app);
     };
 
-    let canonical = PathBuf::from(root)
+    let canonical = PathBuf::from(&root)
         .canonicalize()
         .map_err(|error| format!("无法解析会话工作区目录: {}", error))?;
     if !canonical.is_dir() {
@@ -192,26 +139,6 @@ pub fn display_path_text(path: &str) -> String {
 
 pub fn display_path_string(path: &Path) -> String {
     display_path_text(&path.display().to_string())
-}
-
-pub fn remove_conversation_workspace(app: &AppHandle, conversation_id: &str) -> Result<(), String> {
-    let Some(conversation_id) = normalize_conversation_id(Some(conversation_id)) else {
-        return Ok(());
-    };
-
-    let _guard = workspace_store_lock()
-        .lock()
-        .map_err(|_| "工作区配置锁已损坏".to_string())?;
-    let mut store = read_workspace_store(app)?;
-    store.roots.remove(&conversation_id);
-    write_workspace_store(app, &store)
-}
-
-pub fn clear_conversation_workspaces(app: &AppHandle) -> Result<(), String> {
-    let _guard = workspace_store_lock()
-        .lock()
-        .map_err(|_| "工作区配置锁已损坏".to_string())?;
-    write_workspace_store(app, &ConversationWorkspaceStore::default())
 }
 
 fn normalize_relative_path(path: Option<String>) -> Result<PathBuf, String> {
@@ -305,39 +232,6 @@ fn entry_from_path(root: &Path, path: PathBuf) -> Option<WorkspaceEntry> {
 }
 
 #[tauri::command]
-pub fn get_workspace_root(app: AppHandle) -> Result<String, String> {
-    workspace_root_string_for_conversation(&app, None)
-}
-
-#[tauri::command]
-pub fn set_default_workspace_root(app: AppHandle, path: String) -> Result<String, String> {
-    let trimmed = path.trim();
-    if trimmed.is_empty() {
-        return Err("请选择有效的工作区目录".to_string());
-    }
-    let canonical = PathBuf::from(trimmed)
-        .canonicalize()
-        .map_err(|error| format!("无法解析工作区目录: {}", error))?;
-    if !canonical.is_dir() {
-        return Err("工作区必须是目录".to_string());
-    }
-
-    let config_path = default_workspace_config_path(&app)?;
-    if let Some(parent) = config_path.parent() {
-        std::fs::create_dir_all(parent)
-            .map_err(|error| format!("创建工作区配置目录失败: {}", error))?;
-    }
-    let text = serde_json::to_string_pretty(&DefaultWorkspaceConfig {
-        root: display_path_string(&canonical),
-    })
-    .map_err(|error| format!("序列化工作区配置失败: {}", error))?;
-    std::fs::write(&config_path, text)
-        .map_err(|error| format!("保存工作区配置失败: {}", error))?;
-
-    Ok(display_path_string(&canonical))
-}
-
-#[tauri::command]
 pub fn workspace_list_directory(
     app: AppHandle,
     conversation_id: Option<String>,
@@ -406,69 +300,4 @@ pub fn workspace_read_text_file(
         content,
         size: metadata.len(),
     })
-}
-
-#[derive(Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct WorkspaceContextInfo {
-    workspace_root: String,
-    workspace_name: String,
-    git_branch: Option<String>,
-    git_worktree: Option<String>,
-}
-
-#[tauri::command]
-pub fn get_workspace_context(app: AppHandle) -> Result<WorkspaceContextInfo, String> {
-    let root = default_workspace_root(&app)?;
-    let root_str = display_path_string(&root);
-    let workspace_name = root
-        .file_name()
-        .map(|n| n.to_string_lossy().to_string())
-        .unwrap_or_else(|| "workspace".to_string());
-
-    let git_branch = get_git_branch(&root);
-    let git_worktree = get_git_worktree(&root);
-
-    Ok(WorkspaceContextInfo {
-        workspace_root: root_str,
-        workspace_name,
-        git_branch,
-        git_worktree,
-    })
-}
-
-fn get_git_branch(root: &Path) -> Option<String> {
-    let output = std::process::Command::new("git")
-        .args(["rev-parse", "--abbrev-ref", "HEAD"])
-        .current_dir(root)
-        .output()
-        .ok()?;
-    if output.status.success() {
-        let branch = String::from_utf8_lossy(&output.stdout).trim().to_string();
-        if !branch.is_empty() {
-            return Some(branch);
-        }
-    }
-    None
-}
-
-fn get_git_worktree(root: &Path) -> Option<String> {
-    let output = std::process::Command::new("git")
-        .args(["rev-parse", "--show-toplevel"])
-        .current_dir(root)
-        .output()
-        .ok()?;
-    if output.status.success() {
-        let toplevel = String::from_utf8_lossy(&output.stdout).trim().to_string();
-        let root_canonical = root.canonicalize().ok()?;
-        let toplevel_canonical = PathBuf::from(&toplevel).canonicalize().ok()?;
-        if root_canonical != toplevel_canonical {
-            return Some(
-                root.file_name()
-                    .map(|n| n.to_string_lossy().to_string())
-                    .unwrap_or_else(|| "worktree".to_string()),
-            );
-        }
-    }
-    None
 }

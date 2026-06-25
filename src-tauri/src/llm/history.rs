@@ -50,7 +50,8 @@ async fn ensure_schema(pool: &SqlitePool) -> Result<(), String> {
             title TEXT NOT NULL,
             created_at INTEGER NOT NULL,
             updated_at INTEGER NOT NULL,
-            pinned_at INTEGER
+            pinned_at INTEGER,
+            workspace_path TEXT
         );
 
         CREATE TABLE IF NOT EXISTS conversation_messages (
@@ -159,15 +160,6 @@ async fn ensure_schema(pool: &SqlitePool) -> Result<(), String> {
     .await
     .map_err(|e| e.to_string())?;
 
-    // 兼容旧库：FOLDER 设计早期 file_change_batches 没有 snapshot_sha / end_snapshot_sha。
-    // ALTER TABLE ADD COLUMN 不支持 IF NOT EXISTS，已存在时会报错——忽略即可。
-    for stmt in [
-        "ALTER TABLE file_change_batches ADD COLUMN snapshot_sha TEXT",
-        "ALTER TABLE file_change_batches ADD COLUMN end_snapshot_sha TEXT",
-    ] {
-        let _ = sqlx::query(stmt).execute(pool).await;
-    }
-
     sqlx::query(
         r#"
         CREATE TABLE IF NOT EXISTS token_usage_log (
@@ -198,16 +190,6 @@ async fn ensure_schema(pool: &SqlitePool) -> Result<(), String> {
     .execute(pool)
     .await
     .map_err(|e| e.to_string())?;
-
-    sqlx::query("ALTER TABLE conversation_tool_logs ADD COLUMN turn_id TEXT")
-        .execute(pool)
-        .await
-        .ok();
-
-    sqlx::query("ALTER TABLE conversations ADD COLUMN pinned_at INTEGER")
-        .execute(pool)
-        .await
-        .ok();
 
     Ok(())
 }
@@ -494,9 +476,11 @@ async fn print_html_to_pdf(html_path: &Path, output_path: &Path) -> Result<(), S
 }
 
 // Create a new conversation row with generated UUID and optional title.
+// workspace_path: 该会话绑定的项目工作区目录；None 时使用内置默认工作区。
 pub async fn create_conversation(
     app: &AppHandle,
     title: Option<String>,
+    workspace_path: Option<String>,
 ) -> Result<ConversationMeta, String> {
     let pool = get_pool_with_schema(app).await?;
 
@@ -507,22 +491,37 @@ pub async fn create_conversation(
         .filter(|t| !t.is_empty())
         .unwrap_or_default();
 
+    // 没传 workspace_path 或传空，就用内置默认工作区（app_data/workspace）。
+    let ws_path = match workspace_path
+        .map(|p| p.trim().to_string())
+        .filter(|p| !p.is_empty())
+    {
+        Some(p) => p,
+        None => crate::command::workspace::default_workspace_root(app)
+            .map(|path| crate::command::workspace::display_path_string(&path))?,
+    };
+
     sqlx::query(
-        "INSERT INTO conversations (id, title, created_at, updated_at) VALUES (?, ?, ?, ?)",
+        "INSERT INTO conversations (id, title, created_at, updated_at, workspace_path) VALUES (?, ?, ?, ?, ?)",
     )
     .bind(&id)
     .bind(&conv_title)
     .bind(now)
     .bind(now)
+    .bind(&ws_path)
     .execute(&pool)
     .await
     .map_err(|e| e.to_string())?;
+
+    // 写入进程内缓存，供同步热路径读取。
+    crate::command::workspace::cache_conversation_workspace(&id, &ws_path);
 
     Ok(ConversationMeta {
         id,
         title: conv_title,
         updated_at: now,
         pinned_at: None,
+        workspace_path: Some(ws_path),
     })
 }
 
@@ -537,6 +536,7 @@ pub async fn list_conversations(app: &AppHandle) -> Result<Vec<ConversationMeta>
             c.title,
             c.updated_at,
             c.pinned_at,
+            c.workspace_path,
             (
                 SELECT m.content
                 FROM conversation_messages m
@@ -555,19 +555,32 @@ pub async fn list_conversations(app: &AppHandle) -> Result<Vec<ConversationMeta>
     .await
     .map_err(|e| e.to_string())?;
 
-    let items = rows
+    let items: Vec<ConversationMeta> = rows
         .into_iter()
-        .map(|row| ConversationMeta {
-            id: row.get::<String, _>("id"),
-            title: resolved_conversation_title(
-                &row.get::<String, _>("title"),
-                row.get::<Option<String>, _>("first_user_content")
-                    .as_deref(),
-            ),
-            updated_at: row.get::<i64, _>("updated_at"),
-            pinned_at: row.get::<Option<i64>, _>("pinned_at"),
+        .map(|row| {
+            let ws_path = row
+                .get::<Option<String>, _>("workspace_path")
+                .filter(|p| !p.trim().is_empty());
+            ConversationMeta {
+                id: row.get::<String, _>("id"),
+                title: resolved_conversation_title(
+                    &row.get::<String, _>("title"),
+                    row.get::<Option<String>, _>("first_user_content")
+                        .as_deref(),
+                ),
+                updated_at: row.get::<i64, _>("updated_at"),
+                pinned_at: row.get::<Option<i64>, _>("pinned_at"),
+                workspace_path: ws_path,
+            }
         })
         .collect();
+
+    // 批量刷新进程内缓存，供同步热路径读取。
+    let cache_entries: Vec<(String, Option<String>)> = items
+        .iter()
+        .map(|c| (c.id.clone(), c.workspace_path.clone()))
+        .collect();
+    crate::command::workspace::refresh_workspace_cache(&cache_entries).await;
 
     Ok(items)
 }
@@ -1131,7 +1144,6 @@ sqlx::query(
 
         tx.commit().await.map_err(|e| e.to_string())?;
         crate::command::rag::rag_remove_conversation_documents(app, &id).await?;
-        crate::command::workspace::remove_conversation_workspace(app, &id)?;
         crate::llm::services::shell_sessions::close_session(Some(&id)).await;
         let _ = crate::llm::services::user_terminal::stop_session(Some(&id));
     } else {
@@ -1182,7 +1194,6 @@ sqlx::query(
 
         tx.commit().await.map_err(|e| e.to_string())?;
         crate::command::rag::rag_remove_all_conversation_documents(app).await?;
-        crate::command::workspace::clear_conversation_workspaces(app)?;
         crate::llm::services::shell_sessions::close_all_sessions().await;
         crate::llm::services::user_terminal::close_all_sessions();
     }
@@ -1258,7 +1269,6 @@ pub async fn delete_conversation(app: &AppHandle, conversation_id: &str) -> Resu
         .map_err(|e| e.to_string())?;
 
     crate::command::rag::rag_remove_conversation_documents(app, conversation_id).await?;
-    crate::command::workspace::remove_conversation_workspace(app, conversation_id)?;
     crate::llm::services::shell_sessions::close_session(Some(conversation_id)).await;
     let _ = crate::llm::services::user_terminal::stop_session(Some(conversation_id));
 

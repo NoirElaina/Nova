@@ -62,6 +62,14 @@ pub async fn get_git_repo_status(
     crate::llm::services::file_changes::get_conversation_repo_status(&app, conversation_id.as_deref())
 }
 
+/// 基于显式工作区路径查询 git 状态。供 EnvironmentBar 在无会话时使用。
+#[tauri::command]
+pub async fn get_workspace_git_status(
+    workspace_path: String,
+) -> Result<GitRepoStatus, String> {
+    crate::llm::services::file_changes::get_repo_status_by_path(&workspace_path)
+}
+
 #[derive(Debug, Clone, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct InitGitRepoResult {

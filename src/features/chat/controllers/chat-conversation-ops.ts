@@ -41,6 +41,8 @@ import { buildAssistantTranscriptSegments } from "../utils/assistant-transcript"
 
 type ConversationOpsDeps = {
   activeConversationId: Ref<string>;
+  /** 当前工作区路径（前端状态）。无活跃会话时由 EnvironmentBar 修改；有活跃会话时反映该会话的工作区。 */
+  activeWorkspacePath: Ref<string>;
   agentMode: Ref<AgentMode>;
   planMode: Ref<boolean>;
   isGenerating: Ref<boolean>;
@@ -64,6 +66,7 @@ type ConversationOpsDeps = {
 export function createConversationOperations(deps: ConversationOpsDeps) {
   const {
     activeConversationId,
+    activeWorkspacePath,
     agentMode,
     planMode,
     isGenerating,
@@ -224,7 +227,8 @@ export function createConversationOperations(deps: ConversationOpsDeps) {
 
   async function createNewConversation(seedTitle?: string): Promise<string | null> {
     try {
-      const conv = await createConversation(seedTitle);
+      const conv = await createConversation(seedTitle, activeWorkspacePath.value || undefined);
+      activeWorkspacePath.value = conv.workspacePath || '';
       await refreshConversations();
       return conv.id;
     } catch (err) {
@@ -245,6 +249,8 @@ export function createConversationOperations(deps: ConversationOpsDeps) {
     }
 
     activeConversationId.value = targetConversationId;
+    const conversationMeta = conversations.value.find((c) => c.id === targetConversationId);
+    activeWorkspacePath.value = conversationMeta?.workspacePath || '';
     planMode.value = agentMode.value === "plan";
     pendingUploads.value = [];
 
@@ -302,18 +308,21 @@ export function createConversationOperations(deps: ConversationOpsDeps) {
 
     resetTurnRuntimeState(activeRuntimeRefs);
 
-    if (activeConversationId.value && !hasConversationContent() && !assistantResponse.value.trim()) {
+    // 已在空白欢迎界面：无需重复清理。
+    if (!activeConversationId.value && !hasConversationContent() && !assistantResponse.value.trim()) {
       return;
     }
 
     isCreatingNewChat.value = true;
     try {
-      const id = await createNewConversation();
-      if (!id) {
-        return;
-      }
-
-      await loadConversation(id);
+      // 不立即创建会话；让用户在欢迎页选择工作区，发消息时再创建。
+      activeConversationId.value = "";
+      messages.value = [];
+      pendingUploads.value = [];
+      conversationFiles.value = [];
+      conversationMemory.value = null;
+      toolExecutionLogs.value = [];
+      // 保留 activeWorkspacePath 供下一次创建会话使用。
     } finally {
       isCreatingNewChat.value = false;
     }
@@ -351,15 +360,10 @@ export function createConversationOperations(deps: ConversationOpsDeps) {
         if (conversations.value.length > 0) {
           await loadConversation(conversations.value[0].id);
         } else {
-          const newId = await createNewConversation();
-          if (newId) {
-            await loadConversation(newId);
-          } else {
-            activeConversationId.value = "";
-            messages.value = [];
-            pendingUploads.value = [];
-            conversationFiles.value = [];
-          }
+          activeConversationId.value = "";
+          messages.value = [];
+          pendingUploads.value = [];
+          conversationFiles.value = [];
         }
       }
     } catch (err) {
@@ -408,12 +412,7 @@ export function createConversationOperations(deps: ConversationOpsDeps) {
 
     await refreshConversations();
     if (conversations.value.length === 0) {
-      const newId = await createNewConversation();
-      if (newId) {
-        await loadConversation(newId);
-      } else {
-        activeConversationId.value = "";
-      }
+      activeConversationId.value = "";
       return;
     }
 

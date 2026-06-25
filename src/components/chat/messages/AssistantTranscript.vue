@@ -11,6 +11,7 @@ import {
 } from "../../../features/chat/utils/assistant-transcript";
 import MarkdownRenderer from "../MarkdownRenderer.vue";
 import TurnActivitySummaryCard from "./TurnActivitySummaryCard.vue";
+import ModifiedFilesCard from "./ModifiedFilesCard.vue";
 
 const props = defineProps<{
   segments: AssistantTranscriptSegment[];
@@ -29,6 +30,21 @@ const renderSegments = computed(() =>
     return segment.text.trim().length > 0;
   }),
 );
+
+const aggregatedToolEntries = computed<ToolExecutionEntry[]>(() => {
+  const byId = new Map<string, ToolExecutionEntry>();
+  for (const entry of props.entries ?? []) {
+    byId.set(entry.id, entry);
+  }
+  if (props.toolSummary) {
+    for (const entry of props.toolSummary.entries) {
+      if (!byId.has(entry.id)) {
+        byId.set(entry.id, entry);
+      }
+    }
+  }
+  return [...byId.values()];
+});
 
 function segmentKey(segment: AssistantTranscriptSegment, index: number): string {
   if (segment.type === "tools") {
@@ -79,6 +95,11 @@ function reasoningSummary(text: string): string {
         :summary="toolSegmentSummary(segment)!"
       />
     </template>
+
+    <ModifiedFilesCard
+      v-if="aggregatedToolEntries.length > 0"
+      :entries="aggregatedToolEntries"
+    />
   </div>
 </template>
 

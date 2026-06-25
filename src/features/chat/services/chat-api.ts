@@ -343,6 +343,34 @@ export async function revertFileChange(
   });
 }
 
+export type GitRepoStatus = {
+  initialized: boolean;
+  path: string;
+};
+
+export type InitGitRepoResult = {
+  /** true 表示这次调用新建了 `.git`；false 表示仓库已存在，本次为空操作。 */
+  created: boolean;
+  path: string;
+};
+
+/** 查询会话工作区的 git 初始化状态。 */
+export async function getGitRepoStatus(
+  conversationId: string | null,
+): Promise<GitRepoStatus> {
+  return invoke<GitRepoStatus>("get_git_repo_status", { conversationId });
+}
+
+/**
+ * 显式把会话工作区初始化为 git 仓库。
+ * 默认流程不再自动 `git init`，必须由用户在审查页点击按钮触发，避免污染用户工作目录。
+ */
+export async function initGitRepo(
+  conversationId: string | null,
+): Promise<InitGitRepoResult> {
+  return invoke<InitGitRepoResult>("init_git_repo", { conversationId });
+}
+
 export async function sendChatMessage(
   conversationId: string | null,
   messages: ChatRequestMessage[],

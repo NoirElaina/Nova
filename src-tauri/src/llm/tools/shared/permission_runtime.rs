@@ -64,7 +64,7 @@ pub async fn await_permission_and_recheck(
 
     if matches!(
         decision,
-        crate::llm::utils::permissions::PermissionAction::DenySession
+        crate::llm::utils::permissions::PermissionAction::DenyOnce
     ) {
         return Err(format!("Permission denied by user for '{}'", tool_name));
     }

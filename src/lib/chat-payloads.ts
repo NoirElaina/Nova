@@ -4,7 +4,7 @@ import type {
   PlanModeChangePayload,
 } from "./chat-types";
 
-export type PermissionActionName = "allow_once" | "allow_session" | "deny_session";
+export type PermissionActionName = "allow_once" | "allow_session" | "deny_once";
 
 function detectPermissionActionFromText(text: string): PermissionActionName | null {
   const normalized = text.trim().toLowerCase();
@@ -16,8 +16,8 @@ function detectPermissionActionFromText(text: string): PermissionActionName | nu
   if (normalized === "allow_session") {
     return "allow_session";
   }
-  if (normalized === "deny_session") {
-    return "deny_session";
+  if (normalized === "deny_once") {
+    return "deny_once";
   }
   return null;
 }

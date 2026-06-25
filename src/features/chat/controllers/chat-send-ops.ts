@@ -524,7 +524,7 @@ export function createSendOperations(deps: SendOpsDeps) {
         await submitPermissionDecision(
           activeConversationId.value || null,
           pendingPermissionRequestId.value,
-          "deny_session",
+          "deny_once",
         );
         resetPendingPromptState(activeRuntimeRefs);
       } catch (err) {

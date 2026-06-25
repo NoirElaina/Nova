@@ -204,7 +204,7 @@ type StreamOpsDeps = {
   submitPermissionDecision: (
     conversationId: string | null,
     requestId: string,
-    action: "deny_session",
+    action: "deny_once",
   ) => Promise<boolean>;
 };
 
@@ -575,7 +575,7 @@ export function createChatStreamOperations(deps: StreamOpsDeps) {
         void submitPermissionDecision(
           isActive ? activeConversationId.value || null : conversationId,
           requestId,
-          "deny_session",
+          "deny_once",
         ).catch((err) => {
           console.error("Failed to auto-deny malformed permission request:", err);
         });

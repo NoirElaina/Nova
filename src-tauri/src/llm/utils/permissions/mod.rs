@@ -110,7 +110,6 @@ struct ConversationPermissionState {
     pending_by_signature: HashMap<String, String>,
     allow_once: HashSet<String>,
     allow_session: HashSet<String>,
-    deny_session: HashSet<String>,
     resolved_by_request: HashMap<String, RecordedDecision>,
 }
 
@@ -123,7 +122,7 @@ struct PermissionState {
 pub enum PermissionAction {
     AllowOnce,
     AllowSession,
-    DenySession,
+    DenyOnce,
 }
 
 #[derive(Debug)]
@@ -222,7 +221,7 @@ fn prune_expired_pending(state: &mut ConversationPermissionState) {
             state
                 .pending_by_signature
                 .remove(&pending.operation.signature);
-            notify_permission_waiter(&request_id, PermissionAction::DenySession);
+            notify_permission_waiter(&request_id, PermissionAction::DenyOnce);
         }
     }
 }
@@ -504,9 +503,9 @@ fn build_permission_prompt_payload(operation: &ProtectedOperation) -> String {
                         "description": "本次应用运行期间对同一操作持续放行"
                     },
                     {
-                        "label": "拒绝并记住",
-                        "value": "deny_session",
-                        "description": "本会话拒绝同一操作，直到会话结束"
+                        "label": "拒绝",
+                        "value": "deny_once",
+                        "description": "只拒绝这一次"
                     }
                 ]
             }
@@ -574,7 +573,7 @@ pub fn parse_permission_action_name(action: &str) -> Option<PermissionAction> {
     match action.trim().to_ascii_lowercase().as_str() {
         "allow_once" => Some(PermissionAction::AllowOnce),
         "allow_session" => Some(PermissionAction::AllowSession),
-        "deny_session" => Some(PermissionAction::DenySession),
+        "deny_once" => Some(PermissionAction::DenyOnce),
         _ => None,
     }
 }
@@ -592,10 +591,9 @@ fn apply_decision(
     let signature = pending.operation.signature;
     // signature: 该操作的唯一归一化签名。
     state.pending_by_signature.remove(&signature);
-    // 先移除旧决策，确保同一 signature 在三种集合里互斥。
+    // 先移除旧决策，确保同一 signature 在允许集合里互斥。
     state.allow_once.remove(&signature);
     state.allow_session.remove(&signature);
-    state.deny_session.remove(&signature);
 
     match action {
         PermissionAction::AllowOnce => {
@@ -604,8 +602,8 @@ fn apply_decision(
         PermissionAction::AllowSession => {
             state.allow_session.insert(signature);
         }
-        PermissionAction::DenySession => {
-            state.deny_session.insert(signature);
+        PermissionAction::DenyOnce => {
+            // 一次性拒绝：不记忆，仅通知等待方本次拒绝。
         }
     }
 
@@ -808,14 +806,6 @@ pub fn enforce_tool_permission(
     // state: 当前 conversation 的权限状态。
     prune_expired_pending(state);
     prune_resolved_decisions(state);
-
-    if state.deny_session.contains(&operation.signature) {
-        // 会话级拒绝优先级最高，直接阻断。
-        return PermissionEnforcement::Deny(format!(
-            "Blocked by permission gate: this operation was denied in current session ({})",
-            operation.preview
-        ));
-    }
 
     if state.allow_session.contains(&operation.signature) {
         // 会话级允许可重复使用。

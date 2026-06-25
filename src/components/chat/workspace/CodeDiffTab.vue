@@ -3,12 +3,15 @@ import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { Button } from "@/components/ui/button";
 import {
   getFileChange,
+  getGitRepoStatus,
+  initGitRepo,
   listFileChanges,
   revertFileChange,
   type FileChangeBatch,
   type FileChangeBatchSummary,
   type FileChangeEntry,
   type FileDiffLine,
+  type GitRepoStatus,
 } from "@/features/chat/services/chat-api";
 import { emitToast } from "@/lib/toast";
 
@@ -26,6 +29,12 @@ const error = ref("");
 const expandedBatchIds = ref<Set<string>>(new Set());
 const expandedFileIds = ref<Set<string>>(new Set());
 let refreshTimer: number | null = null;
+
+// 工作区 git 初始化状态。默认流程不再自动 `git init`，
+// 必须由用户点击「初始化 Git」按钮显式触发，避免污染用户工作目录。
+const gitStatus = ref<GitRepoStatus | null>(null);
+const gitStatusLoading = ref(false);
+const initializingGit = ref(false);
 
 const activeBatches = computed(() => batches.value.filter((batch) => !batch.reverted));
 const hasChanges = computed(() => batches.value.length > 0);
@@ -45,6 +54,49 @@ const loadChanges = async () => {
     loading.value = false;
   }
 };
+
+const loadGitStatus = async () => {
+  gitStatusLoading.value = true;
+  try {
+    gitStatus.value = await getGitRepoStatus(props.conversationId ?? null);
+  } catch (err) {
+    // 查询失败不阻断主流程，只是按钮状态无法精确显示。
+    gitStatus.value = null;
+    console.warn("[CodeDiffTab] getGitRepoStatus failed:", err);
+  } finally {
+    gitStatusLoading.value = false;
+  }
+};
+
+const handleInitGit = async () => {
+  if (initializingGit.value) return;
+  initializingGit.value = true;
+  error.value = "";
+  try {
+    const result = await initGitRepo(props.conversationId ?? null);
+    await loadGitStatus();
+    await loadChanges();
+    emitToast({
+      variant: "success",
+      source: "file-review",
+      message: result.created
+        ? `已在该会话工作区初始化 Git 仓库：${result.path}`
+        : `该工作区已经是 Git 仓库：${result.path}`,
+    });
+  } catch (err) {
+    const message = String(err);
+    error.value = message;
+    emitToast({
+      variant: "error",
+      source: "file-review",
+      message,
+    });
+  } finally {
+    initializingGit.value = false;
+  }
+};
+
+const gitInitialized = computed(() => gitStatus.value?.initialized === true);
 
 const formatTime = (value: number) => {
   return new Intl.DateTimeFormat("zh-CN", {
@@ -182,6 +234,7 @@ watch(
     batchDetails.value = {};
     detailErrors.value = {};
     void loadChanges();
+    void loadGitStatus();
   },
   { immediate: true },
 );
@@ -208,9 +261,38 @@ onBeforeUnmount(() => {
           {{ activeFileCount }} 文件 · {{ activeBatches.length }} 次
         </span>
       </div>
-      <Button variant="ghost" size="sm" class="h-7 px-2 text-xs text-[#64748b]" :disabled="loading" @click="loadChanges">
-        {{ loading ? "刷新中" : "刷新" }}
-      </Button>
+      <div class="flex shrink-0 items-center gap-1.5">
+        <Button
+          variant="ghost"
+          size="sm"
+          class="h-7 px-2 text-xs text-[#64748b]"
+          :disabled="loading"
+          @click="loadChanges"
+        >
+          {{ loading ? "刷新中" : "刷新" }}
+        </Button>
+        <Button
+          v-if="!gitInitialized"
+          variant="outline"
+          size="sm"
+          class="h-7 px-2 text-xs"
+          :disabled="initializingGit || gitStatusLoading"
+          :title="gitStatus ? `工作区：${gitStatus.path}` : '在该工作区创建 Git 仓库以启用快照与回退'"
+          @click="handleInitGit"
+        >
+          {{ initializingGit ? "初始化中" : "初始化 Git" }}
+        </Button>
+        <span
+          v-else
+          class="inline-flex items-center gap-1 rounded-md bg-emerald-50 px-2 py-0.5 text-[11px] text-emerald-700 dark:bg-emerald-950/30 dark:text-emerald-300"
+          :title="gitStatus ? `工作区：${gitStatus.path}` : '工作区已是 Git 仓库'"
+        >
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <polyline points="20 6 9 17 4 12" />
+          </svg>
+          Git 已就绪
+        </span>
+      </div>
     </div>
 
     <div v-if="error" class="mx-4 mt-3 rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 text-xs text-rose-700 dark:border-rose-900/60 dark:bg-rose-950/30 dark:text-rose-200">

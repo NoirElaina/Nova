@@ -97,6 +97,8 @@ pub fn run() {
             command::file_changes::list_file_changes,
             command::file_changes::get_file_change,
             command::file_changes::revert_file_change,
+            command::file_changes::init_git_repo,
+            command::file_changes::get_git_repo_status,
             command::mcp::add_mcp_server,
             command::mcp::get_mcp_server,
             command::mcp::update_mcp_server,

@@ -65,7 +65,8 @@ pub fn write_file_simple(
     Ok(target.display().to_string())
 }
 
-// 回合开始：在工作区拍一个起点快照。失败（无 git / 无改动）时静默忽略，不阻断回合。
+// 回合开始：在工作区拍一个起点快照。失败（非 git 仓库 / 无改动）时静默忽略，不阻断回合。
+// 注意：这里不再自动 `git init`。只有用户在审查页显式点击「初始化 Git」之后才会建 `.git`。
 pub async fn create_turn_snapshot(
     app: &AppHandle,
     conversation_id: Option<&str>,
@@ -78,7 +79,8 @@ pub async fn create_turn_snapshot(
     else {
         return;
     };
-    if crate::llm::services::git_snapshot::ensure_repo(&repo_root).is_err() {
+    if !crate::llm::services::git_snapshot::is_repo_initialized(&repo_root) {
+        // 非 git 仓库：跳过快照，文件改动仍由消息卡片展示，只是无法回退。
         return;
     }
     let ref_name = format!("turn-start-{conv_id}-{}", now_millis());
@@ -87,6 +89,38 @@ pub async fn create_turn_snapshot(
     {
         persist_pending_snapshot(app, &conv_id, &sha).await.ok();
     }
+}
+
+/// 用户在审查页点击「初始化 Git」时调用。把会话工作区显式 init 成 git 仓库。
+/// 返回 (是否新建了 .git, 仓库根绝对路径)。
+pub fn init_conversation_repo(
+    app: &AppHandle,
+    conversation_id: Option<&str>,
+) -> Result<(bool, String), String> {
+    let repo_root = crate::command::workspace::workspace_root_for_conversation(app, conversation_id)?;
+    let already = crate::llm::services::git_snapshot::is_repo_initialized(&repo_root);
+    crate::llm::services::git_snapshot::ensure_repo(&repo_root)?;
+    let path_str = crate::command::workspace::display_path_string(&repo_root);
+    Ok((!already, path_str))
+}
+
+/// 查询会话工作区的 git 初始化状态，供前端决定按钮文案/可见性。
+pub fn get_conversation_repo_status(
+    app: &AppHandle,
+    conversation_id: Option<&str>,
+) -> Result<GitRepoStatus, String> {
+    let repo_root = crate::command::workspace::workspace_root_for_conversation(app, conversation_id)?;
+    Ok(GitRepoStatus {
+        initialized: crate::llm::services::git_snapshot::is_repo_initialized(&repo_root),
+        path: crate::command::workspace::display_path_string(&repo_root),
+    })
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GitRepoStatus {
+    pub initialized: bool,
+    pub path: String,
 }
 
 async fn persist_pending_snapshot(
@@ -154,7 +188,8 @@ pub async fn record_turn_changes(
 ) -> Option<String> {
     let conv_id = normalize_conversation_id(conversation_id).ok()?;
     let repo_root = crate::command::workspace::workspace_root_for_conversation(app, Some(&conv_id)).ok()?;
-    if crate::llm::services::git_snapshot::ensure_repo(&repo_root).is_err() {
+    if !crate::llm::services::git_snapshot::is_repo_initialized(&repo_root) {
+        // 非 git 仓库：没有快照可对比，直接放弃本轮 batch。
         return None;
     }
 

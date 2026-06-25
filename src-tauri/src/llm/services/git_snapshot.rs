@@ -24,7 +24,14 @@ fn run_git(root: &Path, args: &[&str]) -> Result<String, String> {
 
 
 
-/// 把 target_root 当成 git 仓库准备就绪。已是仓库则啥也不做；不是则 `git init` 兜底。
+/// 仅检查工作区是否已经是一个 git 仓库（存在 `.git`）。不会执行任何 git 命令，也不会污染用户目录。
+pub fn is_repo_initialized(root: &Path) -> bool {
+    root.join(".git").exists()
+}
+
+/// 显式把 target_root 初始化为 git 仓库。已是仓库则啥也不做；不是则 `git init`。
+/// 默认流程不再自动调用本函数——必须由用户在审查页点击「初始化 Git」按钮触发，
+/// 避免在用户工作目录里偷偷创建 `.git`。
 pub fn ensure_repo(root: &Path) -> Result<(), String> {
     if root.join(".git").exists() {
         return Ok(());

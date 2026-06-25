@@ -83,7 +83,6 @@ fn emit_token_usage_event(
     .ok();
 }
 
-
 // 对比"本地估算值"和"API 返回真实值"的差异，输出到 stderr 日志。
 // 作用：调试 token 估算准确性，如果差异太大说明估算逻辑需要优化。
 // 输出内容：estimatedInputTokens, actualInputTokens, inputDelta, inputDeltaPercent, toolCount
@@ -145,7 +144,6 @@ fn emit_token_debug_event(
     )
     .ok();
 }
-
 
 // 当上下文太长需要压缩时，发送压缩结果给前端。
 // 作用：通知前端上下文压缩已执行，显示节省了多少 token。
@@ -954,8 +952,7 @@ pub async fn send_chat_message(
             if let Some(conv_id) = conversation_id.as_deref() {
                 let mut snapshot = current_messages.clone();
                 strip_injected_context(&mut snapshot);
-                let _ =
-                    crate::llm::history::save_turn_snapshot(&app, conv_id, &snapshot).await;
+                let _ = crate::llm::history::save_turn_snapshot(&app, conv_id, &snapshot).await;
             }
             break TurnOutcome::error(msg);
         }

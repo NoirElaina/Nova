@@ -818,7 +818,11 @@ fn current_turn_cost(
         cache_read_tokens,
         cache_creation_tokens,
     };
-    pricing::calculate_for_model(&model, &usage, pricing::cache_billing_for_provider(provider))
+    pricing::calculate_for_model(
+        &model,
+        &usage,
+        pricing::cache_billing_for_provider(provider),
+    )
 }
 
 /// 工具结果是否表示需要用户输入（type == "needs_user_input"）。

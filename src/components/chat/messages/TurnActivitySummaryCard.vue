@@ -69,6 +69,7 @@ function resultText(entry: ToolTurnEntrySnapshot): string {
 .turn-summary-card {
   margin: 0;
   color: #6b7280;
+  interpolate-size: allow-keywords;
 }
 
 .turn-summary-card[open] {
@@ -105,6 +106,24 @@ function resultText(entry: ToolTurnEntrySnapshot): string {
   transform: rotate(90deg);
 }
 
+.turn-summary-card::details-content {
+  block-size: 0;
+  opacity: 0;
+  overflow: hidden;
+  transform: translateY(-4px);
+  transition:
+    block-size 0.22s ease,
+    opacity 0.16s ease,
+    transform 0.22s ease,
+    content-visibility 0.22s ease allow-discrete;
+}
+
+.turn-summary-card[open]::details-content {
+  block-size: auto;
+  opacity: 1;
+  transform: translateY(0);
+}
+
 .turn-summary-card__body {
   margin-top: 8px;
   border: 1px solid #e5e7eb;
@@ -115,6 +134,7 @@ function resultText(entry: ToolTurnEntrySnapshot): string {
 
 .turn-summary-card__tool {
   margin: 0;
+  interpolate-size: allow-keywords;
 }
 
 .turn-summary-card__tool + .turn-summary-card__tool {
@@ -183,6 +203,24 @@ function resultText(entry: ToolTurnEntrySnapshot): string {
 
 .turn-summary-card__tool[open] .turn-summary-card__row-chevron {
   transform: rotate(90deg);
+}
+
+.turn-summary-card__tool::details-content {
+  block-size: 0;
+  opacity: 0;
+  overflow: hidden;
+  transform: translateY(-3px);
+  transition:
+    block-size 0.2s ease,
+    opacity 0.14s ease,
+    transform 0.2s ease,
+    content-visibility 0.2s ease allow-discrete;
+}
+
+.turn-summary-card__tool[open]::details-content {
+  block-size: auto;
+  opacity: 1;
+  transform: translateY(0);
 }
 
 .turn-summary-card__result {

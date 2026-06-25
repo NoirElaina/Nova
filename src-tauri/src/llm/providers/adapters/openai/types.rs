@@ -91,6 +91,14 @@ pub(crate) struct OpenAiDelta {
     pub(crate) _role: Option<String>,
     pub(crate) content: Option<String>,
     pub(crate) refusal: Option<String>,
+    #[serde(default)]
+    pub(crate) reasoning_content: Option<Value>,
+    #[serde(default)]
+    pub(crate) reasoning_details: Option<Value>,
+    #[serde(default)]
+    pub(crate) reasoning: Option<Value>,
+    #[serde(default)]
+    pub(crate) thinking_content: Option<Value>,
     pub(crate) tool_calls: Option<Vec<OpenAiToolCall>>,
 }
 

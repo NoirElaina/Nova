@@ -74,8 +74,8 @@ fn load_or_create_master_key(app: &AppHandle) -> Result<[u8; KEY_LEN], String> {
 /// ?????nonce(12 bytes) + ciphertext + tag??? base64 ???
 fn aes_encrypt(plaintext: &[u8]) -> Result<Vec<u8>, String> {
     let key = get_master_key()?;
-    let cipher = Aes256Gcm::new_from_slice(&key)
-        .map_err(|e| format!("AES key init failed: {}", e))?;
+    let cipher =
+        Aes256Gcm::new_from_slice(&key).map_err(|e| format!("AES key init failed: {}", e))?;
 
     let mut nonce_bytes = [0u8; NONCE_LEN];
     rand::rngs::OsRng.fill_bytes(&mut nonce_bytes);
@@ -98,8 +98,8 @@ fn aes_decrypt(blob: &[u8]) -> Result<Vec<u8>, String> {
         return Err("Encrypted payload too short".to_string());
     }
     let key = get_master_key()?;
-    let cipher = Aes256Gcm::new_from_slice(&key)
-        .map_err(|e| format!("AES key init failed: {}", e))?;
+    let cipher =
+        Aes256Gcm::new_from_slice(&key).map_err(|e| format!("AES key init failed: {}", e))?;
 
     let (nonce_bytes, ciphertext) = blob.split_at(NONCE_LEN);
     let nonce = Nonce::from_slice(nonce_bytes);
@@ -176,6 +176,5 @@ pub fn decrypt_secret_value(value: &str) -> Result<String, String> {
         .decode(encoded)
         .map_err(|error| format!("invalid encrypted API key payload: {}", error))?;
     let plain = aes_decrypt(&protected)?;
-    String::from_utf8(plain)
-        .map_err(|error| format!("decrypted API key is not UTF-8: {}", error))
+    String::from_utf8(plain).map_err(|error| format!("decrypted API key is not UTF-8: {}", error))
 }

@@ -1,9 +1,9 @@
 pub(crate) mod prompt;
 pub(crate) mod types;
 
+use reqwest::RequestBuilder;
 use serde_json::Value;
 use std::collections::BTreeMap;
-use reqwest::RequestBuilder;
 
 use crate::llm::providers::adapters::ApiAdapter;
 use crate::llm::providers::stream_runner::{Delta, ReadyToolCall};
@@ -143,10 +143,13 @@ impl ApiAdapter for ResponsesAdapter {
         agent_mode: AgentMode,
         conversation_id: Option<&str>,
     ) -> Result<RequestBuilder, String> {
-        let settings = crate::command::settings::get_settings(app.clone()).map_err(|e| e.to_string())?;
+        let settings =
+            crate::command::settings::get_settings(app.clone()).map_err(|e| e.to_string())?;
         let profile = settings.active_provider_profile();
 
-        let request = prompt::build_request(app, messages, agent_mode, conversation_id).map_err(|e| e.message)?.request;
+        let request = prompt::build_request(app, messages, agent_mode, conversation_id)
+            .map_err(|e| e.message)?
+            .request;
 
         builder = builder.header("content-type", "application/json");
 
@@ -355,6 +358,5 @@ pub fn estimate_prompt_tokens(
     agent_mode: AgentMode,
     conversation_id: Option<&str>,
 ) -> Result<ProviderPromptEstimate, ProviderTurnError> {
-    prompt::build_request(app, messages, agent_mode, conversation_id)
-        .map(|built| built.estimate)
+    prompt::build_request(app, messages, agent_mode, conversation_id).map(|built| built.estimate)
 }

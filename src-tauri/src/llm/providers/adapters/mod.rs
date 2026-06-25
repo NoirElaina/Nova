@@ -4,6 +4,7 @@ use reqwest::RequestBuilder;
 
 pub mod anthropic;
 pub mod openai;
+pub(crate) mod reasoning;
 pub mod responses;
 
 /// 协议适配器：只负责格式转换，不持有网络连接

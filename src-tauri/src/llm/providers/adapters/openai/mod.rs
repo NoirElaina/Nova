@@ -1,9 +1,10 @@
 pub(crate) mod prompt;
 pub(crate) mod types;
 
-use std::collections::BTreeMap;
 use reqwest::RequestBuilder;
+use std::collections::BTreeMap;
 
+use super::reasoning::{extract_reasoning_field_text, push_inline_parts, InlineThinkExtractor};
 use crate::llm::providers::adapters::ApiAdapter;
 use crate::llm::providers::stream_runner::{Delta, ReadyToolCall};
 use crate::llm::providers::{ProviderPromptEstimate, ProviderTurnError};
@@ -21,12 +22,14 @@ struct PendingToolCall {
 
 pub struct OpenAiAdapter {
     pending: BTreeMap<usize, PendingToolCall>,
+    inline_think: InlineThinkExtractor,
 }
 
 impl OpenAiAdapter {
     pub fn new() -> Self {
         Self {
             pending: BTreeMap::new(),
+            inline_think: InlineThinkExtractor::default(),
         }
     }
 }
@@ -44,10 +47,13 @@ impl ApiAdapter for OpenAiAdapter {
         agent_mode: AgentMode,
         conversation_id: Option<&str>,
     ) -> Result<RequestBuilder, String> {
-        let settings = crate::command::settings::get_settings(app.clone()).map_err(|e| e.to_string())?;
+        let settings =
+            crate::command::settings::get_settings(app.clone()).map_err(|e| e.to_string())?;
         let profile = settings.active_provider_profile();
 
-        let request = prompt::build_request(app, messages, agent_mode, conversation_id).map_err(|e| e.message)?.request;
+        let request = prompt::build_request(app, messages, agent_mode, conversation_id)
+            .map_err(|e| e.message)?
+            .request;
 
         builder = builder.header("content-type", "application/json");
 
@@ -93,19 +99,33 @@ impl ApiAdapter for OpenAiAdapter {
             let OpenAiDelta {
                 content,
                 refusal,
+                reasoning_content,
+                reasoning_details,
+                reasoning,
+                thinking_content,
                 tool_calls,
                 ..
             } = choice.delta;
 
+            let reasoning_fields = serde_json::json!({
+                "reasoning_content": reasoning_content,
+                "reasoning_details": reasoning_details,
+                "reasoning": reasoning,
+                "thinking_content": thinking_content,
+            });
+            if let Some(text) = extract_reasoning_field_text(&reasoning_fields) {
+                deltas.push(Delta::Reasoning(text));
+            }
+
             if let Some(text) = content {
                 if !text.is_empty() {
-                    deltas.push(Delta::Text(text));
+                    push_inline_parts(&mut deltas, self.inline_think.push(&text));
                 }
             }
 
             if let Some(text) = refusal {
                 if !text.is_empty() {
-                    deltas.push(Delta::Text(text));
+                    push_inline_parts(&mut deltas, self.inline_think.push(&text));
                 }
             }
 
@@ -205,8 +225,11 @@ impl ApiAdapter for OpenAiAdapter {
     }
 
     fn flush(&mut self) -> Vec<Delta> {
+        let mut deltas = Vec::new();
+        push_inline_parts(&mut deltas, self.inline_think.flush());
+
         if self.pending.is_empty() {
-            return Vec::new();
+            return deltas;
         }
         let drained: Vec<(usize, PendingToolCall)> =
             std::mem::take(&mut self.pending).into_iter().collect();
@@ -218,11 +241,10 @@ impl ApiAdapter for OpenAiAdapter {
                 }
             }
         }
-        if ready.is_empty() {
-            Vec::new()
-        } else {
-            vec![Delta::ToolsReady(ready)]
+        if !ready.is_empty() {
+            deltas.push(Delta::ToolsReady(ready));
         }
+        deltas
     }
 }
 
@@ -232,6 +254,5 @@ pub fn estimate_prompt_tokens(
     agent_mode: AgentMode,
     conversation_id: Option<&str>,
 ) -> Result<ProviderPromptEstimate, ProviderTurnError> {
-    prompt::build_request(app, messages, agent_mode, conversation_id)
-        .map(|built| built.estimate)
+    prompt::build_request(app, messages, agent_mode, conversation_id).map(|built| built.estimate)
 }

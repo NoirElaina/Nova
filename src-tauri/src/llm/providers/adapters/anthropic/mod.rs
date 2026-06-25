@@ -2,7 +2,9 @@ pub(crate) mod prompt;
 pub(crate) mod types;
 
 use reqwest::RequestBuilder;
+use serde_json::Value;
 
+use super::reasoning::{extract_reasoning_field_text, push_inline_parts, InlineThinkExtractor};
 use crate::llm::providers::adapters::ApiAdapter;
 use crate::llm::providers::stream_runner::{Delta, ReadyToolCall};
 use crate::llm::providers::{ProviderPromptEstimate, ProviderTurnError};
@@ -18,6 +20,7 @@ pub struct AnthropicAdapter {
     current_tool_input: String,
     current_thinking: String,
     current_sig: String,
+    inline_think: InlineThinkExtractor,
     pending_tool_calls: Vec<tools::ToolCallRequest>,
     pending_stop_reason: Option<String>,
 }
@@ -30,6 +33,7 @@ impl AnthropicAdapter {
             current_tool_input: String::new(),
             current_thinking: String::new(),
             current_sig: String::new(),
+            inline_think: InlineThinkExtractor::default(),
             pending_tool_calls: Vec::new(),
             pending_stop_reason: None,
         }
@@ -49,7 +53,8 @@ impl ApiAdapter for AnthropicAdapter {
         agent_mode: AgentMode,
         conversation_id: Option<&str>,
     ) -> Result<RequestBuilder, String> {
-        let settings = crate::command::settings::get_settings(app.clone()).map_err(|e| e.to_string())?;
+        let settings =
+            crate::command::settings::get_settings(app.clone()).map_err(|e| e.to_string())?;
         let profile = settings.active_provider_profile();
         let api_key = profile.api_key;
 
@@ -57,7 +62,9 @@ impl ApiAdapter for AnthropicAdapter {
             return Err("API error: No API key configured. Please set it in Settings.".to_string());
         }
 
-        let request = prompt::build_request(app, messages, agent_mode, conversation_id).map_err(|e| e.message)?.request;
+        let request = prompt::build_request(app, messages, agent_mode, conversation_id)
+            .map_err(|e| e.message)?
+            .request;
 
         Ok(builder
             .header("x-api-key", &api_key)
@@ -67,9 +74,24 @@ impl ApiAdapter for AnthropicAdapter {
     }
 
     fn parse_event(&mut self, data: &str) -> Result<Vec<Delta>, String> {
-        let event = match serde_json::from_str::<StreamEvent>(data) {
+        let raw: Value = serde_json::from_str(data).map_err(|e| {
+            format!(
+                "Failed to parse Anthropic stream event JSON: {}. Data preview: {}",
+                e,
+                truncate_for_log(data, 1200)
+            )
+        })?;
+        let compat_reasoning = raw
+            .get("delta")
+            .and_then(extract_reasoning_field_text)
+            .or_else(|| extract_reasoning_field_text(&raw));
+
+        let event = match serde_json::from_value::<StreamEvent>(raw) {
             Ok(e) => e,
             Err(e) => {
+                if let Some(text) = compat_reasoning {
+                    return Ok(vec![Delta::Reasoning(text)]);
+                }
                 return Err(format!(
                     "Failed to parse Anthropic stream event: {}. Data preview: {}",
                     e,
@@ -79,6 +101,9 @@ impl ApiAdapter for AnthropicAdapter {
         };
 
         let mut deltas: Vec<Delta> = Vec::new();
+        if let Some(text) = compat_reasoning {
+            deltas.push(Delta::Reasoning(text));
+        }
 
         match event {
             StreamEvent::MessageStart { message } => {
@@ -106,7 +131,7 @@ impl ApiAdapter for AnthropicAdapter {
 
             StreamEvent::ContentBlockDelta { delta, .. } => match delta {
                 StreamDelta::TextDelta { text } => {
-                    deltas.push(Delta::Text(text));
+                    push_inline_parts(&mut deltas, self.inline_think.push(&text));
                 }
                 StreamDelta::ThinkingDelta { thinking } => {
                     self.current_thinking.push_str(&thinking);
@@ -217,6 +242,12 @@ impl ApiAdapter for AnthropicAdapter {
 
         Ok(deltas)
     }
+
+    fn flush(&mut self) -> Vec<Delta> {
+        let mut deltas = Vec::new();
+        push_inline_parts(&mut deltas, self.inline_think.flush());
+        deltas
+    }
 }
 
 pub fn estimate_prompt_tokens(
@@ -225,6 +256,5 @@ pub fn estimate_prompt_tokens(
     agent_mode: AgentMode,
     conversation_id: Option<&str>,
 ) -> Result<ProviderPromptEstimate, ProviderTurnError> {
-    prompt::build_request(app, messages, agent_mode, conversation_id)
-        .map(|built| built.estimate)
+    prompt::build_request(app, messages, agent_mode, conversation_id).map(|built| built.estimate)
 }

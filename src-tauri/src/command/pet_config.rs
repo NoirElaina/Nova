@@ -3,8 +3,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::io::Read;
 use std::sync::{Mutex, OnceLock};
-use tauri::{AppHandle, Emitter, Manager};
 use tauri::webview::WebviewWindowBuilder;
+use tauri::{AppHandle, Emitter, Manager};
 use zip::ZipArchive;
 
 #[tauri::command]
@@ -38,10 +38,7 @@ pub async fn fetch_pet(
         .error_for_status()
         .map_err(|e| e.to_string())?;
 
-    response
-        .json::<Value>()
-        .await
-        .map_err(|e| e.to_string())
+    response.json::<Value>().await.map_err(|e| e.to_string())
 }
 
 #[derive(Serialize, Deserialize)]
@@ -114,8 +111,7 @@ pub async fn download_pet(
         atlas_size,
         row_frame_counts,
     };
-    let meta_json =
-        serde_json::to_string_pretty(&meta).map_err(|e| e.to_string())?;
+    let meta_json = serde_json::to_string_pretty(&meta).map_err(|e| e.to_string())?;
     std::fs::write(pet_dir.join("pet.json"), meta_json).map_err(|e| e.to_string())?;
 
     Ok(pet_dir.to_string_lossy().to_string())
@@ -262,7 +258,9 @@ pub async fn launch_desktop_pet(
             guard.clone()
         };
         if let Some(cfg) = config_clone {
-            existing.emit("pet-window-update", cfg).map_err(|e: tauri::Error| e.to_string())?;
+            existing
+                .emit("pet-window-update", cfg)
+                .map_err(|e: tauri::Error| e.to_string())?;
         }
         return Ok(());
     }

@@ -1,5 +1,5 @@
-use std::time::Duration;
 use reqwest::Client;
+use std::time::Duration;
 use tauri::AppHandle;
 
 use crate::llm::cancellation;
@@ -52,7 +52,7 @@ impl LlmClient {
             _ => Box::new(OpenAiAdapter::new()),
         };
 
-       let http_client = Client::builder()
+        let http_client = Client::builder()
             .timeout(Duration::from_secs(300))
             .connect_timeout(Duration::from_secs(10))
             .pool_max_idle_per_host(4)
@@ -119,12 +119,7 @@ impl LlmClient {
         if let Some(body) = request.body() {
             if let Some(bytes) = body.as_bytes() {
                 if let Ok(wire) = std::str::from_utf8(bytes) {
-                    crate::llm::utils::turn_log::log_wire_request(
-                        app,
-                        conversation_id,
-                        &url,
-                        wire,
-                    );
+                    crate::llm::utils::turn_log::log_wire_request(app, conversation_id, &url, wire);
                 }
             }
         }
@@ -165,7 +160,15 @@ impl LlmClient {
                 let mut parser = AdapterStreamParser {
                     adapter: self.adapter.as_mut(),
                 };
-                run_streaming(&mut parser, app, res, conversation_id, &self.model, cancel_token).await
+                run_streaming(
+                    &mut parser,
+                    app,
+                    res,
+                    conversation_id,
+                    &self.model,
+                    cancel_token,
+                )
+                .await
             }
             Err(e) => {
                 let msg = e.to_string();

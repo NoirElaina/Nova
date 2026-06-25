@@ -23,12 +23,12 @@ pub fn run() {
             if let Err(error) = crate::logging::init(app.handle()) {
                 eprintln!("[logging.init] {}", error);
             }
-            
+
             // 初始化加密主密钥，必须在其他命令之前完成。
             if let Err(error) = crate::command::settings_secrets::init_master_key(app.handle()) {
                 warn!(error = %error, "failed to initialize master encryption key");
             }
-            
+
             info!("application setup started");
 
             // 启动时自动创建默认 workspace 目录，确保 AI 有默认工作区。

@@ -35,5 +35,10 @@ pub async fn fetch_available_models(
             .collect()
     });
 
-    report_backend_result(&app, "command.model_fetch.fetch_available_models", result, None)
+    report_backend_result(
+        &app,
+        "command.model_fetch.fetch_available_models",
+        result,
+        None,
+    )
 }

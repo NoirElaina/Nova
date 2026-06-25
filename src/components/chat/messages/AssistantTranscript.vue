@@ -92,6 +92,7 @@ function reasoningSummary(text: string): string {
 .transcript-reasoning {
   margin: 0;
   color: #6b7280;
+  interpolate-size: allow-keywords;
 }
 
 .transcript-reasoning[open] {
@@ -126,6 +127,24 @@ function reasoningSummary(text: string): string {
 
 .transcript-reasoning[open] .transcript-reasoning__chevron {
   transform: rotate(90deg);
+}
+
+.transcript-reasoning::details-content {
+  block-size: 0;
+  opacity: 0;
+  overflow: hidden;
+  transform: translateY(-4px);
+  transition:
+    block-size 0.22s ease,
+    opacity 0.16s ease,
+    transform 0.22s ease,
+    content-visibility 0.22s ease allow-discrete;
+}
+
+.transcript-reasoning[open]::details-content {
+  block-size: auto;
+  opacity: 1;
+  transform: translateY(0);
 }
 
 .transcript-reasoning__body {

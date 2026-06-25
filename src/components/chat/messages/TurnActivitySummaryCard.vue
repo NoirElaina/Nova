@@ -26,7 +26,7 @@ function rowText(entry: ToolTurnEntrySnapshot): string {
 }
 
 function resultText(entry: ToolTurnEntrySnapshot): string {
-  const result = entry.result.trim();
+  const result = entry.result.replace(/\s+$/,'');
   if (result) {
     return result;
   }

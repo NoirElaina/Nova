@@ -617,7 +617,7 @@ export function createChatStreamOperations(deps: StreamOpsDeps) {
       const streamedInput = toolId ? state.toolInputById.get(toolId) ?? "" : "";
       const fallbackInput = (payload.tool_use_input ?? "").trim();
       const rawInput = streamedInput.trim().length > 0 ? streamedInput : fallbackInput;
-      const result = (payload.tool_result ?? "").trim();
+      const result = (payload.tool_result ?? "").trimEnd();
 
       completeToolExecutionTraceInState(
         conversationId,

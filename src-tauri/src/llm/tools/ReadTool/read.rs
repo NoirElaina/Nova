@@ -48,7 +48,6 @@ pub fn tool() -> Tool {
 const IMAGE_EXTENSIONS: &[&str] = &["png", "jpg", "jpeg"];
 const PDF_EXTENSION: &str = "pdf";
 const MAX_TEXT_SIZE: u64 = 2 * 1024 * 1024;
-const MAX_LINES_WITHOUT_PAGING: usize = 2000;
 
 fn ext_lower(path: &std::path::Path) -> String {
     path.extension()
@@ -131,17 +130,11 @@ fn read_text(
     }
 
     let shown = &all_lines[start..end];
-    let show_line_numbers = limit.is_some() || total_lines > MAX_LINES_WITHOUT_PAGING;
 
     let mut output = String::new();
     for (i, line) in shown.iter().enumerate() {
         let line_num = start + i;
-        if show_line_numbers {
-            output.push_str(&format!("{:>6}\t{}\n", line_num + 1, line));
-        } else {
-            output.push_str(line);
-            output.push('\n');
-        }
+        output.push_str(&format!("{:>6}\t{}\n", line_num + 1, line));
     }
 
     if limit.is_some() && end < total_lines {

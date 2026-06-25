@@ -28,7 +28,6 @@ pub fn tool() -> Tool {
 - `description`: a short (3-5 word) description of what this command does in active voice. Helps the user understand what's happening.
 - `timeout`: optional timeout in milliseconds (max 600000). Defaults to 120000.
 - `run_in_background`: set to true to run the command in the background. The shell session stays alive for subsequent calls.
-- `dangerouslyDisableSandbox`: set to true to disable sandboxing.
 
 On Windows this runs PowerShell 7 (pwsh). On Linux/macOS it runs sh. Interactive TUI programs are not supported."#
             .into(),
@@ -50,10 +49,6 @@ On Windows this runs PowerShell 7 (pwsh). On Linux/macOS it runs sh. Interactive
                 "run_in_background": {
                     "type": "boolean",
                     "description": "Set to true to run this command in the background."
-                },
-                "dangerouslyDisableSandbox": {
-                    "type": "boolean",
-                    "description": "Set this to true to dangerously override sandbox mode and run commands without sandboxing."
                 }
             },
             "required": ["command"]

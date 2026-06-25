@@ -16,6 +16,33 @@ mod state_machine;
 use state_machine::TurnOutcome;
 
 const SESSION_RAG_CONTEXT_MARKER: &str = "[Session RAG Context]";
+
+fn strip_images_to_text(messages: &[Message]) -> Vec<Message> {
+    const PLACEHOLDER: &str = "错误：当前模型不支持图片输入，请告知用户切换到支持图片输入的模型，或描述图片内容。";
+    messages
+        .iter()
+        .map(|msg| {
+            let content = match &msg.content {
+                Content::Text(text) => Content::Text(text.clone()),
+                Content::Blocks(blocks) => Content::Blocks(
+                    blocks
+                        .iter()
+                        .map(|block| match block {
+                            ContentBlock::Image { .. } => ContentBlock::Text {
+                                text: PLACEHOLDER.to_string(),
+                            },
+                            other => other.clone(),
+                        })
+                        .collect(),
+                ),
+            };
+            Message {
+                role: msg.role.clone(),
+                content,
+            }
+        })
+        .collect()
+}
 const SESSION_RAG_SEARCH_LIMIT: usize = 5;
 const MCP_SERVER_CONTEXT_MARKER: &str = "[MCP Server Catalog]";
 const RESPONSE_RESERVE_TOKENS: u32 = 8_000;
@@ -690,6 +717,10 @@ pub async fn send_chat_message(
 
         let window_tokens =
             crate::llm::utils::model_context::get_context_window_tokens(&model) as i64;
+
+        if !crate::llm::utils::model_context::supports_image_input(&model) {
+            current_messages = strip_images_to_text(&current_messages);
+        }
         // 工具结果上下文编辑：专门处理较早、较大的 tool_use/tool_result 对。
         // 它不同于前面的整体 compact；这里在主循环每次 provider 请求前执行，
         // 用于防止多轮工具调用后旧工具输出持续占满上下文窗口。

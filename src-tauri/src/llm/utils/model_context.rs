@@ -14,12 +14,20 @@ struct ModelEntry {
     context_length: Option<u64>,
     #[serde(default)]
     top_provider: TopProvider,
+    #[serde(default)]
+    architecture: Architecture,
 }
 
 #[derive(Debug, Deserialize, Default)]
 struct TopProvider {
     #[serde(default)]
     max_completion_tokens: Option<u64>,
+}
+
+#[derive(Debug, Deserialize, Default)]
+struct Architecture {
+    #[serde(default)]
+    input_modalities: Vec<String>,
 }
 
 pub const DEFAULT_CONTEXT_WINDOW: u32 = 200_000;
@@ -67,4 +75,17 @@ pub fn get_max_output_tokens(model: &str) -> u32 {
         .and_then(|e| e.top_provider.max_completion_tokens)
         .and_then(|v| u32::try_from(v).ok())
         .unwrap_or(DEFAULT_MAX_OUTPUT_TOKENS)
+}
+
+/// 查询模型是否支持图片输入。
+/// 模型不在预置库中时乐观返回 true（假装支持，让 API 自己决定）。
+pub fn supports_image_input(model: &str) -> bool {
+    match find_entry(model) {
+        Some(entry) => entry
+            .architecture
+            .input_modalities
+            .iter()
+            .any(|m| m.eq_ignore_ascii_case("image")),
+        None => true,
+    }
 }

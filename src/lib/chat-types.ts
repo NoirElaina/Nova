@@ -208,7 +208,6 @@ export interface AskUserAnswerItem {
 export interface AskUserAnswerSubmission {
   answers: Record<string, string | string[]>;
   answerItems?: AskUserAnswerItem[];
-  freeform?: string;
 }
 
 export interface PlanModeChangePayload {

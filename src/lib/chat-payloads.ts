@@ -73,10 +73,6 @@ export function buildPendingQuestionReply(
     }
   }
 
-  if (payload.freeform?.trim()) {
-    lines.push(`- 其他补充：${payload.freeform.trim()}`);
-  }
-
   return lines.join("\n");
 }
 

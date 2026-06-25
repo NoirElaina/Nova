@@ -19,7 +19,6 @@ const emit = defineEmits<{
 }>();
 
 const selectedAnswers = reactive<Record<string, string[]>>({});
-const activePreview = reactive<Record<string, string>>({});
 const freeformAnswers = reactive<Record<string, string>>({});
 const freeform = ref('');
 const currentIndex = ref(0);
@@ -34,11 +33,6 @@ const isLastQuestion = computed(() => currentIndex.value >= questions.value.leng
 const progressText = computed(() => {
   if (questions.value.length <= 1) return '';
   return `${currentIndex.value + 1} / ${questions.value.length}`;
-});
-
-const dialogTitle = computed(() => {
-  const firstHeader = currentQuestion.value?.header ?? questions.value[0]?.header ?? '';
-  return firstHeader.includes('权限') ? '请确认权限操作' : '我需要你确认几个关键选项';
 });
 
 function optionAnswerValue(option: AskUserOption): string {
@@ -72,7 +66,6 @@ watch(
   () => props.request,
   () => {
     Object.keys(selectedAnswers).forEach((key) => delete selectedAnswers[key]);
-    Object.keys(activePreview).forEach((key) => delete activePreview[key]);
     Object.keys(freeformAnswers).forEach((key) => delete freeformAnswers[key]);
     freeform.value = '';
     currentIndex.value = 0;
@@ -92,8 +85,6 @@ function toggleOption(question: AskUserQuestionItem, index: number, option: AskU
   } else {
     selectedAnswers[key] = [target];
   }
-
-  activePreview[key] = option.preview ?? '';
 }
 
 function isSelected(question: AskUserQuestionItem, index: number, option: AskUserOption) {
@@ -135,17 +126,9 @@ function buildSubmission(): AskUserAnswerSubmission {
     });
   }
 
-  const freeformParts = questions.value
-    .map((q, index) => {
-      const value = (freeformAnswers[questionStateKey(q, index)] ?? '').trim();
-      return value ? `${q.header}: ${value}` : '';
-    })
-    .filter(Boolean);
-
   return {
     answers,
     answerItems,
-    freeform: freeformParts.join('\n') || undefined,
   };
 }
 
@@ -176,301 +159,227 @@ function submitAnswers() {
 </script>
 
 <template>
-  <div v-if="request" class="ask-shell">
-    <div class="ask-card">
-      <div class="ask-header">
-        <div>
-          <div class="ask-title">{{ dialogTitle }}</div>
-          <div v-if="request.context" class="ask-context">{{ request.context }}</div>
-        </div>
-        <Button variant="ghost" size="icon-sm" class="ask-close" title="关闭" @click="emit('skip')">
-          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8">
-            <path d="M6 6l12 12M18 6L6 18" stroke-linecap="round" />
-          </svg>
-        </Button>
+  <div v-if="request" class="ask-box">
+    <div class="ask-top">
+      <div class="ask-meta">
+        <span v-if="currentQuestion" class="ask-chip">{{ currentQuestion.header }}</span>
+        <span v-if="progressText" class="ask-progress">{{ progressText }}</span>
+      </div>
+      <button type="button" class="ask-skip-btn" title="跳过" @click="emit('skip')">跳过</button>
+    </div>
+
+    <div v-if="currentQuestion" class="ask-body">
+      <div class="ask-question-text">{{ currentQuestion.question }}</div>
+
+      <div class="ask-options">
+        <button
+          type="button"
+          v-for="(option, index) in currentQuestion.options"
+          :key="`${currentQuestionKey}-${option.label}-${index}`"
+          class="ask-option"
+          :class="{ 'is-selected': isSelected(currentQuestion, currentIndex, option) }"
+          @click="toggleOption(currentQuestion, currentIndex, option)"
+        >
+          <span class="ask-option-label">{{ option.label }}</span>
+          <span v-if="option.description" class="ask-option-desc">{{ option.description }}</span>
+        </button>
       </div>
 
-      <div v-if="currentQuestion" class="ask-question-list">
-        <section class="ask-question-card">
-          <div class="ask-question-header">
-            <div class="ask-question-meta">
-              <span class="ask-chip">{{ currentQuestion.header }}</span>
-              <span class="ask-mode">{{ currentQuestion.multi_select ? '可多选' : '单选' }}</span>
-            </div>
-            <span v-if="progressText" class="ask-progress">{{ progressText }}</span>
-          </div>
-          <div class="ask-question-title">{{ currentQuestion.question }}</div>
-
-          <div class="ask-options">
-            <Button
-              variant="ghost"
-              v-for="(option, index) in currentQuestion.options"
-              :key="`${currentQuestionKey}-${option.label}-${index}`"
-              class="ask-option"
-              :class="{ 'is-selected': isSelected(currentQuestion, currentIndex, option) }"
-              @click="toggleOption(currentQuestion, currentIndex, option)"
-            >
-              <span class="ask-index">{{ index + 1 }}</span>
-              <span class="ask-option-body">
-                <span class="ask-label">{{ option.label }}</span>
-                <span class="ask-description">{{ option.description }}</span>
-              </span>
-            </Button>
-          </div>
-
-          <div
-            v-if="activePreview[currentQuestionKey]"
-            class="ask-preview"
-          >
-            <div class="ask-preview-title">Preview</div>
-            <pre class="ask-preview-body">{{ activePreview[currentQuestionKey] }}</pre>
-          </div>
-
-        </section>
-      </div>
-
-      <div v-if="request.allow_freeform !== false" class="ask-freeform">
-        <div class="ask-freeform-title">其他补充</div>
+      <div v-if="request.allow_freeform !== false" class="ask-freeform-row">
         <Textarea
           v-model="freeform"
           class="ask-freeform-input"
-          rows="3"
-          placeholder="如果上面的选项还不够准确，可以在这里补充说明"
+          rows="2"
+          :placeholder="currentQuestion.options.length > 0 ? '或直接输入你的回答' : '输入你的回答'"
         />
       </div>
+    </div>
 
-      <div class="ask-actions">
-        <Button
-          variant="outline"
-          size="sm"
-          v-if="questions.length > 1"
-          class="ask-back"
-          :disabled="currentIndex === 0"
-          @click="goPrevious"
-        >
-          上一步
-        </Button>
-        <Button variant="outline" size="sm" class="ask-skip" @click="emit('skip')">跳过</Button>
-        <Button size="sm" class="ask-submit" :disabled="!canSubmit" @click="submitAnswers">
-          {{ isLastQuestion ? '确认' : '下一步' }}
-        </Button>
-      </div>
+    <div class="ask-bottom">
+      <Button
+        v-if="questions.length > 1"
+        variant="ghost"
+        size="sm"
+        class="ask-nav-btn"
+        :disabled="currentIndex === 0"
+        @click="goPrevious"
+      >
+        上一步
+      </Button>
+      <div class="flex-1" />
+      <Button size="sm" class="ask-submit-btn" :disabled="!canSubmit" @click="submitAnswers">
+        {{ isLastQuestion ? '确认' : '下一步' }}
+      </Button>
     </div>
   </div>
 </template>
 
 <style scoped>
-.ask-shell {
+.ask-box {
   width: 100%;
   box-sizing: border-box;
-}
-
-.ask-card {
-  width: 100%;
-  max-width: 760px;
-  margin: 0 auto;
-  box-sizing: border-box;
   border: 1px solid #e5e7eb;
-  border-radius: 20px;
+  border-radius: 14px;
   background: #ffffff;
-  padding: 14px;
-  box-shadow: 0 14px 40px rgba(15, 23, 42, 0.1);
+  padding: 10px 12px;
 }
 
-.ask-header {
-  display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: 12px;
-  padding: 2px 2px 12px;
+.dark .ask-box {
+  border-color: #3f3f46;
+  background: #1a1a1a;
 }
 
-.ask-title {
-  color: #111827;
-  font-size: 16px;
-  font-weight: 600;
-  line-height: 1.4;
-}
-
-.ask-context {
-  margin-top: 6px;
-  color: #64748b;
-  font-size: 12px;
-  line-height: 1.5;
-}
-
-.ask-close {
-  flex-shrink: 0;
-  width: 28px;
-  height: 28px;
-  border: 0;
-  border-radius: 999px;
-  background: transparent;
-  color: #64748b;
-}
-
-.ask-close:hover {
-  background: #f1f5f9;
-}
-
-.ask-question-list {
-  display: flex;
-  flex-direction: column;
-  gap: 12px;
-}
-
-.ask-question-card {
-  border: 1px solid #e5e7eb;
-  border-radius: 16px;
-  padding: 12px;
-  background: #ffffff;
-}
-
-.ask-question-header {
+.ask-top {
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 8px;
-  margin-bottom: 8px;
+  margin-bottom: 6px;
 }
 
-.ask-question-meta {
+.ask-meta {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 6px;
 }
 
 .ask-chip {
   display: inline-flex;
   align-items: center;
-  justify-content: center;
-  min-height: 24px;
-  padding: 0 10px;
+  padding: 1px 8px;
   border-radius: 999px;
-  background: #eef2f7;
+  background: #f1f5f9;
   color: #475569;
   font-size: 11px;
   font-weight: 600;
-  letter-spacing: 0.03em;
 }
 
-.ask-mode {
-  color: #94a3b8;
-  font-size: 11px;
+.dark .ask-chip {
+  background: #27272a;
+  color: #a1a1aa;
 }
 
 .ask-progress {
-  color: #64748b;
-  font-size: 12px;
+  color: #94a3b8;
+  font-size: 11px;
   font-variant-numeric: tabular-nums;
 }
 
-.ask-question-title {
-  margin-bottom: 10px;
+.ask-skip-btn {
+  border: 0;
+  background: transparent;
+  color: #94a3b8;
+  font-size: 12px;
+  cursor: pointer;
+  padding: 2px 6px;
+  border-radius: 6px;
+  transition: background 120ms ease, color 120ms ease;
+}
+
+.ask-skip-btn:hover {
+  background: #f1f5f9;
+  color: #64748b;
+}
+
+.dark .ask-skip-btn:hover {
+  background: #27272a;
+  color: #d4d4d8;
+}
+
+.ask-body {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.ask-question-text {
   color: #111827;
-  font-size: 14px;
+  font-size: 13px;
   line-height: 1.5;
+}
+
+.dark .ask-question-text {
+  color: #ececec;
 }
 
 .ask-options {
   display: flex;
   flex-direction: column;
-  gap: 12px;
+  gap: 8px;
 }
 
 .ask-option {
-  width: 100%;
-  min-height: 74px;
-  height: auto !important;
   display: flex;
-  align-items: flex-start;
-  gap: 12px;
-  padding: 12px 14px;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 10px 14px;
   border: 1px solid #e5e7eb;
-  border-radius: 14px;
+  border-radius: 8px;
   background: transparent;
   text-align: left;
-  white-space: normal;
+  cursor: pointer;
+  transition: background 120ms ease, border-color 120ms ease;
 }
 
 .ask-option:hover {
   background: #f8fafc;
+  border-color: #cbd5e1;
 }
 
 .ask-option.is-selected {
   background: #eff6ff;
-  border-color: #bfdbfe;
+  border-color: #93c5fd;
 }
 
-.ask-index {
-  width: 28px;
-  height: 28px;
-  flex-shrink: 0;
-  border-radius: 10px;
-  background: #eef2f7;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  color: #475569;
-  font-size: 13px;
+.dark .ask-option {
+  border-color: #3f3f46;
 }
 
-.ask-option-body {
-  min-width: 0;
-  display: flex;
-  flex: 1;
-  flex-direction: column;
-  gap: 6px;
+.dark .ask-option:hover {
+  background: #27272a;
+  border-color: #52525b;
 }
 
-.ask-label {
+.dark .ask-option.is-selected {
+  background: rgba(59, 130, 246, 0.12);
+  border-color: #3b82f6;
+}
+
+.ask-option-label {
   color: #111827;
-  font-size: 14px;
+  font-size: 13px;
   font-weight: 500;
-  line-height: 1.35;
+  line-height: 1.4;
 }
 
-.ask-description {
-  color: #64748b;
-  font-size: 12px;
-  line-height: 1.5;
+.dark .ask-option-label {
+  color: #ececec;
 }
 
-.ask-preview {
-  margin-top: 10px;
-  padding: 10px 12px;
-  border-radius: 14px;
-  background: #f8fafc;
-  border: 1px solid #e5e7eb;
-}
-
-.ask-preview-title {
-  margin-bottom: 6px;
+.ask-option-desc {
   color: #64748b;
   font-size: 11px;
-  font-weight: 700;
-  text-transform: uppercase;
-  letter-spacing: 0.05em;
+  line-height: 1.4;
+  margin-left: auto;
+  text-align: right;
 }
 
-.ask-preview-body {
-  margin: 0;
-  white-space: pre-wrap;
-  word-break: break-word;
-  color: #334155;
-  font-size: 12px;
-  line-height: 1.6;
-  font-family: 'SF Mono', 'Fira Code', monospace;
+.dark .ask-option-desc {
+  color: #a1a1aa;
+}
+
+.ask-freeform-row {
+  margin-top: 2px;
 }
 
 .ask-freeform-input {
   width: 100%;
-  margin-top: 10px;
   border: 1px solid #e5e7eb;
-  border-radius: 12px;
+  border-radius: 10px;
   background: #ffffff;
-  padding: 10px 12px;
-  resize: vertical;
+  padding: 7px 10px;
+  resize: none;
   box-sizing: border-box;
   outline: none;
   color: #111827;
@@ -478,48 +387,38 @@ function submitAnswers() {
   line-height: 1.5;
 }
 
-.ask-freeform {
-  margin-top: 12px;
+.dark .ask-freeform-input {
+  border-color: #3f3f46;
+  background: #111827;
+  color: #ececec;
 }
 
-.ask-freeform-title {
-  color: #475569;
-  font-size: 12px;
-  font-weight: 600;
-}
-
-.ask-actions {
+.ask-bottom {
   display: flex;
-  justify-content: flex-end;
-  gap: 10px;
-  margin-top: 14px;
+  align-items: center;
+  gap: 8px;
+  margin-top: 8px;
 }
 
-.ask-back,
-.ask-skip,
-.ask-submit {
-  flex-shrink: 0;
+.ask-nav-btn {
+  color: #64748b;
+}
+
+.ask-submit-btn {
   border-radius: 10px;
-  padding: 8px 14px;
-  font-size: 13px;
-}
-
-.ask-back,
-.ask-skip {
-  border: 1px solid #cbd5e1;
-  background: #ffffff;
-  color: #111827;
-}
-
-.ask-submit {
-  border: 1px solid #111827;
   background: #111827;
   color: white;
+  font-size: 13px;
+  padding: 6px 16px;
 }
 
-.ask-back:disabled,
-.ask-submit:disabled {
-  opacity: 0.45;
+.ask-submit-btn:disabled {
+  opacity: 0.4;
   cursor: not-allowed;
+}
+
+.dark .ask-submit-btn {
+  background: #ececec;
+  color: #111827;
 }
 </style>

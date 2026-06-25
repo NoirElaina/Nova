@@ -12,5 +12,6 @@ pub mod rag;
 pub mod search;
 pub mod shell_sessions;
 pub mod skills;
+pub mod token_usage_log;
 pub mod tools;
 pub mod user_terminal;

@@ -19,11 +19,7 @@ import AboutTab   from './tabs/AboutTab.vue'
 
 type MainView = 'chat' | 'settings'
 
-const props = defineProps<{
-  messages?: any[]
-  entries?: any[]
-  assistantTurnCost?: any
-}>()
+defineProps<{}>()
 
 const emit = defineEmits<{
   (e: 'change-main-view', view: MainView): void
@@ -162,9 +158,6 @@ onUnmounted(() => {
         <DataTab    v-else-if="activeTab === 'data'" />
         <UsageTab
           v-else-if="activeTab === 'usage'"
-          :messages="props.messages || []"
-          :entries="props.entries || []"
-          :assistantTurnCost="props.assistantTurnCost"
         />
         <AboutTab   v-else-if="activeTab === 'about'" />
       </div>

@@ -139,6 +139,30 @@ async fn ensure_schema(pool: &SqlitePool) -> Result<(), String> {
 
         CREATE INDEX IF NOT EXISTS idx_file_change_files_batch_order
             ON file_change_files(batch_id, file_order);
+
+        CREATE TABLE IF NOT EXISTS token_usage_log (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            conversation_id TEXT,
+            model TEXT NOT NULL,
+            provider TEXT,
+            input_tokens INTEGER NOT NULL DEFAULT 0,
+            output_tokens INTEGER NOT NULL DEFAULT 0,
+            cache_read_tokens INTEGER NOT NULL DEFAULT 0,
+            cache_creation_tokens INTEGER NOT NULL DEFAULT 0,
+            total_tokens INTEGER NOT NULL DEFAULT 0,
+            cost_usd TEXT,
+            source TEXT,
+            created_at INTEGER NOT NULL
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_token_usage_log_created
+            ON token_usage_log(created_at DESC);
+
+        CREATE INDEX IF NOT EXISTS idx_token_usage_log_model
+            ON token_usage_log(model);
+
+        CREATE INDEX IF NOT EXISTS idx_token_usage_log_conversation
+            ON token_usage_log(conversation_id);
         "#,
     )
     .execute(pool)
@@ -1059,6 +1083,11 @@ pub async fn clear_history(app: &AppHandle, conversation_id: Option<String>) -> 
             .execute(&mut *tx)
             .await
             .map_err(|e| e.to_string())?;
+        sqlx::query("UPDATE token_usage_log SET conversation_id = NULL WHERE conversation_id = ?")
+            .bind(&id)
+            .execute(&mut *tx)
+            .await
+            .map_err(|e| e.to_string())?;
 
         tx.commit().await.map_err(|e| e.to_string())?;
         crate::command::rag::rag_remove_conversation_documents(app, &id).await?;
@@ -1099,6 +1128,10 @@ pub async fn clear_history(app: &AppHandle, conversation_id: Option<String>) -> 
             .await
             .map_err(|e| e.to_string())?;
         sqlx::query("DELETE FROM messages")
+            .execute(&mut *tx)
+            .await
+            .map_err(|e| e.to_string())?;
+        sqlx::query("UPDATE token_usage_log SET conversation_id = NULL")
             .execute(&mut *tx)
             .await
             .map_err(|e| e.to_string())?;
@@ -1157,6 +1190,12 @@ pub async fn delete_conversation(app: &AppHandle, conversation_id: &str) -> Resu
     .map_err(|e| e.to_string())?;
 
     sqlx::query("DELETE FROM file_change_batches WHERE conversation_id = ?")
+        .bind(conversation_id)
+        .execute(&pool)
+        .await
+        .map_err(|e| e.to_string())?;
+
+    sqlx::query("UPDATE token_usage_log SET conversation_id = NULL WHERE conversation_id = ?")
         .bind(conversation_id)
         .execute(&pool)
         .await

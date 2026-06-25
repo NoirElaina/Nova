@@ -28,3 +28,5 @@ pub mod browser;
 pub mod workspace;
 // 宠物功能
 pub mod pet_config;
+// 全局 token 用量统计命令入口。
+pub mod usage;

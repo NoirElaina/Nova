@@ -886,6 +886,23 @@ pub async fn send_chat_message(
             provider_result.cost.as_ref(),
             input_token_source,
         );
+        let log_cost = provider_result
+            .cost
+            .as_ref()
+            .map(|c| c.total_cost_usd.as_str());
+        let _ = crate::llm::services::token_usage_log::log_token_usage(
+            &app,
+            conversation_id.as_deref(),
+            provider.model(),
+            Some(provider.provider_name()),
+            input_tokens.unwrap_or(0),
+            provider_result.output_tokens.unwrap_or(0),
+            provider_result.cache_read_tokens.unwrap_or(0),
+            provider_result.cache_creation_tokens.unwrap_or(0),
+            log_cost,
+            Some(input_token_source),
+        )
+        .await;
         emit_token_debug_event(
             &app,
             conversation_id.as_deref(),

@@ -183,6 +183,14 @@ impl LlmClient {
         }
     }
 
+    pub fn model(&self) -> &str {
+        &self.model
+    }
+
+    pub fn provider_name(&self) -> &'static str {
+        self.adapter.provider_name()
+    }
+
     pub fn estimate_prompt_tokens(
         &self,
         app: &AppHandle,

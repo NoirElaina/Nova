@@ -14,7 +14,7 @@ const emit = defineEmits<{
   (e: 'close'): void;
 }>();
 
-type TabId = 'workspace' | 'diff' | 'files' | 'terminal' | 'browser';
+type TabId = 'workspace' | 'diff' | 'usage' | 'files' | 'terminal' | 'browser';
 
 const props = defineProps<{
   open: boolean;

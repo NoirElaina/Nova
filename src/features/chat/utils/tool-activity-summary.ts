@@ -106,12 +106,11 @@ export function buildToolTurnSummary(entries: ToolExecutionEntry[]): ToolTurnSum
 }
 
 export function renderToolTurnSummaryLine(summary: ToolTurnSummary): string {
-  return `本轮调用了 ${summary.totalCalls} 个工具`;
-}
+  const readCount =
+    summary.categoryCounts.find((item) => item.label === "读取文件")?.count ?? 0;
+  if (readCount > 0) {
+    return `Read ${readCount} ${readCount === 1 ? "file" : "files"}, used ${summary.totalCalls} ${summary.totalCalls === 1 ? "tool" : "tools"}`;
+  }
 
-export function renderToolTurnCategoryLine(summary: ToolTurnSummary): string {
-  return summary.categoryCounts
-    .slice(0, 4)
-    .map((item) => `${item.label} ${item.count} 次`)
-    .join("，");
+  return `Used ${summary.totalCalls} ${summary.totalCalls === 1 ? "tool" : "tools"}`;
 }

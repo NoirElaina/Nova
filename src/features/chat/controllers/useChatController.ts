@@ -9,6 +9,7 @@ import {
 } from "../services/chat-api";
 import type {
   AgentMode,
+  AssistantTranscriptSegment,
   ChatMessage,
   ChatMessageEvent,
   ContextCompactSummary,
@@ -41,6 +42,7 @@ export function useChatController() {
   const currentStage = ref<LiveTurnStage>("processing");
   const assistantResponse = ref("");
   const assistantReasoning = ref("");
+  const assistantSegments = ref<AssistantTranscriptSegment[]>([]);
   const assistantTokenUsage = ref<number | undefined>(undefined);
   const assistantTurnCost = ref<TurnCost | undefined>(undefined);
   const conversations = ref<ConversationMeta[]>([]);
@@ -75,6 +77,7 @@ export function useChatController() {
     currentStage,
     assistantResponse,
     assistantReasoning,
+    assistantSegments,
     assistantTokenUsage,
     assistantTurnCost,
     pendingQuestion,
@@ -164,6 +167,7 @@ export function useChatController() {
     conversationMemory,
     assistantResponse,
     assistantReasoning,
+    assistantSegments,
     assistantTokenUsage,
     assistantTurnCost,
     runtimeStateByConversation,
@@ -199,6 +203,7 @@ export function useChatController() {
     agentMode,
     assistantResponse,
     assistantReasoning,
+    assistantSegments,
     assistantTokenUsage,
     assistantTurnCost,
     currentToolStartedAt,
@@ -301,6 +306,7 @@ export function useChatController() {
     currentStage,
     assistantResponse,
     assistantReasoning,
+    assistantSegments,
     assistantTokenUsage,
     assistantTurnCost,
     toolExecutionLogs,

@@ -14,6 +14,7 @@ export interface TurnCost {
   toolCalls: number;
   toolDurationMs: number;
   toolSummary?: ToolTurnSummary;
+  transcriptSegments?: AssistantTranscriptSegment[];
   contextCompacts: ContextCompactSummary[];
 }
 
@@ -53,6 +54,20 @@ export interface ToolTurnSummary {
   entries: ToolTurnEntrySnapshot[];
 }
 
+export type AssistantTranscriptSegment =
+  | {
+      type: "text";
+      text: string;
+    }
+  | {
+      type: "reasoning";
+      text: string;
+    }
+  | {
+      type: "tools";
+      toolIds: string[];
+    };
+
 export type AgentMode = "agent" | "plan" | "auto";
 
 export type AttachmentKind = "document" | "image";
@@ -72,6 +87,7 @@ export interface ChatMessage {
   role: "user" | "assistant";
   content: string;
   reasoning?: string;
+  transcriptSegments?: AssistantTranscriptSegment[];
   attachments?: ChatAttachment[];
   tokenUsage?: number;
   cost?: TurnCost;

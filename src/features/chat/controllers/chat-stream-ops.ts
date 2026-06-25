@@ -16,6 +16,12 @@ import type {
 } from "../../../lib/chat-types";
 import { estimateTokens } from "../utils/session-memory";
 import { buildToolTurnSummary } from "../utils/tool-activity-summary";
+import {
+  appendTranscriptReasoning,
+  appendTranscriptText,
+  appendTranscriptTool,
+  buildAssistantTranscriptSegments,
+} from "../utils/assistant-transcript";
 import type {
   ConversationTurnRuntimeState,
   LiveTurnStage,
@@ -228,6 +234,7 @@ export function createChatStreamOperations(deps: StreamOpsDeps) {
     }
     activeRuntimeRefs.assistantResponse.value = "";
     activeRuntimeRefs.assistantReasoning.value = "";
+    activeRuntimeRefs.assistantSegments.value = [];
     activeRuntimeRefs.assistantTokenUsage.value = undefined;
     activeRuntimeRefs.assistantTurnCost.value = undefined;
     activeRuntimeRefs.isGenerating.value = false;
@@ -258,20 +265,29 @@ export function createChatStreamOperations(deps: StreamOpsDeps) {
     const toolSummary = buildToolTurnSummary(
       state.toolExecutionLogs.filter((entry) => state.currentTurnToolIds.includes(entry.id)),
     );
+    const transcriptSegments = buildAssistantTranscriptSegments(state.assistantSegments, {
+      reasoning: finalReasoning,
+      text: finalText,
+    });
 
     if (finalText || finalReasoning) {
       const assistantMessage: ChatMessage = {
         role: "assistant",
         content: finalText || "（本轮没有返回可显示的文本内容）",
         reasoning: finalReasoning || undefined,
+        transcriptSegments,
         tokenUsage: resolvedTokenUsage > 0 ? resolvedTokenUsage : undefined,
-        cost: buildAssistantCostForState(state, toolSummary),
+        cost: {
+          ...buildAssistantCostForState(state, toolSummary),
+          transcriptSegments,
+        },
       };
       await persistMessage(assistantMessage, conversationId);
     }
 
     state.assistantResponse = "";
     state.assistantReasoning = "";
+    state.assistantSegments = [];
     state.assistantTokenUsage = undefined;
     state.assistantTurnCost = undefined;
     state.isGenerating = false;
@@ -321,6 +337,13 @@ export function createChatStreamOperations(deps: StreamOpsDeps) {
         activeRuntimeRefs.currentTurnToolIds.value.includes(entry.id),
       ),
     );
+    const transcriptSegments = buildAssistantTranscriptSegments(
+      activeRuntimeRefs.assistantSegments.value,
+      {
+        reasoning: finalReasoning,
+        text: finalText,
+      },
+    );
 
     const cost = buildAssistantCost(
       activeRuntimeRefs.currentInputTokens.value,
@@ -331,12 +354,14 @@ export function createChatStreamOperations(deps: StreamOpsDeps) {
       toolSummary,
       activeRuntimeRefs.assistantTurnCost.value,
     );
+    cost.transcriptSegments = transcriptSegments;
     activeRuntimeRefs.assistantTurnCost.value = cost;
 
     const assistantMessage: ChatMessage = {
       role: "assistant",
       content: finalText || "（本轮没有返回可显示的文本内容）",
       reasoning: finalReasoning || undefined,
+      transcriptSegments,
       tokenUsage: resolvedTokenUsage > 0 ? resolvedTokenUsage : undefined,
       cost,
     };
@@ -350,6 +375,7 @@ export function createChatStreamOperations(deps: StreamOpsDeps) {
     }
     activeRuntimeRefs.assistantResponse.value = "";
     activeRuntimeRefs.assistantReasoning.value = "";
+    activeRuntimeRefs.assistantSegments.value = [];
     activeRuntimeRefs.assistantTokenUsage.value = undefined;
     activeRuntimeRefs.isGenerating.value = false;
     activeRuntimeRefs.currentStage.value = "processing";
@@ -380,6 +406,13 @@ export function createChatStreamOperations(deps: StreamOpsDeps) {
         activeRuntimeRefs.currentTurnToolIds.value.includes(entry.id),
       ),
     );
+    const transcriptSegments = buildAssistantTranscriptSegments(
+      activeRuntimeRefs.assistantSegments.value,
+      {
+        reasoning: finalReasoning,
+        text: finalText,
+      },
+    );
     const cost = buildAssistantCost(
       activeRuntimeRefs.currentInputTokens.value,
       activeRuntimeRefs.currentOutputTokens.value,
@@ -389,11 +422,13 @@ export function createChatStreamOperations(deps: StreamOpsDeps) {
       toolSummary,
       activeRuntimeRefs.assistantTurnCost.value,
     );
+    cost.transcriptSegments = transcriptSegments;
 
     const assistantMessage: ChatMessage = {
       role: "assistant",
       content: cancelledText,
       reasoning: finalReasoning || undefined,
+      transcriptSegments,
       tokenUsage: resolvedTokenUsage > 0 ? resolvedTokenUsage : undefined,
       cost,
     };
@@ -404,6 +439,7 @@ export function createChatStreamOperations(deps: StreamOpsDeps) {
     );
     activeRuntimeRefs.assistantResponse.value = "";
     activeRuntimeRefs.assistantReasoning.value = "";
+    activeRuntimeRefs.assistantSegments.value = [];
     activeRuntimeRefs.assistantTokenUsage.value = undefined;
     activeRuntimeRefs.assistantTurnCost.value = undefined;
     activeRuntimeRefs.isGenerating.value = false;
@@ -422,6 +458,7 @@ export function createChatStreamOperations(deps: StreamOpsDeps) {
     state.currentStage = "processing";
     state.assistantResponse = "";
     state.assistantReasoning = "";
+    state.assistantSegments = [];
     state.assistantTokenUsage = undefined;
     state.assistantTurnCost = undefined;
     if (!preservePendingPrompt) {
@@ -459,6 +496,7 @@ export function createChatStreamOperations(deps: StreamOpsDeps) {
       state.isGenerating = true;
       switchStage(state, "processing");
       state.assistantResponse += payload.text;
+      state.assistantSegments = appendTranscriptText(state.assistantSegments, payload.text);
       return;
     }
 
@@ -466,6 +504,7 @@ export function createChatStreamOperations(deps: StreamOpsDeps) {
       state.isGenerating = true;
       switchStage(state, "processing");
       state.assistantReasoning += payload.text;
+      state.assistantSegments = appendTranscriptReasoning(state.assistantSegments, payload.text);
       return;
     }
 
@@ -486,6 +525,7 @@ export function createChatStreamOperations(deps: StreamOpsDeps) {
       if (!state.currentTurnToolIds.includes(toolId)) {
         state.currentTurnToolIds = [...state.currentTurnToolIds, toolId];
       }
+      state.assistantSegments = appendTranscriptTool(state.assistantSegments, toolId);
 
       startToolExecutionTraceInState(state, toolId, toolName);
       return;
@@ -615,6 +655,10 @@ export function createChatStreamOperations(deps: StreamOpsDeps) {
           const preview =
             rendered.length > 1200 ? `${rendered.slice(0, 1200)}\n...(truncated)` : rendered;
           state.assistantResponse += `\n${preview}\n`;
+          state.assistantSegments = appendTranscriptText(
+            state.assistantSegments,
+            `\n${preview}\n`,
+          );
 
           if (!isActive) {
             emitToast({
@@ -746,6 +790,7 @@ export function createChatStreamOperations(deps: StreamOpsDeps) {
           switchStage(state, "processing");
           state.assistantResponse = "";
           state.assistantReasoning = "";
+          state.assistantSegments = [];
           state.assistantTokenUsage = undefined;
           state.assistantTurnCost = undefined;
           resetTurnRuntimeState(activeRuntimeRefs);

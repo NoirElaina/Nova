@@ -1,10 +1,10 @@
 <script setup lang="ts">
 import { ref, computed } from 'vue';
 import { Button } from '@/components/ui/button';
-import MarkdownRenderer from '../MarkdownRenderer.vue';
 import type { ChatMessage } from '../../../lib/chat-types';
+import { normalizeAssistantTranscript } from '../../../features/chat/utils/assistant-transcript';
+import AssistantTranscript from './AssistantTranscript.vue';
 import ContextCompactNotice from './ContextCompactNotice.vue';
-import TurnActivitySummaryCard from './TurnActivitySummaryCard.vue';
 
 const props = defineProps<{
   message: ChatMessage;
@@ -21,7 +21,7 @@ const emit = defineEmits<{
 }>();
 
 const animatingReaction = ref<'up' | 'down' | null>(null);
-const reasoningOpen = ref(false);
+const transcriptSegments = computed(() => normalizeAssistantTranscript(props.message));
 
 const formatUsd = (value?: string) => {
   const amount = Number.parseFloat(value ?? '');
@@ -30,14 +30,6 @@ const formatUsd = (value?: string) => {
   if (amount < 0.01) return `$${amount.toFixed(5)}`;
   return `$${amount.toFixed(4)}`;
 };
-
-// 计算思考内容的字符数，显示在折叠 header 里
-const reasoningChars = computed(() => {
-  const len = props.message.reasoning?.trim().length ?? 0;
-  if (len === 0) return '';
-  if (len < 1000) return `${len} 字`;
-  return `${(len / 1000).toFixed(1)}k 字`;
-});
 
 const triggerReaction = (value: 'up' | 'down') => {
   animatingReaction.value = value;
@@ -53,31 +45,14 @@ const triggerReaction = (value: 'up' | 'down') => {
 <template>
   <div class="w-full max-w-[85%]">
     <div class="min-w-0 flex-1 text-[0.95rem] leading-relaxed break-words text-[#1a1a1a] dark:text-[#ececec]">
-      <div
-        v-if="message.reasoning?.trim()"
-        class="reasoning-panel"
-        :class="{ 'reasoning-panel--open': reasoningOpen }"
-      >
-        <button class="reasoning-summary" @click="reasoningOpen = !reasoningOpen">
-          <span class="reasoning-arrow">▸</span>
-          <span class="reasoning-label">AI 思考过程</span>
-          <span class="reasoning-meta">{{ reasoningChars }}</span>
-        </button>
-        <div class="reasoning-body">
-          <div class="reasoning-scroll">
-            <MarkdownRenderer :content="message.reasoning" />
-          </div>
-        </div>
-      </div>
-      <TurnActivitySummaryCard
-        v-if="message.cost?.toolSummary && message.cost.toolSummary.totalCalls > 0"
-        :summary="message.cost.toolSummary"
-      />
       <ContextCompactNotice
         v-if="message.cost && message.cost.contextCompacts.length > 0"
         :items="message.cost.contextCompacts"
       />
-      <MarkdownRenderer :content="message.content" />
+      <AssistantTranscript
+        :segments="transcriptSegments"
+        :toolSummary="message.cost?.toolSummary"
+      />
       <div
         v-if="((message.cost?.inputTokens ?? 0) + (message.cost?.outputTokens ?? 0) > 0) || (message.tokenUsage && message.tokenUsage > 0) || (conversationTokenUsage && conversationTokenUsage > 0)"
         class="token-badge mt-2"
@@ -198,112 +173,6 @@ const triggerReaction = (value: 'up' | 'down') => {
   color: #86efac;
   border-color: rgba(34, 197, 94, 0.38);
   background: rgba(20, 83, 45, 0.32);
-}
-
-.reasoning-panel {
-  margin-bottom: 10px;
-  border: 1px solid #e5e7eb;
-  background: #f7f7f7;
-  border-radius: 10px;
-  overflow: hidden;
-  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.035);
-}
-
-/* ---- 折叠栏 header ---- */
-.reasoning-summary {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  width: 100%;
-  padding: 8px 10px;
-  background: transparent;
-  border: none;
-  cursor: pointer;
-  font-size: 11px;
-  color: #64748b;
-  user-select: none;
-  text-align: left;
-}
-
-.reasoning-summary:hover {
-  background: rgba(0, 0, 0, 0.03);
-}
-
-.reasoning-arrow {
-  display: inline-block;
-  transition: transform 0.18s ease;
-  flex-shrink: 0;
-}
-
-.reasoning-panel--open .reasoning-arrow {
-  transform: rotate(90deg);
-}
-
-.reasoning-label {
-  font-weight: 500;
-}
-
-.reasoning-meta {
-  margin-left: auto;
-  font-size: 10px;
-  opacity: 0.6;
-  font-family: monospace;
-}
-
-/* ---- 展开体（带 max-height 滚动）---- */
-.reasoning-body {
-  display: grid;
-  grid-template-rows: 0fr;
-  transition: grid-template-rows 0.22s ease;
-}
-
-.reasoning-panel--open .reasoning-body {
-  grid-template-rows: 1fr;
-}
-
-.reasoning-scroll {
-  overflow: hidden;
-  /* 展开后内部区域最大高度 260px，超出滚动 */
-}
-
-.reasoning-panel--open .reasoning-scroll {
-  overflow-y: auto;
-  max-height: 260px;
-  padding: 0 10px 10px;
-}
-
-.reasoning-panel--open .reasoning-scroll::-webkit-scrollbar {
-  width: 4px;
-}
-
-.reasoning-panel--open .reasoning-scroll::-webkit-scrollbar-track {
-  background: transparent;
-}
-
-.reasoning-panel--open .reasoning-scroll::-webkit-scrollbar-thumb {
-  background: rgba(100, 116, 139, 0.3);
-  border-radius: 4px;
-}
-
-.reasoning-panel :deep(.markdown-body) {
-  margin-top: 4px;
-}
-
-.dark .reasoning-panel {
-  border-color: #3f4652;
-  background: #1f2937;
-}
-
-.dark .reasoning-summary {
-  color: #cbd5e1;
-}
-
-.dark .reasoning-summary:hover {
-  background: rgba(255, 255, 255, 0.04);
-}
-
-.dark .reasoning-panel--open .reasoning-scroll::-webkit-scrollbar-thumb {
-  background: rgba(148, 163, 184, 0.28);
 }
 
 .dark .reaction-btn.is-active-up {

@@ -1,4 +1,5 @@
 import type {
+  AssistantTranscriptSegment,
   NeedsUserInputPayload,
   ContextCompactSummary,
   ContextUsage,
@@ -61,6 +62,7 @@ export type ConversationTurnRuntimeState = {
   currentStage: LiveTurnStage;
   assistantResponse: string;
   assistantReasoning: string;
+  assistantSegments: AssistantTranscriptSegment[];
   assistantTokenUsage?: number;
   assistantTurnCost?: TurnCost;
   pendingQuestion: NeedsUserInputPayload | null;

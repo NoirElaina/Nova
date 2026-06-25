@@ -2,7 +2,6 @@
 import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { Button } from "@/components/ui/button";
 import type { ToolExecutionEntry } from "../../../lib/chat-types";
-import { emitToast } from "../../../lib/toast";
 import {
   getShellSessionStatus,
   type ShellSessionStatus,

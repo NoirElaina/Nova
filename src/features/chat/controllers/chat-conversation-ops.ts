@@ -2,6 +2,7 @@ import type { Ref } from "vue";
 import { emitToast } from "../../../lib/toast";
 import type {
   AgentMode,
+  AssistantTranscriptSegment,
   ChatMessage,
   ConversationMemory,
   ConversationMeta,
@@ -36,6 +37,7 @@ import {
   restoreRuntimeState,
   stashRuntimeState,
 } from "./chat-runtime-state";
+import { buildAssistantTranscriptSegments } from "../utils/assistant-transcript";
 
 type ConversationOpsDeps = {
   activeConversationId: Ref<string>;
@@ -51,6 +53,7 @@ type ConversationOpsDeps = {
   conversationMemory: Ref<ConversationMemory | null>;
   assistantResponse: Ref<string>;
   assistantReasoning: Ref<string>;
+  assistantSegments: Ref<AssistantTranscriptSegment[]>;
   assistantTokenUsage: Ref<number | undefined>;
   assistantTurnCost: Ref<TurnCost | undefined>;
   runtimeStateByConversation: Map<string, ConversationTurnRuntimeState>;
@@ -73,6 +76,7 @@ export function createConversationOperations(deps: ConversationOpsDeps) {
     conversationMemory,
     assistantResponse,
     assistantReasoning,
+    assistantSegments,
     assistantTokenUsage,
     assistantTurnCost,
     runtimeStateByConversation,
@@ -113,6 +117,7 @@ export function createConversationOperations(deps: ConversationOpsDeps) {
     activeRuntimeRefs.currentStage.value = "processing";
     assistantResponse.value = "";
     assistantReasoning.value = "";
+    assistantSegments.value = [];
     assistantTokenUsage.value = undefined;
     assistantTurnCost.value = undefined;
     activeRuntimeRefs.pendingQuestion.value = null;
@@ -153,6 +158,10 @@ export function createConversationOperations(deps: ConversationOpsDeps) {
       activeRuntimeRefs.currentStage.value = "processing";
       assistantResponse.value = response;
       assistantReasoning.value = reasoning;
+      assistantSegments.value = buildAssistantTranscriptSegments(undefined, {
+        reasoning,
+        text: response,
+      });
       assistantTokenUsage.value = undefined;
       assistantTurnCost.value = undefined;
       return;
@@ -173,6 +182,10 @@ export function createConversationOperations(deps: ConversationOpsDeps) {
           role: "assistant",
           content,
           reasoning: finalReasoning || undefined,
+          transcriptSegments: buildAssistantTranscriptSegments(undefined, {
+            reasoning: finalReasoning,
+            text: finalText,
+          }),
         };
         messages.value.push(assistantMessage);
         await persistMessage(assistantMessage, conversationId);
@@ -251,6 +264,7 @@ export function createConversationOperations(deps: ConversationOpsDeps) {
           attachments: message.attachments,
           tokenUsage: message.tokenUsage,
           cost: message.cost,
+          transcriptSegments: message.cost?.transcriptSegments,
         }));
 
       const restored = restoreRuntimeState(
@@ -383,6 +397,7 @@ export function createConversationOperations(deps: ConversationOpsDeps) {
     resetTurnRuntimeState(activeRuntimeRefs);
     assistantResponse.value = "";
     assistantReasoning.value = "";
+    assistantSegments.value = [];
     assistantTokenUsage.value = undefined;
     assistantTurnCost.value = undefined;
     pendingUploads.value = [];

@@ -1,5 +1,6 @@
 import type { Ref } from "vue";
 import type {
+  AssistantTranscriptSegment,
   NeedsUserInputPayload,
   ContextCompactSummary,
   ContextUsage,
@@ -24,6 +25,7 @@ export type ActiveRuntimeRefs = {
   currentStage: Ref<LiveTurnStage>;
   assistantResponse: Ref<string>;
   assistantReasoning: Ref<string>;
+  assistantSegments: Ref<AssistantTranscriptSegment[]>;
   assistantTokenUsage: Ref<number | undefined>;
   assistantTurnCost: Ref<TurnCost | undefined>;
   pendingQuestion: Ref<NeedsUserInputPayload | null>;
@@ -68,6 +70,14 @@ export function bindActiveRuntimeState(active: ActiveRuntimeRefs): ConversationT
     },
     set assistantReasoning(value: string) {
       active.assistantReasoning.value = value;
+    },
+    get assistantSegments() {
+      return active.assistantSegments.value;
+    },
+    set assistantSegments(value: AssistantTranscriptSegment[]) {
+      active.assistantSegments.value = value.map((segment) =>
+        segment.type === "tools" ? { type: "tools", toolIds: [...segment.toolIds] } : { ...segment },
+      );
     },
     get assistantTokenUsage() {
       return active.assistantTokenUsage.value;
@@ -186,6 +196,7 @@ export function createEmptyRuntimeState(): ConversationTurnRuntimeState {
     currentStage: "processing",
     assistantResponse: "",
     assistantReasoning: "",
+    assistantSegments: [],
     assistantTokenUsage: undefined,
     assistantTurnCost: undefined,
     pendingQuestion: null,
@@ -216,6 +227,9 @@ export function cloneRuntimeState(
 ): ConversationTurnRuntimeState {
   return {
     ...state,
+    assistantSegments: state.assistantSegments.map((segment) =>
+      segment.type === "tools" ? { type: "tools", toolIds: [...segment.toolIds] } : { ...segment },
+    ),
     currentContextCompacts: cloneContextCompacts(state.currentContextCompacts),
     toolExecutionLogs: state.toolExecutionLogs.map((entry) => ({ ...entry })),
     currentTurnToolIds: [...state.currentTurnToolIds],
@@ -232,6 +246,9 @@ export function snapshotActiveRuntimeState(
     currentStage: active.currentStage.value,
     assistantResponse: active.assistantResponse.value,
     assistantReasoning: active.assistantReasoning.value,
+    assistantSegments: active.assistantSegments.value.map((segment) =>
+      segment.type === "tools" ? { type: "tools", toolIds: [...segment.toolIds] } : { ...segment },
+    ),
     assistantTokenUsage: active.assistantTokenUsage.value,
     assistantTurnCost: active.assistantTurnCost.value,
     pendingQuestion: active.pendingQuestion.value,
@@ -260,6 +277,9 @@ export function applyRuntimeStateToActive(
   active.currentStage.value = state.currentStage;
   active.assistantResponse.value = state.assistantResponse;
   active.assistantReasoning.value = state.assistantReasoning;
+  active.assistantSegments.value = state.assistantSegments.map((segment) =>
+    segment.type === "tools" ? { type: "tools", toolIds: [...segment.toolIds] } : { ...segment },
+  );
   active.assistantTokenUsage.value = state.assistantTokenUsage;
   active.assistantTurnCost.value = state.assistantTurnCost;
   active.pendingQuestion.value = state.pendingQuestion;
@@ -292,6 +312,7 @@ export function clearActiveRuntimeState(active: ActiveRuntimeRefs) {
   active.currentStage.value = "processing";
   active.assistantResponse.value = "";
   active.assistantReasoning.value = "";
+  active.assistantSegments.value = [];
   active.assistantTokenUsage.value = undefined;
   active.assistantTurnCost.value = undefined;
   active.pendingQuestion.value = null;

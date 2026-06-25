@@ -7,6 +7,7 @@ import {
 import type {
   AgentMode,
   AskUserAnswerSubmission,
+  AssistantTranscriptSegment,
   ChatAttachment,
   ChatMessage,
   ContextCompactSummary,
@@ -135,6 +136,7 @@ type SendOpsDeps = {
   agentMode: Ref<AgentMode>;
   assistantResponse: Ref<string>;
   assistantReasoning: Ref<string>;
+  assistantSegments: Ref<AssistantTranscriptSegment[]>;
   assistantTokenUsage: Ref<number | undefined>;
   assistantTurnCost: Ref<TurnCost | undefined>;
   currentToolStartedAt: Ref<number | null>;
@@ -173,6 +175,7 @@ export function createSendOperations(deps: SendOpsDeps) {
     agentMode,
     assistantResponse,
     assistantReasoning,
+    assistantSegments,
     assistantTokenUsage,
     assistantTurnCost,
     currentToolStartedAt,
@@ -299,6 +302,7 @@ export function createSendOperations(deps: SendOpsDeps) {
     currentStage.value = "processing";
     assistantResponse.value = "";
     assistantReasoning.value = "";
+    assistantSegments.value = [];
     assistantTokenUsage.value = undefined;
     assistantTurnCost.value = undefined;
     currentToolStartedAt.value = null;
@@ -337,6 +341,7 @@ export function createSendOperations(deps: SendOpsDeps) {
         });
         assistantResponse.value = "";
         assistantReasoning.value = "";
+        assistantSegments.value = [];
         assistantTokenUsage.value = undefined;
         assistantTurnCost.value = undefined;
         isGenerating.value = false;

@@ -41,6 +41,7 @@ const {
   currentStage,
   assistantResponse,
   assistantReasoning,
+  assistantSegments,
   assistantTokenUsage,
   assistantTurnCost,
   toolExecutionLogs,
@@ -323,6 +324,7 @@ onBeforeUnmount(() => {
             :currentStage="currentStage"
             :assistantResponse="assistantResponse"
             :assistantReasoning="assistantReasoning"
+            :assistantSegments="assistantSegments"
             :assistantTokenUsage="assistantTokenUsage"
             :currentTurnToolEntries="currentTurnToolExecutionLogs"
             :pendingQuestion="pendingQuestion"

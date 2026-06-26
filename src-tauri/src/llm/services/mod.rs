@@ -10,6 +10,7 @@ pub mod memory_dir;
 pub mod model_fetch;
 pub mod rag;
 pub mod search;
+pub mod session_files;
 pub mod shell_sessions;
 pub mod skills;
 pub mod token_usage_log;

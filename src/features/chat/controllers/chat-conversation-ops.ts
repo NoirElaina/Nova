@@ -17,12 +17,12 @@ import {
   deleteConversation,
   getChatTurnStatus,
   getConversationMemory,
-  listConversationRagDocuments,
+  listSessionFiles,
   listConversations,
   loadConversationHistory,
   loadConversationToolLogs,
   setConversationPinned,
-  type RagDocumentMeta,
+  type SessionFileMeta,
   upsertConversationMemory,
 } from "../services/chat-api";
 import { extractSessionMemory } from "../utils/session-memory";
@@ -50,7 +50,7 @@ type ConversationOpsDeps = {
   conversations: Ref<ConversationMeta[]>;
   messages: Ref<ChatMessage[]>;
   toolExecutionLogs: Ref<ToolExecutionEntry[]>;
-  conversationFiles: Ref<RagDocumentMeta[]>;
+  conversationFiles: Ref<SessionFileMeta[]>;
   pendingUploads: Ref<PendingUploadFile[]>;
   conversationMemory: Ref<ConversationMemory | null>;
   assistantResponse: Ref<string>;
@@ -94,7 +94,7 @@ export function createConversationOperations(deps: ConversationOpsDeps) {
     }
 
     try {
-      conversationFiles.value = await listConversationRagDocuments(conversationId);
+      conversationFiles.value = await listSessionFiles(conversationId);
     } catch (err) {
       console.error("Failed to load conversation files:", err);
       conversationFiles.value = [];

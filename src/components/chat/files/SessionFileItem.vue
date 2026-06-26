@@ -2,15 +2,10 @@
 import { Card, CardContent } from '@/components/ui/card';
 
 type SessionFileMeta = {
-  id: string;
-  sourceName: string;
-  sourceType: string;
-  mimeType?: string;
-  contentChars: number;
-  preview: string;
-  checksum: string;
+  filename: string;
+  readPath: string;
+  size: number;
   createdAt: number;
-  updatedAt: number;
 };
 
 const props = defineProps<{
@@ -29,6 +24,14 @@ const formatDocTime = (ts: number) => {
     minute: "2-digit",
   });
 };
+
+const formatFileSize = (bytes: number) => {
+  if (!bytes || !Number.isFinite(bytes) || bytes <= 0) return "";
+  if (bytes < 1024) return `${bytes} B`;
+  const kb = bytes / 1024;
+  if (kb < 1024) return `${kb.toFixed(1)} KB`;
+  return `${(kb / 1024).toFixed(1)} MB`;
+};
 </script>
 
 <template>
@@ -43,20 +46,17 @@ const formatDocTime = (ts: number) => {
             </svg>
           </span>
           <div class="min-w-0">
-            <div class="truncate text-[12px] font-medium text-[#111827] dark:text-[#e2dbcf]" :title="props.file.sourceName">
-              {{ props.file.sourceName }}
+            <div class="truncate text-[12px] font-medium text-[#111827] dark:text-[#e2dbcf]" :title="props.file.readPath">
+              {{ props.file.filename }}
             </div>
             <div class="text-[10px] text-[#94a3b8] dark:text-[#a79f92]">
-              {{ props.file.contentChars.toLocaleString() }} 字符
+              {{ formatFileSize(props.file.size) }}
             </div>
           </div>
         </div>
         <div class="shrink-0 text-[10px] text-[#94a3b8] dark:text-[#9d9589]">
-          {{ formatDocTime(props.file.updatedAt) }}
+          {{ formatDocTime(props.file.createdAt) }}
         </div>
-      </div>
-      <div class="mt-2 line-clamp-2 text-[11px] leading-relaxed text-[#64748b] dark:text-[#ada496]">
-        {{ props.file.preview }}
       </div>
     </CardContent>
   </Card>

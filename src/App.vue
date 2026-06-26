@@ -187,8 +187,8 @@ const handleBrowserAnnotationSelected = async (payload: BrowserAnnotationSelecte
     sourceName: payload.sourceName || "浏览器注释.md",
     mimeType: "text/markdown",
     content,
+    rawBytes: null,
     size: new TextEncoder().encode(content).length,
-    knowledgeStored: false,
   };
   await handleUploadFiles([file]);
 };

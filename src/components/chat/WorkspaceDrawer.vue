@@ -2,7 +2,7 @@
 import { defineAsyncComponent, ref, watch } from 'vue';
 import { Button } from '@/components/ui/button';
 import type { ChatMessage, ToolExecutionEntry, TurnCost } from '../../lib/chat-types';
-import type { RagDocumentMeta } from '../../features/chat/services/chat-api';
+import type { SessionFileMeta } from '../../features/chat/services/chat-api';
 import CodeDiffTab from './workspace/CodeDiffTab.vue';
 import FilesTab from './workspace/FilesTab.vue';
 import BrowserTab from './workspace/BrowserTab.vue';
@@ -23,7 +23,7 @@ const props = defineProps<{
   entries: ToolExecutionEntry[];
   currentTurnToolEntries?: ToolExecutionEntry[];
   messages: ChatMessage[];
-  files: RagDocumentMeta[];
+  files: SessionFileMeta[];
   assistantTurnCost?: TurnCost;
   conversationId?: string | null;
   browserOpenRequestKey?: number;
@@ -107,7 +107,6 @@ watch(
             v-else-if="activeTab === 'files'"
             :files="files"
             :selectedFileId="selectedFileId"
-            :conversationId="conversationId ?? null"
           />
 
           <TerminalTab

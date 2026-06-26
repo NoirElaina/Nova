@@ -4,7 +4,7 @@ import { emitToast } from "../../../lib/toast";
 import {
   cancelChatMessage,
   submitPermissionDecision,
-  type RagDocumentMeta,
+  type SessionFileMeta,
   upsertConversationToolLog,
 } from "../services/chat-api";
 import type {
@@ -49,7 +49,7 @@ export function useChatController() {
   const activeConversationId = ref("");
   /** 当前工作区路径（前端状态）。空字符串表示使用后端默认工作区。 */
   const activeWorkspacePath = ref("");
-  const conversationFiles = ref<RagDocumentMeta[]>([]);
+  const conversationFiles = ref<SessionFileMeta[]>([]);
   const pendingUploads = ref<PendingUploadFile[]>([]);
   const pendingQuestion = ref<NeedsUserInputPayload | null>(null);
   const pendingPermissionRequestId = ref<string | null>(null);

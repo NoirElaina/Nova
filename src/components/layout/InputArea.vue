@@ -38,8 +38,11 @@ const textareaRef = ref<HTMLTextAreaElement | null>(null);
 const fileInputRef = ref<HTMLInputElement | null>(null);
 
 const MAX_UPLOAD_FILE_SIZE_BYTES = 100 * 1024 * 1024;
-const MAX_IMAGE_FILE_SIZE_BYTES = 5 * 1024 * 1024;
-const MAX_UPLOAD_FILE_CHARS = Infinity;
+// 图片最终 base64 编码后的上限（约 5MB），超出会自动缩放
+const MAX_IMAGE_BASE64_BYTES = 5 * 1024 * 1024;
+const IMAGE_MAX_DIMENSION = 2000;
+const IMAGE_RESIZE_SCALE_STEPS = 0.75;
+const IMAGE_JPEG_QUALITIES = [0.85, 0.7, 0.55, 0.4];
 const SUPPORTED_IMAGE_MIME_TYPES = new Set([
   'image/png',
   'image/jpeg',
@@ -119,53 +122,6 @@ const pendingUploads = computed(() => props.pendingUploads ?? []);
 const hasPendingUploads = computed(() => pendingUploads.value.length > 0);
 const canSend = computed(() => !!currentInput.value.trim() || hasPendingUploads.value);
 
-// key: `${sourceName}-${index}` → 估算 token 数（异步填入）
-const uploadTokenCache = ref<Map<string, number>>(new Map());
-
-const getUploadTokenCacheKey = (file: PendingUploadFile, index: number) =>
-  `${file.sourceName}-${index}`;
-
-const formatTokenCount = (file: PendingUploadFile, index: number): string | null => {
-  if (file.kind !== 'document') return null;
-  const key = getUploadTokenCacheKey(file, index);
-  const n = uploadTokenCache.value.get(key);
-  if (n === undefined) return '…';
-  if (n >= 1_000_000) return `~${(n / 1_000_000).toFixed(1)}m tokens`;
-  if (n >= 1_000) return `~${(n / 1_000).toFixed(1)}k tokens`;
-  return `~${n} tokens`;
-};
-
-const computeUploadTokens = async (file: PendingUploadFile, index: number) => {
-  if (file.kind !== 'document') return;
-  const key = getUploadTokenCacheKey(file, index);
-  if (uploadTokenCache.value.has(key)) return;
-  try {
-    const n = await invoke<number>('estimate_text_tokens', {
-      text: (file as UploadedDocumentFile).content,
-      protocol: 'anthropic',
-    });
-    uploadTokenCache.value = new Map(uploadTokenCache.value).set(key, n);
-  } catch {
-    // 降级：chars / 4
-    const n = Math.ceil((file as UploadedDocumentFile).content.trim().length / 4);
-    uploadTokenCache.value = new Map(uploadTokenCache.value).set(key, n);
-  }
-};
-
-watch(
-  pendingUploads,
-  (files) => {
-    // 清理已移除文件的缓存
-    const validKeys = new Set(files.map((f, i) => getUploadTokenCacheKey(f, i)));
-    for (const k of uploadTokenCache.value.keys()) {
-      if (!validKeys.has(k)) uploadTokenCache.value.delete(k);
-    }
-    // 计算新增文件
-    files.forEach((f, i) => computeUploadTokens(f, i));
-  },
-  { immediate: true, deep: false },
-);
-
 const loadSettings = async () => {
   try {
     settings.value = await invoke('get_settings');
@@ -209,6 +165,85 @@ const readAsDataUrl = (file: File): Promise<string> =>
     reader.readAsDataURL(file);
   });
 
+const loadImageElement = (dataUrl: string): Promise<HTMLImageElement> =>
+  new Promise((resolve, reject) => {
+    const img = new Image();
+    img.onload = () => resolve(img);
+    img.onerror = () => reject(new Error('图片解码失败'));
+    img.src = dataUrl;
+  });
+
+const canvasToDataUrl = (
+  img: HTMLImageElement,
+  width: number,
+  height: number,
+  mime: string,
+  quality?: number,
+): string => {
+  const canvas = document.createElement('canvas');
+  canvas.width = width;
+  canvas.height = height;
+  const ctx = canvas.getContext('2d');
+  if (!ctx) throw new Error('Canvas 2D 上下文不可用');
+  ctx.drawImage(img, 0, 0, width, height);
+  return quality !== undefined ? canvas.toDataURL(mime, quality) : canvas.toDataURL(mime);
+};
+
+const base64ByteLength = (dataUrl: string): number => {
+  const commaIndex = dataUrl.indexOf(',');
+  if (commaIndex < 0) return 0;
+  const base64 = dataUrl.slice(commaIndex + 1);
+  const padding = base64.endsWith('==') ? 2 : base64.endsWith('=') ? 1 : 0;
+  return Math.floor((base64.length * 3) / 4) - padding;
+};
+
+// 缩放图片到符合 MAX_IMAGE_BASE64_BYTES 限制；保持原 mime（gif 不缩放，直接返回原 dataUrl）
+const resizeImageIfNeeded = async (
+  dataUrl: string,
+  mimeType: string,
+): Promise<{ dataUrl: string; mimeType: string }> => {
+  if (mimeType === 'image/gif') {
+    return { dataUrl, mimeType };
+  }
+
+  const originalBytes = base64ByteLength(dataUrl);
+  if (originalBytes <= MAX_IMAGE_BASE64_BYTES) {
+    return { dataUrl, mimeType };
+  }
+
+  const img = await loadImageElement(dataUrl);
+  const originalWidth = img.naturalWidth;
+  const originalHeight = img.naturalHeight;
+
+  // 计算初始缩放比例：先限制最大尺寸，再逐级 ×0.75 降采样
+  const initialScale = Math.min(
+    1,
+    IMAGE_MAX_DIMENSION / originalWidth,
+    IMAGE_MAX_DIMENSION / originalHeight,
+  );
+  let currentWidth = Math.max(1, Math.round(originalWidth * initialScale));
+  let currentHeight = Math.max(1, Math.round(originalHeight * initialScale));
+
+  // 尝试当前尺寸 + 逐级降采样，每级尝试 PNG（无损）+ 多档 JPEG
+  while (currentWidth >= 1 && currentHeight >= 1) {
+    const encoders: Array<{ mime: string; quality?: number }> = [
+      { mime: mimeType },
+      ...IMAGE_JPEG_QUALITIES.map((q) => ({ mime: 'image/jpeg', quality: q })),
+    ];
+    for (const encoder of encoders) {
+      const candidate = canvasToDataUrl(img, currentWidth, currentHeight, encoder.mime, encoder.quality);
+      if (base64ByteLength(candidate) <= MAX_IMAGE_BASE64_BYTES) {
+        return { dataUrl: candidate, mimeType: encoder.mime };
+      }
+    }
+    if (currentWidth === 1 && currentHeight === 1) break;
+    currentWidth = Math.max(1, Math.floor(currentWidth * IMAGE_RESIZE_SCALE_STEPS));
+    currentHeight = Math.max(1, Math.floor(currentHeight * IMAGE_RESIZE_SCALE_STEPS));
+  }
+
+  throw new Error(`图片缩放后仍超过 ${Math.round(MAX_IMAGE_BASE64_BYTES / 1024 / 1024)}MB 限制`);
+};
+
 const fallbackPastedImageName = (mimeType: string, index: number) => {
   const ext = IMAGE_MIME_TO_EXTENSION[mimeType] || 'png';
   return `pasted-image-${Date.now()}-${index + 1}.${ext}`;
@@ -225,8 +260,8 @@ const buildPendingUploadFiles = async (files: File[]): Promise<{
     const file = files[i];
     const imageMimeType = inferImageMimeType(file);
     if (imageMimeType) {
-      if (file.size > MAX_IMAGE_FILE_SIZE_BYTES) {
-        rejected.push(`${file.name || `图片${i + 1}`}: 超过 5MB 图片限制`);
+      if (file.size > MAX_UPLOAD_FILE_SIZE_BYTES) {
+        rejected.push(`${file.name || `图片${i + 1}`}: 超过 100MB 限制`);
         continue;
       }
 
@@ -235,6 +270,17 @@ const buildPendingUploadFiles = async (files: File[]): Promise<{
         dataUrl = await readAsDataUrl(file);
       } catch {
         rejected.push(`${file.name || `图片${i + 1}`}: 图片读取失败`);
+        continue;
+      }
+
+      let finalMimeType = imageMimeType;
+      try {
+        const result = await resizeImageIfNeeded(dataUrl, imageMimeType);
+        dataUrl = result.dataUrl;
+        finalMimeType = result.mimeType;
+      } catch (error) {
+        const message = error instanceof Error ? error.message : '图片缩放失败';
+        rejected.push(`${file.name || `图片${i + 1}`}: ${message}`);
         continue;
       }
 
@@ -252,11 +298,11 @@ const buildPendingUploadFiles = async (files: File[]): Promise<{
 
       const imageItem: UploadedImageFile = {
         kind: 'image',
-        sourceName: file.name || fallbackPastedImageName(imageMimeType, i),
-        mimeType: imageMimeType,
-        mediaType: imageMimeType,
+        sourceName: file.name || fallbackPastedImageName(finalMimeType, i),
+        mimeType: finalMimeType,
+        mediaType: finalMimeType,
         data: base64Data,
-        size: file.size,
+        size: base64ByteLength(dataUrl),
       };
       accepted.push(imageItem);
       continue;
@@ -267,17 +313,49 @@ const buildPendingUploadFiles = async (files: File[]): Promise<{
       continue;
     }
 
-    let parsed;
-    try {
-      parsed = await parseDocumentUploadFile(file);
-    } catch (error) {
-      const message = error instanceof Error ? error.message : '文件解析失败';
-      rejected.push(`${file.name || `文件${i + 1}`}: ${message}`);
+    const ext = extensionOf(file.name);
+    const isBinaryDoc = ext === 'docx' || ext === 'pptx' || ext === 'pdf';
+
+    if (isBinaryDoc) {
+      let rawBytes: number[];
+      try {
+        const buf = await file.arrayBuffer();
+        rawBytes = Array.from(new Uint8Array(buf));
+      } catch {
+        rejected.push(`${file.name || `文件${i + 1}`}: 文件读取失败`);
+        continue;
+      }
+
+      let content: string | null = null;
+      if (ext === 'docx' || ext === 'pptx') {
+        try {
+          const parsed = await parseDocumentUploadFile(file);
+          content = parsed.content;
+        } catch (error) {
+          const message = error instanceof Error ? error.message : '文件解析失败';
+          rejected.push(`${file.name || `文件${i + 1}`}: ${message}`);
+          continue;
+        }
+      }
+
+      const textItem: UploadedDocumentFile = {
+        kind: 'document',
+        sourceName: file.name,
+        mimeType: file.type || undefined,
+        content,
+        rawBytes,
+        size: file.size,
+      };
+      accepted.push(textItem);
       continue;
     }
 
-    if (parsed.content.length > MAX_UPLOAD_FILE_CHARS) {
-      rejected.push(`${file.name || `文件${i + 1}`}: 内容超过 ${MAX_UPLOAD_FILE_CHARS.toLocaleString()} 字符`);
+    // 纯文本类文件：直接读取内容，注入对话上下文
+    let textContent: string;
+    try {
+      textContent = await file.text();
+    } catch {
+      rejected.push(`${file.name || `文件${i + 1}`}: 文件读取失败`);
       continue;
     }
 
@@ -285,9 +363,9 @@ const buildPendingUploadFiles = async (files: File[]): Promise<{
       kind: 'document',
       sourceName: file.name,
       mimeType: file.type || undefined,
-      content: parsed.content,
+      content: textContent,
+      rawBytes: null,
       size: file.size,
-      knowledgeStored: false,
     };
     accepted.push(textItem);
   }
@@ -483,13 +561,12 @@ defineExpose({
             </svg>
             <span class="max-w-[160px] truncate" :title="file.sourceName">{{ file.sourceName }}</span>
             <span class="text-[11px] opacity-75">{{ formatFileSize(file.size) }}</span>
-            <span v-if="file.kind === 'document'" class="text-[11px] opacity-50">{{ formatTokenCount(file, index) }}</span>
             <span
               v-if="file.kind === 'document'"
               class="rounded-md bg-black/5 px-1.5 py-0.5 text-[10px] leading-none text-[#64748b] dark:bg-white/10 dark:text-[#cbd5e1]"
-              title="文档会持续作为会话上下文；超出模型上下文窗口时自动转入会话知识库。"
+              title="上传的文件将保存为会话文件，AI 可通过 Read 工具随时读取。"
             >
-              会话上下文
+              会话文件
             </span>
             <button
               type="button"

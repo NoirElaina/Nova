@@ -5,15 +5,10 @@ import type { PendingUploadFile } from "../../../lib/chat-types";
 import SessionFileItem from "./SessionFileItem.vue";
 
 type SessionFileMeta = {
-  id: string;
-  sourceName: string;
-  sourceType: string;
-  mimeType?: string;
-  contentChars: number;
-  preview: string;
-  checksum: string;
+  filename: string;
+  readPath: string;
+  size: number;
   createdAt: number;
-  updatedAt: number;
 };
 
 const props = defineProps<{
@@ -23,7 +18,7 @@ const props = defineProps<{
 
 const emit = defineEmits<{
   (e: "open"): void;
-  (e: "open-workspace-file", fileId: string): void;
+  (e: "open-workspace-file", readPath: string): void;
   (e: "remove-pending-upload", index: number): void;
 }>();
 
@@ -120,15 +115,15 @@ onBeforeUnmount(() => {
       </div>
 
       <div v-if="props.files.length === 0" class="px-3 py-5 text-[12px] text-[#94a3b8] dark:text-[#9b9489]">
-        当前会话还没有已入库文件。
+        当前会话还没有会话文件。
       </div>
       <div v-else class="max-h-[52vh] overflow-y-auto px-2.5 py-2 space-y-2">
         <SessionFileItem
           v-for="doc in props.files"
-          :key="doc.id"
+          :key="doc.readPath"
           :file="doc"
           class="cursor-pointer"
-          @click="emit('open-workspace-file', doc.id)"
+          @click="emit('open-workspace-file', doc.readPath)"
         />
       </div>
     </div>

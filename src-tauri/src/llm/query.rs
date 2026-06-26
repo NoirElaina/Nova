@@ -15,8 +15,6 @@ mod state_machine;
 
 use state_machine::TurnOutcome;
 
-const SESSION_RAG_CONTEXT_MARKER: &str = "[Session RAG Context]";
-
 fn strip_images_to_text(messages: &[Message]) -> Vec<Message> {
     const PLACEHOLDER: &str = "错误：当前模型不支持图片输入，请告知用户切换到支持图片输入的模型，或描述图片内容。";
     messages
@@ -43,7 +41,6 @@ fn strip_images_to_text(messages: &[Message]) -> Vec<Message> {
         })
         .collect()
 }
-const SESSION_RAG_SEARCH_LIMIT: usize = 5;
 const MCP_SERVER_CONTEXT_MARKER: &str = "[MCP Server Catalog]";
 const RESPONSE_RESERVE_TOKENS: u32 = 8_000;
 
@@ -294,37 +291,6 @@ fn text_from_content(content: &Content) -> String {
     }
 }
 
-// 获取最新用户消息的纯文本
-// 作用：从消息列表中找到最新的用户消息，提取纯文本（去掉附件标记）。
-// 处理逻辑：
-// 1. 倒序遍历找到最新的 Role::User 消息
-// 2. 调用 text_from_content 提取文本
-// 3. 去掉 [Attached Documents] 之后的内容（前端附加的文件标记）
-// 4. trim 后返回
-// 用途：用于 Session RAG 搜索 — 用用户的最新问题作为查询关键词，检索相关文档片段注入上下文。
-fn latest_user_query_text(messages: &[Message]) -> Option<String> {
-    messages.iter().rev().find_map(|message| {
-        if message.role != Role::User {
-            return None;
-        }
-
-        let text = text_from_content(&message.content);
-        // Strip direct attachment blocks appended by the frontend so they do not
-        // pollute hybrid retrieval query terms.
-        let clean = text
-            .lines()
-            .take_while(|line| !line.trim().starts_with("[Attached Documents]"))
-            .collect::<Vec<_>>()
-            .join("\n");
-        let trimmed = clean.trim();
-        if trimmed.is_empty() {
-            None
-        } else {
-            Some(trimmed.to_string())
-        }
-    })
-}
-
 // 截断字符串到指定长度
 // 作用：限制日志/错误消息的长度，避免输出过长。
 // 处理逻辑：取前 limit 个字符，如果超出则加 "..." 后缀。
@@ -337,66 +303,6 @@ fn truncate_chars(input: &str, limit: usize) -> String {
     } else {
         snippet
     }
-}
-
-// 构建 Session RAG 上下文消息
-// 作用：用用户最新问题检索会话文档库，返回相关片段注入上下文。
-// 处理逻辑：
-// 1. 检查 conversation_id 是否有效
-// 2. 用 latest_user_query_text 提取查询关键词（至少 2 个字符）
-// 3. 调用 rag_search_conversation_documents 检索（最多 5 条）
-// 4. 格式化为带标记的上下文消息返回
-// 用途：让 AI 能访问用户之前上传的文档内容。
-async fn build_session_rag_context_message(
-    app: &AppHandle,
-    conversation_id: Option<&str>,
-    query: &str,
-) -> Result<Option<Message>, String> {
-    let Some(scope_id) = conversation_id
-        .map(|id| id.trim())
-        .filter(|id| !id.is_empty())
-    else {
-        return Ok(None);
-    };
-
-    let query_text = query.trim();
-    if query_text.chars().count() < 2 {
-        return Ok(None);
-    }
-
-    let hits = crate::command::rag::rag_search_conversation_documents(
-        app.clone(),
-        scope_id.to_string(),
-        query_text.to_string(),
-        Some(SESSION_RAG_SEARCH_LIMIT),
-    )
-    .await?;
-
-    if hits.is_empty() {
-        return Ok(None);
-    }
-
-    let mut context_lines = vec![
-		format!("{} Query: {}", SESSION_RAG_CONTEXT_MARKER, query_text),
-		"Use the retrieved snippets below as supporting context. If they conflict with current repository reality or explicit user instructions, prioritize repository reality and user intent.".to_string(),
-	];
-
-    context_lines.push("Retrieved snippets:".to_string());
-    for (idx, hit) in hits.iter().enumerate() {
-        context_lines.push(format!(
-            "{}. {} (score={}, id={})",
-            idx + 1,
-            hit.source_name,
-            hit.score,
-            hit.id
-        ));
-        context_lines.push(format!("   snippet: {}", hit.snippet));
-    }
-
-    Ok(Some(Message {
-        role: Role::User,
-        content: Content::Text(context_lines.join("\n")),
-    }))
 }
 
 // 构建 MCP 服务器上下文消息
@@ -466,10 +372,10 @@ fn apply_post_compact_hook(
 // 保存快照前调用，确保快照只包含真实对话内容。
 fn strip_injected_context(messages: &mut Vec<Message>) {
     const MARKERS: &[&str] = &[
-        SESSION_RAG_CONTEXT_MARKER,
         MCP_SERVER_CONTEXT_MARKER,
         "[Session Restore Context]",
         "[Global Memory]",
+        "[Session Files]",
         // lifecycle hooks — 每轮动态注入，不应固化进 snapshot
         "[SessionStart]",
         "[UserPromptSubmit]",
@@ -550,8 +456,6 @@ pub async fn send_chat_message(
     messages: Vec<Message>,
     agent_mode: AgentMode,
 ) -> Result<(), String> {
-    // 提取用户最新问题，用于 Session RAG 检索相关文档片段
-    let rag_query = latest_user_query_text(&messages);
     // 判断是否是会话第一轮，决定是否注入 session_start_hooks
     let session_start_turn = is_session_start_turn(&messages);
     // 记录前端传入消息数量，用于之后从 turn_messages 中定位"本轮新消息"起始位置。
@@ -668,25 +572,6 @@ pub async fn send_chat_message(
             clamp_i64_to_u32(compact_outcome.estimated_tokens),
             after_tokens,
         );
-    }
-
-    // 会话 RAG 是本轮临时上下文增强：
-    // 使用最新用户文本检索当前 conversation 绑定的文档，并把命中的片段追加到 current_messages。
-    // 检索失败只发 backend-error，不中断主对话；保存 snapshot 前会剥掉该类临时注入。
-    if let Some(query_text) = rag_query.as_deref() {
-        match build_session_rag_context_message(&app, conversation_id.as_deref(), query_text).await
-        {
-            Ok(Some(rag_context)) => current_messages.push(rag_context),
-            Ok(None) => {}
-            Err(e) => {
-                emit_backend_error(
-                    &app,
-                    "rag.session_search",
-                    format!("会话知识库检索失败，本轮将跳过 RAG 上下文增强：{}", e),
-                    Some("build_session_rag_context_message"),
-                );
-            }
-        }
     }
 
     // MCP catalog 也是本轮临时上下文：

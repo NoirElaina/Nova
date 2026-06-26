@@ -4,6 +4,7 @@ use crate::llm::types::{Content, ContentBlock, Message, Role};
 
 const SESSION_RESTORE_MARKER: &str = "[Session Restore Context]";
 const GLOBAL_MEMORY_MARKER: &str = "[Global Memory]";
+const SESSION_FILES_MARKER: &str = "[Session Files]";
 
 #[derive(Debug, Clone, Copy)]
 pub struct AssembleOptions {
@@ -141,6 +142,19 @@ fn has_global_memory_marker(messages: &[Message]) -> bool {
     })
 }
 
+fn has_session_files_marker(messages: &[Message]) -> bool {
+    messages.iter().any(|m| match &m.content {
+        Content::Text(t) => t.contains(SESSION_FILES_MARKER),
+        Content::Blocks(blocks) => blocks.iter().any(|b| {
+            if let ContentBlock::Text { text } = b {
+                text.contains(SESSION_FILES_MARKER)
+            } else {
+                false
+            }
+        }),
+    })
+}
+
 // 组装本轮发给模型前的临时上下文；query 每轮都会调用这个函数。
 //
 // `incoming` 已经由 query 层决定来源：
@@ -169,6 +183,17 @@ pub async fn assemble_messages_for_turn(
     if !has_global_memory_marker(&assembled) {
         if let Some(global_msg) = global_memory_message(app, incoming).await {
             assembled.insert(0, global_msg);
+        }
+    }
+
+    // 会话文件列表：每轮注入，让 AI 知道有哪些文件可用，通过 Read 工具按需读取。
+    // compact 后历史被压缩也能恢复文件信息。
+    if !has_session_files_marker(&assembled) {
+        if let Some(files_msg) =
+            crate::llm::services::session_files::build_session_files_message(app, conversation_id)
+                .await
+        {
+            assembled.push(files_msg);
         }
     }
 

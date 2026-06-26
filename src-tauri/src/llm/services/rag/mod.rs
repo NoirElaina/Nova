@@ -22,7 +22,6 @@ use tracing::{debug, warn};
 use uuid::Uuid;
 
 const GLOBAL_SCOPE: &str = "global";
-const CONVERSATION_SCOPE_PREFIX: &str = "conversation:";
 const SEARCH_LIMIT_DEFAULT: usize = 5;
 const SEARCH_LIMIT_MAX: usize = 50;
 const SEARCH_CANDIDATE_MULTIPLIER: usize = 4;
@@ -54,21 +53,6 @@ struct HitDetail {
     snippet: String,
     document_chars: usize,
     updated_at: i64,
-}
-
-fn scope_from_conversation_id(conversation_id: Option<&str>) -> Result<String, String> {
-    match conversation_id.map(str::trim).filter(|id| !id.is_empty()) {
-        Some(id) => Ok(format!("{}{}", CONVERSATION_SCOPE_PREFIX, id)),
-        None => Ok(GLOBAL_SCOPE.to_string()),
-    }
-}
-
-fn required_conversation_scope(conversation_id: &str) -> Result<String, String> {
-    let id = conversation_id.trim();
-    if id.is_empty() {
-        return Err("conversation_id is required".to_string());
-    }
-    Ok(format!("{}{}", CONVERSATION_SCOPE_PREFIX, id))
 }
 
 fn checksum_hex(content: &str) -> String {
@@ -118,15 +102,6 @@ pub async fn list_documents(app: AppHandle) -> Result<Vec<RagDocumentMeta>, Stri
     list_documents_for_scope(&pool, GLOBAL_SCOPE).await
 }
 
-pub async fn list_conversation_documents(
-    app: AppHandle,
-    conversation_id: String,
-) -> Result<Vec<RagDocumentMeta>, String> {
-    let pool = db::get_pool(&app).await?;
-    let scope = required_conversation_scope(&conversation_id)?;
-    list_documents_for_scope(&pool, &scope).await
-}
-
 async fn list_documents_for_scope(
     pool: &SqlitePool,
     scope: &str,
@@ -166,7 +141,6 @@ async fn list_documents_for_scope(
 pub async fn read_document(
     app: AppHandle,
     document_id: String,
-    conversation_id: Option<String>,
 ) -> Result<Option<RagDocumentContent>, String> {
     let id = document_id.trim();
     if id.is_empty() {
@@ -174,7 +148,6 @@ pub async fn read_document(
     }
 
     let pool = db::get_pool(&app).await?;
-    let scope = scope_from_conversation_id(conversation_id.as_deref())?;
     let row = sqlx::query(
         r#"
         SELECT id, source_name, source_type, mime_type, content, content_chars, checksum, created_at, updated_at
@@ -183,7 +156,7 @@ pub async fn read_document(
         "#,
     )
     .bind(id)
-    .bind(scope)
+    .bind(GLOBAL_SCOPE)
     .fetch_optional(&pool)
     .await
     .map_err(|e| e.to_string())?;
@@ -205,22 +178,11 @@ pub async fn upsert_documents(
     app: AppHandle,
     documents: Vec<RagDocumentInput>,
 ) -> Result<RagUpsertResult, String> {
-    upsert_documents_for_scope(app, None, documents).await
-}
-
-pub async fn upsert_conversation_documents(
-    app: AppHandle,
-    conversation_id: String,
-    documents: Vec<RagDocumentInput>,
-) -> Result<RagUpsertResult, String> {
-    let normalized_conversation_id = normalize_optional_string(Some(conversation_id))
-        .ok_or_else(|| "conversation_id is required".to_string())?;
-    upsert_documents_for_scope(app, Some(normalized_conversation_id), documents).await
+    upsert_documents_for_scope(app, documents).await
 }
 
 async fn upsert_documents_for_scope(
     app: AppHandle,
-    forced_conversation_id: Option<String>,
     documents: Vec<RagDocumentInput>,
 ) -> Result<RagUpsertResult, String> {
     if documents.is_empty() {
@@ -268,11 +230,7 @@ async fn upsert_documents_for_scope(
         });
     }
 
-    let scope = if let Some(scope_id) = forced_conversation_id.as_deref() {
-        required_conversation_scope(scope_id)?
-    } else {
-        GLOBAL_SCOPE.to_string()
-    };
+    let scope = GLOBAL_SCOPE.to_string();
 
     if prepared.is_empty() {
         let stats = scope_stats(&pool, &scope).await?;
@@ -454,16 +412,6 @@ pub async fn search_documents(
     limit: Option<usize>,
 ) -> Result<Vec<RagSearchHit>, String> {
     search_documents_for_scope(app, query, limit, GLOBAL_SCOPE.to_string()).await
-}
-
-pub async fn search_conversation_documents(
-    app: AppHandle,
-    conversation_id: String,
-    query: String,
-    limit: Option<usize>,
-) -> Result<Vec<RagSearchHit>, String> {
-    let scope = required_conversation_scope(&conversation_id)?;
-    search_documents_for_scope(app, query, limit, scope).await
 }
 
 async fn search_documents_for_scope(
@@ -729,76 +677,4 @@ pub async fn clear_documents(app: AppHandle) -> Result<(), String> {
         .map_err(|e| e.to_string())?;
     tx.commit().await.map_err(|e| e.to_string())?;
     Ok(())
-}
-
-pub async fn remove_conversation_documents(
-    app: &AppHandle,
-    conversation_id: &str,
-) -> Result<usize, String> {
-    let scope = required_conversation_scope(conversation_id)?;
-    remove_scope_documents(app, &scope).await
-}
-
-pub async fn remove_all_conversation_documents(app: &AppHandle) -> Result<usize, String> {
-    let pool = db::get_pool(app).await?;
-    let document_ids = sqlx::query("SELECT id FROM rag_documents WHERE scope LIKE ?")
-        .bind(format!("{}%", CONVERSATION_SCOPE_PREFIX))
-        .fetch_all(&pool)
-        .await
-        .map_err(|e| e.to_string())?
-        .into_iter()
-        .map(|row| row.get::<String, _>("id"))
-        .collect::<Vec<_>>();
-
-    if document_ids.is_empty() {
-        return Ok(0);
-    }
-
-    let mut tx = pool.begin().await.map_err(|e| e.to_string())?;
-    for document_id in &document_ids {
-        sqlx::query("DELETE FROM rag_chunks_fts WHERE document_id = ?")
-            .bind(document_id)
-            .execute(&mut *tx)
-            .await
-            .map_err(|e| e.to_string())?;
-    }
-    let result = sqlx::query("DELETE FROM rag_documents WHERE scope LIKE ?")
-        .bind(format!("{}%", CONVERSATION_SCOPE_PREFIX))
-        .execute(&mut *tx)
-        .await
-        .map_err(|e| e.to_string())?;
-    tx.commit().await.map_err(|e| e.to_string())?;
-    Ok(result.rows_affected() as usize)
-}
-
-async fn remove_scope_documents(app: &AppHandle, scope: &str) -> Result<usize, String> {
-    let pool = db::get_pool(app).await?;
-    let document_ids = sqlx::query("SELECT id FROM rag_documents WHERE scope = ?")
-        .bind(scope)
-        .fetch_all(&pool)
-        .await
-        .map_err(|e| e.to_string())?
-        .into_iter()
-        .map(|row| row.get::<String, _>("id"))
-        .collect::<Vec<_>>();
-
-    if document_ids.is_empty() {
-        return Ok(0);
-    }
-
-    let mut tx = pool.begin().await.map_err(|e| e.to_string())?;
-    for document_id in &document_ids {
-        sqlx::query("DELETE FROM rag_chunks_fts WHERE document_id = ?")
-            .bind(document_id)
-            .execute(&mut *tx)
-            .await
-            .map_err(|e| e.to_string())?;
-    }
-    let result = sqlx::query("DELETE FROM rag_documents WHERE scope = ?")
-        .bind(scope)
-        .execute(&mut *tx)
-        .await
-        .map_err(|e| e.to_string())?;
-    tx.commit().await.map_err(|e| e.to_string())?;
-    Ok(result.rows_affected() as usize)
 }

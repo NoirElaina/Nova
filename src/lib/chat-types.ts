@@ -79,8 +79,9 @@ export interface ChatAttachment {
   kind?: AttachmentKind;
   mediaType?: string;
   data?: string;
-  content?: string;
-  knowledgeStored?: boolean;
+  /** 纯文本文件的提取内容，发送时注入 prompt，UI 不渲染。null 表示无内联内容（如 pdf）。 */
+  content?: string | null;
+  sessionFilePath?: string;
 }
 
 export interface ChatMessage {
@@ -96,9 +97,11 @@ export interface ChatMessage {
 
 export interface UploadedDocumentFile extends ChatAttachment {
   kind: "document";
-  content: string;
+  /** 纯文本文件内容（.md/.txt/.json 等，直接注入对话）；docx/pptx 解析后的文本；pdf 为 null。 */
+  content: string | null;
+  /** 二进制文件原始字节（docx/pptx/pdf），存为会话文件；纯文本为 null。 */
+  rawBytes: number[] | null;
   size: number;
-  knowledgeStored?: boolean;
 }
 
 export interface UploadedImageFile extends ChatAttachment {

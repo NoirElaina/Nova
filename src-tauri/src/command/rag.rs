@@ -15,24 +15,13 @@ pub async fn rag_search_documents(
     crate::llm::services::rag::search_documents(app, query, limit).await
 }
 
-pub async fn rag_search_conversation_documents(
-    app: AppHandle,
-    conversation_id: String,
-    query: String,
-    limit: Option<usize>,
-) -> Result<Vec<RagSearchHit>, String> {
-    crate::llm::services::rag::search_conversation_documents(app, conversation_id, query, limit)
-        .await
-}
-
 #[tauri::command]
 pub async fn rag_read_document(
     app: AppHandle,
     document_id: String,
-    conversation_id: Option<String>,
 ) -> Result<Option<RagDocumentContent>, String> {
     let result =
-        crate::llm::services::rag::read_document(app.clone(), document_id, conversation_id).await;
+        crate::llm::services::rag::read_document(app.clone(), document_id).await;
     report_backend_result(&app, "command.rag.rag_read_document", result, None)
 }
 
@@ -49,58 +38,12 @@ pub async fn rag_list_documents(app: AppHandle) -> Result<Vec<RagDocumentMeta>, 
 }
 
 #[tauri::command]
-pub async fn rag_list_conversation_documents(
-    app: AppHandle,
-    conversation_id: String,
-) -> Result<Vec<RagDocumentMeta>, String> {
-    let result =
-        crate::llm::services::rag::list_conversation_documents(app.clone(), conversation_id).await;
-    report_backend_result(
-        &app,
-        "command.rag.rag_list_conversation_documents",
-        result,
-        None,
-    )
-}
-
-#[tauri::command]
 pub async fn rag_upsert_documents(
     app: AppHandle,
     documents: Vec<RagDocumentInput>,
 ) -> Result<RagUpsertResult, String> {
     let result = crate::llm::services::rag::upsert_documents(app.clone(), documents).await;
     report_backend_result(&app, "command.rag.rag_upsert_documents", result, None)
-}
-
-#[tauri::command]
-pub async fn rag_upsert_conversation_documents(
-    app: AppHandle,
-    conversation_id: String,
-    documents: Vec<RagDocumentInput>,
-) -> Result<RagUpsertResult, String> {
-    let result = crate::llm::services::rag::upsert_conversation_documents(
-        app.clone(),
-        conversation_id,
-        documents,
-    )
-    .await;
-    report_backend_result(
-        &app,
-        "command.rag.rag_upsert_conversation_documents",
-        result,
-        None,
-    )
-}
-
-pub async fn rag_remove_conversation_documents(
-    app: &AppHandle,
-    conversation_id: &str,
-) -> Result<usize, String> {
-    crate::llm::services::rag::remove_conversation_documents(app, conversation_id).await
-}
-
-pub async fn rag_remove_all_conversation_documents(app: &AppHandle) -> Result<usize, String> {
-    crate::llm::services::rag::remove_all_conversation_documents(app).await
 }
 
 #[tauri::command]

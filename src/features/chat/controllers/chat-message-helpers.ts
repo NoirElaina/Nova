@@ -17,9 +17,9 @@ import type {
   ModelTextBlock,
 } from "./chat-controller-types";
 
-export type BuildModelMessageOptions = {
-  includeDocumentContent?: boolean;
-};
+// 内联注入的纯文本文件：单文件上限与截断保留量（头尾各保留）。
+const MAX_INLINE_DOC_CHARS = 50000;
+const TRUNCATION_HEAD_TAIL_CHARS = 20000;
 
 export function buildAssistantCost(
   currentInputTokens: number,
@@ -104,55 +104,38 @@ export function estimateInputTokensForTurn(
 
 export function formatMessageContentForModel(
   msg: ChatMessage,
-  options: BuildModelMessageOptions = {},
 ): string {
-  const includeDocumentContent = options.includeDocumentContent ?? true;
-  const content = msg.content.trim();
-  const documentAttachments =
-    msg.attachments
-      ?.filter((item) => item.kind === "document")
-      .filter((item) => item.sourceName?.trim()) ?? [];
+  const text = msg.content.trim();
 
-  const documentBlocks = documentAttachments
-    .filter((item) => includeDocumentContent && item.content?.trim())
-    .map((item) => {
-      const meta = [
-        `name=${item.sourceName}`,
-        item.mimeType ? `mime=${item.mimeType}` : null,
-        Number.isFinite(item.size) ? `size=${item.size}` : null,
-        item.knowledgeStored ? "knowledge=stored" : "knowledge=inline",
-      ]
-        .filter(Boolean)
-        .join(" ");
-      return `<document ${meta}>\n${item.content?.trim()}\n</document>`;
-    });
+  const documentAttachments = (msg.attachments ?? [])
+    .filter((item) => item.kind === "document" && item.content?.trim() && item.sourceName?.trim());
 
-  const attachedDocumentContext =
-    documentBlocks.length > 0
-      ? `\n\n[Attached Documents]\nThese documents are attached directly for this turn. Use them as primary context for the user's request.\n${documentBlocks.join("\n\n")}`
-      : "";
-
-  const attachmentNotice =
-    documentAttachments.length > 0 && documentBlocks.length === 0
-      ? `\n\n[Attached Documents]\nDocument attachment metadata: ${documentAttachments.map((item) => {
-          const status = item.knowledgeStored ? "stored in conversation knowledge base" : "attached to conversation";
-          return `${item.sourceName} (${status})`;
-        }).join(", ")}`
-      : "";
-
-  if (content) {
-    return `${content}${attachedDocumentContext}${attachmentNotice}`;
+  if (documentAttachments.length === 0) {
+    return text;
   }
 
-  if (documentBlocks.length > 0) {
-    return `请优先结合我上传的文件回答。${attachedDocumentContext}`;
-  }
+  const blocks = documentAttachments.map((item) => {
+    const content = item.content!.trim();
+    const originalLength = content.length;
+    let body: string;
+    let notice = "";
+    if (originalLength > MAX_INLINE_DOC_CHARS) {
+      const head = content.slice(0, TRUNCATION_HEAD_TAIL_CHARS);
+      const tail = content.slice(originalLength - TRUNCATION_HEAD_TAIL_CHARS);
+      body = `${head}\n\n...[中间内容已截断]...\n\n${tail}`;
+      notice = `\n[注意：内容很长（原始 ${originalLength} 字符），已截断为头尾各 ${TRUNCATION_HEAD_TAIL_CHARS} 字符，中间内容可能丢失。如需完整内容请告知用户。]\n`;
+    } else {
+      body = content;
+    }
+    const meta = [`filename="${item.sourceName}"`, item.mimeType ? `mime="${item.mimeType}"` : null]
+      .filter(Boolean)
+      .join(" ");
+    return `<document ${meta}>${notice}\n${body}\n</document>`;
+  });
 
-  if (documentAttachments.length > 0) {
-    return `请优先结合我上传的文件回答。${attachmentNotice}`;
-  }
+  const attachedDocumentContext = `\n\n[Attached Documents]\n${blocks.join("\n\n")}`;
 
-  return "";
+  return text ? `${text}${attachedDocumentContext}` : attachedDocumentContext;
 }
 
 export function isDocumentUploadFile(
@@ -179,7 +162,7 @@ export function isImageAttachment(
 
 export function toAttachmentMeta(
   files: PendingUploadFile[],
-  options: { includeDocumentContent?: boolean; includeImageData?: boolean } = {},
+  options: { includeImageData?: boolean } = {},
 ): ChatAttachment[] {
   return files.map((file) => {
     if (file.kind === "image") {
@@ -198,17 +181,15 @@ export function toAttachmentMeta(
       mimeType: file.mimeType,
       size: file.size,
       kind: "document",
-      content: options.includeDocumentContent ? file.content : undefined,
-      knowledgeStored: file.knowledgeStored,
+      content: file.content ?? undefined,
     };
   });
 }
 
 export function buildModelMessage(
   msg: ChatMessage,
-  options: BuildModelMessageOptions = {},
 ): ModelMessage {
-  const textContent = formatMessageContentForModel(msg, options);
+  const textContent = formatMessageContentForModel(msg);
   if (msg.role !== "user") {
     return {
       role: msg.role,

@@ -70,6 +70,13 @@ export type RagDocumentContent = RagDocumentMeta & {
   content: string;
 };
 
+export type SessionFileMeta = {
+  filename: string;
+  readPath: string;
+  size: number;
+  createdAt: number;
+};
+
 export type ShellSessionStatus = {
   exists: boolean;
   alive: boolean;
@@ -381,31 +388,31 @@ export async function ackChatTurnStatus(conversationId: string | null): Promise<
   });
 }
 
-export async function upsertConversationRagDocuments(
+export async function saveSessionFile(
   conversationId: string,
-  documents: RagUploadDocumentInput[],
-): Promise<RagUpsertResult> {
-  return invoke<RagUpsertResult>("rag_upsert_conversation_documents", {
+  filename: string,
+  content: string | null,
+  rawBytes: number[] | null,
+): Promise<SessionFileMeta> {
+  return invoke<SessionFileMeta>("save_session_file", {
     conversationId,
-    documents,
+    filename,
+    content,
+    rawBytes,
   });
 }
 
-export async function listConversationRagDocuments(
+export async function listSessionFiles(
   conversationId: string,
-): Promise<RagDocumentMeta[]> {
-  return invoke<RagDocumentMeta[]>("rag_list_conversation_documents", {
+): Promise<SessionFileMeta[]> {
+  return invoke<SessionFileMeta[]>("list_session_files", {
     conversationId,
   });
 }
 
-export async function readRagDocument(
-  documentId: string,
-  conversationId?: string | null,
-): Promise<RagDocumentContent | null> {
-  return invoke<RagDocumentContent | null>("rag_read_document", {
-    documentId,
-    conversationId,
+export async function readSessionFile(readPath: string): Promise<string> {
+  return invoke<string>("read_session_file", {
+    readPath,
   });
 }
 

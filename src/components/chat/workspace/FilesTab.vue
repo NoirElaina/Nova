@@ -1,26 +1,25 @@
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue';
-import { readRagDocument, type RagDocumentContent, type RagDocumentMeta } from '../../../features/chat/services/chat-api';
+import { readSessionFile, type SessionFileMeta } from '../../../features/chat/services/chat-api';
 
 const props = defineProps<{
-  files: RagDocumentMeta[];
+  files: SessionFileMeta[];
   selectedFileId?: string | null;
-  conversationId?: string | null;
 }>();
 
-const selectedId = ref<string | null>(null);
-const selectedDocument = ref<RagDocumentContent | null>(null);
-const loadingId = ref<string | null>(null);
+const selectedPath = ref<string | null>(null);
+const selectedContent = ref<string | null>(null);
+const loadingPath = ref<string | null>(null);
 const errorMessage = ref('');
 
-const selectedMeta = computed(() => props.files.find((file) => file.id === selectedId.value) ?? null);
+const selectedMeta = computed(() => props.files.find((file) => file.readPath === selectedPath.value) ?? null);
 
 const formatDocTime = (ts: number) => {
   const date = new Date(ts * 1000);
   if (Number.isNaN(date.getTime())) {
     return '--';
   }
-  return date.toLocaleString('zh-CN', {
+  return date.toLocaleString("zh-CN", {
     year: 'numeric',
     month: '2-digit',
     day: '2-digit',
@@ -29,35 +28,36 @@ const formatDocTime = (ts: number) => {
   });
 };
 
-const formatChars = (count?: number) => {
-  if (!Number.isFinite(count ?? 0) || !count) {
-    return '0 字符';
-  }
-  return `${count.toLocaleString()} 字符`;
+const formatFileSize = (bytes: number) => {
+  if (!Number.isFinite(bytes) || !bytes) return '0 B';
+  if (bytes < 1024) return `${bytes} B`;
+  const kb = bytes / 1024;
+  if (kb < 1024) return `${kb.toFixed(1)} KB`;
+  return `${(kb / 1024).toFixed(1)} MB`;
 };
 
-const selectFile = async (file: RagDocumentMeta) => {
-  selectedId.value = file.id;
-  selectedDocument.value = null;
+const selectFile = async (file: SessionFileMeta) => {
+  selectedPath.value = file.readPath;
+  selectedContent.value = null;
   errorMessage.value = '';
-  loadingId.value = file.id;
+  loadingPath.value = file.readPath;
 
   try {
-    const document = await readRagDocument(file.id, props.conversationId ?? null);
-    if (selectedId.value !== file.id) {
+    const content = await readSessionFile(file.readPath);
+    if (selectedPath.value !== file.readPath) {
       return;
     }
-    selectedDocument.value = document;
-    if (!document) {
-      errorMessage.value = '没有找到这个文件内容，可能已经被删除。';
+    selectedContent.value = content;
+    if (!content) {
+      errorMessage.value = '文件内容为空。';
     }
   } catch (error) {
-    if (selectedId.value === file.id) {
+    if (selectedPath.value === file.readPath) {
       errorMessage.value = `读取文件失败：${String(error)}`;
     }
   } finally {
-    if (loadingId.value === file.id) {
-      loadingId.value = null;
+    if (loadingPath.value === file.readPath) {
+      loadingPath.value = null;
     }
   }
 };
@@ -66,11 +66,11 @@ watch(
   () => props.files,
   (files) => {
     if (!files.length) {
-      selectedId.value = null;
-      selectedDocument.value = null;
+      selectedPath.value = null;
+      selectedContent.value = null;
       return;
     }
-    if (!selectedId.value || !files.some((file) => file.id === selectedId.value)) {
+    if (!selectedPath.value || !files.some((file) => file.readPath === selectedPath.value)) {
       void selectFile(files[0]);
     }
   },
@@ -79,16 +79,16 @@ watch(
 
 watch(
   () => props.selectedFileId,
-  (fileId) => {
-    if (!fileId || selectedId.value === fileId) {
+  (readPath) => {
+    if (!readPath || selectedPath.value === readPath) {
       return;
     }
-    const file = props.files.find((item) => item.id === fileId);
+    const file = props.files.find((item) => item.readPath === readPath);
     if (file) {
       void selectFile(file);
     } else {
-      selectedId.value = fileId;
-      selectedDocument.value = null;
+      selectedPath.value = readPath;
+      selectedContent.value = null;
       errorMessage.value = '没有找到这个文件，可能文件列表还没有刷新。';
     }
   },
@@ -109,16 +109,16 @@ watch(
       </div>
 
       <div v-if="files.length === 0" class="px-3 py-4 text-[13px] leading-6 text-[#6b7280] dark:text-[#aaa]">
-        当前会话还没有已入库文件。上传文本文件并发送后会出现在这里。
+        当前会话还没有会话文件。上传文件并发送后会出现在这里。
       </div>
 
       <div v-else class="min-h-0 flex-1 overflow-y-auto px-2 py-2">
         <button
           v-for="file in files"
-          :key="file.id"
+          :key="file.readPath"
           type="button"
           class="flex w-full items-start gap-2 rounded-md px-2 py-2 text-left transition-colors"
-          :class="selectedId === file.id
+          :class="selectedPath === file.readPath
             ? 'bg-[#f7f7f8] text-[#111827] ring-1 ring-[#1a73e8] ring-inset dark:bg-[#2d2d2d] dark:text-[#ececec]'
             : 'text-[#374151] hover:bg-[#f7f7f8] dark:text-[#d7d7d7] dark:hover:bg-[#2a2a2a]'"
           @click="selectFile(file)"
@@ -130,12 +130,9 @@ watch(
             </svg>
           </span>
           <span class="min-w-0 flex-1">
-            <span class="block truncate text-[13px] font-medium" :title="file.sourceName">{{ file.sourceName }}</span>
+            <span class="block truncate text-[13px] font-medium" :title="file.readPath">{{ file.filename }}</span>
             <span class="mt-0.5 block truncate text-[11px] text-[#6b7280] dark:text-[#aaa]">
-              {{ formatChars(file.contentChars) }}
-            </span>
-            <span class="mt-1 line-clamp-2 block text-[11px] leading-5 text-[#6b7280] dark:text-[#aaa]">
-              {{ file.preview }}
+              {{ formatFileSize(file.size) }}
             </span>
           </span>
         </button>
@@ -147,13 +144,12 @@ watch(
         <div class="flex min-h-10 items-center rounded-xl border border-[#e7ebf0] bg-white px-3 py-2 shadow-[0_1px_2px_rgba(15,23,42,0.035)] dark:border-[#333] dark:bg-[#242424]">
           <template v-if="selectedMeta">
             <div class="min-w-0">
-              <div class="truncate text-[13px] font-semibold text-[#202124] dark:text-[#ececec]" :title="selectedMeta.sourceName">
-                {{ selectedMeta.sourceName }}
+              <div class="truncate text-[13px] font-semibold text-[#202124] dark:text-[#ececec]" :title="selectedMeta.readPath">
+                {{ selectedMeta.filename }}
               </div>
               <div class="mt-0.5 flex min-w-0 gap-3 truncate text-[11px] text-[#6b7280] dark:text-[#aaa]">
-                <span>{{ formatChars(selectedMeta.contentChars) }}</span>
-                <span v-if="selectedMeta.mimeType" class="truncate">{{ selectedMeta.mimeType }}</span>
-                <span class="truncate">更新于 {{ formatDocTime(selectedMeta.updatedAt) }}</span>
+                <span>{{ formatFileSize(selectedMeta.size) }}</span>
+                <span class="truncate">创建于 {{ formatDocTime(selectedMeta.createdAt) }}</span>
               </div>
             </div>
           </template>
@@ -167,7 +163,7 @@ watch(
       </div>
 
       <div class="min-h-0 flex-1 overflow-auto">
-        <div v-if="loadingId" class="m-3 rounded-lg border border-[#e5e7eb] bg-[#f9fafb] px-3 py-2 text-[13px] text-[#6b7280] dark:border-[#333] dark:bg-[#252525] dark:text-[#aaa]">
+        <div v-if="loadingPath" class="m-3 rounded-lg border border-[#e5e7eb] bg-[#f9fafb] px-3 py-2 text-[13px] text-[#6b7280] dark:border-[#333] dark:bg-[#252525] dark:text-[#aaa]">
           正在读取文件内容...
         </div>
 
@@ -176,9 +172,9 @@ watch(
         </div>
 
         <pre
-          v-else-if="selectedDocument"
+          v-else-if="selectedContent"
           class="min-h-full whitespace-pre-wrap break-words p-3 font-mono text-[12px] leading-6 text-[#202124] dark:text-[#ececec]"
-        >{{ selectedDocument.content }}</pre>
+        >{{ selectedContent }}</pre>
 
         <div v-else class="m-3 rounded-lg border border-dashed border-[#d1d5db] px-4 py-8 text-center text-[13px] text-[#6b7280] dark:border-[#444] dark:text-[#aaa]">
           暂无可查看内容。

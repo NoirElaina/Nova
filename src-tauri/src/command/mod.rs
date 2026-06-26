@@ -14,6 +14,8 @@ pub mod mcp;
 pub mod skill;
 // RAG 知识库相关命令入口。
 pub mod rag;
+// 会话文件管理命令入口。
+pub mod session_files;
 // 持久终端会话状态命令入口。
 pub mod shell;
 // 用户可交互真 PTY 终端命令入口。

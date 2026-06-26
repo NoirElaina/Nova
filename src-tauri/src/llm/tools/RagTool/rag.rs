@@ -46,7 +46,7 @@ pub fn tool() -> Tool {
 // `query` 只在 search 分支使用，`document_id` 只在 read 分支使用。
 async fn execute_with_app(
     app: &AppHandle,
-    conversation_id: Option<String>,
+    _conversation_id: Option<String>,
     input: Value,
 ) -> Result<ToolOutcome, ToolFailure> {
     // action: 统一转成小写后的操作类型，避免模型大小写混用时匹配失败。
@@ -78,35 +78,20 @@ async fn execute_with_app(
                 ));
             };
 
-            // limit: 搜索结果数量上限；不传时交给底层 RAG 默认值处理。
             let limit = input
                 .get("limit")
                 .and_then(|v| v.as_u64())
                 .map(|v| v as usize);
 
-            let result = if let Some(scope_id) = conversation_id
-                .as_deref()
-                .map(str::trim)
-                .filter(|value| !value.is_empty())
-            {
-                crate::command::rag::rag_search_conversation_documents(
-                    app.clone(),
-                    scope_id.to_string(),
-                    query.to_string(),
-                    limit,
-                )
-                .await
-            } else {
+            let result =
                 crate::command::rag::rag_search_documents(app.clone(), query.to_string(), limit)
-                    .await
-            };
+                    .await;
 
             match result {
                 Ok(results) => Ok(ToolOutcome::json(json!({
                     "ok": true,
                     "action": "search",
                     "query": query,
-                    "conversation_scoped": conversation_id.as_deref().map(str::trim).filter(|value| !value.is_empty()).is_some(),
                     "results": results
                 }))),
                 Err(e) => Err(ToolFailure::new(e)),
@@ -127,7 +112,6 @@ async fn execute_with_app(
             match crate::command::rag::rag_read_document(
                 app.clone(),
                 document_id.to_string(),
-                conversation_id.clone(),
             )
             .await
             {
@@ -157,20 +141,7 @@ async fn execute_with_app(
                 ));
             };
 
-            let docs = if let Some(scope_id) = conversation_id
-                .as_deref()
-                .map(str::trim)
-                .filter(|s| !s.is_empty())
-            {
-                crate::command::rag::rag_list_conversation_documents(
-                    app.clone(),
-                    scope_id.to_string(),
-                )
-                .await
-            } else {
-                crate::command::rag::rag_list_documents(app.clone())
-                    .await
-            };
+            let docs = crate::command::rag::rag_list_documents(app.clone()).await;
 
             let docs = match docs {
                 Ok(d) => d,
@@ -189,7 +160,6 @@ async fn execute_with_app(
             match crate::command::rag::rag_read_document(
                 app.clone(),
                 meta.id.clone(),
-                conversation_id.clone(),
             )
             .await
             {

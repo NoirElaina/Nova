@@ -1,4 +1,4 @@
-use crate::llm::services::file_changes::{read_file_utf8, resolve_tool_path, write_file_simple};
+use crate::llm::utils::file_io::{read_file_utf8, resolve_tool_path, write_file_simple};
 use crate::llm::tools::{
     app_tool, AppExecuteFuture, ToolFailure, ToolOutcome, ToolPermissionDescriptor, ToolRegistration,
 };

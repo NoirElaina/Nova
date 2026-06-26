@@ -110,50 +110,6 @@ async fn ensure_schema(pool: &SqlitePool) -> Result<(), String> {
             updated_at INTEGER NOT NULL
         );
 
-        CREATE TABLE IF NOT EXISTS file_change_batches (
-            id TEXT PRIMARY KEY,
-            conversation_id TEXT NOT NULL,
-            tool_name TEXT NOT NULL,
-            created_at INTEGER NOT NULL,
-            reverted INTEGER NOT NULL DEFAULT 0,
-            reverted_at INTEGER,
-            snapshot_sha TEXT,
-            end_snapshot_sha TEXT,
-            FOREIGN KEY (conversation_id) REFERENCES conversations(id) ON DELETE CASCADE
-        );
-
-        CREATE TABLE IF NOT EXISTS file_change_files (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            batch_id TEXT NOT NULL,
-            file_order INTEGER NOT NULL,
-            path TEXT NOT NULL,
-            absolute_path TEXT NOT NULL,
-            change_type TEXT NOT NULL,
-            before_text TEXT,
-            after_text TEXT,
-            diff_json TEXT NOT NULL,
-            additions INTEGER NOT NULL,
-            deletions INTEGER NOT NULL,
-            FOREIGN KEY (batch_id) REFERENCES file_change_batches(id) ON DELETE CASCADE
-        );
-
-        CREATE INDEX IF NOT EXISTS idx_file_change_batches_conversation_created
-            ON file_change_batches(conversation_id, created_at DESC);
-
-        CREATE INDEX IF NOT EXISTS idx_file_change_files_batch_order
-            ON file_change_files(batch_id, file_order);
-
-        CREATE TABLE IF NOT EXISTS conversation_change_snapshots (
-            id TEXT PRIMARY KEY,
-            conversation_id TEXT NOT NULL,
-            snapshot_sha TEXT NOT NULL,
-            created_at INTEGER NOT NULL,
-            consumed_at INTEGER
-        );
-
-        CREATE INDEX IF NOT EXISTS idx_conversation_change_snapshots_pending
-            ON conversation_change_snapshots(conversation_id, consumed_at, created_at);
-
         "#,
     )
     .execute(pool)
@@ -874,23 +830,6 @@ pub async fn replace_history(
         .execute(&mut *tx)
         .await
         .map_err(|e| e.to_string())?;
-    sqlx::query(
-            "DELETE FROM file_change_files WHERE batch_id IN (SELECT id FROM file_change_batches WHERE conversation_id = ?)",
-        )
-        .bind(normalized_conversation_id)
-        .execute(&mut *tx)
-        .await
-        .map_err(|e| e.to_string())?;
-    sqlx::query("DELETE FROM file_change_batches WHERE conversation_id = ?")
-        .bind(normalized_conversation_id)
-        .execute(&mut *tx)
-        .await
-        .map_err(|e| e.to_string())?;
-    sqlx::query("DELETE FROM conversation_change_snapshots WHERE conversation_id = ?")
-        .bind(normalized_conversation_id)
-        .execute(&mut *tx)
-        .await
-        .map_err(|e| e.to_string())?;
 
     for (index, message) in messages.iter().enumerate() {
         let created_at = now + index as i64;
@@ -1119,23 +1058,6 @@ pub async fn clear_history(app: &AppHandle, conversation_id: Option<String>) -> 
             .execute(&mut *tx)
             .await
             .map_err(|e| e.to_string())?;
-sqlx::query(
-            "DELETE FROM file_change_files WHERE batch_id IN (SELECT id FROM file_change_batches WHERE conversation_id = ?)",
-        )
-        .bind(&id)
-        .execute(&mut *tx)
-        .await
-        .map_err(|e| e.to_string())?;
-    sqlx::query("DELETE FROM file_change_batches WHERE conversation_id = ?")
-        .bind(&id)
-        .execute(&mut *tx)
-        .await
-        .map_err(|e| e.to_string())?;
-    sqlx::query("DELETE FROM conversation_change_snapshots WHERE conversation_id = ?")
-        .bind(&id)
-        .execute(&mut *tx)
-        .await
-        .map_err(|e| e.to_string())?;
     sqlx::query("UPDATE token_usage_log SET conversation_id = NULL WHERE conversation_id = ?")
         .bind(&id)
         .execute(&mut *tx)
@@ -1164,18 +1086,6 @@ sqlx::query(
             .await
             .map_err(|e| e.to_string())?;
         sqlx::query("DELETE FROM conversation_turn_snapshots")
-            .execute(&mut *tx)
-            .await
-            .map_err(|e| e.to_string())?;
-        sqlx::query("DELETE FROM file_change_files")
-            .execute(&mut *tx)
-            .await
-            .map_err(|e| e.to_string())?;
-        sqlx::query("DELETE FROM file_change_batches")
-            .execute(&mut *tx)
-            .await
-            .map_err(|e| e.to_string())?;
-        sqlx::query("DELETE FROM conversation_change_snapshots")
             .execute(&mut *tx)
             .await
             .map_err(|e| e.to_string())?;
@@ -1231,26 +1141,6 @@ pub async fn delete_conversation(app: &AppHandle, conversation_id: &str) -> Resu
         .map_err(|e| e.to_string())?;
 
     sqlx::query("DELETE FROM conversation_turn_snapshots WHERE conversation_id = ?")
-        .bind(conversation_id)
-        .execute(&pool)
-        .await
-        .map_err(|e| e.to_string())?;
-
-    sqlx::query(
-        "DELETE FROM file_change_files WHERE batch_id IN (SELECT id FROM file_change_batches WHERE conversation_id = ?)",
-    )
-    .bind(conversation_id)
-    .execute(&pool)
-    .await
-    .map_err(|e| e.to_string())?;
-
-    sqlx::query("DELETE FROM file_change_batches WHERE conversation_id = ?")
-        .bind(conversation_id)
-        .execute(&pool)
-        .await
-        .map_err(|e| e.to_string())?;
-
-    sqlx::query("DELETE FROM conversation_change_snapshots WHERE conversation_id = ?")
         .bind(conversation_id)
         .execute(&pool)
         .await

@@ -33,3 +33,6 @@ pub mod turn_log;
 // Tool-facing path helpers. File tools must use explicit absolute paths; workspace
 // context is descriptive/default cwd only, not an implicit relative-path resolver.
 pub mod paths;
+
+// Write/Edit 工具共用的文件 I/O 辅助。
+pub mod file_io;

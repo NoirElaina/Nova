@@ -258,7 +258,7 @@ function collapseContext(lines: DiffLine[]): DiffLine[] {
   return result;
 }
 
-function buildHunk(entry: ToolExecutionEntry): FileChangeHunk | null {
+export function buildHunk(entry: ToolExecutionEntry): FileChangeHunk | null {
   const kind = detectFileChangeKind(entry.toolName);
   if (!kind) return null;
 

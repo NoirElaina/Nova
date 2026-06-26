@@ -558,10 +558,6 @@ pub async fn send_chat_message(
     let frontend_msg_count = messages.len();
     let mut turn_messages = messages;
 
-    // 回合开始：给工作区拍一个起点 git 快照。
-    // 没有 git / 非仓库目录 → 静默忽略，回合照常进行，只是没有"审查/回退"能力。
-    crate::llm::services::file_changes::create_turn_snapshot(&app, conversation_id.as_deref()).await;
-
     // 执行用户提交钩子，可能追加额外上下文（如用户配置的提示前缀）
     let prompt_submit_hook =
         crate::llm::services::hooks::run_user_prompt_submit_hooks(&app, conversation_id.as_deref());
@@ -1069,12 +1065,6 @@ pub async fn send_chat_message(
     // Error 路径：跳过 session_end_hooks 和完整 snapshot 保存，
     // 因为回合未正常完成，partial snapshot 已在循环内保存。
     if matches!(final_outcome.turn_state, state_machine::TurnState::Error) {
-        // 回合异常终止：丢弃本轮起点的 git 快照，避免污染下一轮审查 diff。
-        // 只消耗 pending，不生成 batch。
-        if let Some(conv_id) = conversation_id.as_deref() {
-            crate::llm::services::file_changes::discard_pending_snapshot(&app, Some(conv_id))
-                .await;
-        }
         crate::llm::services::live_turns::mark_terminal(
             conversation_id.as_deref(),
             final_outcome.turn_state.as_event_state(),
@@ -1127,10 +1117,6 @@ pub async fn send_chat_message(
             );
             return Err(error_text);
         }
-        // 回合结束：拍结束快照并与起点快照 diff，把本轮 AI 改动写一条 batch 到审查表。
-        // 纯只读回合（没有文件改动）/ 没有 git 仓库 → 静默跳过，不影响主流程。
-        let _ =
-            crate::llm::services::file_changes::record_turn_changes(&app, Some(conv_id)).await;
     }
 
     // 4. 业务终止：告知前端本轮结束，并携带 stop_reason/turn_state 以区分 completed/needs_user_input/error。

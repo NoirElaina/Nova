@@ -121,30 +121,19 @@ export type FileDiffLine = {
   text: string;
 };
 
-export type FileChangeEntry = {
+export type WorkspaceFileChange = {
   path: string;
   absolutePath: string;
   changeType: "added" | "deleted" | "modified";
-  before?: string | null;
-  after?: string | null;
+  additions: number;
+  deletions: number;
   diff: FileDiffLine[];
 };
 
-export type FileChangeBatch = {
-  id: string;
-  conversationId: string;
-  toolName: string;
-  createdAt: number;
-  reverted: boolean;
-  revertedAt?: number | null;
-  files: FileChangeEntry[];
-};
-
-export type FileChangeBatchSummary = Omit<FileChangeBatch, "files"> & {
-  fileCount: number;
-  additions: number;
-  deletions: number;
-  paths: string[];
+export type WorkspaceDiff = {
+  files: WorkspaceFileChange[];
+  totalAdditions: number;
+  totalDeletions: number;
 };
 
 export async function listConversations(): Promise<ConversationMeta[]> {
@@ -319,31 +308,11 @@ export async function stopUserTerminal(conversationId: string | null): Promise<v
   });
 }
 
-export async function listFileChanges(
+export async function getWorkspaceDiff(
   conversationId: string | null,
-): Promise<FileChangeBatchSummary[]> {
-  return invoke<FileChangeBatchSummary[]>("list_file_changes", {
+): Promise<WorkspaceDiff> {
+  return invoke<WorkspaceDiff>("get_workspace_diff", {
     conversationId,
-  });
-}
-
-export async function getFileChange(
-  conversationId: string | null,
-  batchId: string,
-): Promise<FileChangeBatch> {
-  return invoke<FileChangeBatch>("get_file_change", {
-    conversationId,
-    batchId,
-  });
-}
-
-export async function revertFileChange(
-  conversationId: string | null,
-  batchId: string,
-): Promise<FileChangeBatch> {
-  return invoke<FileChangeBatch>("revert_file_change", {
-    conversationId,
-    batchId,
   });
 }
 

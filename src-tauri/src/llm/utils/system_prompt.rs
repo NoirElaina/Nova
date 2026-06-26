@@ -34,10 +34,16 @@ const AUTO_MODE_SECTION: &str = r#"
 const GLOBAL_MEMORY_SECTION: &str = r#"
 
 ## Global Memory
-- You may store stable cross-session memory by calling `remember_global_memory`.
-- Use it for durable user preferences, long-lived project rules, or persistent facts that improve future turns.
-- Do not store secrets, credentials, private tokens, or one-off ephemeral details.
-- Keep memory entries concise, specific, and reusable.
+- You SHOULD persist stable cross-session memory by calling `remember_global_memory` when:
+  1. The user expresses a preference or correction (e.g. "太长了"、"不要兜底"、"用中文"、"我说的是...")
+  2. The user reveals durable facts about themselves or their project
+  3. The user establishes a workflow rule or convention
+- Priority: user preferences and corrections > project facts > procedural details
+- Write DECLARATIVE facts, not imperatives:
+  ✓ "User prefers concise responses"
+  ✗ "Always respond concisely"
+- Do NOT store: secrets, credentials, private tokens, one-off tasks, environment errors, transient failures
+- Keep entries concise, specific, and reusable
 "#;
 
 fn read_non_empty_file(path: &PathBuf) -> Option<String> {

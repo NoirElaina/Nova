@@ -7,7 +7,6 @@ import WelcomeScreen from "./components/chat/WelcomeScreen.vue";
 import ChatScreen from "./components/chat/ChatScreen.vue";
 import ExecutionTracePopover from "./components/chat/files/ExecutionTracePopover.vue";
 import WorkspaceDrawer from "./components/chat/WorkspaceDrawer.vue";
-import CustomScreen from "./components/custom/PetScreen.vue";
 import PetOverlay from "./components/custom/PetOverlay.vue";
 import HooksConfigScreen from "./components/hooks/HooksConfigScreen.vue";
 import AgentConfigScreen from "./components/agent/AgentConfigScreen.vue";
@@ -289,10 +288,6 @@ onBeforeUnmount(() => {
         <HooksConfigScreen
           v-if="mainView === 'hooks'"
           @change-main-view="handleChangeMainView"
-        />
-
-        <CustomScreen
-          v-else-if="mainView === 'custom'"
         />
 
         <AgentConfigScreen

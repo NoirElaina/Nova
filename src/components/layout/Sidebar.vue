@@ -9,7 +9,7 @@ interface ConversationItem {
   pinnedAt?: number | null;
 }
 
-type MainView = "chat" | "custom" | "hooks" | "agent" | "agentMarket" | "schedule" | "settings";
+type MainView = "chat" | "hooks" | "agent" | "agentMarket" | "schedule" | "settings";
 type ConversationExportFormat = "json" | "pdf";
 
 const props = defineProps<{
@@ -273,14 +273,6 @@ watch(
       >
         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" class="text-[#64748b]"><circle cx="11" cy="11" r="8" stroke="currentColor" stroke-width="1.8"/><path d="M21 21l-4.35-4.35" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>
         <span>搜索</span>
-      </Button>
-      <Button
-        variant="ghost"
-        :class="[sidebarItemClass, props.activeMainView === 'custom' ? sidebarItemActiveClass : sidebarItemIdleClass]"
-        @click="emit('change-main-view', 'custom')"
-      >
-        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" class="text-[#64748b]"><path d="M12 20.5V20m0-16v-.5m0 0a2.5 2.5 0 100 5 2.5 2.5 0 000-5zm0 16a2.5 2.5 0 100-5 2.5 2.5 0 000 5zm-8.5-8H4m16 0h-.5m0 0a2.5 2.5 0 10-5 0 2.5 2.5 0 005 0zm-16 0a2.5 2.5 0 105 0 2.5 2.5 0 00-5 0z" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>
-        <span>宠物</span>
       </Button>
       <Button
         variant="ghost"

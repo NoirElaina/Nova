@@ -16,6 +16,7 @@ import MemoryTab  from './tabs/MemoryTab.vue'
 import DataTab    from './tabs/DataTab.vue'
 import UsageTab   from './tabs/UsageTab.vue'
 import AboutTab   from './tabs/AboutTab.vue'
+import PetScreen  from '../../custom/PetScreen.vue'
 
 type MainView = 'chat' | 'settings'
 
@@ -25,7 +26,7 @@ const emit = defineEmits<{
   (e: 'change-main-view', view: MainView): void
 }>()
 
-type Tab = 'general' | 'model' | 'mcp' | 'rag' | 'skill' | 'memory' | 'data' | 'usage' | 'about'
+type Tab = 'general' | 'model' | 'mcp' | 'rag' | 'skill' | 'memory' | 'data' | 'usage' | 'pet' | 'about'
 const activeTab = ref<Tab>('general')
 const uiLanguage = ref<UiLanguage>(getStoredUiLanguage())
 
@@ -46,6 +47,7 @@ const tabs: { id: Tab; icon: string }[] = [
   { id: 'memory', icon: 'M9 12h6M9 16h6M9 8h6M6 3h12a2 2 0 012 2v14a2 2 0 01-2 2H6a2 2 0 01-2-2V5a2 2 0 012-2z' },
   { id: 'data', icon: 'M4 7v10c0 2.21 3.582 4 8 4s8-1.79 8-4V7M4 7c0 2.21 3.582 4 8 4s8-1.79 8-4M4 7c0-2.21 3.582-4 8-4s8 1.79 8 4' },
   { id: 'usage', icon: 'M16 8v8m-4-5v5m-4-2v2m-2 4h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z' },
+  { id: 'pet', icon: 'M12 20.5V20m0-16v-.5m0 0a2.5 2.5 0 100 5 2.5 2.5 0 000-5zm0 16a2.5 2.5 0 100-5 2.5 2.5 0 000 5zm-8.5-8H4m16 0h-.5m0 0a2.5 2.5 0 10-5 0 2.5 2.5 0 005 0zm-16 0a2.5 2.5 0 105 0 2.5 2.5 0 00-5 0z' },
   { id: 'about', icon: 'M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z' },
 ]
 
@@ -58,6 +60,7 @@ const tabLabel: Record<Tab, { zh: string; en: string }> = {
   memory:  { zh: '记忆',   en: 'Memory' },
   data:    { zh: '数据',   en: 'Data' },
   usage:   { zh: '用量',   en: 'Usage' },
+  pet:     { zh: '宠物',   en: 'Pets' },
   about:   { zh: '关于',   en: 'About' },
 }
 
@@ -159,6 +162,7 @@ onUnmounted(() => {
         <UsageTab
           v-else-if="activeTab === 'usage'"
         />
+        <PetScreen  v-else-if="activeTab === 'pet'" />
         <AboutTab   v-else-if="activeTab === 'about'" />
       </div>
     </main>

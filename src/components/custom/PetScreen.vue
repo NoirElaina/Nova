@@ -244,7 +244,7 @@ onMounted(() => {
 </script>
 
 <template>
-  <div class="h-full overflow-y-auto bg-[#faf9f6] px-6 pt-16 pb-6">
+  <div class="h-full overflow-y-auto bg-[#faf9f6] px-6 pb-6">
 
     <div class="mb-3 flex items-center gap-3">
       <h1 class="text-xl font-bold text-[#111827]">

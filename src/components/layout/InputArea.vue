@@ -17,6 +17,22 @@ import { emitToast } from '../../lib/toast';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import ContextUsageIndicator from './ContextUsageIndicator.vue';
 
+type SkillSummary = {
+  name: string;
+  description: string;
+  path: string;
+};
+
+type SlashCommandEntry = {
+  name: string;
+  description: string;
+};
+
+// 内置斜杠命令列表。目前只有 skill 命令，未来可在此扩展。
+const SLASH_COMMANDS: SlashCommandEntry[] = [
+  { name: 'skill', description: '使用指定技能' },
+];
+
 const props = defineProps<{
   isGenerating?: boolean;
   agentMode?: AgentMode;
@@ -38,6 +54,23 @@ const emit = defineEmits<{
 const currentInput = ref("");
 const textareaRef = ref<HTMLTextAreaElement | null>(null);
 const fileInputRef = ref<HTMLInputElement | null>(null);
+
+// + 按钮菜单状态：null=关闭，'main'=主视图，'skill'=技能视图
+const plusMenuView = ref<null | 'main' | 'skill'>(null);
+const skills = ref<SkillSummary[]>([]);
+const skillsLoading = ref(false);
+
+// 斜杠命令状态：null=未触发，'command'=命令列表阶段，'param'=参数匹配阶段
+const slashPhase = ref<null | 'command' | 'param'>(null);
+const slashQuery = ref('');
+const slashSelectedIndex = ref(0);
+const slashSkills = ref<SkillSummary[]>([]);
+const slashSkillsLoading = ref(false);
+
+const plusButtonRef = ref<HTMLElement | null>(null);
+
+// 当前选中的命令名（进入 param 阶段后固定）
+const slashActiveCommand = ref<string>('');
 
 const MAX_UPLOAD_FILE_SIZE_BYTES = 100 * 1024 * 1024;
 // 图片最终 base64 编码后的上限（约 5MB），超出会自动缩放
@@ -131,6 +164,279 @@ const loadSettings = async () => {
     console.error('Failed to load settings in InputArea:', error);
   }
 };
+
+// 加载技能列表（用于 + 菜单和斜杠命令参数匹配）
+const loadSkills = async (): Promise<SkillSummary[]> => {
+  try {
+    const list = await invoke<SkillSummary[]>('list_skills');
+    return list || [];
+  } catch (error) {
+    console.error('Failed to load skills:', error);
+    return [];
+  }
+};
+
+// + 按钮点击：打开主视图，按需预加载技能列表
+const openPlusMenu = async () => {
+  if (props.isGenerating) return;
+  plusMenuView.value = 'main';
+  if (skills.value.length === 0 && !skillsLoading.value) {
+    skillsLoading.value = true;
+    skills.value = await loadSkills();
+    skillsLoading.value = false;
+  }
+};
+
+const closePlusMenu = () => {
+  plusMenuView.value = null;
+};
+
+const enterSkillView = async () => {
+  plusMenuView.value = 'skill';
+  if (slashSkills.value.length === 0 && !slashSkillsLoading.value) {
+    slashSkillsLoading.value = true;
+    slashSkills.value = await loadSkills();
+    skills.value = slashSkills.value;
+    slashSkillsLoading.value = false;
+  }
+};
+
+// + 菜单选择"上传文件"
+const pickUploadFromPlusMenu = () => {
+  closePlusMenu();
+  triggerFilePicker();
+};
+
+// + 菜单选择某个技能：填入 /skill <name> 到输入框
+const pickSkillFromPlusMenu = (skill: SkillSummary) => {
+  currentInput.value = `/skill ${skill.name} `;
+  closePlusMenu();
+  // 进入参数阶段，便于继续编辑/补充参数
+  slashActiveCommand.value = 'skill';
+  slashPhase.value = 'param';
+  slashQuery.value = skill.name;
+  nextTick(() => {
+    autoResize();
+    focusTextarea();
+    // 光标移到末尾
+    const el = textareaRef.value;
+    if (el) {
+      const len = el.value.length;
+      el.setSelectionRange(len, len);
+    }
+  });
+};
+
+// ── 斜杠命令逻辑 ──────────────────────────────────────────────────
+
+// 命令列表阶段的过滤结果
+const filteredCommands = computed(() => {
+  const q = slashQuery.value.trim().toLowerCase();
+  if (!q) return SLASH_COMMANDS;
+  return SLASH_COMMANDS.filter((cmd) => cmd.name.toLowerCase().includes(q));
+});
+
+// 参数阶段的技能过滤结果
+const filteredSlashSkills = computed(() => {
+  const q = slashQuery.value.trim().toLowerCase();
+  if (!q) return slashSkills.value;
+  return slashSkills.value.filter(
+    (s) => s.name.toLowerCase().includes(q) || s.description.toLowerCase().includes(q),
+  );
+});
+
+// 当前阶段显示的选项列表
+const slashOptions = computed<{ label: string; description: string; value: string }[]>(() => {
+  if (slashPhase.value === 'command') {
+    return filteredCommands.value.map((cmd) => ({
+      label: `/${cmd.name}`,
+      description: cmd.description,
+      value: cmd.name,
+    }));
+  }
+  if (slashPhase.value === 'param') {
+    return filteredSlashSkills.value.map((s) => ({
+      label: s.name,
+      description: s.description,
+      value: s.name,
+    }));
+  }
+  return [];
+});
+
+// 解析当前输入，决定是否进入斜杠命令阶段
+const refreshSlashState = () => {
+  const text = currentInput.value;
+  const el = textareaRef.value;
+
+  // 非 / 开头则关闭
+  if (!text.startsWith('/')) {
+    slashPhase.value = null;
+    slashActiveCommand.value = '';
+    slashQuery.value = '';
+    return;
+  }
+
+  // 找到第一个空格位置
+  const firstSpace = text.indexOf(' ');
+  const cursorPos = el?.selectionStart ?? text.length;
+
+  // 命令名阶段：光标在第一个空格之前
+  if (firstSpace === -1 || cursorPos <= firstSpace) {
+    const name = text.slice(1, cursorPos);
+    slashActiveCommand.value = '';
+    slashPhase.value = 'command';
+    slashQuery.value = name;
+    slashSelectedIndex.value = 0;
+    return;
+  }
+
+  // 已有空格：检查命令名是否匹配内置命令
+  const cmdName = text.slice(1, firstSpace).toLowerCase();
+  const matched = SLASH_COMMANDS.find((cmd) => cmd.name.toLowerCase() === cmdName);
+  if (!matched) {
+    slashPhase.value = null;
+    return;
+  }
+
+  // 进入参数阶段：从第一个空格后到光标
+  const argPart = text.slice(firstSpace + 1, cursorPos);
+  // 参数中不能再有空格（单参数命令）
+  if (argPart.includes(' ')) {
+    slashPhase.value = null;
+    return;
+  }
+
+  slashActiveCommand.value = matched.name;
+  slashPhase.value = 'param';
+  slashQuery.value = argPart;
+  slashSelectedIndex.value = 0;
+};
+
+// 确保斜杠技能列表已加载
+const ensureSlashSkillsLoaded = async () => {
+  if (slashSkills.value.length === 0 && !slashSkillsLoading.value) {
+    slashSkillsLoading.value = true;
+    slashSkills.value = await loadSkills();
+    slashSkillsLoading.value = false;
+  }
+};
+
+const hideSlashMenu = () => {
+  slashPhase.value = null;
+  slashActiveCommand.value = '';
+  slashQuery.value = '';
+};
+
+// 选择某个斜杠选项
+const selectSlashOption = (option: { label: string; value: string }) => {
+  if (slashPhase.value === 'command') {
+    // 命令阶段：替换 / 开头到第一个空格之间的内容为 /<cmd> （命令名后强制加空格）
+    const text = currentInput.value;
+    const firstSpace = text.indexOf(' ');
+    const after = firstSpace === -1 ? '' : text.slice(firstSpace + 1);
+    currentInput.value = after ? `/${option.value} ${after}` : `/${option.value} `;
+    nextTick(() => {
+      const el = textareaRef.value;
+      if (!el) return;
+      // 光标定位到命令名后空格之后，便于继续输入参数
+      const cmdEnd = `/${option.value} `.length;
+      el.setSelectionRange(cmdEnd, cmdEnd);
+      // 进入参数阶段
+      slashActiveCommand.value = option.value;
+      slashPhase.value = 'param';
+      slashQuery.value = '';
+      slashSelectedIndex.value = 0;
+      void ensureSlashSkillsLoaded();
+    });
+    return;
+  }
+
+  if (slashPhase.value === 'param') {
+    // 参数阶段：填充 /<cmd> <param>
+    const text = currentInput.value;
+    const cursorPos = textareaRef.value?.selectionStart ?? text.length;
+    const firstSpace = text.indexOf(' ');
+    if (firstSpace === -1) return;
+    const before = text.slice(0, firstSpace + 1);
+    const after = text.slice(cursorPos);
+    currentInput.value = `${before}${option.value}${after.startsWith(' ') ? after : ' ' + after}`;
+    nextTick(() => {
+      const el = textareaRef.value;
+      if (!el) return;
+      const newPos = before.length + option.value.length + 1;
+      el.setSelectionRange(newPos, newPos);
+      hideSlashMenu();
+      focusTextarea();
+    });
+  }
+};
+
+// 斜杠菜单键盘导航：返回 true 表示已处理
+const handleSlashKeydown = (e: KeyboardEvent): boolean => {
+  if (slashPhase.value === null) return false;
+  const opts = slashOptions.value;
+  if (opts.length === 0) return false;
+
+  if (e.key === 'ArrowDown') {
+    e.preventDefault();
+    slashSelectedIndex.value = (slashSelectedIndex.value + 1) % opts.length;
+    return true;
+  }
+  if (e.key === 'ArrowUp') {
+    e.preventDefault();
+    slashSelectedIndex.value = (slashSelectedIndex.value - 1 + opts.length) % opts.length;
+    return true;
+  }
+  if (e.key === 'Enter' || e.key === 'Tab') {
+    e.preventDefault();
+    const selected = opts[slashSelectedIndex.value];
+    if (selected) selectSlashOption(selected);
+    return true;
+  }
+  if (e.key === 'Escape') {
+    e.preventDefault();
+    hideSlashMenu();
+    return true;
+  }
+  return false;
+};
+
+// 解析输入是否为 /skill <name> 命令
+const parseSkillCommand = (text: string): { name: string; rest: string } | null => {
+  const trimmed = text.trim();
+  if (!trimmed.startsWith('/')) return null;
+  const firstSpace = trimmed.indexOf(' ');
+  if (firstSpace === -1) return null;
+  const cmd = trimmed.slice(1, firstSpace).toLowerCase();
+  if (cmd !== 'skill') return null;
+  const remaining = trimmed.slice(firstSpace + 1).trim();
+  if (!remaining) return null;
+  const nextSpace = remaining.indexOf(' ');
+  const name = nextSpace === -1 ? remaining : remaining.slice(0, nextSpace);
+  const rest = nextSpace === -1 ? '' : remaining.slice(nextSpace + 1).trim();
+  if (!name) return null;
+  return { name, rest };
+};
+
+// 转义 HTML 特殊字符，防止镜像层渲染用户输入时出现 XSS 或解析错误
+const escapeHtml = (s: string) =>
+  s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+
+// 输入框镜像层内容：高亮开头的斜杠命令名（如 /skill）
+const highlightedInput = computed(() => {
+  const text = currentInput.value;
+  if (!text) return '';
+  const escaped = escapeHtml(text);
+  // 匹配开头的 /命令名（字母开头，可含连字符）
+  const match = escaped.match(/^(\/[a-zA-Z][\w-]*)/);
+  if (match) {
+    const cmd = match[1];
+    const rest = escaped.slice(cmd.length);
+    return `<span class="text-primary font-semibold">${cmd}</span>${rest}`;
+  }
+  return escaped;
+});
 
 const onModelValueChange = async (value: unknown) => {
   if (typeof value !== 'string' || !settings.value) return;
@@ -452,6 +758,23 @@ const autoResize = () => {
   el.style.height = `${newHeight}px`;
 };
 
+// textarea 输入事件：先调整高度，再刷新斜杠命令状态
+const onTextareaInput = () => {
+  autoResize();
+  refreshSlashState();
+};
+
+// textarea keydown 事件：斜杠菜单激活时优先拦截导航键，否则交给 sendMessage
+const onTextareaKeydown = (e: KeyboardEvent) => {
+  if (slashPhase.value !== null) {
+    if (handleSlashKeydown(e)) return;
+    // 斜杠菜单激活时，Enter 已被 handleSlashKeydown 处理；若未处理则放行
+  }
+  if (e.key === 'Enter' && !e.shiftKey) {
+    sendMessage(e);
+  }
+};
+
 
 // 发送消息，支持 Shift + Enter 换行，当 isGenerating 为 true 时禁用发送功能
 const sendMessage = (e?: KeyboardEvent) => {
@@ -459,9 +782,28 @@ const sendMessage = (e?: KeyboardEvent) => {
   e?.preventDefault();
   if ((!currentInput.value.trim() && !hasPendingUploads.value) || props.isGenerating) return;
 
-  const message = currentInput.value.trim();
+  const rawText = currentInput.value;
+  const trimmed = rawText.trim();
+
+  // 识别 /skill <name> 命令：不发送命令原文，转换为简短描述消息触发 SkillTool
+  const skillCmd = parseSkillCommand(trimmed);
+  if (skillCmd) {
+    const argHint = skillCmd.rest ? `\n附加参数：${skillCmd.rest}` : '';
+    const message = `请使用 Skill 工具加载并执行技能：${skillCmd.name}${argHint}`;
+    emit('send', message);
+    currentInput.value = "";
+    hideSlashMenu();
+    nextTick(() => {
+      autoResize();
+      focusTextarea();
+    });
+    return;
+  }
+
+  const message = trimmed;
   emit('send', message);
   currentInput.value = "";
+  hideSlashMenu();
   nextTick(() => {
     autoResize();
     focusTextarea();
@@ -495,9 +837,24 @@ watch(
 
 
 const handleSettingsUpdate = () => loadSettings();
+
+// 点击 + 菜单外部时关闭菜单
+const handleDocumentClick = (e: MouseEvent) => {
+  if (plusMenuView.value === null) return;
+  const target = e.target as Node | null;
+  if (plusButtonRef.value && target && plusButtonRef.value.contains(target)) return;
+  // 菜单内部点击由各自 handler 处理；这里只处理外部点击
+  const menus = document.querySelectorAll('[data-plus-menu]');
+  for (const menu of menus) {
+    if (menu.contains(target)) return;
+  }
+  closePlusMenu();
+};
+
 onMounted(() => {
   loadSettings();
   window.addEventListener('settings-updated', handleSettingsUpdate);
+  document.addEventListener('click', handleDocumentClick, true);
   nextTick(() => {
     autoResize();
     focusTextarea();
@@ -506,6 +863,7 @@ onMounted(() => {
 
 onUnmounted(() => {
   window.removeEventListener('settings-updated', handleSettingsUpdate);
+  document.removeEventListener('click', handleDocumentClick, true);
 });
 
 defineExpose({
@@ -583,16 +941,121 @@ defineExpose({
           </div>
         </div>
       </div>
-      <textarea ref="textareaRef" v-model="currentInput" @keydown.enter="sendMessage" @input="autoResize" @paste="onTextareaPaste"
-        placeholder="Message Nova..." rows="1"
-        class="w-full bg-transparent border-none text-[0.95rem] text-[#1a1a1a] dark:text-[#ececec] resize-none outline-none block max-h-[40vh] px-4 pt-3 pb-2 placeholder:text-[#a3a3a3]"></textarea>
+      <div class="relative w-full">
+        <!-- 高亮镜像层：显示带命令高亮的输入内容，位于 textarea 下方 -->
+        <div
+          aria-hidden="true"
+          class="absolute inset-0 w-full px-4 pt-3 pb-2 text-[0.95rem] text-[#1a1a1a] dark:text-[#ececec] max-h-[40vh] overflow-hidden whitespace-pre-wrap break-words pointer-events-none"
+          v-html="highlightedInput + '\u200b'"></div>
+        <textarea ref="textareaRef" v-model="currentInput" @keydown="onTextareaKeydown" @input="onTextareaInput" @paste="onTextareaPaste"
+          placeholder="Message Nova..." rows="1"
+          class="relative w-full bg-transparent border-none text-[0.95rem] text-transparent caret-[#1a1a1a] dark:caret-[#ececec] resize-none outline-none block max-h-[40vh] px-4 pt-3 pb-2 placeholder:text-[#a3a3a3] z-10"></textarea>
+
+        <!-- 斜杠命令下拉菜单：向上弹出，与输入框同宽 -->
+        <div
+          v-if="slashPhase !== null && slashOptions.length > 0"
+          class="absolute bottom-full left-0 mb-2 w-full rounded-lg border border-border bg-popover shadow-lg z-50 overflow-hidden">
+          <div class="max-h-[240px] overflow-y-auto py-1">
+            <button
+              v-for="(option, index) in slashOptions"
+              :key="option.label + index"
+              type="button"
+              class="w-full flex items-center justify-between gap-2 px-3 py-1.5 text-left transition-colors"
+              :class="{ 'bg-secondary/80': index === slashSelectedIndex }"
+              @mouseenter="slashSelectedIndex = index"
+              @click="selectSlashOption(option)">
+              <div class="flex items-center gap-2 min-w-0">
+                <span class="text-sm font-medium truncate">{{ option.label }}</span>
+              </div>
+              <span v-if="option.description" class="text-xs text-muted-foreground truncate shrink-0 max-w-[60%]">{{ option.description }}</span>
+            </button>
+          </div>
+        </div>
+        <div
+          v-else-if="slashPhase === 'param' && slashSkillsLoading"
+          class="absolute bottom-full left-0 mb-2 w-full rounded-lg border border-border bg-popover shadow-lg z-50 overflow-hidden">
+          <div class="px-3 py-2 text-xs text-muted-foreground">加载技能列表...</div>
+        </div>
+        <div
+          v-else-if="slashPhase === 'param' && slashOptions.length === 0 && !slashSkillsLoading"
+          class="absolute bottom-full left-0 mb-2 w-full rounded-lg border border-border bg-popover shadow-lg z-50 overflow-hidden">
+          <div class="px-3 py-2 text-xs text-muted-foreground">暂无匹配技能</div>
+        </div>
+
+        <!-- + 按钮菜单：主视图（与输入框同宽） -->
+        <div
+          v-if="plusMenuView === 'main'"
+          data-plus-menu
+          class="absolute bottom-full left-0 mb-2 w-full rounded-lg border border-border bg-popover shadow-lg z-50 overflow-hidden">
+          <button
+            type="button"
+            class="w-full flex items-center gap-2 px-3 py-2 text-sm text-left hover:bg-secondary/80 transition-colors"
+            @click="pickUploadFromPlusMenu">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+              stroke-linecap="round" stroke-linejoin="round" class="shrink-0">
+              <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M17 8l-5-5-5 5M12 3v12" />
+            </svg>
+            <span>上传文件</span>
+          </button>
+          <button
+            type="button"
+            class="w-full flex items-center justify-between gap-2 px-3 py-2 text-sm text-left hover:bg-secondary/80 transition-colors"
+            @click="enterSkillView">
+            <div class="flex items-center gap-2">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+                stroke-linecap="round" stroke-linejoin="round" class="shrink-0">
+                <path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z" />
+              </svg>
+              <span>使用技能</span>
+            </div>
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+              stroke-linecap="round" stroke-linejoin="round" class="shrink-0 opacity-60">
+              <path d="M9 18l6-6-6-6" />
+            </svg>
+          </button>
+        </div>
+
+        <!-- + 按钮菜单：技能视图（与输入框同宽） -->
+        <div
+          v-if="plusMenuView === 'skill'"
+          data-plus-menu
+          class="absolute bottom-full left-0 mb-2 w-full rounded-lg border border-border bg-popover shadow-lg z-50 overflow-hidden">
+          <div class="flex items-center gap-2 px-3 py-2 border-b border-border">
+            <button
+              type="button"
+              class="shrink-0 rounded p-0.5 hover:bg-secondary/80 transition-colors"
+              @click="plusMenuView = 'main'">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+                stroke-linecap="round" stroke-linejoin="round">
+                <path d="M15 18l-6-6 6-6" />
+              </svg>
+            </button>
+            <span class="text-xs font-medium text-muted-foreground">技能列表</span>
+          </div>
+          <div class="max-h-[240px] overflow-y-auto">
+            <div v-if="skillsLoading" class="px-3 py-2 text-xs text-muted-foreground">加载中...</div>
+            <div v-else-if="skills.length === 0" class="px-3 py-2 text-xs text-muted-foreground">暂无可用技能</div>
+            <button
+              v-for="skill in skills"
+              :key="skill.name"
+              type="button"
+              class="w-full flex flex-col items-start gap-0.5 px-3 py-1.5 text-left hover:bg-secondary/80 transition-colors"
+              @click="pickSkillFromPlusMenu(skill)">
+              <span class="text-sm truncate w-full">{{ skill.name }}</span>
+              <span v-if="skill.description" class="text-xs text-muted-foreground truncate w-full">{{ skill.description }}</span>
+            </button>
+          </div>
+        </div>
+      </div>
 
       <div class="flex min-w-0 items-center gap-2 px-3 pb-3 pt-2">
         <div class="flex min-w-0 flex-1 flex-wrap items-center gap-2">
           <button
+            ref="plusButtonRef"
             type="button"
             class="w-8 h-8 shrink-0 rounded-lg flex items-center justify-center text-muted-foreground hover:bg-secondary/80 transition-colors"
-            @click="triggerFilePicker">
+            :class="{ 'bg-secondary/80': plusMenuView !== null }"
+            @click="plusMenuView !== null ? closePlusMenu() : openPlusMenu()">
             <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
               stroke-linecap="round" stroke-linejoin="round">
               <path d="M12 5v14M5 12h14" />

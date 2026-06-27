@@ -914,6 +914,7 @@ pub async fn send_chat_message(
                 conversation_id.as_deref(),
             );
             if let Some(error) = stop_hook_result.override_error {
+                finalize_turn_on_error(&app, conversation_id.as_deref(), &error);
                 return Err(error);
             }
             // 判断 stop hooks 是否注入了附加上下文。
@@ -981,6 +982,7 @@ pub async fn send_chat_message(
         conversation_id.as_deref(),
     );
     if let Some(error) = session_end_hook.override_error {
+        finalize_turn_on_error(&app, conversation_id.as_deref(), &error);
         return Err(error);
     }
     if let Some(hooked_reason) = session_end_hook.stop_reason {
@@ -1038,4 +1040,32 @@ pub async fn send_chat_message(
 
     // 全流程成功完成。
     Ok(())
+}
+
+// 错误路径收尾：标记会话为 error 终态并发送 stop 事件。
+// 用于早返回路径（stop hook / session_end hook 报错），避免跳过 mark_terminal
+// 导致 live_turns 状态卡在 "running" 且前端收不到 stop 事件。
+fn finalize_turn_on_error(
+    app: &AppHandle,
+    conversation_id: Option<&str>,
+    stop_reason: &str,
+) {
+    crate::llm::services::live_turns::mark_terminal(conversation_id, "error");
+    app.emit(
+        "chat-stream",
+        ChatMessageEvent {
+            r#type: "stop".into(),
+            text: None,
+            tool_use_id: None,
+            tool_use_name: None,
+            tool_use_input: None,
+            tool_result: None,
+            tool_is_error: None,
+            token_usage: None,
+            stop_reason: Some(stop_reason.to_string()),
+            turn_state: Some("error".to_string()),
+            conversation_id: conversation_id.map(str::to_string),
+        },
+    )
+    .ok();
 }

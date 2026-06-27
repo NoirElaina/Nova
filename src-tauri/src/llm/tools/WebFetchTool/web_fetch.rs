@@ -42,6 +42,9 @@ Fails on authenticated/private URLs. Cross-host redirects are returned rather th
 
 const MAX_BODY_BYTES: usize = 512 * 1024;
 const CACHE_TTL_SECS: u64 = 900;
+// 缓存条目上限：超过时淘汰最旧条目，避免长会话无界增长导致 OOM。
+// 64 条 × 512KB 上限 ≈ 32MB 内存占用上限。
+const CACHE_MAX_ENTRIES: usize = 64;
 
 struct CacheEntry {
     content: String,
@@ -139,6 +142,16 @@ async fn execute_async(input: Value) -> Result<ToolOutcome, ToolFailure> {
     // Update cache.
     {
         let mut cache = FETCH_CACHE.lock().unwrap();
+        // 容量上限：达到上限时淘汰 fetched_at 最旧的条目。
+        if cache.len() >= CACHE_MAX_ENTRIES {
+            if let Some(oldest_key) = cache
+                .iter()
+                .min_by_key(|(_, entry)| entry.fetched_at)
+                .map(|(k, _)| k.clone())
+            {
+                cache.remove(&oldest_key);
+            }
+        }
         cache.insert(
             url.to_string(),
             CacheEntry {

@@ -23,10 +23,10 @@ const IMAGE_TOKEN_MAX: i64 = 8192;
 const IMAGE_TOKEN_FALLBACK: i64 = 1536;
 
 // 策略阈值：完全按 token 比例触发（对标 Claude Code 的 autoCompact 策略）。
-// 不再使用消息条数或工具结果字符数等硬编码阈值。
+// 不再使用消息条数或工具结果字符数等硬编码阈值，也不使用绝对值 buffer，
+// 避免小上下文窗口模型触发"每轮必压缩"死结。
 // Micro: 80% 窗口时做本地工具结果截断（不调用模型）
-// Full: (窗口 - BUFFER) 时做模型摘要压缩（对标 Claude Code 的 windowSize - 13k）
-const FULL_COMPACT_BUFFER_TOKENS: i64 = 13_000;
+// Full: 90% 窗口时做模型摘要压缩
 
 // 截断值：在 tool_result 里保持头尾信息, 避免 payload 过长。
 const TOOL_RESULT_TEXT_TRUNCATE_LIMIT: usize = 1200;
@@ -493,9 +493,9 @@ fn decide_compact_strategy(messages: &[Message], window_tokens: i64) -> CompactD
     let estimated_tokens = estimate_message_tokens(messages);
 
     // Micro: 80% 窗口触发本地工具结果截断（不调用模型）
-    // Full: (窗口 - 13k buffer) 触发模型摘要压缩
+    // Full: 90% 窗口触发模型摘要压缩
     let micro_token_threshold = (window_tokens * 80) / 100;
-    let full_token_threshold = window_tokens - FULL_COMPACT_BUFFER_TOKENS;
+    let full_token_threshold = (window_tokens * 90) / 100;
 
     // 决策逻辑：优先判断 Full，再判断 Micro，否则 None
     let level = if estimated_tokens >= full_token_threshold {

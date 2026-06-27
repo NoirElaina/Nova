@@ -1,5 +1,7 @@
+use crate::llm::tools::shared::read_state::global_registry;
 use crate::llm::tools::{app_tool, AppExecuteFuture, ToolFailure, ToolOutcome, ToolRegistration};
 use crate::llm::types::Tool;
+use crate::llm::utils::file_io::read_file_utf8;
 use serde_json::{json, Value};
 use std::path::PathBuf;
 use tauri::AppHandle;
@@ -18,7 +20,8 @@ pub fn tool() -> Tool {
 - Reads PDF files via the `pages` parameter (e.g. "1-5", max 20 pages/request).
 - `file_path` must be an absolute path.
 - `offset` is 0-based (line 0 is the first line). When specified, `limit` is required by Claude Code; when both are omitted, the entire file is returned.
-- Reading a directory, a missing file, or an empty file returns an error."#
+- Reading a directory, a missing file, or an empty file returns an error.
+- You must read a file before you can edit it with the Edit tool."#
             .into(),
         input_schema: json!({
             "type": "object",
@@ -80,11 +83,15 @@ fn base64(bytes: &[u8]) -> String {
     base64::engine::general_purpose::STANDARD.encode(bytes)
 }
 
+/// 读取文本文件。返回 (格式化输出, 原始内容)。
+///
+/// 原始内容已 strip BOM——用于 read_state 注册表缓存，供 EditTool
+/// 在 Windows mtime 误报时做字节对比 fallback。
 fn read_text(
     path: &std::path::Path,
     limit: Option<usize>,
     offset: Option<usize>,
-) -> Result<String, String> {
+) -> Result<(String, String), String> {
     let metadata = std::fs::metadata(path)
         .map_err(|e| format!("Error accessing file: {}", e))?;
     if !metadata.is_file() {
@@ -98,16 +105,11 @@ fn read_text(
         ));
     }
 
-    let content = std::fs::read_to_string(path).map_err(|e| {
-        if e.kind() == std::io::ErrorKind::InvalidData {
-            format!(
-                "File does not appear to be valid UTF-8: {}. Try reading it as an image or PDF instead.",
-                path.display()
-            )
-        } else {
-            format!("Error reading {}: {}", path.display(), e)
-        }
-    })?;
+    // 用 read_file_utf8 strip BOM，让 AI 看到干净内容（不带 \u{FEFF} 前缀）。
+    // 这避免 AI copy 出来的 old_string 带 BOM 但 EditTool 读文件又 strip BOM
+    // 导致匹配失败的 bug。
+    let (content, _had_bom) = read_file_utf8(path)
+        .map_err(|e| format!("Error reading {}: {}", path.display(), e))?;
 
     if content.is_empty() {
         return Err(format!("File is empty: {}", path.display()));
@@ -147,7 +149,7 @@ fn read_text(
         ));
     }
 
-    Ok(output)
+    Ok((output, content))
 }
 
 fn parse_page_range(pages: &str) -> Result<(u32, u32), String> {
@@ -269,7 +271,10 @@ fn resolve_file_path(raw: &str) -> Result<PathBuf, String> {
     Ok(path)
 }
 
-async fn execute_async(input: Value) -> Result<ToolOutcome, ToolFailure> {
+async fn execute_async(
+    conversation_id: Option<&str>,
+    input: Value,
+) -> Result<ToolOutcome, ToolFailure> {
     let file_path = input
         .get("file_path")
         .and_then(Value::as_str)
@@ -299,24 +304,39 @@ async fn execute_async(input: Value) -> Result<ToolOutcome, ToolFailure> {
         )));
     }
 
-    let result = if is_pdf(&path) {
-        read_pdf(&path, pages)
-    } else if is_image_ext(&path) {
-        read_image(&path)
-    } else {
-        read_text(&path, limit, offset)
-    };
-
-    match result {
-        Ok(content) => Ok(ToolOutcome::text(content)),
-        Err(e) => Err(ToolFailure::new(e)),
+    // 只有文本文件需要登记到 read_state——image/pdf 不能被 Edit。
+    if is_pdf(&path) {
+        let content = read_pdf(&path, pages).map_err(ToolFailure::new)?;
+        return Ok(ToolOutcome::text(content));
     }
+    if is_image_ext(&path) {
+        let content = read_image(&path).map_err(ToolFailure::new)?;
+        return Ok(ToolOutcome::text(content));
+    }
+
+    let (formatted, raw_content) = read_text(&path, limit, offset).map_err(ToolFailure::new)?;
+
+    // 登记到 read_state 注册表，让后续 EditTool 能 check_editable。
+    // 完整读取（offset && limit 都 None）时缓存原始内容，用于 Windows mtime
+    // 误报 fallback；分页读取标记 is_partial=true，EditTool 会拒绝。
+    let is_partial = offset.is_some() || limit.is_some();
+    let cached_content = if is_partial { None } else { Some(raw_content) };
+    global_registry().record_read(
+        conversation_id,
+        &path,
+        cached_content,
+        is_partial,
+    );
+
+    Ok(ToolOutcome::text(formatted))
 }
 
 fn execute_with_app_boxed(
     _app: AppHandle,
-    _conversation_id: Option<String>,
+    conversation_id: Option<String>,
     input: Value,
 ) -> AppExecuteFuture {
-    Box::pin(async move { execute_async(input).await })
+    Box::pin(async move {
+        execute_async(conversation_id.as_deref(), input).await
+    })
 }

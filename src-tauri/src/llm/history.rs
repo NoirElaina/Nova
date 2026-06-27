@@ -6,7 +6,7 @@ use uuid::Uuid;
 
 use crate::llm::commands::memory;
 use crate::llm::commands::types::{
-    ConversationMeta, GlobalMemoryEntry, HistoryMessage, HistoryToolExecution,
+    ConversationMeta, HistoryMessage, HistoryToolExecution,
 };
 use crate::llm::types::{Content, ContentBlock, Message, Role};
 
@@ -158,28 +158,20 @@ pub async fn get_pool_with_schema(app: &AppHandle) -> Result<SqlitePool, String>
     Ok(pool)
 }
 
-pub async fn upsert_global_memory(
-    app: &AppHandle,
-    content: &str,
-    kind: Option<&str>,
-    source: Option<&str>,
-) -> Result<GlobalMemoryEntry, String> {
-    crate::llm::services::memory_dir::upsert_global_memory(app, content, kind, source).await
+pub async fn list_memory_entries(app: &AppHandle) -> Result<Vec<String>, String> {
+    crate::llm::services::memory_dir::memory_list(app).await
 }
 
-pub async fn list_global_memory(
-    app: &AppHandle,
-    limit: Option<i64>,
-) -> Result<Vec<GlobalMemoryEntry>, String> {
-    crate::llm::services::memory_dir::list_global_memory(app, limit).await
+pub async fn add_memory_entry(app: &AppHandle, content: &str) -> Result<(), String> {
+    crate::llm::services::memory_dir::memory_add(app, content).await
 }
 
-pub async fn delete_global_memory(app: &AppHandle, id: i64) -> Result<bool, String> {
-    crate::llm::services::memory_dir::delete_global_memory(app, id).await
+pub async fn remove_memory_entry(app: &AppHandle, old_text: &str) -> Result<(), String> {
+    crate::llm::services::memory_dir::memory_remove(app, old_text).await
 }
 
-pub async fn clear_global_memory(app: &AppHandle) -> Result<i64, String> {
-    crate::llm::services::memory_dir::clear_global_memory(app).await
+pub async fn clear_memory_entries(app: &AppHandle) -> Result<(), String> {
+    crate::llm::services::memory_dir::memory_clear(app).await
 }
 
 async fn conversation_exists(pool: &SqlitePool, conversation_id: &str) -> Result<bool, String> {

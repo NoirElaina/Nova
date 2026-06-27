@@ -1,7 +1,7 @@
 mod state;
 mod summary;
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 
 use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
 use serde::Serialize;
@@ -9,7 +9,7 @@ use serde_json::Map;
 use serde_json::{json, Value};
 use tauri::AppHandle;
 
-use crate::llm::commands::types::CompactContext;
+use crate::llm::commands::types::{CompactContext, HistoryMessage};
 use crate::llm::types::{Content, ContentBlock, Message, Role};
 
 // 每条消息、块、工具使用/工具结果的静态开销。用于 token 估算近似，防止只依赖字符数导致低估。
@@ -301,26 +301,7 @@ fn split_session_restore_message(messages: &[Message]) -> (Option<Message>, Vec<
     (Some(messages[marker_index].clone()), rest)
 }
 
-fn collect_tool_use_names(messages: &[Message]) -> HashMap<String, String> {
-    let mut names = HashMap::new();
-
-    for message in messages {
-        let Content::Blocks(blocks) = &message.content else {
-            continue;
-        };
-
-        for block in blocks {
-            if let ContentBlock::ToolUse { id, name, .. } = block {
-                names.insert(id.clone(), name.clone());
-            }
-        }
-    }
-
-    names
-}
-
 fn collect_clearable_tool_result_ids(messages: &[Message]) -> Vec<String> {
-    let tool_names = collect_tool_use_names(messages);
     let mut ids = Vec::new();
     let mut seen = HashSet::new();
 
@@ -340,14 +321,6 @@ fn collect_clearable_tool_result_ids(messages: &[Message]) -> Vec<String> {
             };
 
             if !seen.insert(tool_use_id.clone()) {
-                continue;
-            }
-
-            let excluded = tool_names
-                .get(tool_use_id)
-                .map(|_name| false)
-                .unwrap_or(false);
-            if excluded {
                 continue;
             }
 
@@ -959,6 +932,88 @@ pub async fn compact_messages_for_turn(
     compact_messages_for_turn_with_report(app, conversation_id, messages)
         .await
         .map(|outcome| outcome.messages)
+}
+
+// 手动压缩：把当前会话历史发给 AI 摘要，用摘要+最近几条消息替换数据库历史。
+// replace_history 会清除关联的工具日志/记忆/边界记录（旧消息已不存在，关联数据无意义）。
+const MANUAL_COMPACT_RECENT_LIMIT: usize = 4;
+const MANUAL_COMPACT_MIN_MESSAGES: usize = 6;
+
+#[derive(Debug, Serialize)]
+pub struct ManualCompactOutcome {
+    pub before_tokens: u32,
+    pub after_tokens: u32,
+    pub saved_tokens: u32,
+    pub summary: String,
+}
+
+pub async fn manual_compact(
+    app: &AppHandle,
+    conversation_id: &str,
+) -> Result<ManualCompactOutcome, String> {
+    let history_messages = crate::llm::history::load_history(app, conversation_id).await?;
+    if history_messages.len() <= MANUAL_COMPACT_MIN_MESSAGES {
+        return Err("消息太少，无需压缩".to_string());
+    }
+
+    let messages: Vec<Message> = history_messages
+        .iter()
+        .map(|h| Message {
+            role: if h.role.eq_ignore_ascii_case("user") {
+                Role::User
+            } else {
+                Role::Assistant
+            },
+            content: Content::Text(h.content.clone()),
+        })
+        .collect();
+
+    let before_tokens = estimate_tokens_for_messages(&messages) as u32;
+
+    let split_index = messages
+        .len()
+        .saturating_sub(MANUAL_COMPACT_RECENT_LIMIT);
+    let messages_to_summarize = &messages[..split_index];
+    let recent_messages = &messages[split_index..];
+
+    let summary = summary::summarize_messages_for_compact(app, messages_to_summarize).await?;
+    let compact_message = build_auto_compact_summary_message(&summary);
+
+    let mut new_messages = vec![compact_message];
+    new_messages.extend(recent_messages.iter().cloned());
+
+    let after_tokens = estimate_tokens_for_messages(&new_messages) as u32;
+
+    let new_history: Vec<HistoryMessage> = new_messages
+        .iter()
+        .map(|m| HistoryMessage {
+            role: match m.role {
+                Role::User => "user".to_string(),
+                Role::Assistant => "assistant".to_string(),
+            },
+            content: match &m.content {
+                Content::Text(t) => t.clone(),
+                Content::Blocks(_) => String::new(),
+            },
+            reasoning: None,
+            attachments: None,
+            token_usage: None,
+            cost: None,
+        })
+        .collect();
+
+    crate::llm::history::replace_history(app, conversation_id, new_history).await?;
+
+    // replace_history 会清除 turn snapshot，这里用压缩后的消息重建一份，
+    // 否则下一轮 send_chat_message 会因找不到 snapshot 而拒绝执行。
+    crate::llm::history::save_turn_snapshot(app, conversation_id, &new_messages).await?;
+
+    Ok(ManualCompactOutcome {
+        before_tokens,
+        after_tokens,
+        saved_tokens: before_tokens.saturating_sub(after_tokens),
+        summary,
+    })
 }
 
 // 检查当前输出消息是否包含工具结果里标记为需要用户输入的 payload，

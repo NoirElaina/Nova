@@ -155,6 +155,43 @@ export function useChatController() {
     planMode.value = mode === "plan";
   }
 
+  const isCompacting = ref(false);
+
+  async function handleCompactConversation() {
+    const conversationId = activeConversationId.value;
+    if (!conversationId || isCompacting.value) return;
+    isCompacting.value = true;
+    try {
+      const { invoke } = await import("@tauri-apps/api/core");
+      const outcome = await invoke<{
+        beforeTokens: number;
+        afterTokens: number;
+        savedTokens: number;
+        summary: string;
+      }>("manual_compact_conversation", { conversationId });
+      await conversationOps.loadConversation(conversationId);
+      currentContextCompacts.value = [];
+      currentContextTokens.value = outcome.afterTokens;
+      currentContextUsage.value = {
+        usedTokens: outcome.afterTokens,
+        source: "actual",
+      };
+      emitToast({
+        variant: "success",
+        source: "manual-compact",
+        message: `对话已压缩，节省 ${outcome.savedTokens} tokens`,
+      });
+    } catch (err) {
+      emitToast({
+        variant: "error",
+        source: "manual-compact",
+        message: `压缩失败: ${err}`,
+      });
+    } finally {
+      isCompacting.value = false;
+    }
+  }
+
   const conversationOps = createConversationOperations({
     activeConversationId,
     activeWorkspacePath,
@@ -338,5 +375,7 @@ export function useChatController() {
     handleDeleteConversation: conversationOps.handleDeleteConversation,
     handlePinConversation: conversationOps.handlePinConversation,
     handleChangeMainView,
+    isCompacting,
+    handleCompactConversation,
   };
 }

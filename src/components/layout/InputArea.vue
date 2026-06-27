@@ -23,6 +23,7 @@ const props = defineProps<{
   pendingUploads?: PendingUploadFile[];
   contextUsage?: ContextUsage;
   contextTokens?: number;
+  compacting?: boolean;
 }>();
 
 const emit = defineEmits<{
@@ -31,6 +32,7 @@ const emit = defineEmits<{
   (e: 'mode-change', mode: AgentMode): void;
   (e: 'upload-files', files: PendingUploadFile[]): void;
   (e: 'remove-upload', index: number): void;
+  (e: 'compact'): void;
 }>();
 
 const currentInput = ref("");
@@ -621,7 +623,7 @@ defineExpose({
                 </SelectItem>
               </SelectContent>
             </Select>
-            <ContextUsageIndicator :usage="contextUsage" :usedTokens="contextTokens" :model="currentModel" />
+            <ContextUsageIndicator :usage="contextUsage" :usedTokens="contextTokens" :model="currentModel" :compacting="compacting" @compact="emit('compact')" />
           </div>
         </div>
         <button class="w-8 h-8 shrink-0 rounded-full flex items-center justify-center transition-colors shadow-sm"

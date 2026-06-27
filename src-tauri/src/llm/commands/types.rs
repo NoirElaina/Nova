@@ -1,25 +1,6 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-mod i64_string_serde {
-    use serde::{Deserialize, Deserializer, Serializer};
-
-    pub fn serialize<S>(value: &i64, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: Serializer,
-    {
-        serializer.serialize_str(&value.to_string())
-    }
-
-    pub fn deserialize<'de, D>(deserializer: D) -> Result<i64, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        let raw = String::deserialize(deserializer)?;
-        raw.parse::<i64>().map_err(serde::de::Error::custom)
-    }
-}
-
 #[derive(Debug, Serialize, Deserialize, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct ConversationMeta {
@@ -98,26 +79,6 @@ pub struct ConversationMemory {
     // 关键事实列表。
     pub key_facts: Vec<String>,
     // 记忆更新时间（unix 秒）。
-    pub updated_at: i64,
-}
-
-#[derive(Debug, Serialize, Deserialize, Clone)]
-#[serde(rename_all = "camelCase")]
-pub struct GlobalMemoryEntry {
-    // 全局记忆记录 ID。
-    #[serde(with = "i64_string_serde")]
-    pub id: i64,
-    // 记忆文本内容。
-    pub content: String,
-    // 记忆类型（preference/fact/rule）。
-    pub kind: String,
-    // 记忆来源（assistant/user/tool）。
-    pub source: String,
-    // 相同记忆被命中的累计次数。
-    pub hits: i64,
-    // 创建时间（unix 秒）。
-    pub created_at: i64,
-    // 最近更新时间（unix 秒）。
     pub updated_at: i64,
 }
 

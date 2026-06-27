@@ -7,6 +7,11 @@ const props = defineProps<{
   usage?: ContextUsage;
   usedTokens?: number;
   model?: string;
+  compacting?: boolean;
+}>();
+
+const emit = defineEmits<{
+  (e: 'compact'): void;
 }>();
 
 const DEFAULT_WINDOW_TOKENS = 200_000;
@@ -108,8 +113,13 @@ const formatTokens = (value: number) => {
         <span>保留用于响应</span>
       </div>
 
-      <button type="button" class="compact-button">
-        压缩对话
+      <button
+        type="button"
+        class="compact-button"
+        :disabled="compacting"
+        @click="emit('compact')"
+      >
+        {{ compacting ? '正在压缩…' : '压缩对话' }}
       </button>
     </div>
   </div>
@@ -291,6 +301,11 @@ const formatTokens = (value: number) => {
 .compact-button:hover {
   background: #f2f4f7;
   border-color: rgba(208, 213, 221, 0.96);
+}
+
+.compact-button:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
 }
 
 .dark .context-usage-popover {

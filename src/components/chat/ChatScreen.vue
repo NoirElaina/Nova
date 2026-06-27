@@ -38,6 +38,7 @@ const props = defineProps<{
   contextUsage?: ContextUsage;
   contextCompacts?: ContextCompactSummary[];
   contextTokens?: number;
+  compacting?: boolean;
 }>();
 
 const emit = defineEmits<{
@@ -49,6 +50,7 @@ const emit = defineEmits<{
   (e: 'mode-change', mode: AgentMode): void;
   (e: 'upload-files', files: PendingUploadFile[]): void;
   (e: 'remove-upload', index: number): void;
+  (e: 'compact'): void;
 }>();
 
 const chatAreaRef = ref<HTMLElement | null>(null);
@@ -497,11 +499,13 @@ defineExpose({
           :pendingUploads="pendingUploads"
           :contextUsage="contextUsage"
           :contextTokens="contextTokens"
+          :compacting="compacting"
           @send="handleSend"
           @cancel="emit('cancel')"
           @mode-change="emit('mode-change', $event)"
           @upload-files="handleUploadFiles"
           @remove-upload="handleRemoveUpload"
+          @compact="emit('compact')"
         />
       </div>
     </div>

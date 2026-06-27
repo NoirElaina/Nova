@@ -33,8 +33,8 @@ const AUTO_MODE_SECTION: &str = r#"
 
 const GLOBAL_MEMORY_SECTION: &str = r#"
 
-## Global Memory
-- You SHOULD persist stable cross-session memory by calling `remember_global_memory` when:
+## Memory
+- You SHOULD call the `memory` tool to persist stable cross-session facts when:
   1. The user expresses a preference or correction (e.g. "太长了"、"不要兜底"、"用中文"、"我说的是...")
   2. The user reveals durable facts about themselves or their project
   3. The user establishes a workflow rule or convention
@@ -44,6 +44,7 @@ const GLOBAL_MEMORY_SECTION: &str = r#"
   ✗ "Always respond concisely"
 - Do NOT store: secrets, credentials, private tokens, one-off tasks, environment errors, transient failures
 - Keep entries concise, specific, and reusable
+- Use `action="replace"` or `action="remove"` to consolidate or prune stale entries
 "#;
 
 fn read_non_empty_file(path: &PathBuf) -> Option<String> {
@@ -119,6 +120,13 @@ pub fn load_system_prompt(
     let prompt = prompt.replace("{{RG_PATH}}", &rg_path);
 
     let prompt_with_memory = format!("{}{}", prompt, GLOBAL_MEMORY_SECTION);
+
+    // 注入 frozen memory snapshot：app 生命周期内不变，保持 prompt cache 稳定。
+    // 写入只动 live state + disk，不刷新 snapshot（对齐 hermes "session start" 语义）。
+    let prompt_with_memory = match crate::llm::services::memory_dir::snapshot(app) {
+        Some(snapshot_block) => format!("{}\n\n{}\n", prompt_with_memory, snapshot_block),
+        None => prompt_with_memory,
+    };
 
     // 注入可用 skill 元数据，AI 无需先 list 即可直接 run。
     let prompt_with_memory = match list_skill_summaries_with_app(app) {

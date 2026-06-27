@@ -3333,6 +3333,7 @@ dependencies = [
  "tauri-plugin-fs",
  "tauri-plugin-opener",
  "tauri-plugin-shell",
+ "tempfile",
  "tiktoken-rs",
  "tokio",
  "tokio-util",

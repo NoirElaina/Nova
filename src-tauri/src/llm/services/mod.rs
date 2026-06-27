@@ -13,6 +13,7 @@ pub mod search;
 pub mod session_files;
 pub mod shell_sessions;
 pub mod skills;
+pub mod threat_patterns;
 pub mod token_usage_log;
 pub mod tools;
 pub mod user_terminal;

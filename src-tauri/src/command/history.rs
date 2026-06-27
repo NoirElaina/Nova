@@ -6,7 +6,7 @@ use crate::llm::utils::error_event::report_backend_result;
 // 对外复用 llm/commands 公共类型。
 pub use crate::llm::commands::types::{
     CompactBoundary, CompactContext, ConversationHandover, ConversationMemory, ConversationMeta,
-    GlobalMemoryEntry, HistoryMessage, HistoryToolExecution, ResumeContext,
+    HistoryMessage, HistoryToolExecution, ResumeContext,
 };
 
 #[tauri::command]
@@ -329,52 +329,54 @@ pub async fn upsert_conversation_memory(
 }
 
 #[tauri::command]
-pub async fn list_global_memory(
-    app: AppHandle,
-    limit: Option<i64>,
-) -> Result<Vec<GlobalMemoryEntry>, String> {
+pub async fn list_memory_entries(app: AppHandle) -> Result<Vec<String>, String> {
     report_backend_result(
         &app,
-        "command.history.list_global_memory",
-        history::list_global_memory(&app, limit).await,
+        "command.history.list_memory_entries",
+        history::list_memory_entries(&app).await,
         None,
     )
 }
 
 #[tauri::command]
-pub async fn upsert_global_memory(
-    app: AppHandle,
-    content: String,
-    kind: Option<String>,
-    source: Option<String>,
-) -> Result<GlobalMemoryEntry, String> {
+pub async fn add_memory_entry(app: AppHandle, content: String) -> Result<(), String> {
     report_backend_result(
         &app,
-        "command.history.upsert_global_memory",
-        history::upsert_global_memory(&app, &content, kind.as_deref(), source.as_deref()).await,
+        "command.history.add_memory_entry",
+        history::add_memory_entry(&app, &content).await,
         None,
     )
 }
 
 #[tauri::command]
-pub async fn delete_global_memory(app: AppHandle, id: String) -> Result<bool, String> {
-    let result = async {
-        let parsed_id = id
-            .trim()
-            .parse::<i64>()
-            .map_err(|e| format!("invalid global memory id '{}': {}", id, e))?;
-        history::delete_global_memory(&app, parsed_id).await
-    }
-    .await;
-    report_backend_result(&app, "command.history.delete_global_memory", result, None)
+pub async fn remove_memory_entry(app: AppHandle, old_text: String) -> Result<(), String> {
+    report_backend_result(
+        &app,
+        "command.history.remove_memory_entry",
+        history::remove_memory_entry(&app, &old_text).await,
+        None,
+    )
 }
 
 #[tauri::command]
-pub async fn clear_global_memory(app: AppHandle) -> Result<i64, String> {
+pub async fn clear_memory_entries(app: AppHandle) -> Result<(), String> {
     report_backend_result(
         &app,
-        "command.history.clear_global_memory",
-        history::clear_global_memory(&app).await,
+        "command.history.clear_memory_entries",
+        history::clear_memory_entries(&app).await,
+        None,
+    )
+}
+
+#[tauri::command]
+pub async fn manual_compact_conversation(
+    app: AppHandle,
+    conversation_id: String,
+) -> Result<crate::llm::services::compact::ManualCompactOutcome, String> {
+    report_backend_result(
+        &app,
+        "command.history.manual_compact_conversation",
+        crate::llm::services::compact::manual_compact(&app, &conversation_id).await,
         None,
     )
 }

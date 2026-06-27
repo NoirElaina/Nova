@@ -12,36 +12,20 @@ import {
   type UiLanguage,
 } from '../../../../lib/ui-preferences'
 
-type GlobalMemoryKind = 'preference' | 'fact' | 'rule'
-
-type GlobalMemoryEntry = {
-  id: string
-  content: string
-  kind: GlobalMemoryKind | string
-  source: string
-  hits: number
-  createdAt: number
-  updatedAt: number
-}
-
 const uiLanguage = ref<UiLanguage>(getStoredUiLanguage())
-const isLoadingGlobalMemory = ref(false)
-const isSavingGlobalMemory = ref(false)
-const isClearingGlobalMemory = ref(false)
-const isRemovingGlobalMemoryId = ref<string | null>(null)
+const isLoadingMemory = ref(false)
+const isSavingMemory = ref(false)
+const isClearingMemory = ref(false)
+const removingEntry = ref<string | null>(null)
 const confirmDialogOpen = ref(false)
-const globalMemoryEntries = ref<GlobalMemoryEntry[]>([])
-const newGlobalMemoryContent = ref('')
-const newGlobalMemoryKind = ref<GlobalMemoryKind>('fact')
+const memoryEntries = ref<string[]>([])
+const newMemoryContent = ref('')
 
 const localeTexts = {
   'zh-CN': {
     title: '全局记忆',
-    desc: '跨会话长期保留的偏好、事实和规则。AI 可自动写入；你也可以在这里手动管理。',
+    desc: '跨会话长期保留的偏好与事实。AI 会自动写入；你也可以在这里手动管理。',
     inputPlaceholder: '例如：默认用中文回复；代码修改优先最小化变更。',
-    kindPreference: '偏好',
-    kindFact: '事实',
-    kindRule: '规则',
     addButton: '新增记忆',
     adding: '新增中...',
     empty: '暂无全局记忆。',
@@ -55,21 +39,16 @@ const localeTexts = {
     deleteDone: '已删除该条全局记忆。',
     deleteFailed: '删除全局记忆失败：',
     loadFailed: '加载全局记忆失败：',
-    clearDone: '已清空 {count} 条全局记忆。',
+    clearDone: '已清空全局记忆。',
     clearFailed: '清空全局记忆失败：',
-    kindLabel: '类型',
-    hits: '命中',
     cancel: '取消',
     confirm: '确认',
     loading: '加载中...',
   },
   'en-US': {
     title: 'Global Memory',
-    desc: 'Persistent cross-session preferences, facts, and rules. AI can write them automatically, and you can manage them here.',
+    desc: 'Persistent cross-session preferences and facts. AI writes them automatically, and you can manage them here.',
     inputPlaceholder: 'Example: Reply in Chinese by default; prefer minimal code changes.',
-    kindPreference: 'Preference',
-    kindFact: 'Fact',
-    kindRule: 'Rule',
     addButton: 'Add Memory',
     adding: 'Adding...',
     empty: 'No global memory yet.',
@@ -83,10 +62,8 @@ const localeTexts = {
     deleteDone: 'Global memory entry deleted.',
     deleteFailed: 'Failed to delete global memory: ',
     loadFailed: 'Failed to load global memory: ',
-    clearDone: 'Cleared {count} global memory entrie(s).',
+    clearDone: 'Global memory cleared.',
     clearFailed: 'Failed to clear global memory: ',
-    kindLabel: 'Type',
-    hits: 'Hits',
     cancel: 'Cancel',
     confirm: 'Confirm',
     loading: 'Loading...',
@@ -94,100 +71,87 @@ const localeTexts = {
 } as const
 
 const t = computed(() => localeTexts[uiLanguage.value])
-const globalMemoryKindOptions = computed(() => ([
-  { value: 'preference' as GlobalMemoryKind, label: t.value.kindPreference },
-  { value: 'fact' as GlobalMemoryKind, label: t.value.kindFact },
-  { value: 'rule' as GlobalMemoryKind, label: t.value.kindRule },
-]))
-const formatClearDone = (count: number) => t.value.clearDone.replace('{count}', String(count))
 
 const handleUiLanguageUpdated = (event: Event) => {
   const customEvent = event as CustomEvent<{ language?: unknown }>
   uiLanguage.value = normalizeUiLanguage(customEvent.detail?.language ?? getStoredUiLanguage())
 }
 
-const loadGlobalMemory = async () => {
-  if (isLoadingGlobalMemory.value) return
-  isLoadingGlobalMemory.value = true
+const loadMemory = async () => {
+  if (isLoadingMemory.value) return
+  isLoadingMemory.value = true
   try {
-    const entries = await invoke<GlobalMemoryEntry[]>('list_global_memory', { limit: 50 })
-    globalMemoryEntries.value = Array.isArray(entries) ? entries : []
+    const entries = await invoke<string[]>('list_memory_entries')
+    memoryEntries.value = Array.isArray(entries) ? entries : []
   } catch (error) {
-    console.error('Failed to load global memory:', error)
+    console.error(t.value.loadFailed, error)
   } finally {
-    isLoadingGlobalMemory.value = false
+    isLoadingMemory.value = false
   }
 }
 
-const saveGlobalMemory = async () => {
-  const content = newGlobalMemoryContent.value.trim()
-  if (!content || isSavingGlobalMemory.value) return
+const saveMemory = async () => {
+  const content = newMemoryContent.value.trim()
+  if (!content || isSavingMemory.value) return
 
-  isSavingGlobalMemory.value = true
+  isSavingMemory.value = true
   try {
-    await invoke('upsert_global_memory', {
-      content,
-      kind: newGlobalMemoryKind.value,
-      source: 'manual_settings',
-    })
-    newGlobalMemoryContent.value = ''
-    await loadGlobalMemory()
+    await invoke('add_memory_entry', { content })
+    newMemoryContent.value = ''
+    await loadMemory()
     emitToast({
       variant: 'success',
       source: 'global-memory',
       message: t.value.addDone,
     })
   } catch (error) {
-    console.error('Failed to save global memory:', error)
+    console.error(t.value.addFailed, error)
   } finally {
-    isSavingGlobalMemory.value = false
+    isSavingMemory.value = false
   }
 }
 
-const removeGlobalMemory = async (id: string) => {
-  if (isRemovingGlobalMemoryId.value !== null) return
-  isRemovingGlobalMemoryId.value = id
+const removeMemory = async (content: string) => {
+  if (removingEntry.value !== null) return
+  removingEntry.value = content
   try {
-    const removed = await invoke<boolean>('delete_global_memory', { id })
-    if (!removed) {
-      throw new Error('entry not found')
-    }
-    globalMemoryEntries.value = globalMemoryEntries.value.filter((entry) => entry.id !== id)
+    await invoke('remove_memory_entry', { oldText: content })
+    memoryEntries.value = memoryEntries.value.filter((entry) => entry !== content)
     emitToast({
       variant: 'success',
       source: 'global-memory',
       message: t.value.deleteDone,
     })
   } catch (error) {
-    console.error('Failed to delete global memory:', error)
+    console.error(t.value.deleteFailed, error)
   } finally {
-    isRemovingGlobalMemoryId.value = null
+    removingEntry.value = null
   }
 }
 
-const clearGlobalMemory = async () => {
-  if (isClearingGlobalMemory.value) return
+const clearMemory = async () => {
+  if (isClearingMemory.value) return
 
-  isClearingGlobalMemory.value = true
+  isClearingMemory.value = true
   try {
-    const clearedCount = await invoke<number>('clear_global_memory')
-    globalMemoryEntries.value = []
+    await invoke('clear_memory_entries')
+    memoryEntries.value = []
     emitToast({
       variant: 'success',
       source: 'global-memory',
-      message: formatClearDone(clearedCount || 0),
+      message: t.value.clearDone,
     })
   } catch (error) {
-    console.error('Failed to clear global memory:', error)
+    console.error(t.value.clearFailed, error)
   } finally {
-    isClearingGlobalMemory.value = false
+    isClearingMemory.value = false
     confirmDialogOpen.value = false
   }
 }
 
 onMounted(() => {
   window.addEventListener('ui-language-updated', handleUiLanguageUpdated as EventListener)
-  void loadGlobalMemory()
+  void loadMemory()
 })
 
 onUnmounted(() => {
@@ -203,9 +167,9 @@ onUnmounted(() => {
       :description="t.confirmDesc"
       :confirm-text="t.confirm"
       :cancel-text="t.cancel"
-      :busy="isClearingGlobalMemory"
+      :busy="isClearingMemory"
       destructive
-      @confirm="clearGlobalMemory"
+      @confirm="clearMemory"
     />
 
     <Card class="mb-3 border-[#e5e7eb] dark:border-[#333]">
@@ -215,22 +179,8 @@ onUnmounted(() => {
       </CardHeader>
       <CardContent class="px-4 pt-0">
         <div class="space-y-3">
-          <div class="flex flex-wrap items-center gap-2">
-            <span class="text-[12px] text-[#374151] dark:text-[#d7d7d7]">{{ t.kindLabel }}</span>
-            <Button
-              v-for="opt in globalMemoryKindOptions"
-              :key="opt.value"
-              size="sm"
-              :variant="newGlobalMemoryKind === opt.value ? 'default' : 'outline'"
-              class="h-8"
-              @click="newGlobalMemoryKind = opt.value"
-            >
-              {{ opt.label }}
-            </Button>
-          </div>
-
           <Textarea
-            v-model="newGlobalMemoryContent"
+            v-model="newMemoryContent"
             rows="3"
             :placeholder="t.inputPlaceholder"
             class="min-h-20"
@@ -239,48 +189,43 @@ onUnmounted(() => {
           <div class="flex flex-wrap items-center gap-2">
             <Button
               size="sm"
-              :disabled="isSavingGlobalMemory || !newGlobalMemoryContent.trim()"
-              @click="saveGlobalMemory"
+              :disabled="isSavingMemory || !newMemoryContent.trim()"
+              @click="saveMemory"
             >
-              {{ isSavingGlobalMemory ? t.adding : t.addButton }}
+              {{ isSavingMemory ? t.adding : t.addButton }}
             </Button>
             <Button
               variant="outline"
               size="sm"
-              :disabled="isClearingGlobalMemory || globalMemoryEntries.length === 0"
+              :disabled="isClearingMemory || memoryEntries.length === 0"
               @click="confirmDialogOpen = true"
             >
-              {{ isClearingGlobalMemory ? t.clearing : t.clear }}
+              {{ isClearingMemory ? t.clearing : t.clear }}
             </Button>
           </div>
 
           <div class="rounded-lg border border-[#e5e7eb] dark:border-[#333] bg-[#f9fafb] dark:bg-[#1e1e1e]">
-            <div v-if="isLoadingGlobalMemory" class="px-3 py-3 text-[12px] text-[#64748b] dark:text-[#a3a3a3]">
+            <div v-if="isLoadingMemory" class="px-3 py-3 text-[12px] text-[#64748b] dark:text-[#a3a3a3]">
               {{ t.loading }}
             </div>
-            <div v-else-if="globalMemoryEntries.length === 0" class="px-3 py-3 text-[12px] text-[#64748b] dark:text-[#a3a3a3]">
+            <div v-else-if="memoryEntries.length === 0" class="px-3 py-3 text-[12px] text-[#64748b] dark:text-[#a3a3a3]">
               {{ t.empty }}
             </div>
             <div v-else class="max-h-64 overflow-y-auto divide-y divide-[#e5e7eb] dark:divide-[#333]">
               <div
-                v-for="entry in globalMemoryEntries"
-                :key="entry.id"
+                v-for="entry in memoryEntries"
+                :key="entry"
                 class="flex items-start justify-between gap-3 px-3 py-2.5"
               >
-                <div class="min-w-0">
-                  <div class="text-[11px] text-[#64748b] dark:text-[#a3a3a3]">
-                    {{ entry.kind }} · {{ t.hits }} {{ entry.hits }}
-                  </div>
-                  <div class="mt-0.5 text-[12.5px] leading-relaxed text-[#111827] dark:text-[#ececec] break-words">
-                    {{ entry.content }}
-                  </div>
+                <div class="mt-0.5 text-[12.5px] leading-relaxed text-[#111827] dark:text-[#ececec] break-words">
+                  {{ entry }}
                 </div>
                 <Button
                   variant="ghost"
                   size="sm"
                   class="h-7 px-2 text-[11px] text-red-500 hover:bg-red-50 dark:text-red-400 dark:hover:bg-red-950/30"
-                  :disabled="isRemovingGlobalMemoryId === entry.id"
-                  @click="removeGlobalMemory(entry.id)"
+                  :disabled="removingEntry === entry"
+                  @click="removeMemory(entry)"
                 >
                   {{ t.delete }}
                 </Button>

@@ -73,6 +73,8 @@ const {
   handleDeleteConversation,
   handlePinConversation,
   handleChangeMainView,
+  isCompacting,
+  handleCompactConversation,
 } = useChatController();
 
 void chatScreenRef;
@@ -322,8 +324,8 @@ onBeforeUnmount(() => {
             @remove-upload="handleRemovePendingUpload"
           />
 
-          <ChatScreen 
-            v-else 
+          <ChatScreen
+            v-else
             ref="chatScreenRef"
             :messages="messages"
             :isGenerating="isGenerating"
@@ -341,6 +343,7 @@ onBeforeUnmount(() => {
             :contextUsage="currentContextUsage"
             :contextCompacts="currentContextCompacts"
             :contextTokens="currentContextTokens"
+            :compacting="isCompacting"
             @send="handleSendMessage"
             @save-user-edit="handleEditMessage($event.index, $event.content)"
             @cancel="handleCancelGeneration"
@@ -349,6 +352,7 @@ onBeforeUnmount(() => {
             @remove-upload="handleRemovePendingUpload"
             @ask-submit="handlePendingQuestionSubmit"
             @ask-skip="handlePendingQuestionSkip"
+            @compact="handleCompactConversation"
           />
         </template>
       </section>

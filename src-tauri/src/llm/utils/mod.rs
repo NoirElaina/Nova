@@ -36,3 +36,6 @@ pub mod paths;
 
 // Write/Edit 工具共用的文件 I/O 辅助。
 pub mod file_io;
+
+// 原子写入：tempfile + fsync + rename + EXDEV fallback（记忆/会话文件 crash 安全）
+pub mod atomic_write;

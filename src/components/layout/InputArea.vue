@@ -13,25 +13,30 @@ import {
   extensionOf,
   parseDocumentUploadFile,
 } from '../../lib/document-upload';
-import { emitToast } from '../../lib/toast';
+import { emitToast, emitErrorToast } from '../../lib/toast';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import ContextUsageIndicator from './ContextUsageIndicator.vue';
+import { getWorkspaceDiff } from '../../features/chat/services/chat-api';
+import {
+  SLASH_COMMANDS,
+  MEMORY_OPTIONS,
+  REVIEW_OPTIONS,
+  INIT_OPTIONS,
+  parseSlashCommand,
+  buildInitPrompt,
+  buildReviewPrompt,
+  formatWorkspaceDiff,
+} from '../../lib/slash-commands';
+import type {
+  SlashCommandEntry,
+  SlashParamOption,
+} from '../../lib/slash-commands';
 
 type SkillSummary = {
   name: string;
   description: string;
   path: string;
 };
-
-type SlashCommandEntry = {
-  name: string;
-  description: string;
-};
-
-// 内置斜杠命令列表。目前只有 skill 命令，未来可在此扩展。
-const SLASH_COMMANDS: SlashCommandEntry[] = [
-  { name: 'skill', description: '使用指定技能' },
-];
 
 const props = defineProps<{
   isGenerating?: boolean;
@@ -71,6 +76,18 @@ const plusButtonRef = ref<HTMLElement | null>(null);
 
 // 当前选中的命令名（进入 param 阶段后固定）
 const slashActiveCommand = ref<string>('');
+
+// /memory 浮层状态
+const memoryEntries = ref<string[]>([]);
+const memoryLoading = ref(false);
+const memoryViewOpen = ref(false);
+
+// /review 执行中标记（异步拿 diff）
+const reviewLoading = ref(false);
+
+// 各命令二级选项动态数据：skill 需加载技能列表，compact 需加载用量统计
+const usageStats = ref<{ total_tokens: number; total_cost_usd: string; favorite_model?: string } | null>(null);
+const usageLoading = ref(false);
 
 const MAX_UPLOAD_FILE_SIZE_BYTES = 100 * 1024 * 1024;
 // 图片最终 base64 编码后的上限（约 5MB），超出会自动缩放
@@ -236,17 +253,49 @@ const filteredCommands = computed(() => {
   return SLASH_COMMANDS.filter((cmd) => cmd.name.toLowerCase().includes(q));
 });
 
-// 参数阶段的技能过滤结果
-const filteredSlashSkills = computed(() => {
+// 获取指定命令的二级选项列表（含动态加载）
+const currentParamOptions = computed<SlashParamOption[]>(() => {
+  const cmd = slashActiveCommand.value;
+  if (cmd === 'skill') {
+    // skill 二级选项为技能列表
+    return slashSkills.value.map((s) => ({
+      label: s.name,
+      description: s.description,
+      value: s.name,
+    }));
+  }
+  if (cmd === 'compact') {
+    // compact 二级选项：展示用量统计后压缩
+    const usage = usageStats.value;
+    if (usage) {
+      return [
+        {
+          label: '继续压缩',
+          value: 'compact',
+          description: `累计 ${usage.total_tokens} tokens / $${usage.total_cost_usd}${usage.favorite_model ? ' / ' + usage.favorite_model : ''}`,
+        },
+      ];
+    }
+    return [{ label: '查看用量并压缩', value: 'compact', description: '加载用量统计中...' }];
+  }
+  if (cmd === 'memory') return MEMORY_OPTIONS;
+  if (cmd === 'review') return REVIEW_OPTIONS;
+  if (cmd === 'init') return INIT_OPTIONS;
+  return [];
+});
+
+// 对二级选项按查询词过滤
+const filteredParamOptions = computed<SlashParamOption[]>(() => {
+  const opts = currentParamOptions.value;
   const q = slashQuery.value.trim().toLowerCase();
-  if (!q) return slashSkills.value;
-  return slashSkills.value.filter(
-    (s) => s.name.toLowerCase().includes(q) || s.description.toLowerCase().includes(q),
+  if (!q) return opts;
+  return opts.filter(
+    (o) => o.label.toLowerCase().includes(q) || (o.description?.toLowerCase().includes(q) ?? false),
   );
 });
 
 // 当前阶段显示的选项列表
-const slashOptions = computed<{ label: string; description: string; value: string }[]>(() => {
+const slashOptions = computed<SlashParamOption[]>(() => {
   if (slashPhase.value === 'command') {
     return filteredCommands.value.map((cmd) => ({
       label: `/${cmd.name}`,
@@ -255,11 +304,7 @@ const slashOptions = computed<{ label: string; description: string; value: strin
     }));
   }
   if (slashPhase.value === 'param') {
-    return filteredSlashSkills.value.map((s) => ({
-      label: s.name,
-      description: s.description,
-      value: s.name,
-    }));
+    return filteredParamOptions.value;
   }
   return [];
 });
@@ -322,6 +367,21 @@ const ensureSlashSkillsLoaded = async () => {
   }
 };
 
+// 加载用量统计（/compact 二级选项展示用）
+const ensureUsageStatsLoaded = async () => {
+  if (usageStats.value || usageLoading.value) return;
+  usageLoading.value = true;
+  try {
+    const stats = await invoke<{ total_tokens: number; total_cost_usd: string; favorite_model?: string }>('get_usage_stats');
+    usageStats.value = stats;
+  } catch {
+    // 加载失败不阻塞，仍显示压缩选项
+    usageStats.value = { total_tokens: 0, total_cost_usd: '0' };
+  } finally {
+    usageLoading.value = false;
+  }
+};
+
 const hideSlashMenu = () => {
   slashPhase.value = null;
   slashActiveCommand.value = '';
@@ -329,44 +389,41 @@ const hideSlashMenu = () => {
 };
 
 // 选择某个斜杠选项
-const selectSlashOption = (option: { label: string; value: string }) => {
+const selectSlashOption = (option: SlashParamOption) => {
   if (slashPhase.value === 'command') {
-    // 命令阶段：替换 / 开头到第一个空格之间的内容为 /<cmd> （命令名后强制加空格）
-    const text = currentInput.value;
-    const firstSpace = text.indexOf(' ');
-    const after = firstSpace === -1 ? '' : text.slice(firstSpace + 1);
-    currentInput.value = after ? `/${option.value} ${after}` : `/${option.value} `;
+    const entry = SLASH_COMMANDS.find((cmd) => cmd.name === option.value);
+    if (!entry) return;
+
+    // 进入参数阶段：命令名后强制加空格，光标定位到空格后
+    currentInput.value = `/${option.value} `;
     nextTick(() => {
       const el = textareaRef.value;
       if (!el) return;
-      // 光标定位到命令名后空格之后，便于继续输入参数
       const cmdEnd = `/${option.value} `.length;
       el.setSelectionRange(cmdEnd, cmdEnd);
-      // 进入参数阶段
       slashActiveCommand.value = option.value;
       slashPhase.value = 'param';
       slashQuery.value = '';
       slashSelectedIndex.value = 0;
-      void ensureSlashSkillsLoaded();
+      // 按命令类型预加载二级选项数据
+      if (entry.type === 'skill') {
+        void ensureSlashSkillsLoaded();
+      } else if (entry.name === 'compact') {
+        void ensureUsageStatsLoaded();
+      }
     });
     return;
   }
 
   if (slashPhase.value === 'param') {
-    // 参数阶段：填充 /<cmd> <param>
-    const text = currentInput.value;
-    const cursorPos = textareaRef.value?.selectionStart ?? text.length;
-    const firstSpace = text.indexOf(' ');
-    if (firstSpace === -1) return;
-    const before = text.slice(0, firstSpace + 1);
-    const after = text.slice(cursorPos);
-    currentInput.value = `${before}${option.value}${after.startsWith(' ') ? after : ' ' + after}`;
+    // 参数阶段：选中二级选项后直接执行命令（参数为选项 value）
+    const entry = SLASH_COMMANDS.find((cmd) => cmd.name === slashActiveCommand.value);
+    if (!entry) return;
+    hideSlashMenu();
+    currentInput.value = '';
+    void executeSlashCommand({ entry, rest: option.value });
     nextTick(() => {
-      const el = textareaRef.value;
-      if (!el) return;
-      const newPos = before.length + option.value.length + 1;
-      el.setSelectionRange(newPos, newPos);
-      hideSlashMenu();
+      autoResize();
       focusTextarea();
     });
   }
@@ -402,21 +459,86 @@ const handleSlashKeydown = (e: KeyboardEvent): boolean => {
   return false;
 };
 
-// 解析输入是否为 /skill <name> 命令
-const parseSkillCommand = (text: string): { name: string; rest: string } | null => {
-  const trimmed = text.trim();
-  if (!trimmed.startsWith('/')) return null;
-  const firstSpace = trimmed.indexOf(' ');
-  if (firstSpace === -1) return null;
-  const cmd = trimmed.slice(1, firstSpace).toLowerCase();
-  if (cmd !== 'skill') return null;
-  const remaining = trimmed.slice(firstSpace + 1).trim();
-  if (!remaining) return null;
-  const nextSpace = remaining.indexOf(' ');
-  const name = nextSpace === -1 ? remaining : remaining.slice(0, nextSpace);
-  const rest = nextSpace === -1 ? '' : remaining.slice(nextSpace + 1).trim();
-  if (!name) return null;
-  return { name, rest };
+// 执行 Local 类型命令（不发送消息给 AI）。rest 为二级选项 value
+const executeLocalCommand = async (entry: SlashCommandEntry, rest: string): Promise<boolean> => {
+  if (entry.name === 'compact') {
+    if (props.compacting) {
+      emitToast({ message: '正在压缩中，请稍候' });
+      return true;
+    }
+    emit('compact');
+    return true;
+  }
+  if (entry.name === 'memory') {
+    if (rest === 'clear') {
+      try {
+        await invoke('clear_memory_entries');
+        memoryEntries.value = [];
+        emitToast({ message: '全局记忆已清空' });
+      } catch (error) {
+        emitErrorToast('清空记忆', error);
+      }
+      return true;
+    }
+    // 默认 view：展示全局记忆
+    memoryViewOpen.value = true;
+    if (memoryEntries.value.length === 0 && !memoryLoading.value) {
+      memoryLoading.value = true;
+      try {
+        memoryEntries.value = await invoke<string[]>('list_memory_entries');
+      } catch (error) {
+        emitErrorToast('加载记忆', error);
+        memoryViewOpen.value = false;
+      } finally {
+        memoryLoading.value = false;
+      }
+    }
+    return true;
+  }
+  return false;
+};
+
+// 执行 Prompt 类型命令（构造模板消息发送给 AI）。rest 为二级选项 value
+const executePromptCommand = async (entry: SlashCommandEntry, rest: string): Promise<boolean> => {
+  if (entry.name === 'init') {
+    emit('send', buildInitPrompt(rest));
+    return true;
+  }
+  if (entry.name === 'review') {
+    if (reviewLoading.value) return true;
+    reviewLoading.value = true;
+    try {
+      const diff = await getWorkspaceDiff(null);
+      const diffText = formatWorkspaceDiff(diff);
+      const scope = rest === 'all' ? '（含未跟踪文件）' : '（已跟踪改动）';
+      const prompt = `${buildReviewPrompt(scope)}\n\n## 工作区 diff\n\n\`\`\`diff\n${diffText}\n\`\`\``;
+      emit('send', prompt);
+    } catch (error) {
+      emitErrorToast('获取工作区改动', error);
+    } finally {
+      reviewLoading.value = false;
+    }
+    return true;
+  }
+  return false;
+};
+
+// 执行已识别的斜杠命令。返回 true 表示已处理（应清空输入框）
+const executeSlashCommand = async (parsed: { entry: SlashCommandEntry; rest: string }): Promise<boolean> => {
+  const { entry, rest } = parsed;
+  if (entry.type === 'local') {
+    return executeLocalCommand(entry, rest);
+  }
+  if (entry.type === 'prompt') {
+    return executePromptCommand(entry, rest);
+  }
+  if (entry.type === 'skill') {
+    // rest 为技能名
+    if (!rest) return false;
+    emit('send', `请使用 Skill 工具加载并执行技能：${rest}`);
+    return true;
+  }
+  return false;
 };
 
 // 转义 HTML 特殊字符，防止镜像层渲染用户输入时出现 XSS 或解析错误
@@ -782,21 +904,23 @@ const sendMessage = (e?: KeyboardEvent) => {
   e?.preventDefault();
   if ((!currentInput.value.trim() && !hasPendingUploads.value) || props.isGenerating) return;
 
-  const rawText = currentInput.value;
-  const trimmed = rawText.trim();
+  const trimmed = currentInput.value.trim();
 
-  // 识别 /skill <name> 命令：不发送命令原文，转换为简短描述消息触发 SkillTool
-  const skillCmd = parseSkillCommand(trimmed);
-  if (skillCmd) {
-    const argHint = skillCmd.rest ? `\n附加参数：${skillCmd.rest}` : '';
-    const message = `请使用 Skill 工具加载并执行技能：${skillCmd.name}${argHint}`;
-    emit('send', message);
-    currentInput.value = "";
+  // 识别斜杠命令：所有命令都需通过二级选项选择参数后执行
+  const parsed = parseSlashCommand(trimmed);
+  if (parsed) {
+    const { entry, rest } = parsed;
+    // options 类型命令必须带参数（通过二级选项填入）；无参时回车不执行
+    if (entry.args === 'options' && !rest) {
+      return;
+    }
+    currentInput.value = '';
     hideSlashMenu();
     nextTick(() => {
       autoResize();
       focusTextarea();
     });
+    void executeSlashCommand(parsed);
     return;
   }
 
@@ -838,17 +962,24 @@ watch(
 
 const handleSettingsUpdate = () => loadSettings();
 
-// 点击 + 菜单外部时关闭菜单
+// 点击浮层外部时关闭 + 菜单和 memory 浮层
 const handleDocumentClick = (e: MouseEvent) => {
-  if (plusMenuView.value === null) return;
   const target = e.target as Node | null;
-  if (plusButtonRef.value && target && plusButtonRef.value.contains(target)) return;
-  // 菜单内部点击由各自 handler 处理；这里只处理外部点击
-  const menus = document.querySelectorAll('[data-plus-menu]');
-  for (const menu of menus) {
-    if (menu.contains(target)) return;
+  // 关闭 + 菜单
+  if (plusMenuView.value !== null) {
+    if (plusButtonRef.value && target && plusButtonRef.value.contains(target)) return;
+    const menus = document.querySelectorAll('[data-plus-menu]');
+    for (const menu of menus) {
+      if (menu.contains(target)) return;
+    }
+    closePlusMenu();
   }
-  closePlusMenu();
+  // 关闭 memory 浮层
+  if (memoryViewOpen.value) {
+    const memMenu = document.querySelector('[data-memory-menu]');
+    if (memMenu && target && memMenu.contains(target)) return;
+    memoryViewOpen.value = false;
+  }
 };
 
 onMounted(() => {
@@ -974,12 +1105,42 @@ defineExpose({
         <div
           v-else-if="slashPhase === 'param' && slashSkillsLoading"
           class="absolute bottom-full left-0 mb-2 w-full rounded-lg border border-border bg-popover shadow-lg z-50 overflow-hidden">
-          <div class="px-3 py-2 text-xs text-muted-foreground">加载技能列表...</div>
+          <div class="px-3 py-2 text-xs text-muted-foreground">加载中...</div>
         </div>
         <div
           v-else-if="slashPhase === 'param' && slashOptions.length === 0 && !slashSkillsLoading"
           class="absolute bottom-full left-0 mb-2 w-full rounded-lg border border-border bg-popover shadow-lg z-50 overflow-hidden">
-          <div class="px-3 py-2 text-xs text-muted-foreground">暂无匹配技能</div>
+          <div class="px-3 py-2 text-xs text-muted-foreground">暂无匹配项</div>
+        </div>
+
+        <!-- /memory 浮层：展示全局记忆条目（与输入框同宽） -->
+        <div
+          v-if="memoryViewOpen"
+          data-memory-menu
+          class="absolute bottom-full left-0 mb-2 w-full rounded-lg border border-border bg-popover shadow-lg z-50 overflow-hidden">
+          <div class="flex items-center justify-between gap-2 px-3 py-2 border-b border-border">
+            <span class="text-xs font-medium text-muted-foreground">全局记忆</span>
+            <button
+              type="button"
+              class="shrink-0 rounded p-0.5 hover:bg-secondary/80 transition-colors"
+              @click="memoryViewOpen = false">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+                stroke-linecap="round" stroke-linejoin="round">
+                <line x1="18" y1="6" x2="6" y2="18" />
+                <line x1="6" y1="6" x2="18" y2="18" />
+              </svg>
+            </button>
+          </div>
+          <div class="max-h-[240px] overflow-y-auto">
+            <div v-if="memoryLoading" class="px-3 py-2 text-xs text-muted-foreground">加载中...</div>
+            <div v-else-if="memoryEntries.length === 0" class="px-3 py-2 text-xs text-muted-foreground">暂无记忆条目</div>
+            <div
+              v-for="(entry, idx) in memoryEntries"
+              :key="idx"
+              class="px-3 py-2 text-sm border-b border-border/50 last:border-b-0 whitespace-pre-wrap break-words">
+              {{ entry }}
+            </div>
+          </div>
         </div>
 
         <!-- + 按钮菜单：主视图（与输入框同宽） -->

@@ -10,7 +10,6 @@
 use std::path::Path;
 
 const UTF8_BOM: &[u8] = &[0xEF, 0xBB, 0xBF];
-const UTF8_BOM_STR: &str = "\u{FEFF}";
 
 /// 文件原始编码。读取时探测，写回时据此还原（含 BOM）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -162,32 +161,6 @@ fn encode_bytes(content: &str, encoding: FileEncoding) -> Vec<u8> {
     }
 }
 
-/// 读取文件为归一化 UTF-8 文本（剥离 BOM、CRLF→LF），返回 `(内容, 是否带 UTF-8 BOM)`。
-///
-/// 供 ReadTool 使用：让模型看到干净的 LF 内容，避免 copy 出来的 old_string
-/// 因 BOM / CRLF 与磁盘文件不一致导致匹配失败。
-pub(crate) fn read_file_utf8(path: &Path) -> Result<(String, bool), String> {
-    let (content, meta) = read_file_meta(path)?;
-    Ok((content, meta.encoding == FileEncoding::Utf8Bom))
-}
-
 pub fn resolve_tool_path(raw_path: &str) -> Result<std::path::PathBuf, String> {
     crate::llm::utils::paths::resolve_absolute_path_for_write(raw_path, "path")
-}
-
-/// Write/Edit 工具专用：写文件并返回受影响的 *display* 路径。
-///
-/// 不保留 BOM、不做行尾转换——仅供 WriteTool 覆盖/创建整文件使用
-/// （模型提供的整文件内容按 UTF-8 / LF 写入）。EditTool / MultiEditTool
-/// 应改用 `write_file_with_meta` 以保留原文件的编码与行尾。
-pub fn write_file_simple(target: &Path, content: &str) -> Result<String, String> {
-    if let Some(parent) = target.parent() {
-        std::fs::create_dir_all(parent)
-            .map_err(|e| format!("创建目录失败 {}: {}", target.display(), e))?;
-    }
-    // 防御：剥掉模型可能误带的 BOM 前缀。
-    let content = content.strip_prefix(UTF8_BOM_STR).unwrap_or(content);
-    std::fs::write(target, content)
-        .map_err(|e| format!("写入文件失败 {}: {}", target.display(), e))?;
-    Ok(target.display().to_string())
 }

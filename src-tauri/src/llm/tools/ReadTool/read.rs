@@ -1,6 +1,7 @@
+use crate::llm::tools::shared::read_state;
 use crate::llm::tools::{app_tool, AppExecuteFuture, ToolFailure, ToolOutcome, ToolRegistration};
-use crate::llm::types::Tool;
-use crate::llm::utils::file_io::read_file_utf8;
+use crate::llm::types::{Content, ContentBlock, ImageSource, Message, Role, Tool};
+use crate::llm::utils::file_io::read_file_meta;
 use serde_json::{json, Value};
 use std::path::PathBuf;
 use tauri::AppHandle;
@@ -15,12 +16,12 @@ pub fn tool() -> Tool {
         description: r#"Read a file from the local filesystem. Returns the file content with line numbers (like `cat -n`).
 
 - Reads text files with optional line range via `offset` and `limit`.
-- Reads image files (PNG, JPG, JPEG) — returns base64-encoded content.
+- Reads image files (PNG, JPG, JPEG) — the image is attached to the conversation so you can see it directly.
 - Reads PDF files via the `pages` parameter (e.g. "1-5", max 20 pages/request).
 - `file_path` must be an absolute path.
-- `offset` is 0-based (line 0 is the first line). When specified, `limit` is required by Claude Code; when both are omitted, the entire file is returned.
+- `offset` is 1-based (line 1 is the first line). When both `offset` and `limit` are omitted, the entire file is returned.
 - Reading a directory, a missing file, or an empty file returns an error.
-- You must read a file before you can edit it with the Edit tool."#
+- You must read a file (full read, no offset/limit) before you can edit it with the Edit tool."#
             .into(),
         input_schema: json!({
             "type": "object",
@@ -35,7 +36,7 @@ pub fn tool() -> Tool {
                 },
                 "offset": {
                     "type": "integer",
-                    "description": "The line number to start reading from (0-based). Only provide if the file is too large to read at once."
+                    "description": "The line number to start reading from (1-based). Only provide if the file is too large to read at once."
                 },
                 "pages": {
                     "type": "string",
@@ -66,15 +67,14 @@ fn is_pdf(path: &std::path::Path) -> bool {
     ext_lower(path) == PDF_EXTENSION
 }
 
-fn read_image(path: &std::path::Path) -> Result<String, String> {
+fn read_image(path: &std::path::Path) -> Result<(String, String), String> {
     let bytes = std::fs::read(path)
         .map_err(|e| format!("Error reading image {}: {}", path.display(), e))?;
-    let mime = match ext_lower(path).as_str() {
+    let media_type = match ext_lower(path).as_str() {
         "jpg" | "jpeg" => "image/jpeg",
         _ => "image/png",
     };
-    let encoded = base64(&bytes);
-    Ok(format!("data:{};base64,{}", mime, encoded))
+    Ok((media_type.to_string(), base64(&bytes)))
 }
 
 fn base64(bytes: &[u8]) -> String {
@@ -82,12 +82,13 @@ fn base64(bytes: &[u8]) -> String {
     base64::engine::general_purpose::STANDARD.encode(bytes)
 }
 
-/// 读取文本文件。返回带行号的格式化输出。
+/// 读取文本文件。返回 (带行号的格式化输出, 归一化后的完整内容)。
+/// `offset` 为 1-based 起始行。
 fn read_text(
     path: &std::path::Path,
     limit: Option<usize>,
     offset: Option<usize>,
-) -> Result<String, String> {
+) -> Result<(String, String), String> {
     let metadata = std::fs::metadata(path)
         .map_err(|e| format!("Error accessing file: {}", e))?;
     if !metadata.is_file() {
@@ -101,10 +102,8 @@ fn read_text(
         ));
     }
 
-    // 用 read_file_utf8 strip BOM，让 AI 看到干净内容（不带 \u{FEFF} 前缀）。
-    // 这避免 AI copy 出来的 old_string 带 BOM 但 EditTool 读文件又 strip BOM
-    // 导致匹配失败的 bug。
-    let (content, _had_bom) = read_file_utf8(path)
+    // read_file_meta 解码 + 剥 BOM + CRLF→LF，让模型看到干净的 LF 内容。
+    let (content, _meta) = read_file_meta(path)
         .map_err(|e| format!("Error reading {}: {}", path.display(), e))?;
 
     if content.is_empty() {
@@ -114,7 +113,8 @@ fn read_text(
     let all_lines: Vec<&str> = content.lines().collect();
     let total_lines = all_lines.len();
 
-    let start = offset.unwrap_or(0);
+    // offset 为 1-based 行号，映射到 0-based 索引。
+    let start = offset.map(|o| o.saturating_sub(1)).unwrap_or(0);
     let end = match limit {
         Some(n) => (start + n).min(total_lines),
         None => total_lines,
@@ -123,7 +123,8 @@ fn read_text(
     if start >= total_lines {
         return Err(format!(
             "offset {} is beyond file end ({} lines)",
-            start, total_lines
+            start + 1,
+            total_lines
         ));
     }
 
@@ -145,7 +146,7 @@ fn read_text(
         ));
     }
 
-    Ok(output)
+    Ok((output, content))
 }
 
 fn parse_page_range(pages: &str) -> Result<(u32, u32), String> {
@@ -268,7 +269,7 @@ fn resolve_file_path(raw: &str) -> Result<PathBuf, String> {
 }
 
 async fn execute_async(
-    _conversation_id: Option<&str>,
+    conversation_id: Option<&str>,
     input: Value,
 ) -> Result<ToolOutcome, ToolFailure> {
     let file_path = input
@@ -305,11 +306,32 @@ async fn execute_async(
         return Ok(ToolOutcome::text(content));
     }
     if is_image_ext(&path) {
-        let content = read_image(&path).map_err(ToolFailure::new)?;
-        return Ok(ToolOutcome::text(content));
+        // 把图片作为真正的图像块附加到上下文，模型可直接“看到”，而不是把 base64 当文本灌入。
+        let (media_type, data) = read_image(&path).map_err(ToolFailure::new)?;
+        let note = format!("Image attached ({}). Inspect it directly.", media_type);
+        let image_message = Message {
+            role: Role::User,
+            content: Content::Blocks(vec![
+                ContentBlock::Text { text: note.clone() },
+                ContentBlock::Image {
+                    source: ImageSource {
+                        source_type: "base64".to_string(),
+                        media_type,
+                        data,
+                    },
+                },
+            ]),
+        };
+        return Ok(ToolOutcome::text(note).with_additional_messages(vec![image_message]));
     }
 
-    let formatted = read_text(&path, limit, offset).map_err(ToolFailure::new)?;
+    let (formatted, content) = read_text(&path, limit, offset).map_err(ToolFailure::new)?;
+
+    // 仅在完整读取（无 offset/limit）时记录读取状态，作为 Edit/Write 的「先读后改」凭据。
+    if offset.is_none() && limit.is_none() {
+        read_state::record(conversation_id, &path, &content);
+    }
+
     Ok(ToolOutcome::text(formatted))
 }
 

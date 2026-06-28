@@ -1,8 +1,11 @@
-use crate::llm::utils::file_io::{resolve_tool_path, write_file_simple};
+use crate::llm::tools::shared::read_state;
 use crate::llm::tools::{
     app_tool, AppExecuteFuture, ToolFailure, ToolOutcome, ToolPermissionDescriptor, ToolRegistration,
 };
 use crate::llm::types::Tool;
+use crate::llm::utils::file_io::{
+    read_file_meta, resolve_tool_path, write_file_with_meta, FileEncoding, FileMeta, LineEnding,
+};
 use serde_json::{json, Value};
 use std::path::PathBuf;
 use tauri::AppHandle;
@@ -56,7 +59,7 @@ fn resolve_path(raw: &str) -> Result<PathBuf, String> {
 
 async fn execute_async(
     _app: &AppHandle,
-    _conversation_id: Option<&str>,
+    conversation_id: Option<&str>,
     input: Value,
 ) -> Result<ToolOutcome, ToolFailure> {
     let file_path = input
@@ -72,7 +75,28 @@ async fn execute_async(
     let target = resolve_path(file_path).map_err(|e| ToolFailure::invalid_input(e))?;
     let existed = target.exists();
 
-    let path = write_file_simple(&target, content).map_err(ToolFailure::new)?;
+    // 归一化模型内容为 LF；write_file_with_meta 按目标 meta 还原行尾。
+    let content_lf = content.replace("\r\n", "\n");
+
+    let meta = if existed {
+        // 覆盖已有文件：要求先读过且未被外部改动，并保留原编码与行尾。
+        let (original, meta) = read_file_meta(&target)
+            .map_err(|e| ToolFailure::new(format!("Error reading {}: {}", file_path, e)))?;
+        read_state::ensure_editable(conversation_id, &target, &original)
+            .map_err(ToolFailure::new)?;
+        meta
+    } else {
+        // 新建文件：UTF-8 / LF。
+        FileMeta {
+            encoding: FileEncoding::Utf8,
+            line_ending: LineEnding::Lf,
+        }
+    };
+
+    let path = write_file_with_meta(&target, &content_lf, &meta).map_err(ToolFailure::new)?;
+
+    // 刷新读取状态，使后续 Edit/Write 可继续。
+    read_state::record(conversation_id, &target, &content_lf);
 
     Ok(ToolOutcome::json(json!({
         "ok": true,

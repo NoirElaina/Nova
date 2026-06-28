@@ -1,4 +1,5 @@
 use crate::llm::tools::shared::edit_replacers::apply_replace;
+use crate::llm::tools::shared::read_state;
 use crate::llm::tools::{
     app_tool, AppExecuteFuture, ToolFailure, ToolOutcome, ToolPermissionDescriptor, ToolRegistration,
 };
@@ -120,7 +121,7 @@ fn parse_edit(value: &Value, idx: usize) -> Result<ParsedEdit, ToolFailure> {
 
 async fn execute_async(
     _app: &AppHandle,
-    _conversation_id: Option<&str>,
+    conversation_id: Option<&str>,
     input: Value,
 ) -> Result<ToolOutcome, ToolFailure> {
     let file_path = input
@@ -156,6 +157,10 @@ async fn execute_async(
     let (mut content, meta) = read_file_meta(&target)
         .map_err(|e| ToolFailure::new(format!("Error reading {}: {}", file_path, e)))?;
 
+    // 先读后改 + 新鲜度检测。
+    read_state::ensure_editable(conversation_id, &target, &content)
+        .map_err(ToolFailure::new)?;
+
     // 顺序应用所有 edit。任一失败则整批回滚（不写入）。
     let mut applied_count = 0usize;
     for (idx, edit) in edits.iter().enumerate() {
@@ -173,6 +178,9 @@ async fn execute_async(
 
     // 全部成功后写回——按原始编码与行尾还原。
     write_file_with_meta(&target, &content, &meta).map_err(ToolFailure::new)?;
+
+    // 刷新读取状态，使同一轮内的后续编辑可继续。
+    read_state::record(conversation_id, &target, &content);
 
     Ok(ToolOutcome::json(json!({
         "ok": true,

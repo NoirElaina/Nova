@@ -32,3 +32,5 @@ pub mod workspace;
 pub mod pet_config;
 // 全局 token 用量统计命令入口。
 pub mod usage;
+// TodoWrite 工具状态查询命令入口。
+pub mod todo;

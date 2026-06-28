@@ -156,7 +156,8 @@ pub fn run() {
             command::pet_config::get_pet_spritesheet,
             command::pet_config::launch_desktop_pet,
             command::pet_config::close_desktop_pet,
-            command::pet_config::get_pet_window_config
+            command::pet_config::get_pet_window_config,
+            command::todo::list_todos
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application");

@@ -2,7 +2,7 @@ use crate::llm::tools::shared::todo_state::{global_registry, TodoEntry};
 use crate::llm::tools::{app_tool, AppExecuteFuture, ToolFailure, ToolOutcome, ToolRegistration};
 use crate::llm::types::Tool;
 use serde_json::{json, Value};
-use tauri::AppHandle;
+use tauri::{AppHandle, Emitter, Manager};
 
 pub(super) fn registration() -> ToolRegistration {
     // TodoWrite 是内部状态工具，无副作用，不需要权限审批，但也不是只读
@@ -111,7 +111,7 @@ fn uuid_v4_simple() -> String {
 }
 
 async fn execute_async(
-    _app: &AppHandle,
+    app: &AppHandle,
     conversation_id: Option<&str>,
     input: Value,
 ) -> Result<ToolOutcome, ToolFailure> {
@@ -123,6 +123,7 @@ async fn execute_async(
     if todos_raw.is_empty() {
         // 空列表：清空当前会话的待办。
         global_registry().replace_all(conversation_id, Vec::new());
+        emit_todo_updated(app, conversation_id);
         return Ok(ToolOutcome::text("Todo list cleared."));
     }
 
@@ -147,8 +148,21 @@ async fn execute_async(
     }
 
     let saved = global_registry().replace_all(conversation_id, todos.clone());
+    emit_todo_updated(app, conversation_id);
     let rendered = render_todo_list(&saved);
     Ok(ToolOutcome::text(rendered))
+}
+
+/// 工具执行完成后通知前端刷新待办列表 UI。
+/// 事件 payload 携带 conversation_id，前端按当前会话过滤接收。
+fn emit_todo_updated(app: &AppHandle, conversation_id: Option<&str>) {
+    // 取主窗口 emit；多窗口场景按需扩展。
+    if let Some(window) = app.get_webview_window("main") {
+        let payload = serde_json::json!({
+            "conversationId": conversation_id,
+        });
+        let _ = window.emit("todo-updated", payload);
+    }
 }
 
 fn render_todo_list(todos: &[TodoEntry]) -> String {

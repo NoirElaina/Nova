@@ -5,7 +5,7 @@ use reqwest::RequestBuilder;
 use std::collections::BTreeMap;
 
 use super::reasoning::{extract_reasoning_field_text, push_inline_parts, InlineThinkExtractor};
-use crate::llm::providers::adapters::ApiAdapter;
+use crate::llm::providers::adapters::{parse_tool_arguments, ApiAdapter};
 use crate::llm::providers::stream_runner::{Delta, ReadyToolCall};
 use crate::llm::providers::{ProviderPromptEstimate, ProviderTurnError};
 use crate::llm::types::{AgentMode, Message};
@@ -185,18 +185,7 @@ impl ApiAdapter for OpenAiAdapter {
                                     ));
                                 }
                             };
-                            let input: serde_json::Value = match serde_json::from_str(&tc.arguments)
-                            {
-                                Ok(v) => v,
-                                Err(e) => {
-                                    return Err(format!(
-                                            "Failed to parse OpenAI tool call arguments for '{}': {}. Args preview: {}",
-                                            name,
-                                            e,
-                                            truncate_for_log(&tc.arguments, 800)
-                                        ));
-                                }
-                            };
+                            let input = parse_tool_arguments(&name, &tc.arguments)?;
                             ready.push(ReadyToolCall { id, name, input });
                         }
                         deltas.push(Delta::ToolsReady(ready));
@@ -236,7 +225,7 @@ impl ApiAdapter for OpenAiAdapter {
         let mut ready: Vec<ReadyToolCall> = Vec::new();
         for (_index, tc) in drained {
             if let (Some(id), Some(name)) = (tc.id, tc.name) {
-                if let Ok(input) = serde_json::from_str::<serde_json::Value>(&tc.arguments) {
+                if let Ok(input) = parse_tool_arguments(&name, &tc.arguments) {
                     ready.push(ReadyToolCall { id, name, input });
                 }
             }

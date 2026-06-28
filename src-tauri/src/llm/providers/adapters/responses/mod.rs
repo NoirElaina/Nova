@@ -2,7 +2,6 @@ pub(crate) mod prompt;
 pub(crate) mod types;
 
 use reqwest::RequestBuilder;
-use serde_json::Value;
 use std::collections::BTreeMap;
 
 use crate::llm::providers::adapters::ApiAdapter;
@@ -97,14 +96,7 @@ fn ready_tool_call(
         }
     };
 
-    let input: Value = serde_json::from_str(&arguments).map_err(|e| {
-        format!(
-            "Failed to parse Responses API function call arguments for '{}': {}. Args: {}",
-            name,
-            e,
-            truncate_for_log(&arguments, 800)
-        )
-    })?;
+    let input = crate::llm::providers::adapters::parse_tool_arguments(&name, &arguments)?;
 
     Ok(Some(ReadyToolCall {
         id: call_id,

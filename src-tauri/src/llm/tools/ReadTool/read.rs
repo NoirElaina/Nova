@@ -1,4 +1,3 @@
-use crate::llm::tools::shared::read_state::global_registry;
 use crate::llm::tools::{app_tool, AppExecuteFuture, ToolFailure, ToolOutcome, ToolRegistration};
 use crate::llm::types::Tool;
 use crate::llm::utils::file_io::read_file_utf8;
@@ -83,15 +82,12 @@ fn base64(bytes: &[u8]) -> String {
     base64::engine::general_purpose::STANDARD.encode(bytes)
 }
 
-/// 读取文本文件。返回 (格式化输出, 原始内容)。
-///
-/// 原始内容已 strip BOM——用于 read_state 注册表缓存，供 EditTool
-/// 在 Windows mtime 误报时做字节对比 fallback。
+/// 读取文本文件。返回带行号的格式化输出。
 fn read_text(
     path: &std::path::Path,
     limit: Option<usize>,
     offset: Option<usize>,
-) -> Result<(String, String), String> {
+) -> Result<String, String> {
     let metadata = std::fs::metadata(path)
         .map_err(|e| format!("Error accessing file: {}", e))?;
     if !metadata.is_file() {
@@ -149,7 +145,7 @@ fn read_text(
         ));
     }
 
-    Ok((output, content))
+    Ok(output)
 }
 
 fn parse_page_range(pages: &str) -> Result<(u32, u32), String> {
@@ -272,7 +268,7 @@ fn resolve_file_path(raw: &str) -> Result<PathBuf, String> {
 }
 
 async fn execute_async(
-    conversation_id: Option<&str>,
+    _conversation_id: Option<&str>,
     input: Value,
 ) -> Result<ToolOutcome, ToolFailure> {
     let file_path = input
@@ -304,7 +300,6 @@ async fn execute_async(
         )));
     }
 
-    // 只有文本文件需要登记到 read_state——image/pdf 不能被 Edit。
     if is_pdf(&path) {
         let content = read_pdf(&path, pages).map_err(ToolFailure::new)?;
         return Ok(ToolOutcome::text(content));
@@ -314,20 +309,7 @@ async fn execute_async(
         return Ok(ToolOutcome::text(content));
     }
 
-    let (formatted, raw_content) = read_text(&path, limit, offset).map_err(ToolFailure::new)?;
-
-    // 登记到 read_state 注册表，让后续 EditTool 能 check_editable。
-    // 完整读取（offset && limit 都 None）时缓存原始内容，用于 Windows mtime
-    // 误报 fallback；分页读取标记 is_partial=true，EditTool 会拒绝。
-    let is_partial = offset.is_some() || limit.is_some();
-    let cached_content = if is_partial { None } else { Some(raw_content) };
-    global_registry().record_read(
-        conversation_id,
-        &path,
-        cached_content,
-        is_partial,
-    );
-
+    let formatted = read_text(&path, limit, offset).map_err(ToolFailure::new)?;
     Ok(ToolOutcome::text(formatted))
 }
 

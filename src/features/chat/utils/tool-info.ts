@@ -56,14 +56,34 @@ export function summarizeToolInfo(toolName: string, rawInput: string): string | 
     return "browser action";
   }
 
+  if (lower === "multiedit") {
+    const path = readStringField(parsed, ["file_path", "path", "filePath", "uri"]);
+    const edits = parsed?.["edits"];
+    const count = Array.isArray(edits) ? edits.length : 0;
+    return path
+      ? count > 0
+        ? `path=${truncateText(path, 64)} · ${count} edit${count > 1 ? "s" : ""}`
+        : `path=${truncateText(path, 64)}`
+      : "file operation";
+  }
+
+  if (lower === "edit" || lower.includes("replace_string")) {
+    const path = readStringField(parsed, ["file_path", "path", "filePath", "uri"]);
+    const oldStr = readStringField(parsed, ["old_string", "oldString", "search", "find"]);
+    const newStr = readStringField(parsed, ["new_string", "newString", "replace", "replacement"]);
+    if (!path) return "file operation";
+    if (oldStr && newStr) {
+      return `path=${truncateText(path, 64)} · "${truncateText(oldStr, 32)}" → "${truncateText(newStr, 32)}"`;
+    }
+    return `path=${truncateText(path, 64)}`;
+  }
+
   if (
     lower === "read" ||
     lower === "write" ||
-    lower === "edit" ||
     lower.includes("file_read") ||
     lower.includes("write_file") ||
-    lower.includes("file_edit") ||
-    lower.includes("replace_string")
+    lower.includes("file_edit")
   ) {
     const path = readStringField(parsed, ["file_path", "path", "filePath", "uri"]);
     return path ? `path=${truncateText(path, 64)}` : "file operation";

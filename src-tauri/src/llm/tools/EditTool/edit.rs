@@ -1,4 +1,4 @@
-use crate::llm::tools::shared::read_state::global_registry;
+use crate::llm::tools::shared::edit_replacers::apply_replace;
 use crate::llm::tools::{
     app_tool, AppExecuteFuture, ToolFailure, ToolOutcome, ToolPermissionDescriptor, ToolRegistration,
 };
@@ -16,14 +16,12 @@ pub fn tool() -> Tool {
         name: "Edit".into(),
         description: r#"Performs exact string replacement in an existing file.
 
-- The `old_string` must match the file EXACTLY, including all whitespace and indentation. The edit fails otherwise.
-- You MUST read the file with the Read tool before editing it. Edits will be rejected if the file hasn't been read in the current session.
-- If the file was modified since you last read it (by you, the user, or a linter), the edit will be rejected — read it again first.
-- Use `replace_all: true` to replace every occurrence of `old_string`; when false (default), the string must appear exactly once in the file.
+- The `old_string` should match the file content exactly, but the matcher is fault-tolerant: it will also try line-trimmed, block-anchor (with Levenshtein similarity), whitespace-normalized, indentation-flexible, and escape-normalized matching in that order before giving up.
+- Use `replace_all: true` to replace every occurrence of `old_string`; when false (default), the string must appear exactly once in the file (or be uniquely identifiable via the fuzzy matchers).
 - `new_string` must differ from `old_string`.
 - `file_path` must be an absolute path.
 
-This is the precision editing tool — use it for surgical changes. For full-file writes or new files, use Write."#
+This is the precision editing tool — use it for surgical changes. For full-file writes or new files, use Write. For multiple edits to the same file in one call, use MultiEdit."#
             .into(),
         input_schema: json!({
             "type": "object",
@@ -61,7 +59,7 @@ fn permission(input: &Value) -> Option<ToolPermissionDescriptor> {
 
 async fn execute_async(
     _app: &AppHandle,
-    conversation_id: Option<&str>,
+    _conversation_id: Option<&str>,
     input: Value,
 ) -> Result<ToolOutcome, ToolFailure> {
     let file_path = input
@@ -103,58 +101,24 @@ async fn execute_async(
         )));
     }
 
-    // 先读后写检查：当前会话必须已读过此文件，且读取后文件未被外部修改。
-    // 这避免 AI 凭可能过时的记忆盲改文件。
-    if let Err(reason) = global_registry().check_editable(conversation_id, &target) {
-        return Err(ToolFailure::new(reason.message()));
-    }
-
     // read_file_utf8 同时 strip BOM 并返回 had_bom 标记。
     // original 是 AI 看到的内容（无 BOM），had_bom 用于写回时恢复 BOM。
     let (original, had_bom) = read_file_utf8(&target)
         .map_err(|e| ToolFailure::new(format!("Error reading {}: {}", file_path, e)))?;
 
-    let occurrences = count_matches(&original, old_string);
-
-    if occurrences == 0 {
-        return Err(ToolFailure::new(format!(
-            "old_string not found in file: {}\n\nTip: Read the file first to get exact content and indentation.",
-            file_path
-        )));
-    }
-
-    if !replace_all && occurrences > 1 {
-        return Err(ToolFailure::new(format!(
-            "old_string found {} times in file (not unique). Use replace_all: true to replace all occurrences, or provide more context to make old_string unique.",
-            occurrences
-        )));
-    }
-
-    let modified = if replace_all {
-        original.replace(old_string, new_string)
-    } else {
-        original.replacen(old_string, new_string, 1)
-    };
+    // 使用 fuzzy matcher 链：精确匹配 → 行 trim → 锚点 → 空白归一化 → ...
+    // 这避免了 AI 因一两个空格差异就失败重试。
+    let (modified, replaced_count) = apply_replace(&original, old_string, new_string, replace_all)
+        .map_err(ToolFailure::new)?;
 
     // 写回时保留 BOM 状态——有 BOM 的 Windows 文件编辑后仍然有 BOM。
     write_file_preserving(&target, &modified, had_bom).map_err(ToolFailure::new)?;
 
-    // 登记新内容到 read_state，让后续连续编辑无需重新 Read。
-    global_registry().record_edit(conversation_id, &target, modified);
-
-    let replaced_count = if replace_all { occurrences } else { 1 };
     Ok(ToolOutcome::json(json!({
         "ok": true,
         "file_path": file_path,
         "occurrences_replaced": replaced_count
     })))
-}
-
-fn count_matches(haystack: &str, needle: &str) -> usize {
-    if needle.is_empty() {
-        return 0;
-    }
-    haystack.matches(needle).count()
 }
 
 fn execute_with_app_boxed(

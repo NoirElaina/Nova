@@ -26,10 +26,12 @@ pub fn tool() -> Tool {
 
 - `command`: the command to execute (required).
 - `description`: a short (3-5 word) description of what this command does in active voice. Helps the user understand what's happening.
-- `timeout`: optional timeout in milliseconds (max 600000). Defaults to 120000.
+- `timeout`: optional timeout in milliseconds (max 1800000, i.e. 30 minutes). Defaults to 300000 (5 minutes).
 - `run_in_background`: set to true to run the command in the background. The shell session stays alive for subsequent calls.
 
-On Windows this runs PowerShell 7 (pwsh). On Linux/macOS it runs sh. Interactive TUI programs are not supported."#
+On Windows this runs PowerShell 7 (pwsh). On Linux/macOS it runs sh. Interactive TUI programs are not supported.
+
+Command output is capped at 30000 characters per stream (stdout/stderr); excess is truncated with a marker. Avoid commands that emit huge output; redirect to a file and inspect with Read/Grep instead."#
             .into(),
         input_schema: json!({
             "type": "object",
@@ -44,7 +46,7 @@ On Windows this runs PowerShell 7 (pwsh). On Linux/macOS it runs sh. Interactive
                 },
                 "timeout": {
                     "type": "integer",
-                    "description": "Optional timeout in milliseconds (max 600000)"
+                    "description": "Optional timeout in milliseconds (max 1800000)"
                 },
                 "run_in_background": {
                     "type": "boolean",
@@ -130,8 +132,8 @@ async fn execute_async(
 fn shell_result_json(result: ShellExecutionResult) -> Value {
     json!({
         "ok": result.exit_code.unwrap_or(1) == 0,
-        "stdout": result.stdout,
-        "stderr": result.stderr,
+        "stdout": truncate_output(&result.stdout),
+        "stderr": truncate_output(&result.stderr),
         "exitCode": result.exit_code,
         "cwd": result.cwd,
         "timedOut": result.timed_out,
@@ -148,7 +150,28 @@ fn shell_failure_text(reason: &str, result: &ShellExecutionResult) -> String {
         result.timed_out,
         result.background,
         result.pid,
-        result.stdout,
-        result.stderr
+        truncate_output(&result.stdout),
+        truncate_output(&result.stderr)
+    )
+}
+
+// 单段输出的字符上限（对齐 Claude Code BASH_MAX_OUTPUT_DEFAULT）。
+// 超出则保留头部并追加截断标记，避免大型命令输出灌满上下文、触发 prompt_too_long。
+const MAX_OUTPUT_CHARS: usize = 30_000;
+
+fn truncate_output(content: &str) -> String {
+    if content.len() <= MAX_OUTPUT_CHARS {
+        return content.to_string();
+    }
+    // 截到 <= MAX_OUTPUT_CHARS 的合法 UTF-8 字符边界。
+    let mut cut = MAX_OUTPUT_CHARS;
+    while cut > 0 && !content.is_char_boundary(cut) {
+        cut -= 1;
+    }
+    let remaining_lines = content[cut..].matches('\n').count() + 1;
+    format!(
+        "{}\n\n... [{} lines truncated] ...",
+        &content[..cut],
+        remaining_lines
     )
 }

@@ -2,9 +2,9 @@ use crate::llm::tools::{app_tool, AppExecuteFuture, ToolFailure, ToolOutcome, To
 use crate::llm::types::Tool;
 use serde_json::{json, Value};
 use std::path::PathBuf;
-use std::process::Command;
 use tauri::AppHandle;
 use tauri::Manager;
+use tokio::process::Command;
 
 pub(super) fn registration() -> ToolRegistration {
     app_tool(tool, execute_with_app_boxed, true, None)
@@ -239,7 +239,7 @@ async fn execute_async(
     cmd.arg(pattern);
     cmd.arg(&base_path);
 
-    let output = cmd.output().map_err(|e| {
+    let output = cmd.output().await.map_err(|e| {
         ToolFailure::new(format!("Failed to run rg: {}", e))
     })?;
 

@@ -59,6 +59,9 @@ const emit = defineEmits<{
 const currentInput = ref("");
 const textareaRef = ref<HTMLTextAreaElement | null>(null);
 const fileInputRef = ref<HTMLInputElement | null>(null);
+// IME 合成状态：中文输入法打拼音过程中为 true，此时 textarea 文字需可见，
+// 否则被 text-transparent 隐藏导致用户看不见正在输入的字母。
+const isComposing = ref(false);
 
 // + 按钮菜单状态：null=关闭，'main'=主视图，'skill'=技能视图
 const plusMenuView = ref<null | 'main' | 'skill'>(null);
@@ -1078,9 +1081,9 @@ defineExpose({
           aria-hidden="true"
           class="absolute inset-0 w-full px-4 pt-3 pb-2 text-[0.95rem] text-[#1a1a1a] dark:text-[#ececec] max-h-[40vh] overflow-hidden whitespace-pre-wrap break-words pointer-events-none"
           v-html="highlightedInput + '\u200b'"></div>
-        <textarea ref="textareaRef" v-model="currentInput" @keydown="onTextareaKeydown" @input="onTextareaInput" @paste="onTextareaPaste"
+        <textarea ref="textareaRef" v-model="currentInput" @keydown="onTextareaKeydown" @input="onTextareaInput" @paste="onTextareaPaste" @compositionstart="isComposing = true" @compositionend="isComposing = false"
           placeholder="Message Nova..." rows="1"
-          class="relative w-full bg-transparent border-none text-[0.95rem] text-transparent caret-[#1a1a1a] dark:caret-[#ececec] resize-none outline-none block max-h-[40vh] px-4 pt-3 pb-2 placeholder:text-[#a3a3a3] z-10"></textarea>
+          :class="['relative w-full bg-transparent border-none text-[0.95rem] caret-[#1a1a1a] dark:caret-[#ececec] resize-none outline-none block max-h-[40vh] px-4 pt-3 pb-2 placeholder:text-[#a3a3a3] z-10', isComposing ? 'text-[#1a1a1a] dark:text-[#ececec]' : 'text-transparent']"></textarea>
 
         <!-- 斜杠命令下拉菜单：向上弹出，与输入框同宽 -->
         <div

@@ -3,7 +3,7 @@ use crate::llm::tools::{
     app_tool, AppExecuteFuture, ToolFailure, ToolOutcome, ToolPermissionDescriptor, ToolRegistration,
 };
 use crate::llm::types::Tool;
-use crate::llm::utils::file_io::{read_file_utf8, resolve_tool_path, write_file_preserving};
+use crate::llm::utils::file_io::{read_file_meta, resolve_tool_path, write_file_with_meta};
 use serde_json::{json, Value};
 use tauri::AppHandle;
 
@@ -152,8 +152,8 @@ async fn execute_async(
         edits.push(parse_edit(item, idx)?);
     }
 
-    // 读取文件一次
-    let (mut content, had_bom) = read_file_utf8(&target)
+    // 读取文件一次（解码 + 剥 BOM + CRLF→LF），记录原始编码与行尾。
+    let (mut content, meta) = read_file_meta(&target)
         .map_err(|e| ToolFailure::new(format!("Error reading {}: {}", file_path, e)))?;
 
     // 顺序应用所有 edit。任一失败则整批回滚（不写入）。
@@ -171,8 +171,8 @@ async fn execute_async(
         applied_count += replaced;
     }
 
-    // 全部成功后写回
-    write_file_preserving(&target, &content, had_bom).map_err(ToolFailure::new)?;
+    // 全部成功后写回——按原始编码与行尾还原。
+    write_file_with_meta(&target, &content, &meta).map_err(ToolFailure::new)?;
 
     Ok(ToolOutcome::json(json!({
         "ok": true,

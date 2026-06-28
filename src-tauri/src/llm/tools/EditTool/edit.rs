@@ -3,7 +3,7 @@ use crate::llm::tools::{
     app_tool, AppExecuteFuture, ToolFailure, ToolOutcome, ToolPermissionDescriptor, ToolRegistration,
 };
 use crate::llm::types::Tool;
-use crate::llm::utils::file_io::{read_file_utf8, resolve_tool_path, write_file_preserving};
+use crate::llm::utils::file_io::{read_file_meta, resolve_tool_path, write_file_with_meta};
 use serde_json::{json, Value};
 use tauri::AppHandle;
 
@@ -101,9 +101,9 @@ async fn execute_async(
         )));
     }
 
-    // read_file_utf8 同时 strip BOM 并返回 had_bom 标记。
-    // original 是 AI 看到的内容（无 BOM），had_bom 用于写回时恢复 BOM。
-    let (original, had_bom) = read_file_utf8(&target)
+    // read_file_meta 解码为 UTF-8、剥离 BOM、CRLF→LF，并返回原始编码与行尾元信息。
+    // original 是模型应看到的归一化内容（纯 LF、无 BOM）；meta 用于写回时还原。
+    let (original, meta) = read_file_meta(&target)
         .map_err(|e| ToolFailure::new(format!("Error reading {}: {}", file_path, e)))?;
 
     // 使用 fuzzy matcher 链：精确匹配 → 行 trim → 锚点 → 空白归一化 → ...
@@ -111,8 +111,8 @@ async fn execute_async(
     let (modified, replaced_count) = apply_replace(&original, old_string, new_string, replace_all)
         .map_err(ToolFailure::new)?;
 
-    // 写回时保留 BOM 状态——有 BOM 的 Windows 文件编辑后仍然有 BOM。
-    write_file_preserving(&target, &modified, had_bom).map_err(ToolFailure::new)?;
+    // 写回时按原始编码与行尾还原——CRLF 文件保持 CRLF，带 BOM 的文件保持 BOM。
+    write_file_with_meta(&target, &modified, &meta).map_err(ToolFailure::new)?;
 
     Ok(ToolOutcome::json(json!({
         "ok": true,

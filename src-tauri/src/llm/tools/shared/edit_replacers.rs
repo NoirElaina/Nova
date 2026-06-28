@@ -614,64 +614,55 @@ pub fn find_match(content: &str, old_string: &str, replace_all: bool) -> FindRes
         Box::new(ContextAwareReplacer),
     ];
 
-    let mut not_found = true;
     for replacer in &replacers {
         let candidates = replacer.find(content, old_string);
         if candidates.is_empty() {
             continue;
         }
-        not_found = false;
 
-        // 检查每个候选是否"不成比例"
-        for c in &candidates {
-            if is_disproportionate_match(&c.matched_text, old_string) {
-                // 拒绝这次匹配，继续尝试下一个 replacer
-                continue;
-            }
-        }
-
-        if replace_all {
-            // 全部替换模式：用第一个候选（精确匹配的话会有多个）
-            // 但只有 SimpleReplacer 会返回多个精确匹配，其他 replacer 通常返回 1 个
-            if let Some(first) = candidates.first() {
-                return FindResult::Unique {
-                    matched_text: first.matched_text.clone(),
-                    start: first.start,
-                };
-            }
-        }
-
-        // 非 replace_all：需要唯一匹配
-        // 去重：不同 replacer 可能产生相同候选，按 start 去重
+        // 去重：不同 replacer 可能产生相同候选，按 start 去重。
         let mut unique_starts: Vec<&MatchCandidate> = Vec::new();
         for c in &candidates {
             if !unique_starts.iter().any(|u| u.start == c.start) {
                 unique_starts.push(c);
             }
         }
-        if unique_starts.is_empty() {
+
+        // 过滤掉"不成比例"的误匹配（命中块远大于 old_string，极可能是锚点误匹配）。
+        // 与 opencode 一致：宁可拒绝、让模型重读，也不冒险改错大块代码。
+        let valid: Vec<&MatchCandidate> = unique_starts
+            .into_iter()
+            .filter(|c| !is_disproportionate_match(&c.matched_text, old_string))
+            .collect();
+
+        // 该 replacer 的候选全部被拒——继续尝试下一个精度更低的 replacer。
+        if valid.is_empty() {
             continue;
         }
-        if unique_starts.len() == 1 {
-            let c = unique_starts[0];
-            if is_disproportionate_match(&c.matched_text, old_string) {
-                continue;
-            }
+
+        if replace_all {
+            // 全部替换模式：用第一个有效候选。调用方据 matched_text 替换其所有出现。
+            let c = valid[0];
             return FindResult::Unique {
                 matched_text: c.matched_text.clone(),
                 start: c.start,
             };
         }
-        // 多匹配：返回数量让调用方提示用户
-        return FindResult::Multiple(unique_starts.len());
+
+        // 非 replace_all：要求唯一匹配。
+        if valid.len() == 1 {
+            let c = valid[0];
+            return FindResult::Unique {
+                matched_text: c.matched_text.clone(),
+                start: c.start,
+            };
+        }
+
+        // 多匹配：返回数量让调用方提示用户提供更多上下文或使用 replace_all。
+        return FindResult::Multiple(valid.len());
     }
 
-    if not_found {
-        FindResult::NotFound
-    } else {
-        // 所有候选都被 disproportionate 检查拒绝
-        FindResult::NotFound
-    }
+    FindResult::NotFound
 }
 
 /// 执行替换。返回 (新内容, 替换次数)。

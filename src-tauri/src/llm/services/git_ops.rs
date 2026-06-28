@@ -414,3 +414,59 @@ pub fn init_conversation_repo(
     let path_str = crate::command::workspace::display_path_string(&repo_root);
     Ok((!already, path_str))
 }
+
+/// 生成会话工作区的 git 状态摘要文本（用于注入模型上下文）。
+/// 轻量级：只读取分支名、dirty 文件路径+变更类型、最近 5 条 commit oneline，
+/// 不收集完整 diff（避免与大 diff 收集重复成本）。
+/// 仓库未初始化时返回 None。
+pub fn workspace_git_status_summary(root: &Path) -> Option<String> {
+    if !is_repo_initialized(root) {
+        return None;
+    }
+
+    let branch = current_branch(root).unwrap_or_else(|| "HEAD".to_string());
+
+    // dirty 文件：用 porcelain 格式，轻量且包含 staged+unstaged+untracked。
+    // 输出形如 " M src/main.rs"、"?? new.txt"、"A  staged.txt"。
+    let dirty = run_git(root, &["status", "--porcelain"]).ok();
+    let dirty_lines: Vec<&str> = dirty
+        .as_ref()
+        .map(|s| s.lines().filter(|l| !l.trim().is_empty()).collect())
+        .unwrap_or_default();
+
+    // 最近 5 条 commit oneline。
+    let log = run_git(root, &["log", "--oneline", "-5", "--no-decorate"]).ok();
+    let log_lines: Vec<&str> = log
+        .as_ref()
+        .map(|s| s.lines().filter(|l| !l.trim().is_empty()).collect())
+        .unwrap_or_default();
+
+    let mut out = format!("Branch: {}\n", branch);
+
+    if dirty_lines.is_empty() {
+        out.push_str("Working tree: clean\n");
+    } else {
+        out.push_str(&format!("Working tree: {} changed file(s)\n", dirty_lines.len()));
+        // 限制注入条数，避免超大改动爆上下文。
+        let max_show = 30usize;
+        for line in dirty_lines.iter().take(max_show) {
+            // porcelain 行格式: "XY path"，保留原样以便 agent 看到变更类型。
+            out.push_str(&format!("  {}\n", line));
+        }
+        if dirty_lines.len() > max_show {
+            out.push_str(&format!(
+                "  ...and {} more\n",
+                dirty_lines.len() - max_show
+            ));
+        }
+    }
+
+    if !log_lines.is_empty() {
+        out.push_str("Recent commits:\n");
+        for line in &log_lines {
+            out.push_str(&format!("  {}\n", line));
+        }
+    }
+
+    Some(out)
+}

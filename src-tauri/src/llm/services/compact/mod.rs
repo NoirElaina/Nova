@@ -29,7 +29,10 @@ const IMAGE_TOKEN_FALLBACK: i64 = 1536;
 // Full: 90% 窗口时做模型摘要压缩
 
 // 截断值：在 tool_result 里保持头尾信息, 避免 payload 过长。
-const TOOL_RESULT_TEXT_TRUNCATE_LIMIT: usize = 1200;
+// 旧值 1200 会截断 Read/Grep 返回的代码片段，agent 只看到片段头部+尾部，
+// 丢失中间实现细节，被迫重新 Read 同一文件。提到 8000 可完整保留
+// 约 200 行代码片段（典型文件大小），与 200K 上下文窗口相比成本可接受。
+const TOOL_RESULT_TEXT_TRUNCATE_LIMIT: usize = 8000;
 
 // JSON 压缩上限，避免深层数组/对象导致多次迭代爆炸。
 const TOOL_RESULT_JSON_MAX_DEPTH: usize = 3;
@@ -45,6 +48,11 @@ const CONTEXT_EDIT_CLEAR_TOOL_INPUTS: bool = false;
 const CONTEXT_EDIT_TOOL_RESULT_PLACEHOLDER: &str =
     "[tool_result removed by context editing to save prompt space]";
 const CONTEXT_EDIT_TOOL_INPUT_PLACEHOLDER: &str = "[tool_use input removed by context editing]";
+
+// 文件内容类工具：其 ToolResult 包含文件内容/搜索结果，context editing 时不应被占位符替换。
+// 清除后 agent 被迫重新 Read/Grep 同一文件，浪费工具调用轮次和输出 token。
+// 这些结果由 micro-compact 的截断逻辑（更高阈值）处理，而不是被整段替换为占位符。
+const PROTECTED_FILE_CONTENT_TOOLS: &[&str] = &["Read", "Grep", "Glob"];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum CompactLevel {
@@ -302,6 +310,22 @@ fn split_session_restore_message(messages: &[Message]) -> (Option<Message>, Vec<
 }
 
 fn collect_clearable_tool_result_ids(messages: &[Message]) -> Vec<String> {
+    // 先构建 tool_use_id -> tool_name 映射，用于识别文件内容类工具（Read/Grep/Glob）。
+    // 这些工具的 ToolResult 包含文件内容/搜索结果，被占位符替换后 agent 被迫重新调用，
+    // 浪费工具轮次和输出 token；交给 micro-compact 的截断逻辑处理即可。
+    let mut tool_name_by_id: std::collections::HashMap<String, String> =
+        std::collections::HashMap::new();
+    for message in messages {
+        let Content::Blocks(blocks) = &message.content else {
+            continue;
+        };
+        for block in blocks {
+            if let ContentBlock::ToolUse { id, name, .. } = block {
+                tool_name_by_id.insert(id.clone(), name.clone());
+            }
+        }
+    }
+
     let mut ids = Vec::new();
     let mut seen = HashSet::new();
 
@@ -321,6 +345,15 @@ fn collect_clearable_tool_result_ids(messages: &[Message]) -> Vec<String> {
             };
 
             if !seen.insert(tool_use_id.clone()) {
+                continue;
+            }
+
+            // 跳过文件内容类工具：Read/Grep/Glob 的结果保留，由 micro-compact 截断处理。
+            let is_protected = tool_name_by_id
+                .get(tool_use_id)
+                .map(|name| PROTECTED_FILE_CONTENT_TOOLS.iter().any(|p| p == name))
+                .unwrap_or(false);
+            if is_protected {
                 continue;
             }
 

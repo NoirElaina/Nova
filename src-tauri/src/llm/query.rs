@@ -376,6 +376,7 @@ fn strip_injected_context(messages: &mut Vec<Message>) {
         "[Session Restore Context]",
         "[Global Memory]",
         "[Session Files]",
+        "[Project Context]",
         // lifecycle hooks — 每轮动态注入，不应固化进 snapshot
         "[SessionStart]",
         "[UserPromptSubmit]",

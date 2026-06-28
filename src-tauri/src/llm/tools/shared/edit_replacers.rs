@@ -674,12 +674,21 @@ pub fn apply_replace(
     replace_all: bool,
 ) -> Result<(String, usize), String> {
     match find_match(content, old_string, replace_all) {
-        FindResult::Unique { matched_text, .. } => {
+        FindResult::Unique { matched_text, start } => {
             if replace_all {
                 let count = content.matches(&matched_text).count();
                 Ok((content.replace(&matched_text, new_string), count))
             } else {
-                Ok((content.replacen(&matched_text, new_string, 1), 1))
+                // 用 find_match 返回的精确字节位置替换，避免 replacen 从文件开头
+                // 重新查找命中到更靠前的同名字面文本（fuzzy 匹配判定的"唯一"是
+                // 基于行 trim/归一，而非字面 substring 计数）。
+                let end = start + matched_text.len();
+                let mut replaced =
+                    String::with_capacity(content.len() - matched_text.len() + new_string.len());
+                replaced.push_str(&content[..start]);
+                replaced.push_str(new_string);
+                replaced.push_str(&content[end..]);
+                Ok((replaced, 1))
             }
         }
         FindResult::Multiple(n) => Err(format!(

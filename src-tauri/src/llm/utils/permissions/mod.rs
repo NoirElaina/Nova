@@ -35,12 +35,14 @@ const DANGEROUS_COMMAND_PATTERNS: &[&str] = &[
 ];
 
 // Path prefixes that should never be written without explicit override.
+// 统一用正斜杠书写：normalize_path_for_match 会把待检查路径的 `\` 归一成 `/`，
+// 两侧必须采用同一种分隔符，否则跨平台前缀匹配会静默失效。
 const PROTECTED_PATH_PREFIXES: &[&str] = &[
-    "c:\\windows",
-    "c:\\program files",
-    "c:\\program files (x86)",
-    "c:\\programdata",
-    "c:\\users\\public",
+    "c:/windows",
+    "c:/program files",
+    "c:/program files (x86)",
+    "c:/programdata",
+    "c:/users/public",
     "/etc",
     "/bin",
     "/sbin",
@@ -51,19 +53,14 @@ const PROTECTED_PATH_PREFIXES: &[&str] = &[
 ];
 
 // Sensitive path markers that should be blocked even outside protected roots.
+// 同样统一正斜杠形式，与 normalize_path_for_match 的归一化结果保持一致。
 const PROTECTED_PATH_CONTAINS: &[&str] = &[
-    "\\.ssh\\",
     "/.ssh/",
-    "\\.aws\\",
     "/.aws/",
-    "\\.gnupg\\",
     "/.gnupg/",
-    "\\.config\\git",
     "/.config/git",
-    "\\.git\\config",
     "/.git/config",
     // 整个 .git 目录都受保护，任何写入删除都拦截。
-    "\\.git\\",
     "/.git/",
 ];
 
@@ -268,8 +265,10 @@ fn upsert_pending_request_id(
 }
 
 fn normalize_path_for_match(path: &str) -> String {
-    // 用统一分隔符与小写比较，减少跨平台路径写法差异。
-    path.trim().replace('/', "\\").to_ascii_lowercase()
+    // 用统一分隔符（正斜杠）与小写比较，减少跨平台路径写法差异。
+    // 必须与 PROTECTED_PATH_PREFIXES / PROTECTED_PATH_CONTAINS 的书写形式一致，
+    // 否则前缀/包含匹配会在某一平台静默失效。
+    path.trim().replace('\\', "/").to_ascii_lowercase()
 }
 
 fn normalize_command_for_match(command: &str) -> String {

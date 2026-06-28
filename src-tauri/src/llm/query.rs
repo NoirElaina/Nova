@@ -72,9 +72,10 @@ fn emit_token_usage_event(
     // 根据 Anthropic 文档：
     // total_input = input_tokens + cache_read_tokens + cache_creation_tokens
     // total_all = total_input + output_tokens
-    let total_input = input_tokens.unwrap_or(0)
-        + cache_read_tokens.unwrap_or(0)
-        + cache_creation_tokens.unwrap_or(0);
+    let total_input = input_tokens
+        .unwrap_or(0)
+        .saturating_add(cache_read_tokens.unwrap_or(0))
+        .saturating_add(cache_creation_tokens.unwrap_or(0));
     let total_tokens = total_input.checked_add(output_tokens.unwrap_or(0));
 
     let payload = serde_json::json!({
@@ -835,8 +836,8 @@ pub async fn send_chat_message(
         // 根据 Anthropic 文档：total_input = input_tokens + cache_read + cache_creation
         if let Some(actual_input) = provider_result.input_tokens {
             let total_input = actual_input
-                + provider_result.cache_read_tokens.unwrap_or(0)
-                + provider_result.cache_creation_tokens.unwrap_or(0);
+                .saturating_add(provider_result.cache_read_tokens.unwrap_or(0))
+                .saturating_add(provider_result.cache_creation_tokens.unwrap_or(0));
             emit_context_usage_event(
                 &app,
                 conversation_id.as_deref(),

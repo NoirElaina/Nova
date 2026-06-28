@@ -1,30 +1,12 @@
-use std::path::Path;
-
 use tauri::AppHandle;
 
+use crate::llm::tools::shared::todo_state::global_registry as todo_registry;
 use crate::llm::types::{Content, ContentBlock, Message, Role};
 
 const SESSION_RESTORE_MARKER: &str = "[Session Restore Context]";
 const SESSION_FILES_MARKER: &str = "[Session Files]";
 const PROJECT_CONTEXT_MARKER: &str = "[Project Context]";
-
-// 目录列表时跳过的常见构建/依赖目录，避免注入噪音和大目录爆上下文。
-const DIR_LISTING_SKIP_DIRS: &[&str] = &[
-    ".git",
-    "node_modules",
-    "target",
-    "dist",
-    "build",
-    ".next",
-    "__pycache__",
-    ".venv",
-    "venv",
-    ".cache",
-    "coverage",
-    ".idea",
-    ".vscode",
-    ".nova",
-];
+const PHASE_MARKER: &str = "[Phase]";
 
 #[derive(Debug, Clone, Copy)]
 pub struct AssembleOptions {
@@ -96,47 +78,65 @@ fn has_project_context_marker(messages: &[Message]) -> bool {
     })
 }
 
-// 生成工作区第一层目录/文件列表，跳过构建产物和依赖目录。
-// 只列一层，避免大仓库爆上下文；agent 需要更深层结构时会主动 Glob/Read。
-fn build_directory_listing(root: &Path) -> String {
-    let mut entries: Vec<String> = Vec::new();
-    let read_dir = match std::fs::read_dir(root) {
-        Ok(rd) => rd,
-        Err(_) => return String::new(),
-    };
-
-    for entry in read_dir.flatten() {
-        let file_name = match entry.file_name().into_string() {
-            Ok(n) => n,
-            Err(_) => continue,
-        };
-        let is_dir = entry.file_type().map(|t| t.is_dir()).unwrap_or(false);
-        if is_dir && DIR_LISTING_SKIP_DIRS.iter().any(|skip| *skip == file_name) {
-            continue;
-        }
-        // 标记目录便于 agent 识别结构。
-        entries.push(if is_dir {
-            format!("{}/", file_name)
-        } else {
-            file_name
-        });
-    }
-
-    entries.sort();
-    // 限制条数，避免超大目录爆上下文。
-    let max_entries = 40usize;
-    let mut out = String::new();
-    for entry in entries.iter().take(max_entries) {
-        out.push_str(&format!("  - {}\n", entry));
-    }
-    if entries.len() > max_entries {
-        out.push_str(&format!("  ...and {} more\n", entries.len() - max_entries));
-    }
-    out
+fn has_phase_marker(messages: &[Message]) -> bool {
+    messages.iter().any(|m| match &m.content {
+        Content::Text(t) => t.contains(PHASE_MARKER),
+        Content::Blocks(blocks) => blocks.iter().any(|b| {
+            if let ContentBlock::Text { text } = b {
+                text.contains(PHASE_MARKER)
+            } else {
+                false
+            }
+        }),
+    })
 }
 
-// 构建项目上下文消息：工作区路径 + 第一层目录结构 + git 状态摘要。
-// 让 agent 每轮都能看到项目结构和当前改动，避免"盲改"。
+// 根据 TodoWrite 状态推断当前阶段，构建阶段提示消息。
+// - 无 todo：Explore（让 agent 先建立清单）
+// - 有 todo 但未全部完成：Execute（按清单推进）
+// - 所有 todo 已完成：Verify（运行验证 + GitDiff 复查）
+fn build_phase_message(conversation_id: Option<&str>) -> Option<Message> {
+    let todos = todo_registry().list(conversation_id);
+    let (phase, hint) = if todos.is_empty() {
+        (
+            "Explore",
+            "Collect context with Read/Grep/Glob/GitDiff. For tasks with 3+ steps, use TodoWrite to create a task list before making changes. For trivial 1-2 step tasks, proceed directly.",
+        )
+    } else {
+        let all_completed = todos.iter().all(|t| t.status == "completed");
+        if all_completed {
+            (
+                "Verify",
+                "All todos completed. Run the project's test/lint/typecheck commands to verify changes. Use GitDiff to review all uncommitted changes for completeness. Report a one-line summary of what changed and whether verification passed.",
+            )
+        } else {
+            (
+                "Execute",
+                "Work through the TodoWrite list in order. Mark each item completed before starting the next. Use minimal diffs. If you discover new subtasks, update the TodoWrite list first.",
+            )
+        }
+    };
+
+    Some(Message {
+        role: Role::User,
+        content: Content::Text(format!(
+            "{}: {}\nPhase: {}\nCurrent todo count: {} (completed: {}, in_progress: {}, pending: {}).",
+            PHASE_MARKER,
+            hint,
+            phase,
+            todos.len(),
+            todos.iter().filter(|t| t.status == "completed").count(),
+            todos
+                .iter()
+                .filter(|t| t.status == "in_progress")
+                .count(),
+            todos.iter().filter(|t| t.status == "pending").count(),
+        )),
+    })
+}
+
+// 构建项目上下文消息：仅注入工作区路径。
+// 不注入目录列表和 git 状态——让 agent 自己用 Glob/Read/GitDiff 按需查看，避免杂乱信息干扰。
 async fn build_project_context_message(
     app: &AppHandle,
     conversation_id: Option<&str>,
@@ -144,28 +144,12 @@ async fn build_project_context_message(
     let root = crate::command::workspace::workspace_root_for_conversation(app, conversation_id).ok()?;
     let root_display = crate::command::workspace::display_path_string(&root);
 
-    let mut lines = vec![
-        PROJECT_CONTEXT_MARKER.to_string(),
-        format!("Workspace: {}", root_display),
-    ];
-
-    let dir_listing = build_directory_listing(&root);
-    if !dir_listing.is_empty() {
-        lines.push("Top-level entries:".to_string());
-        // 去掉末尾换行后整体 push，保持格式紧凑。
-        lines.push(dir_listing.trim_end().to_string());
-    } else {
-        lines.push("Top-level entries: (empty or unreadable)".to_string());
-    }
-
-    if let Some(git_summary) = crate::llm::services::git_ops::workspace_git_status_summary(&root) {
-        lines.push("Git status:".to_string());
-        lines.push(git_summary.trim_end().to_string());
-    }
-
     Some(Message {
         role: Role::User,
-        content: Content::Text(lines.join("\n")),
+        content: Content::Text(format!(
+            "{}\nWorkspace: {}",
+            PROJECT_CONTEXT_MARKER, root_display
+        )),
     })
 }
 
@@ -179,9 +163,10 @@ async fn build_project_context_message(
 // 1) 全局记忆 frozen snapshot 现在由 system_prompt 模块注入（保持 prompt cache 稳定），
 //    不再在这里每轮重检索。
 // 2) 项目上下文（工作区结构 + git 状态）每轮注入，让 agent 看到当前改动避免盲改。
-// 3) 会话文件列表每轮注入（marker 防重复）。
-// 4) 会话恢复上下文（include_session_restore 时）。
-// 5) 可选环境上下文（include_env_contexts 时）。
+// 3) 任务阶段（Explore/Execute/Verify）每轮按 TodoWrite 状态推断并注入。
+// 4) 会话文件列表每轮注入（marker 防重复）。
+// 5) 会话恢复上下文（include_session_restore 时）。
+// 6) 可选环境上下文（include_env_contexts 时）。
 pub async fn assemble_messages_for_turn(
     app: &AppHandle,
     conversation_id: Option<&str>,
@@ -196,6 +181,14 @@ pub async fn assemble_messages_for_turn(
     if !has_project_context_marker(&assembled) {
         if let Some(project_msg) = build_project_context_message(app, conversation_id).await {
             assembled.push(project_msg);
+        }
+    }
+
+    // 任务阶段提示：根据当前 TodoWrite 状态推断 Explore/Execute/Verify，
+    // 注入对应阶段的行为提示词，实现 plan-execute-verify 软编排。
+    if !has_phase_marker(&assembled) {
+        if let Some(phase_msg) = build_phase_message(conversation_id) {
+            assembled.push(phase_msg);
         }
     }
 

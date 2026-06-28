@@ -1154,6 +1154,13 @@ pub async fn delete_conversation(app: &AppHandle, conversation_id: &str) -> Resu
     crate::llm::services::shell_sessions::close_session(Some(conversation_id)).await;
     let _ = crate::llm::services::user_terminal::stop_session(Some(conversation_id));
 
+    // 清理内存级 per-conversation 状态：read_state（EditTool 读取记录）和 todo_state（TodoWrite 清单）。
+    // 避免删除会话后状态残留导致内存泄漏或跨会话污染。
+    crate::llm::tools::shared::read_state::global_registry()
+        .clear_session(Some(conversation_id));
+    crate::llm::tools::shared::todo_state::global_registry()
+        .clear_session(Some(conversation_id));
+
     Ok(())
 }
 

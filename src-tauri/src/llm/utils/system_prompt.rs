@@ -1,7 +1,6 @@
 use std::path::PathBuf;
 
 use tauri::AppHandle;
-use tauri::Manager;
 
 use crate::llm::services::skills::list_skill_summaries_with_app;
 use crate::llm::types::AgentMode;
@@ -71,11 +70,6 @@ fn main_prompt_path() -> PathBuf {
         .join(SYSTEM_PROMPT_FILE_NAME)
 }
 
-pub fn workspace_dir(app: &AppHandle) -> PathBuf {
-    crate::command::workspace::default_workspace_root(app)
-        .unwrap_or_else(|_| PathBuf::from("workspace"))
-}
-
 pub fn load_system_prompt(
     app: &AppHandle,
     agent_mode: AgentMode,
@@ -105,18 +99,9 @@ pub fn load_system_prompt(
     };
     let prompt = prompt.replace("{{NOVA_PLATFORM}}", platform);
 
-    // 将 rg 完整路径注入提示词。
-    let rg_path = app
-        .path()
-        .resource_dir()
-        .ok()
-        .map(|dir| {
-            dir.join("bin")
-                .join(if cfg!(target_os = "windows") { "rg.exe" } else { "rg" })
-                .display()
-                .to_string()
-        })
-        .unwrap_or_default();
+    // 将 rg 完整路径注入提示词。复用 GrepTool 的 find_rg_path,
+    // 保证提示词里写的路径与 Grep 实际使用的路径一致(含 env/bundled/PATH 回退)。
+    let rg_path = crate::llm::tools::grep_tool::find_rg_path(app);
     let prompt = prompt.replace("{{RG_PATH}}", &rg_path);
 
     let prompt_with_memory = format!("{}{}", prompt, GLOBAL_MEMORY_SECTION);

@@ -5,6 +5,7 @@ use std::time::Duration;
 
 use base64::engine::general_purpose::STANDARD as BASE64;
 use base64::Engine as _;
+use regex::Regex;
 use serde::Serialize;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::{Child, ChildStdin, Command};
@@ -20,9 +21,48 @@ const PWSH_PATH: &str = "C:\\Program Files\\PowerShell\\7\\pwsh.exe";
 #[cfg(target_os = "windows")]
 use std::os::windows::process::CommandExt;
 
-const DEFAULT_TIMEOUT_MS: u64 = 300_000;
+const DEFAULT_TIMEOUT_MS: u64 = 120_000;
 const MAX_TIMEOUT_MS: u64 = 1_800_000;
 const MARKER_PREFIX: &str = "__NOVA_CMD_END__|";
+
+// 卡顿看门狗:输出长时间不增长且末尾命中交互式 prompt 正则时,
+// 判定命令在等待 stdin,提前终止并提示模型改用管道喂输入。
+// 对齐 Claude Code 的 STALL_THRESHOLD_MS / STALL_TAIL_BYTES / PROMPT_PATTERNS。
+const STALL_THRESHOLD_MS: u64 = 45_000;
+const STALL_TAIL_BYTES: usize = 1024;
+
+fn prompt_patterns() -> &'static [Regex] {
+    static PATTERNS: OnceLock<Vec<Regex>> = OnceLock::new();
+    PATTERNS.get_or_init(|| {
+        vec![
+            Regex::new(r"(?i)\(y/n\)").unwrap(),
+            Regex::new(r"(?i)\[y/n\]").unwrap(),
+            Regex::new(r"(?i)\(yes/no\)").unwrap(),
+            Regex::new(r"(?i)\b(?:Do you|Would you|Shall I|Are you sure|Ready to)\b.*\?\s*$").unwrap(),
+            Regex::new(r"(?i)Press (any key|Enter)").unwrap(),
+            Regex::new(r"(?i)Continue\?").unwrap(),
+            Regex::new(r"(?i)Overwrite\?").unwrap(),
+        ]
+    })
+}
+
+fn looks_like_prompt(text: &str) -> bool {
+    let last_line = text.trim_end().split('\n').last().unwrap_or("");
+    prompt_patterns().iter().any(|p| p.is_match(last_line))
+}
+
+fn extract_tail(stdout: &str, stderr: &str, max_bytes: usize) -> String {
+    let combined = format!("{}\n{}", stdout, stderr);
+    let bytes = combined.as_bytes();
+    if bytes.len() <= max_bytes {
+        return combined;
+    }
+    let mut start = bytes.len() - max_bytes;
+    while start < bytes.len() && !combined.is_char_boundary(start) {
+        start += 1;
+    }
+    combined[start..].to_string()
+}
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -430,6 +470,7 @@ async fn execute_wrapped_command(
     let mut stdout_done = false;
     let mut stderr_done = false;
     let mut resolved_marker: Option<CommandMarker> = None;
+    let mut last_output_growth_at = tokio::time::Instant::now();
 
     loop {
         if stdout_done && stderr_done {
@@ -451,6 +492,30 @@ async fn execute_wrapped_command(
                 background: false,
                 pid: None,
             });
+        }
+
+        // 卡顿看门狗:输出长时间不增长且末尾命中交互式 prompt 正则时,
+        // 判定命令在等待 stdin,提前终止并提示模型改用管道喂输入。
+        if now.duration_since(last_output_growth_at) >= Duration::from_millis(STALL_THRESHOLD_MS) {
+            let tail = extract_tail(&stdout, &stderr, STALL_TAIL_BYTES);
+            if looks_like_prompt(&tail) {
+                warn!("shell command appears blocked on interactive input; restarting");
+                restart_session(session, None).await?;
+                session.last_known_cwd = cwd_before;
+                let notice = "命令疑似在等待交互输入,已终止。请用 piped input 重试(如 `echo y | command`),或加非交互标志。";
+                return Ok(ShellExecutionResult {
+                    stdout: trim_trailing_newline(stdout),
+                    stderr: format!("{}\n{}", notice, trim_trailing_newline(stderr)),
+                    exit_code: None,
+                    cwd: display_cwd_opt(session.last_known_cwd.clone()),
+                    timed_out: true,
+                    cancelled: false,
+                    background: false,
+                    pid: None,
+                });
+            }
+            // 末尾不像 prompt,重置计时器,继续等慢命令。
+            last_output_growth_at = now;
         }
 
         let remaining = timeout_at.saturating_duration_since(now);
@@ -502,6 +567,7 @@ async fn execute_wrapped_command(
             StreamKind::Stdout => stdout.push_str(&event.text),
             StreamKind::Stderr => stderr.push_str(&event.text),
         }
+        last_output_growth_at = tokio::time::Instant::now();
     }
 
     let marker =

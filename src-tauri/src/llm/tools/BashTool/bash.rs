@@ -26,10 +26,12 @@ pub fn tool() -> Tool {
 
 - `command`: the command to execute (required).
 - `description`: a short (3-5 word) description of what this command does in active voice. Helps the user understand what's happening.
-- `timeout`: optional timeout in milliseconds (max 1800000, i.e. 30 minutes). Defaults to 300000 (5 minutes).
+- `timeout`: optional timeout in milliseconds (max 1800000, i.e. 30 minutes). Defaults to 120000 (2 minutes).
 - `run_in_background`: set to true to run the command in the background. The shell session stays alive for subsequent calls.
 
 On Windows this runs PowerShell 7 (pwsh). On Linux/macOS it runs sh. Interactive TUI programs are not supported.
+
+If a command appears to be waiting on an interactive prompt (e.g. `(y/n)`, `Continue?`), the run is aborted; retry with piped input such as `echo y | command` or a non-interactive flag.
 
 Command output is capped at 30000 characters per stream (stdout/stderr); excess is truncated with a marker. Avoid commands that emit huge output; redirect to a file and inspect with Read/Grep instead."#
             .into(),

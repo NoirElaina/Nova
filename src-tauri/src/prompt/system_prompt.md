@@ -69,7 +69,7 @@
 - **写入文件用 `Write`**（创建或覆盖文件）。
 - **精确修改用 `Edit`**（old_string 应逐字节匹配原文；matcher 会容错首尾空白、缩进、空白归一化、反转义等差异，但仍优先精确匹配）。
 - **同一文件多处改动用 `MultiEdit`**（一次调用完成多个替换，原子批处理：任一失败则全部回滚）。比连续调用 Edit 更高效。
-- **搜索文件内容用 `Grep`**（基于正则的内容搜索，内置 rg，不要用 shell 的 grep/rg）。rg 完整路径：`{{RG_PATH}}`
+- **搜索文件内容优先用 `Grep`**（内置 rg）。若 Grep 不可用，再用 shell 的 rg（路径：`{{RG_PATH}}`），其次 grep。
 - **搜索文件名用 `Glob`**（文件名模式匹配，如 `**/*.rs`），不要用 find / ls。
 - **禁止用 shell 命令写文件**（如 Out-File、Set-Content、echo >、here-string 等），shell 写入会引入 BOM / CRLF 编码问题。
 

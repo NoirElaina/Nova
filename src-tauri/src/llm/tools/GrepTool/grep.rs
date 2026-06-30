@@ -92,7 +92,7 @@ pub fn tool() -> Tool {
 const DEFAULT_HEAD_LIMIT: usize = 250;
 const MAX_OUTPUT_BYTES: usize = 512 * 1024;
 
-fn find_rg_path(app: &AppHandle) -> String {
+pub(crate) fn find_rg_path(app: &AppHandle) -> String {
     if let Ok(val) = std::env::var("NOVA_RG_PATH") {
         let trimmed = val.trim().to_string();
         if !trimmed.is_empty() && PathBuf::from(&trimmed).exists() {

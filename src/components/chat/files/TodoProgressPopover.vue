@@ -23,7 +23,6 @@ let unlistenFn: UnlistenFn | null = null;
 
 const total = computed(() => todos.value.length);
 const done = computed(() => todos.value.filter((t) => t.status === "completed").length);
-const inProgress = computed(() => todos.value.find((t) => t.status === "in_progress"));
 const progressPct = computed(() => {
   if (total.value === 0) return 0;
   return Math.round((done.value / total.value) * 100);

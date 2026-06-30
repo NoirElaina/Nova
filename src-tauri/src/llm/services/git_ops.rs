@@ -7,10 +7,18 @@ use std::process::Command;
 
 use tauri::AppHandle;
 
+#[cfg(target_os = "windows")]
+use std::os::windows::process::CommandExt;
+
+#[cfg(target_os = "windows")]
+const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+
 fn run_git(root: &Path, args: &[&str]) -> Result<String, String> {
-    let output = Command::new("git")
-        .current_dir(root)
-        .args(args)
+    let mut command = Command::new("git");
+    command.current_dir(root).args(args);
+    #[cfg(target_os = "windows")]
+    command.creation_flags(CREATE_NO_WINDOW);
+    let output = command
         .output()
         .map_err(|e| format!("无法执行 git {:?}: {}", args, e))?;
     let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();

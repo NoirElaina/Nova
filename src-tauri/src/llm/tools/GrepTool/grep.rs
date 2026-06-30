@@ -6,6 +6,9 @@ use tauri::AppHandle;
 use tauri::Manager;
 use tokio::process::Command;
 
+#[cfg(target_os = "windows")]
+const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+
 pub(super) fn registration() -> ToolRegistration {
     app_tool(tool, execute_with_app_boxed, true, None)
 }
@@ -190,6 +193,9 @@ async fn execute_async(
     let rg_path = find_rg_path(app);
 
     let mut cmd = Command::new(&rg_path);
+
+    #[cfg(target_os = "windows")]
+    cmd.creation_flags(CREATE_NO_WINDOW);
 
     cmd.arg("--no-heading");
     cmd.arg("--with-filename");

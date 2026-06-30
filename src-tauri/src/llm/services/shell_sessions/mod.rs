@@ -17,6 +17,9 @@ const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 #[cfg(target_os = "windows")]
 const PWSH_PATH: &str = "C:\\Program Files\\PowerShell\\7\\pwsh.exe";
 
+#[cfg(target_os = "windows")]
+use std::os::windows::process::CommandExt;
+
 const DEFAULT_TIMEOUT_MS: u64 = 300_000;
 const MAX_TIMEOUT_MS: u64 = 1_800_000;
 const MARKER_PREFIX: &str = "__NOVA_CMD_END__|";
@@ -363,11 +366,12 @@ async fn ensure_session_alive(session: &mut ShellSession) -> Result<(), String> 
 async fn kill_session_tree(session: &mut ShellSession) {
     #[cfg(target_os = "windows")]
     if let Some(pid) = session.child.id() {
-        let _ = std::process::Command::new("taskkill")
-            .args(["/PID", &pid.to_string(), "/T", "/F"])
+        let mut cmd = std::process::Command::new("taskkill");
+        cmd.args(["/PID", &pid.to_string(), "/T", "/F"])
             .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .status();
+            .stderr(Stdio::null());
+        let _ = cmd.creation_flags(CREATE_NO_WINDOW);
+        let _ = cmd.status();
     }
     let _ = session.child.kill().await;
 }
@@ -545,11 +549,12 @@ async fn get_or_create_handle(
 fn kill_pid(pid: u32) {
     #[cfg(target_os = "windows")]
     {
-        let _ = std::process::Command::new("taskkill")
-            .args(["/PID", &pid.to_string(), "/T", "/F"])
+        let mut cmd = std::process::Command::new("taskkill");
+        cmd.args(["/PID", &pid.to_string(), "/T", "/F"])
             .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .status();
+            .stderr(Stdio::null());
+        let _ = cmd.creation_flags(CREATE_NO_WINDOW);
+        let _ = cmd.status();
     }
 
     #[cfg(not(target_os = "windows"))]

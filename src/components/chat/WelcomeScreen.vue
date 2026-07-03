@@ -16,6 +16,7 @@ defineProps<{
   contextCompacts?: ContextCompactSummary[];
   contextTokens?: number;
   workspacePath?: string;
+  conversationId?: string | null;
 }>();
 
 const emit = defineEmits<{
@@ -44,6 +45,7 @@ const handleSend = (msg: string) => {
     <div class="w-full max-w-[42rem] flex flex-col">
       <EnvironmentBar
         :workspacePath="workspacePath"
+        :conversationId="conversationId"
         @update:workspacePath="emit('update:workspacePath', $event)"
       />
 

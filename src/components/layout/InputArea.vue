@@ -58,6 +58,7 @@ const emit = defineEmits<{
 
 const currentInput = ref("");
 const textareaRef = ref<HTMLTextAreaElement | null>(null);
+const mirrorRef = ref<HTMLDivElement | null>(null);
 const fileInputRef = ref<HTMLInputElement | null>(null);
 // IME 合成状态：中文输入法打拼音过程中为 true，此时 textarea 文字需可见，
 // 否则被 text-transparent 隐藏导致用户看不见正在输入的字母。
@@ -883,6 +884,16 @@ const autoResize = () => {
   el.style.height = `${newHeight}px`;
 };
 
+// 镜像层滚动同步：textarea 文字是透明的，可见文字由背后的镜像层渲染。
+// 长文本粘贴后 textarea 内部滚动，镜像层 overflow-hidden 只裁剪不滚动，
+// 会导致可见文字冻结在顶部、与 textarea 滚动位置脱节。这里在 textarea
+// 滚动时把 scrollTop 同步给镜像层（overflow:hidden 元素仍可程序化滚动）。
+const syncMirrorScroll = () => {
+  const ta = textareaRef.value;
+  const mirror = mirrorRef.value;
+  if (ta && mirror) mirror.scrollTop = ta.scrollTop;
+};
+
 // textarea 输入事件：先调整高度，再刷新斜杠命令状态
 const onTextareaInput = () => {
   autoResize();
@@ -1078,10 +1089,11 @@ defineExpose({
       <div class="relative w-full">
         <!-- 高亮镜像层：显示带命令高亮的输入内容，位于 textarea 下方 -->
         <div
+          ref="mirrorRef"
           aria-hidden="true"
-          class="absolute inset-0 w-full px-4 pt-3 pb-2 text-[0.95rem] text-[#1a1a1a] dark:text-[#ececec] max-h-[40vh] overflow-hidden whitespace-pre-wrap break-words pointer-events-none"
+          class="absolute inset-0 w-full px-4 pt-3 pb-2 text-[0.95rem] text-[#1a1a1a] dark:text-[#ececec] overflow-hidden whitespace-pre-wrap break-words pointer-events-none"
           v-html="highlightedInput + '\u200b'"></div>
-        <textarea ref="textareaRef" v-model="currentInput" @keydown="onTextareaKeydown" @input="onTextareaInput" @paste="onTextareaPaste" @compositionstart="isComposing = true" @compositionend="isComposing = false"
+        <textarea ref="textareaRef" v-model="currentInput" @keydown="onTextareaKeydown" @input="onTextareaInput" @paste="onTextareaPaste" @scroll.passive="syncMirrorScroll" @compositionstart="isComposing = true" @compositionend="isComposing = false"
           placeholder="Message Nova..." rows="1"
           :class="['relative w-full bg-transparent border-none text-[0.95rem] caret-[#1a1a1a] dark:caret-[#ececec] resize-none outline-none block max-h-[40vh] px-4 pt-3 pb-2 placeholder:text-[#a3a3a3] z-10', isComposing ? 'text-[#1a1a1a] dark:text-[#ececec]' : 'text-transparent']"></textarea>
 

@@ -6,6 +6,7 @@ import { getWorkspaceGitStatus } from '../../features/chat/services/chat-api';
 
 const props = defineProps<{
   workspacePath?: string;
+  conversationId?: string | null;
 }>();
 
 const emit = defineEmits<{
@@ -18,9 +19,9 @@ const gitWorktree = ref<string | null>(null);
 
 const workspaceName = computed(() => {
   const path = props.workspacePath?.trim();
-  if (!path) return 'Nova';
+  if (!path) return '独立工作区';
   const parts = path.replace(/\\/g, '/').split('/');
-  return parts[parts.length - 1] || 'Nova';
+  return parts[parts.length - 1] || '独立工作区';
 });
 
 const displayName = computed(() => {
@@ -108,6 +109,18 @@ const handleChangeWorkspace = async () => {
         <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/>
       </svg>
       <span>{{ displayName }}</span>
+    </button>
+    <button
+      v-if="props.workspacePath && !props.conversationId"
+      type="button"
+      class="ml-0.5 inline-flex items-center justify-center w-5 h-5 rounded-md hover:bg-black/10 dark:hover:bg-white/10 transition-colors text-muted-foreground hover:text-foreground"
+      title="清除选定工作区，生成独立工作区"
+      @click="emit('update:workspacePath', '')"
+    >
+      <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <line x1="18" y1="6" x2="6" y2="18"/>
+        <line x1="6" y1="6" x2="18" y2="18"/>
+      </svg>
     </button>
 
     <span v-if="gitBranch || gitWorktree" class="text-[#d1d5db] dark:text-[#4b5563]">|</span>

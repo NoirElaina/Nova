@@ -439,14 +439,21 @@ pub async fn create_conversation(
         .filter(|t| !t.is_empty())
         .unwrap_or_default();
 
-    // 没传 workspace_path 或传空，就用内置默认工作区（app_data/workspace）。
+    // 没传 workspace_path 或传空，就用内置默认工作区（app_data/workspace）下的独立子目录。
     let ws_path = match workspace_path
         .map(|p| p.trim().to_string())
         .filter(|p| !p.is_empty())
     {
         Some(p) => p,
-        None => crate::command::workspace::default_workspace_root(app)
-            .map(|path| crate::command::workspace::display_path_string(&path))?,
+        None => {
+            let base = crate::command::workspace::default_workspace_root(app)?;
+            let conv_dir = base.join(&id);
+            std::fs::create_dir_all(&conv_dir)
+                .map_err(|e| format!("创建对话工作区失败: {}", e))?;
+            let canonical = conv_dir.canonicalize()
+                .map_err(|e| format!("无法解析对话工作区: {}", e))?;
+            crate::command::workspace::display_path_string(&canonical)
+        }
     };
 
     sqlx::query(
@@ -1107,6 +1114,25 @@ pub async fn clear_history(app: &AppHandle, conversation_id: Option<String>) -> 
 // Order matters to satisfy FK constraints in environments that enforce them.
 pub async fn delete_conversation(app: &AppHandle, conversation_id: &str) -> Result<(), String> {
     let pool = get_pool_with_schema(app).await?;
+
+    // Check if the conversation has an auto-generated workspace to clean up
+    let ws_path_opt: Option<String> = sqlx::query_scalar("SELECT workspace_path FROM conversations WHERE id = ?")
+        .bind(conversation_id)
+        .fetch_optional(&pool)
+        .await
+        .map_err(|e| e.to_string())?
+        .flatten();
+
+    if let Some(ws_path) = ws_path_opt {
+        if let Ok(default_root) = crate::command::workspace::default_workspace_root(app) {
+            let auto_dir = default_root.join(conversation_id);
+            if let Ok(canonical_auto) = auto_dir.canonicalize() {
+                if ws_path == crate::command::workspace::display_path_string(&canonical_auto) {
+                    let _ = std::fs::remove_dir_all(&auto_dir);
+                }
+            }
+        }
+    }
 
     sqlx::query("DELETE FROM conversation_messages WHERE conversation_id = ?")
         .bind(conversation_id)

@@ -322,7 +322,7 @@ export function createConversationOperations(deps: ConversationOpsDeps) {
       conversationFiles.value = [];
       conversationMemory.value = null;
       toolExecutionLogs.value = [];
-      // 保留 activeWorkspacePath 供下一次创建会话使用。
+      activeWorkspacePath.value = "";
     } finally {
       isCreatingNewChat.value = false;
     }

@@ -319,6 +319,7 @@ onBeforeUnmount(() => {
             :contextCompacts="currentContextCompacts"
             :contextTokens="currentContextTokens"
             :workspacePath="activeWorkspacePath"
+            :conversationId="activeConversationId"
             @update:workspacePath="activeWorkspacePath = $event"
             @send="handleSendMessage"
             @mode-change="handleAgentModeChange"

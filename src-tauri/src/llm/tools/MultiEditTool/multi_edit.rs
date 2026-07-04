@@ -158,14 +158,17 @@ async fn execute_async(
         .map_err(|e| ToolFailure::new(format!("Error reading {}: {}", file_path, e)))?;
 
     // 先读后改 + 新鲜度检测。
+    // TOCTOU 缓解：read→check→write 串成 sync 调用，中间不 await。
     read_state::ensure_editable(conversation_id, &target, &content)
         .map_err(ToolFailure::new)?;
 
     // 顺序应用所有 edit。任一失败则整批回滚（不写入）。
+    // 每个 new_string 归一化为 LF，避免模型输出的 \r\n 在 CRLF 文件还原时产生 \r\r\n 损坏。
     let mut applied_count = 0usize;
     for (idx, edit) in edits.iter().enumerate() {
+        let new_string_lf = edit.new_string.replace("\r\n", "\n");
         let (new_content, replaced) =
-            apply_replace(&content, &edit.old_string, &edit.new_string, edit.replace_all)
+            apply_replace(&content, &edit.old_string, &new_string_lf, edit.replace_all)
                 .map_err(|e| {
                     ToolFailure::new(format!(
                         "edits[{}] failed (no changes written, file unchanged): {}",
@@ -177,6 +180,7 @@ async fn execute_async(
     }
 
     // 全部成功后写回——按原始编码与行尾还原。
+    // 落盘走 atomic_write（tempfile + rename + 权限保留 + symlink 解析）。
     write_file_with_meta(&target, &content, &meta).map_err(ToolFailure::new)?;
 
     // 刷新读取状态，使同一轮内的后续编辑可继续。

@@ -1,7 +1,7 @@
 // TodoWrite 工具的 per-conversation 状态注册表。
 //
 // 核心用途：让 agent 在多步骤工程任务中维护一份待办清单，跟踪进度。
-// 对齐 Claude Code 的 TodoWrite 行为：整列表替换，状态机 pending/in_progress/completed。
+// 整列表替换，状态机 pending/in_progress/completed。
 //
 // 作用域：per-conversation_id 隔离。会话 A 的待办不会泄漏到会话 B。
 // 会话删除时调用 clear_session 清理，避免内存泄漏。

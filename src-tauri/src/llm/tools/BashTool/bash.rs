@@ -157,7 +157,7 @@ fn shell_failure_text(reason: &str, result: &ShellExecutionResult) -> String {
     )
 }
 
-// 单段输出的字符上限（对齐 Claude Code BASH_MAX_OUTPUT_DEFAULT）。
+// 单段输出的字符上限。
 // 超出则保留头部并追加截断标记，避免大型命令输出灌满上下文、触发 prompt_too_long。
 const MAX_OUTPUT_CHARS: usize = 30_000;
 

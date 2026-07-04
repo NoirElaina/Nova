@@ -108,15 +108,22 @@ async fn execute_async(
         .map_err(|e| ToolFailure::new(format!("Error reading {}: {}", file_path, e)))?;
 
     // 先读后改 + 新鲜度检测：未读过或读后被外部改动则拒绝，要求重读。
+    // TOCTOU 缓解：read→check→write 串成 sync 调用，中间不 await。
     read_state::ensure_editable(conversation_id, &target, &original)
         .map_err(ToolFailure::new)?;
 
+    // 归一化 new_string 为 LF，避免模型输出的 \r\n 在 CRLF 文件还原时产生 \r\r\n 损坏。
+    // 先把 \r\n 归一成 \n，再按原始行尾还原，避免 \r\r\n。
+    let new_string_lf = new_string.replace("\r\n", "\n");
+
     // 使用 fuzzy matcher 链：精确匹配 → 行 trim → 锚点 → 空白归一化 → ...
     // 这避免了 AI 因一两个空格差异就失败重试。
-    let (modified, replaced_count) = apply_replace(&original, old_string, new_string, replace_all)
-        .map_err(ToolFailure::new)?;
+    let (modified, replaced_count) =
+        apply_replace(&original, old_string, &new_string_lf, replace_all)
+            .map_err(ToolFailure::new)?;
 
     // 写回时按原始编码与行尾还原——CRLF 文件保持 CRLF，带 BOM 的文件保持 BOM。
+    // 落盘走 atomic_write（tempfile + rename + 权限保留 + symlink 解析）。
     write_file_with_meta(&target, &modified, &meta).map_err(ToolFailure::new)?;
 
     // 刷新读取状态，使同一轮内的后续编辑可继续。

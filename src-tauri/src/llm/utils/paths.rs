@@ -19,6 +19,14 @@ pub(crate) fn absolute_path_from_tool_arg(raw: &str, field_name: &str) -> Result
         return Err(format!("{} is required", field_name));
     }
 
+    // SECURITY: 拒绝 UNC 路径，防止 Windows 上 fs.existsSync 触发 SMB 认证泄露凭据。
+    if trimmed.starts_with("\\\\") || trimmed.starts_with("//") {
+        return Err(format!(
+            "{} must not be a UNC path (\\\\ or // prefix); UNC paths are blocked for security: {}",
+            field_name, raw
+        ));
+    }
+
     let path = PathBuf::from(trimmed);
     if !path.is_absolute() {
         return Err(format!(

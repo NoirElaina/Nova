@@ -32,7 +32,7 @@ struct Architecture {
 
 pub const DEFAULT_CONTEXT_WINDOW: u32 = 200_000;
 // 默认最大输出 token。工程任务（多文件改动+规划+多工具调用）需要更长的输出空间，
-// 8K 会截断复杂规划。提到 32K 对齐 Claude Code 等工程 agent 的默认值。
+// 8K 会截断复杂规划，32K 是工程 agent 的合理默认值。
 // 模型自身的 max_completion_tokens 若更小则会被 find_entry 覆盖。
 pub const DEFAULT_MAX_OUTPUT_TOKENS: u32 = 32_768;
 

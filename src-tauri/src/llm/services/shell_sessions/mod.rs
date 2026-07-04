@@ -27,7 +27,6 @@ const MARKER_PREFIX: &str = "__NOVA_CMD_END__|";
 
 // 卡顿看门狗:输出长时间不增长且末尾命中交互式 prompt 正则时,
 // 判定命令在等待 stdin,提前终止并提示模型改用管道喂输入。
-// 对齐 Claude Code 的 STALL_THRESHOLD_MS / STALL_TAIL_BYTES / PROMPT_PATTERNS。
 const STALL_THRESHOLD_MS: u64 = 45_000;
 const STALL_TAIL_BYTES: usize = 1024;
 

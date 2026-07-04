@@ -62,8 +62,11 @@ export async function installBackendErrorToastListener(): Promise<void> {
   }>('backend-error', (event) => {
     const payload = event.payload ?? {};
     const source = `${payload.source ?? ''}`.toLowerCase();
-    const message = `${payload.message ?? ''}`.toLowerCase();
-    if (source === 'tool.execute' && message.includes('cancelled')) {
+
+    // 工具执行错误（含权限拒绝、参数校验失败、未知工具、MCP 工具失败、hook 拦截等）
+    // 已经作为 tool_result 反馈给 AI，且聊天界面会展示工具调用状态与结果，
+    // 再 toast 是重复打扰用户。后端日志与 stderr 仍会记录，仅前端不弹窗。
+    if (source === 'tool.execute') {
       return;
     }
     emitToast({

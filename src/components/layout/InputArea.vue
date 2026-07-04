@@ -1087,12 +1087,12 @@ defineExpose({
         </div>
       </div>
       <div class="relative w-full">
-        <!-- 高亮镜像层：显示带命令高亮的输入内容，位于 textarea 下方 -->
+        <!-- 高亮镜像层：显示带命令高亮的输入内容，位于 textarea 下方。
+             composition 期间用 opacity 隐藏（不切 display，避免布局重算干扰 IME），textarea 文字同时变为可见。 -->
         <div
           ref="mirrorRef"
-          v-show="!isComposing"
           aria-hidden="true"
-          class="absolute inset-0 w-full px-4 pt-3 pb-2 text-[0.95rem] text-[#1a1a1a] dark:text-[#ececec] overflow-hidden whitespace-pre-wrap break-words pointer-events-none"
+          :class="['absolute inset-0 w-full px-4 pt-3 pb-2 text-[0.95rem] text-[#1a1a1a] dark:text-[#ececec] overflow-hidden whitespace-pre-wrap break-words pointer-events-none', isComposing ? 'opacity-0' : 'opacity-100']"
           v-html="highlightedInput + '\u200b'"></div>
         <textarea ref="textareaRef" v-model="currentInput" @keydown="onTextareaKeydown" @input="onTextareaInput" @paste="onTextareaPaste" @scroll.passive="syncMirrorScroll" @compositionstart="isComposing = true" @compositionend="isComposing = false"
           placeholder="Message Nova..." rows="1"

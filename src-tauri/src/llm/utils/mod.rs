@@ -39,3 +39,7 @@ pub mod file_io;
 
 // 原子写入：tempfile + fsync + rename + EXDEV fallback（记忆/会话文件 crash 安全）
 pub mod atomic_write;
+
+// bash 命令的 AST 解析与语义检查：tree-sitter-bash 解析 + fail-closed
+// allowlist + wrapper 剥离 + eval-like builtin 拦截。
+pub mod bash_ast;

@@ -7,32 +7,7 @@ use tauri::AppHandle;
 use tokio::sync::oneshot;
 
 use crate::llm::tools::ToolPermissionDescriptor;
-
-// Command fragments considered destructive enough to always be gated.
-const DANGEROUS_COMMAND_PATTERNS: &[&str] = &[
-    "rm -rf",
-    "rm -rf /",
-    "rm -rf /*",
-    "del /f /s",
-    "del /f /s /q",
-    "remove-item -recurse",
-    "remove-item -force",
-    "remove-item -recurse -force",
-    "format c:",
-    "diskpart",
-    "shutdown /s",
-    "shutdown -h",
-    "reboot",
-    "mkfs",
-    "git reset --hard",
-    "git clean -fd",
-    "git clean -fdx",
-    // 删整个仓库元数据会毁掉审查/回退能力，始终拦截。
-    "rm -rf .git",
-    "rm -rf /.git",
-    "rmdir /s /q .git",
-    "remove-item -recurse -force .git",
-];
+use crate::llm::utils::bash_ast::wrappers::{is_read_only_command, strip_wrappers_from_argv};
 
 // Path prefixes that should never be written without explicit override.
 // 统一用正斜杠书写：normalize_path_for_match 会把待检查路径的 `\` 归一成 `/`，
@@ -281,18 +256,6 @@ fn normalize_command_for_match(command: &str) -> String {
         .to_ascii_lowercase()
 }
 
-fn contains_shell_word(command: &str, target: &str) -> bool {
-    command.split_whitespace().any(|token| {
-        // token: 当前命令片段。
-        // 去掉包裹在 token 两侧的标点，保留单词内部的 -/_。
-        let cleaned =
-            token.trim_matches(|c: char| !c.is_ascii_alphanumeric() && c != '-' && c != '_');
-        // cleaned: 去除边界标点后的纯命令单词。
-        // 这里做“完整单词”比较，避免误伤如 "rmdir" 对 "rm" 的包含。
-        cleaned == target
-    })
-}
-
 fn truncate_chars(input: &str, max_chars: usize) -> String {
     input.chars().take(max_chars).collect::<String>()
 }
@@ -339,13 +302,17 @@ fn pick_string_field<'a>(value: &'a Value, keys: &[&str]) -> Option<&'a str> {
     None
 }
 
-fn check_mcp_operation(server: &str, tool: &str, arguments: &Value) -> Result<(), String> {
+fn check_mcp_operation(server: &str, tool: &str, arguments: &Value) -> McpCheckResult {
     if looks_like_shell_mcp(server, tool) {
         // 兼容不同 server 的参数命名。
         let command =
             pick_string_field(arguments, &["command", "cmd", "script"]).unwrap_or_default();
         // command: shell 操作中提取到的命令字符串。
-        return check_command(command);
+        return match check_command(command) {
+            CommandCheckResult::Allow => McpCheckResult::Allow,
+            CommandCheckResult::NeedApproval(reason) => McpCheckResult::NeedApproval(reason),
+            CommandCheckResult::Deny(reason) => McpCheckResult::Deny(reason),
+        };
     }
 
     if looks_like_file_mcp(server, tool) {
@@ -356,10 +323,20 @@ fn check_mcp_operation(server: &str, tool: &str, arguments: &Value) -> Result<()
         )
         .unwrap_or_default();
         // path: 文件操作中提取到的目标路径。
-        return check_file_path(path);
+        return match check_file_path(path) {
+            Ok(()) => McpCheckResult::Allow,
+            Err(reason) => McpCheckResult::Deny(reason),
+        };
     }
 
-    Ok(())
+    McpCheckResult::Allow
+}
+
+/// MCP 操作检查结果
+enum McpCheckResult {
+    Allow,
+    NeedApproval(String),
+    Deny(String),
 }
 
 pub(crate) fn describe_shell_command_permission(
@@ -384,8 +361,12 @@ pub(crate) fn describe_shell_command_permission(
     }
 
     let normalized = normalize_command_for_match(command);
-    // warning: 命令命中危险规则时返回给用户看的风险提示。
-    let warning = check_command(command).err();
+    // 用 AST 引擎判定命令风险：Allow 放行，NeedApproval 需审批，Deny 拒绝。
+    let (warning, needs_approval): (Option<String>, bool) = match check_command(command) {
+        CommandCheckResult::Allow => (None, false),
+        CommandCheckResult::NeedApproval(reason) => (Some(reason), true),
+        CommandCheckResult::Deny(reason) => (Some(reason), false),
+    };
 
     Some(ToolPermissionDescriptor {
         signature: format!("{}:{}", tool_name, normalized),
@@ -396,7 +377,7 @@ pub(crate) fn describe_shell_command_permission(
             truncate_chars(command, 180)
         ),
         warning: warning.clone(),
-        needs_approval: warning.is_some(),
+        needs_approval,
     })
 }
 
@@ -452,8 +433,12 @@ fn operation_from_input(tool_name: &str, input: &Value) -> Option<ProtectedOpera
     }
 
     if let Some((server, tool)) = crate::llm::services::mcp_tools::parse_mcp_tool_name(tool_name) {
-        // risk: 对 MCP 动态工具做基于 server/tool 名和参数的统一风险推断。
-        let risk = check_mcp_operation(&server, &tool, input).err();
+        // 对 MCP 动态工具做基于 server/tool 名和参数的统一风险推断。
+        let (warning, needs_approval) = match check_mcp_operation(&server, &tool, input) {
+            McpCheckResult::Allow => (None, false),
+            McpCheckResult::NeedApproval(reason) => (Some(reason), true),
+            McpCheckResult::Deny(reason) => (Some(reason), false),
+        };
 
         return Some(ProtectedOperation {
             signature: format!(
@@ -463,8 +448,8 @@ fn operation_from_input(tool_name: &str, input: &Value) -> Option<ProtectedOpera
                 normalize_command_for_match(&input.to_string())
             ),
             preview: format!("{} {}", tool_name, truncate_chars(&input.to_string(), 160)),
-            warning: risk.clone(),
-            needs_approval: risk.is_some(),
+            warning,
+            needs_approval,
         });
     }
 
@@ -529,7 +514,7 @@ fn humanize_permission_warning(raw: &str) -> String {
             "",
         );
 
-    if stripped.contains("command is empty") {
+    if stripped.contains("命令为空") || stripped.contains("command is empty") {
         return "命令为空，已被安全策略拦截。".to_string();
     }
 
@@ -537,28 +522,25 @@ fn humanize_permission_warning(raw: &str) -> String {
         return "目标路径为空，已被安全策略拦截。".to_string();
     }
 
-    if stripped.contains("command contains dangerous shell command") {
-        if let Some(word) = extract_single_quoted(&stripped) {
-            return format!("命令包含高危 shell 指令 '{}'，默认已拦截。", word);
-        }
-        return "命令包含高危 shell 指令，默认已拦截。".to_string();
+    // AST 解析相关：无法静态分析
+    if stripped.contains("无法静态分析") || stripped.contains("解析器不可用") {
+        return format!("{}。", stripped);
     }
 
-    if stripped.contains("command contains dangerous pattern") {
-        if let Some(pattern) = extract_single_quoted(&stripped) {
-            return format!("命令命中高危模式 '{}'，默认已拦截。", pattern);
-        }
-        return "命令命中高危模式，默认已拦截。".to_string();
+    // 语义检查相关：eval-like builtin、危险 builtin 等
+    if stripped.contains("需要确认") || stripped.contains("需要审批") {
+        return format!("{}。", stripped);
     }
 
-    if stripped.contains("writing protected path") {
+    // 路径约束
+    if stripped.contains("命中受保护路径") || stripped.contains("writing protected path") {
         if let Some(path) = extract_single_quoted(&stripped) {
             return format!("目标路径 '{}' 属于受保护目录，已拦截。", path);
         }
         return "目标路径属于受保护目录，已拦截。".to_string();
     }
 
-    if stripped.contains("writing sensitive path") {
+    if stripped.contains("命中敏感路径") || stripped.contains("writing sensitive path") {
         if let Some(path) = extract_single_quoted(&stripped) {
             return format!("目标路径 '{}' 属于敏感目录，已拦截。", path);
         }
@@ -709,36 +691,106 @@ pub async fn await_permission_decision(
     }
 }
 
-fn check_command(command: &str) -> Result<(), String> {
-    let normalized = normalize_command_for_match(command);
-    // normalized: 规范化后用于风险检测的命令文本。
-    if normalized.is_empty() {
-        return Err("Blocked by permission gate: command is empty".to_string());
+/// 对 bash 命令做 AST 级权限判定。
+///
+/// 返回值：
+/// - Ok(None)：命令通过所有检查，无需审批即可放行（read-only allowlist 命中）
+/// - Ok(Some(warning))：命令需要审批，warning 是给用户的风险提示
+/// - Err(reason)：命令被拒绝，reason 是拒绝原因
+fn check_command(command: &str) -> CommandCheckResult {
+    use crate::llm::utils::bash_ast::parser::parse_for_security;
+    use crate::llm::utils::bash_ast::semantics::check_semantics;
+
+    let trimmed = command.trim();
+    if trimmed.is_empty() {
+        return CommandCheckResult::Deny("命令为空".to_string());
     }
 
-    for dangerous_word in ["rm", "del", "remove-item"] {
-        // dangerous_word: 当前检查的危险关键字。
-        // 先做单词级命中，拦截最常见的删除命令。
-        if contains_shell_word(&normalized, dangerous_word) {
-            return Err(format!(
-                "Blocked by permission gate: command contains dangerous shell command '{}'. Set NOVA_ALLOW_UNSAFE_TOOLS=1 only for trusted debugging.",
-                dangerous_word
+    // 1. AST 解析 + fail-closed allowlist
+    let parsed = match parse_for_security(command) {
+        crate::llm::utils::bash_ast::types::ParseForSecurityResult::Simple { commands } => commands,
+        crate::llm::utils::bash_ast::types::ParseForSecurityResult::TooComplex { reason } => {
+            return CommandCheckResult::NeedApproval(format!(
+                "命令无法静态分析（{}），需要确认",
+                reason
+            ));
+        }
+        crate::llm::utils::bash_ast::types::ParseForSecurityResult::ParseUnavailable => {
+            return CommandCheckResult::NeedApproval(
+                "bash 解析器不可用，无法静态分析命令安全性".to_string(),
+            );
+        }
+    };
+
+    if parsed.is_empty() {
+        return CommandCheckResult::Allow;
+    }
+
+    // 2. 语义检查（wrapper 剥离 + eval-like builtin 拦截）
+    for cmd in &parsed {
+        if let Err(reason) = check_semantics(cmd) {
+            return CommandCheckResult::NeedApproval(format!(
+                "命令含潜在风险（{}），需要确认",
+                reason
             ));
         }
     }
 
-    for pattern in DANGEROUS_COMMAND_PATTERNS {
-        // pattern: 当前检查的危险命令片段。
-        // 再做模式级命中，覆盖参数组合等高危片段。
-        if normalized.contains(pattern) {
-            return Err(format!(
-                "Blocked by permission gate: command contains dangerous pattern '{}'. Set NOVA_ALLOW_UNSAFE_TOOLS=1 only for trusted debugging.",
-                pattern
+    // 3. 路径约束检查（重定向目标 + 路径参数）
+    for cmd in &parsed {
+        for redirect in &cmd.redirects {
+            if let Err(reason) = protected_path_violation(&redirect.target) {
+                return CommandCheckResult::Deny(format!(
+                    "重定向目标命中受保护路径：{}",
+                    reason
+                ));
+            }
+        }
+        for arg in &cmd.argv {
+            if arg.starts_with('-') {
+                continue;
+            }
+            if let Err(reason) = protected_path_violation(arg) {
+                return CommandCheckResult::Deny(format!(
+                    "参数命中受保护路径：{}",
+                    reason
+                ));
+            }
+        }
+    }
+
+    // 4. read-only allowlist 检查
+    // 对每个简单命令，剥 wrapper 后检查 argv[0] 是否在 allowlist 中。
+    // 所有命令都必须是 read-only 才放行；任一不是就需要审批。
+    for cmd in &parsed {
+        if cmd.argv.is_empty() {
+            continue;
+        }
+        let stripped = strip_wrappers_from_argv(&cmd.argv);
+        if !is_read_only_command(&stripped) {
+            return CommandCheckResult::NeedApproval(format!(
+                "命令 '{}' 不在只读 allowlist 中，需要确认",
+                cmd.argv.first().map(|s| s.as_str()).unwrap_or("?")
             ));
         }
     }
 
-    Ok(())
+    CommandCheckResult::Allow
+}
+
+/// 命令检查结果
+enum CommandCheckResult {
+    /// 放行
+    Allow,
+    /// 需要审批，附带原因
+    NeedApproval(String),
+    /// 拒绝，附带原因
+    Deny(String),
+}
+
+/// 检查路径是否触碰受保护路径。公开供 bash_ast 模块调用。
+pub fn protected_path_violation(path: &str) -> Result<(), String> {
+    check_file_path(path)
 }
 
 fn check_file_path(path: &str) -> Result<(), String> {

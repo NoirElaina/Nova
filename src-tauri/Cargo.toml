@@ -62,3 +62,8 @@ zip = "2"
 tiktoken-rs = "0.12.0"
 once_cell = "1.21.4"
 tempfile = "3"
+# tree-sitter 用于把 bash/sh 命令解析成 AST，做 fail-closed 权限判定。
+# 任何无法静态分析的节点（命令替换、子 shell、控制流、算术展开等）都标为
+# too-complex 直接 ask 用户，避免字符串黑名单被 -c/eval/$()/wrapper 绕过。
+tree-sitter = "0.25"
+tree-sitter-bash = "0.23"

@@ -906,7 +906,7 @@ const onTextareaKeydown = (e: KeyboardEvent) => {
     if (handleSlashKeydown(e)) return;
     // 斜杠菜单激活时，Enter 已被 handleSlashKeydown 处理；若未处理则放行
   }
-  if (e.key === 'Enter' && !e.shiftKey) {
+  if (e.key === 'Enter' && !e.shiftKey && !isComposing.value) {
     sendMessage(e);
   }
 };
@@ -1090,6 +1090,7 @@ defineExpose({
         <!-- 高亮镜像层：显示带命令高亮的输入内容，位于 textarea 下方 -->
         <div
           ref="mirrorRef"
+          v-show="!isComposing"
           aria-hidden="true"
           class="absolute inset-0 w-full px-4 pt-3 pb-2 text-[0.95rem] text-[#1a1a1a] dark:text-[#ececec] overflow-hidden whitespace-pre-wrap break-words pointer-events-none"
           v-html="highlightedInput + '\u200b'"></div>

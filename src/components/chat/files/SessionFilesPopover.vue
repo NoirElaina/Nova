@@ -6,7 +6,6 @@ import SessionFileItem from "./SessionFileItem.vue";
 
 type SessionFileMeta = {
   filename: string;
-  readPath: string;
   size: number;
   createdAt: number;
 };
@@ -18,7 +17,7 @@ const props = defineProps<{
 
 const emit = defineEmits<{
   (e: "open"): void;
-  (e: "open-workspace-file", readPath: string): void;
+  (e: "open-workspace-file", filename: string): void;
   (e: "remove-pending-upload", index: number): void;
 }>();
 
@@ -120,10 +119,10 @@ onBeforeUnmount(() => {
       <div v-else class="max-h-[52vh] overflow-y-auto px-2.5 py-2 space-y-2">
         <SessionFileItem
           v-for="doc in props.files"
-          :key="doc.readPath"
+          :key="doc.filename"
           :file="doc"
           class="cursor-pointer"
-          @click="emit('open-workspace-file', doc.readPath)"
+          @click="emit('open-workspace-file', doc.filename)"
         />
       </div>
     </div>

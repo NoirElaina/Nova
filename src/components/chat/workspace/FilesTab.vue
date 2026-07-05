@@ -5,14 +5,18 @@ import { readSessionFile, type SessionFileMeta } from '../../../features/chat/se
 const props = defineProps<{
   files: SessionFileMeta[];
   selectedFileId?: string | null;
+  conversationId?: string | null;
 }>();
 
-const selectedPath = ref<string | null>(null);
+// 用 filename 作为唯一标识（后端不再返回 readPath）
+const selectedFilename = ref<string | null>(null);
 const selectedContent = ref<string | null>(null);
-const loadingPath = ref<string | null>(null);
+const loadingFilename = ref<string | null>(null);
 const errorMessage = ref('');
 
-const selectedMeta = computed(() => props.files.find((file) => file.readPath === selectedPath.value) ?? null);
+const selectedMeta = computed(() =>
+  props.files.find((file) => file.filename === selectedFilename.value) ?? null,
+);
 
 const formatDocTime = (ts: number) => {
   const date = new Date(ts * 1000);
@@ -37,14 +41,19 @@ const formatFileSize = (bytes: number) => {
 };
 
 const selectFile = async (file: SessionFileMeta) => {
-  selectedPath.value = file.readPath;
+  selectedFilename.value = file.filename;
   selectedContent.value = null;
   errorMessage.value = '';
-  loadingPath.value = file.readPath;
+  loadingFilename.value = file.filename;
 
   try {
-    const content = await readSessionFile(file.readPath);
-    if (selectedPath.value !== file.readPath) {
+    const convId = props.conversationId;
+    if (!convId) {
+      errorMessage.value = '无法读取文件：缺少会话 ID';
+      return;
+    }
+    const content = await readSessionFile(convId, file.filename);
+    if (selectedFilename.value !== file.filename) {
       return;
     }
     selectedContent.value = content;
@@ -52,12 +61,12 @@ const selectFile = async (file: SessionFileMeta) => {
       errorMessage.value = '文件内容为空。';
     }
   } catch (error) {
-    if (selectedPath.value === file.readPath) {
+    if (selectedFilename.value === file.filename) {
       errorMessage.value = `读取文件失败：${String(error)}`;
     }
   } finally {
-    if (loadingPath.value === file.readPath) {
-      loadingPath.value = null;
+    if (loadingFilename.value === file.filename) {
+      loadingFilename.value = null;
     }
   }
 };
@@ -66,11 +75,11 @@ watch(
   () => props.files,
   (files) => {
     if (!files.length) {
-      selectedPath.value = null;
+      selectedFilename.value = null;
       selectedContent.value = null;
       return;
     }
-    if (!selectedPath.value || !files.some((file) => file.readPath === selectedPath.value)) {
+    if (!selectedFilename.value || !files.some((file) => file.filename === selectedFilename.value)) {
       void selectFile(files[0]);
     }
   },
@@ -79,15 +88,15 @@ watch(
 
 watch(
   () => props.selectedFileId,
-  (readPath) => {
-    if (!readPath || selectedPath.value === readPath) {
+  (fileId) => {
+    if (!fileId || selectedFilename.value === fileId) {
       return;
     }
-    const file = props.files.find((item) => item.readPath === readPath);
+    const file = props.files.find((item) => item.filename === fileId);
     if (file) {
       void selectFile(file);
     } else {
-      selectedPath.value = readPath;
+      selectedFilename.value = fileId;
       selectedContent.value = null;
       errorMessage.value = '没有找到这个文件，可能文件列表还没有刷新。';
     }
@@ -115,10 +124,10 @@ watch(
       <div v-else class="min-h-0 flex-1 overflow-y-auto px-2 py-2">
         <button
           v-for="file in files"
-          :key="file.readPath"
+          :key="file.filename"
           type="button"
           class="flex w-full items-start gap-2 rounded-md px-2 py-2 text-left transition-colors"
-          :class="selectedPath === file.readPath
+          :class="selectedFilename === file.filename
             ? 'bg-[#f7f7f8] text-[#111827] ring-1 ring-[#1a73e8] ring-inset dark:bg-[#2d2d2d] dark:text-[#ececec]'
             : 'text-[#374151] hover:bg-[#f7f7f8] dark:text-[#d7d7d7] dark:hover:bg-[#2a2a2a]'"
           @click="selectFile(file)"
@@ -130,7 +139,7 @@ watch(
             </svg>
           </span>
           <span class="min-w-0 flex-1">
-            <span class="block truncate text-[13px] font-medium" :title="file.readPath">{{ file.filename }}</span>
+            <span class="block truncate text-[13px] font-medium" :title="file.filename">{{ file.filename }}</span>
             <span class="mt-0.5 block truncate text-[11px] text-[#6b7280] dark:text-[#aaa]">
               {{ formatFileSize(file.size) }}
             </span>
@@ -144,7 +153,7 @@ watch(
         <div class="flex min-h-10 items-center rounded-xl border border-[#e7ebf0] bg-white px-3 py-2 shadow-[0_1px_2px_rgba(15,23,42,0.035)] dark:border-[#333] dark:bg-[#242424]">
           <template v-if="selectedMeta">
             <div class="min-w-0">
-              <div class="truncate text-[13px] font-semibold text-[#202124] dark:text-[#ececec]" :title="selectedMeta.readPath">
+              <div class="truncate text-[13px] font-semibold text-[#202124] dark:text-[#ececec]" :title="selectedMeta.filename">
                 {{ selectedMeta.filename }}
               </div>
               <div class="mt-0.5 flex min-w-0 gap-3 truncate text-[11px] text-[#6b7280] dark:text-[#aaa]">
@@ -163,21 +172,15 @@ watch(
       </div>
 
       <div class="min-h-0 flex-1 overflow-auto">
-        <div v-if="loadingPath" class="m-3 rounded-lg border border-[#e5e7eb] bg-[#f9fafb] px-3 py-2 text-[13px] text-[#6b7280] dark:border-[#333] dark:bg-[#252525] dark:text-[#aaa]">
-          正在读取文件内容...
+        <div v-if="loadingFilename" class="flex h-full items-center justify-center text-[13px] text-[#6b7280] dark:text-[#aaa]">
+          加载中...
         </div>
-
-        <div v-else-if="errorMessage" class="m-3 rounded-lg border border-[#fecaca] bg-[#fef2f2] px-3 py-2 text-[13px] text-[#b91c1c] dark:border-[#4a2424] dark:bg-[#2b1d1d] dark:text-[#fca5a5]">
+        <div v-else-if="errorMessage" class="px-4 py-3 text-[13px] text-red-500 dark:text-red-400">
           {{ errorMessage }}
         </div>
-
-        <pre
-          v-else-if="selectedContent"
-          class="min-h-full whitespace-pre-wrap break-words p-3 font-mono text-[12px] leading-6 text-[#202124] dark:text-[#ececec]"
-        >{{ selectedContent }}</pre>
-
-        <div v-else class="m-3 rounded-lg border border-dashed border-[#d1d5db] px-4 py-8 text-center text-[13px] text-[#6b7280] dark:border-[#444] dark:text-[#aaa]">
-          暂无可查看内容。
+        <pre v-else-if="selectedContent" class="whitespace-pre-wrap break-words p-4 font-mono text-[12px] leading-[1.6] text-[#202124] dark:text-[#ececec]">{{ selectedContent }}</pre>
+        <div v-else class="flex h-full items-center justify-center text-[13px] text-[#6b7280] dark:text-[#aaa]">
+          选择一个文件查看内容。
         </div>
       </div>
     </section>

@@ -107,6 +107,7 @@ watch(
             v-else-if="activeTab === 'files'"
             :files="files"
             :selectedFileId="selectedFileId"
+            :conversationId="conversationId ?? null"
           />
 
           <TerminalTab

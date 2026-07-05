@@ -3,7 +3,6 @@ import { Card, CardContent } from '@/components/ui/card';
 
 type SessionFileMeta = {
   filename: string;
-  readPath: string;
   size: number;
   createdAt: number;
 };
@@ -46,7 +45,7 @@ const formatFileSize = (bytes: number) => {
             </svg>
           </span>
           <div class="min-w-0">
-            <div class="truncate text-[12px] font-medium text-[#111827] dark:text-[#e2dbcf]" :title="props.file.readPath">
+            <div class="truncate text-[12px] font-medium text-[#111827] dark:text-[#e2dbcf]" :title="props.file.filename">
               {{ props.file.filename }}
             </div>
             <div class="text-[10px] text-[#94a3b8] dark:text-[#a79f92]">

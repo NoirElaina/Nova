@@ -72,7 +72,6 @@ export type RagDocumentContent = RagDocumentMeta & {
 
 export type SessionFileMeta = {
   filename: string;
-  readPath: string;
   size: number;
   createdAt: number;
 };
@@ -410,9 +409,13 @@ export async function listSessionFiles(
   });
 }
 
-export async function readSessionFile(readPath: string): Promise<string> {
+export async function readSessionFile(
+  conversationId: string,
+  filename: string,
+): Promise<string> {
   return invoke<string>("read_session_file", {
-    readPath,
+    conversationId,
+    filename,
   });
 }
 

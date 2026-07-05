@@ -33,9 +33,10 @@ pub async fn list_session_files(
 #[tauri::command]
 pub async fn read_session_file(
     app: AppHandle,
-    read_path: String,
+    conversation_id: String,
+    filename: String,
 ) -> Result<String, String> {
-    let result = session_files::read_session_file(&read_path);
+    let result = session_files::read_session_file(&app, &conversation_id, &filename);
     report_backend_result(&app, "command.session_files.read_session_file", result, None)
 }
 

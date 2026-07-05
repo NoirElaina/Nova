@@ -262,7 +262,7 @@ export function createSendOperations(deps: SendOpsDeps) {
           size: file.size,
           kind: "document",
           content: file.content ?? undefined,
-          sessionFilePath: meta.readPath,
+          sessionFilePath: meta.filename ? `session_files:${meta.filename}` : undefined,
         });
       } catch (err) {
         console.error("Failed to save session file:", err);

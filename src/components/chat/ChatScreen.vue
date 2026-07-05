@@ -68,6 +68,23 @@ const formatNowTime = () => {
   return `${hh}:${mm}`;
 };
 
+// 格式化消息发送时间。优先用后端返回的 createdAt（Unix 毫秒），
+// 缺失时回退到当前时间（兼容旧消息）。
+// 此前直接用 formatNowTime() 导致所有用户消息显示相同时间，
+// 且每次组件重新渲染（流式更新等）所有消息时间都会变为"现在"。
+const formatMessageTime = (createdAt?: number) => {
+  if (!createdAt || createdAt <= 0) {
+    return formatNowTime();
+  }
+  const date = new Date(createdAt);
+  if (Number.isNaN(date.getTime())) {
+    return formatNowTime();
+  }
+  const hh = String(date.getHours()).padStart(2, '0');
+  const mm = String(date.getMinutes()).padStart(2, '0');
+  return `${hh}:${mm}`;
+};
+
 const copyText = async (text: string, key: string) => {
   if (!text?.trim()) return;
   try {
@@ -396,7 +413,7 @@ defineExpose({
             :message="msg"
             :index="index"
             :copied="!!copiedMap[`user-${index}`]"
-            :timeText="formatNowTime()"
+            :timeText="formatMessageTime(msg.createdAt)"
             @retry="retryFromUser"
             @save-edit="emit('save-user-edit', $event)"
             @copy="copyText(msg.content, `user-${index}`)"

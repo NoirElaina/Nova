@@ -136,15 +136,28 @@ watch(
 );
 
 onMounted(() => {
+  // 轮询刷新 diff。仅在页面可见时执行，避免后台标签页无意义的后端调用。
+  // 此前无论页面是否可见都每 2.5s 调用 getWorkspaceDiff，在大型 diff 时浪费资源。
   refreshTimer = window.setInterval(() => {
-    void loadChanges();
+    if (document.visibilityState === 'visible') {
+      void loadChanges();
+    }
   }, 2500);
+  // 页面从后台切回前台时立即刷新一次，保证用户看到最新 diff。
+  document.addEventListener('visibilitychange', handleVisibilityChange);
 });
+
+const handleVisibilityChange = () => {
+  if (document.visibilityState === 'visible') {
+    void loadChanges();
+  }
+};
 
 onBeforeUnmount(() => {
   if (refreshTimer !== null) {
     window.clearInterval(refreshTimer);
   }
+  document.removeEventListener('visibilitychange', handleVisibilityChange);
 });
 </script>
 

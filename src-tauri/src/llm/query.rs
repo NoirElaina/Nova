@@ -606,15 +606,24 @@ pub async fn send_chat_message(
         let window_tokens =
             crate::llm::utils::model_context::get_context_window_tokens(&model) as i64;
 
-        if !crate::llm::utils::model_context::supports_image_input(&model) {
-            current_messages = strip_images_to_text(&current_messages);
-        }
+        // 不支持图片输入的模型：剥离图片为占位文本，但只在临时变量上操作，
+        // 不覆盖 current_messages。否则回合结束后保存的 turn_snapshot 会丢失
+        // 原始图片数据，即使用户切回支持图片的模型也无法恢复。
+        //
+        // 此前的写法 `current_messages = strip_images_to_text(&current_messages)`
+        // 直接覆盖了 current_messages，导致 snapshot 保存的是已替换的版本。
+        let messages_for_provider: Vec<Message> =
+            if crate::llm::utils::model_context::supports_image_input(&model) {
+                current_messages.clone()
+            } else {
+                strip_images_to_text(&current_messages)
+            };
         // 工具结果上下文编辑：专门处理较早、较大的 tool_use/tool_result 对。
         // 它不同于前面的整体 compact；这里在主循环每次 provider 请求前执行，
         // 用于防止多轮工具调用后旧工具输出持续占满上下文窗口。
         let context_editing =
-            compact::apply_tool_result_context_editing(&current_messages, window_tokens);
-        if context_editing.applied {
+            compact::apply_tool_result_context_editing(&messages_for_provider, window_tokens);
+        let messages_for_provider = if context_editing.applied {
             // 仅当真的清理了工具结果时通知前端，并用编辑后的 messages 继续本轮 loop。
             emit_context_compact_event(
                 &app,
@@ -627,16 +636,19 @@ pub async fn send_chat_message(
                 clamp_i64_to_u32(context_editing.original_estimated_tokens),
                 clamp_i64_to_u32(context_editing.edited_estimated_tokens),
             );
-            current_messages = context_editing.messages;
-        }
+            context_editing.messages
+        } else {
+            messages_for_provider
+        };
 
         // 请求 provider 前先估算当前 prompt 占用，并通知前端更新 context window UI。
         // 这是本地估算值，不参与模型调用；provider 返回真实 usage 后会再用 actual 数据校正。
-
+        // 注意：估算和发送都用 messages_for_provider（可能已剥离图片/编辑工具结果），
+        // 而非 current_messages（保留原始图片供快照保存）。
         let prompt_estimate = provider
             .estimate_prompt_tokens(
                 &app,
-                &current_messages,
+                &messages_for_provider,
                 agent_mode,
                 conversation_id.as_deref(),
             )
@@ -654,7 +666,7 @@ pub async fn send_chat_message(
         let provider_result = match provider
             .send_request(
                 &app,
-                &current_messages,
+                &messages_for_provider,
                 agent_mode,
                 conversation_id.as_deref(),
             )
@@ -668,16 +680,18 @@ pub async fn send_chat_message(
                     if let Some(recovered_messages) = compact::reactive_compact_messages_for_retry(
                         &app,
                         conversation_id.as_deref(),
-                        &current_messages,
+                        &messages_for_provider,
                     )
                     .await
                     {
                         let before_tokens = clamp_i64_to_u32(
-                            compact::estimate_tokens_for_messages(&current_messages),
+                            compact::estimate_tokens_for_messages(&messages_for_provider),
                         );
                         let after_tokens = clamp_i64_to_u32(compact::estimate_tokens_for_messages(
                             &recovered_messages,
                         ));
+                        // reactive_compact 是真正的上下文压缩恢复，压缩后的 messages
+                        // 应该持久化（原始过长消息已无意义），所以覆盖 current_messages。
                         current_messages = recovered_messages;
                         apply_post_compact_hook(
                             &app,

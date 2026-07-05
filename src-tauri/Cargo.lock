@@ -3313,6 +3313,7 @@ dependencies = [
  "grep-searcher",
  "ignore",
  "jsonschema",
+ "libc",
  "libsqlite3-sys",
  "lopdf",
  "once_cell",

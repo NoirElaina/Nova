@@ -35,6 +35,14 @@ pub const EVAL_LIKE_BUILTINS: &[&str] = &[
 
 /// read-only 命令 allowlist：这些命令在解析成功且语义安全时自动放行。
 /// 命令名匹配 argv[0]（wrapper 剥离后）。
+///
+/// # 注意：以下命令**故意不在** allowlist 中，因为它们可通过参数执行任意代码或写文件，
+/// 而 `is_read_only_command` 只检查 argv[0]，无法区分参数语义：
+/// - `python` / `python3` / `node`：`-c` / `-e` 参数可执行任意代码
+/// - `sed`：`-i` 参数会原地写文件
+/// - `awk`：可调用 `system()` 执行任意命令
+/// - `find`：`-exec` / `-delete` 可执行任意命令或删除文件
+/// 这些命令会落入 `NeedApproval` 分支，由用户审批（fail-closed）。
 pub const READ_ONLY_COMMANDS: &[&str] = &[
     // 文件查看
     "cat",
@@ -50,7 +58,6 @@ pub const READ_ONLY_COMMANDS: &[&str] = &[
     "ls",
     "dir",
     "tree",
-    "find",
     "locate",
     // 搜索
     "grep",
@@ -99,13 +106,8 @@ pub const READ_ONLY_COMMANDS: &[&str] = &[
     "uniq",
     "cut",
     "tr",
-    "sed", // sed -i 会写文件，但 semantics 不拦截，需要路径检查
-    "awk", // awk 可以 system()，但 semantics 已拦截
     // JSON 处理（只读）
     "jq",
-    "python", // python -c 会执行代码，semantics 应该拦截 -c
-    "python3",
-    "node",
     // 版本查看
     "version",
     "--version",

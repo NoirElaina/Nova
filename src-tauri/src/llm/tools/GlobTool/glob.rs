@@ -1,12 +1,35 @@
-use crate::llm::tools::{app_tool, AppExecuteFuture, ToolFailure, ToolOutcome, ToolRegistration};
+use crate::llm::tools::{
+    app_tool, AppExecuteFuture, ToolFailure, ToolOutcome, ToolPermissionDescriptor,
+    ToolRegistration,
+};
 use crate::llm::types::Tool;
+use crate::llm::utils::permissions::protected_path_violation;
 use serde_json::{json, Value};
 use std::path::PathBuf;
 use std::time::SystemTime;
 use tauri::AppHandle;
 
 pub(super) fn registration() -> ToolRegistration {
-    app_tool(tool, execute_with_app_boxed, true, None)
+    // read_only=true，permission=Some（搜索敏感目录需审批，与 ReadTool/GrepTool 保持一致）
+    app_tool(tool, execute_with_app_boxed, true, Some(glob_permission))
+}
+
+/// GlobTool 权限检查：搜索路径命中受保护路径时需审批。
+/// 攻击场景：Glob(pattern="**/*", path="/Users/victim/.ssh")
+fn glob_permission(input: &Value) -> Option<ToolPermissionDescriptor> {
+    let path = input.get("path").and_then(Value::as_str).unwrap_or("");
+    if path.is_empty() {
+        return None;
+    }
+    if protected_path_violation(path).is_err() {
+        return Some(ToolPermissionDescriptor {
+            signature: format!("glob:sensitive:{}", path),
+            preview: format!("搜索敏感路径 {}", path),
+            warning: Some("该路径可能包含凭据或密钥".to_string()),
+            needs_approval: true,
+        });
+    }
+    None
 }
 
 pub fn tool() -> Tool {

@@ -1,13 +1,77 @@
 use crate::llm::tools::shared::read_state;
-use crate::llm::tools::{app_tool, AppExecuteFuture, ToolFailure, ToolOutcome, ToolRegistration};
+use crate::llm::tools::{
+    app_tool, AppExecuteFuture, ToolFailure, ToolOutcome, ToolPermissionDescriptor,
+    ToolRegistration,
+};
 use crate::llm::types::{Content, ContentBlock, ImageSource, Message, Role, Tool};
 use crate::llm::utils::file_io::read_file_meta;
+use crate::llm::utils::permissions::protected_path_violation;
 use serde_json::{json, Value};
 use std::path::PathBuf;
 use tauri::AppHandle;
 
 pub(super) fn registration() -> ToolRegistration {
-    app_tool(tool, execute_with_app_boxed, true, None)
+    // read_only=true（可批量并发），permission=Some(read_permission)（敏感路径需审批）。
+    // 此前 permission=None 导致 ReadTool 可无审批读取 ~/.ssh/id_rsa 等任意文件。
+    app_tool(tool, execute_with_app_boxed, true, Some(read_permission))
+}
+
+/// ReadTool 权限检查：
+/// - 命中受保护路径（.ssh/.aws/.gnupg/.git 等）→ 需要审批
+/// - Unix 设备文件（/dev/zero 等会挂起进程）→ 需要审批
+/// - 其他路径 → 无需审批（返回 None）
+///
+/// 注意：此函数只决定"是否需要审批"，不阻止读取。
+/// 受保护路径的 deny 逻辑由 check_file_path 在 BashTool 层处理；
+/// 这里对 read 操作改为 ask（而非 deny），允许用户审批后读取合法需求。
+fn read_permission(input: &Value) -> Option<ToolPermissionDescriptor> {
+    let file_path = input.get("file_path")?.as_str()?;
+
+    // 1. 受保护路径检查（复用 BashTool 的 PROTECTED_PATH_CONTAINS）
+    if protected_path_violation(file_path).is_err() {
+        return Some(ToolPermissionDescriptor {
+            signature: format!("read:sensitive:{}", file_path),
+            preview: format!("读取敏感路径 {}", file_path),
+            warning: Some(
+                "该路径可能包含凭据或密钥，读取需要确认".to_string(),
+            ),
+            needs_approval: true,
+        });
+    }
+
+    // 2. Unix 设备文件阻止（防止进程挂起或无限输出）
+    #[cfg(unix)]
+    if is_blocked_device_path(file_path) {
+        return Some(ToolPermissionDescriptor {
+            signature: format!("read:device:{}", file_path),
+            preview: format!("读取设备文件 {}", file_path),
+            warning: Some(
+                "设备文件可能导致进程挂起或产生无限输出".to_string(),
+            ),
+            needs_approval: true,
+        });
+    }
+
+    None
+}
+
+#[cfg(unix)]
+fn is_blocked_device_path(path: &str) -> bool {
+    const BLOCKED_DEVICE_PATHS: &[&str] = &[
+        "/dev/zero",
+        "/dev/random",
+        "/dev/urandom",
+        "/dev/full",
+        "/dev/stdin",
+        "/dev/tty",
+        "/dev/console",
+        "/dev/stdout",
+        "/dev/stderr",
+        "/dev/fd/0",
+        "/dev/fd/1",
+        "/dev/fd/2",
+    ];
+    BLOCKED_DEVICE_PATHS.contains(&path)
 }
 
 pub fn tool() -> Tool {

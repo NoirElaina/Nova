@@ -236,8 +236,14 @@ $__nova = Start-Process -FilePath '{pwsh}' -ArgumentList @('-NoLogo','-NonIntera
     pid = $__nova.Id
     cwd = $__novaCwd
 }} | ConvertTo-Json -Compress
+$__novaCwdB64 = [Convert]::ToBase64String([System.Text.Encoding]::UTF8.GetBytes($__novaCwd))
+$__novaMarker = "{prefix}$__novaCommandId|0|$__novaCwdB64|0"
+Write-Output $__novaMarker
+[Console]::Error.WriteLine($__novaMarker)
 "#,
         pwsh = PWSH_PATH,
+        prefix = MARKER_PREFIX,
+        command_id = command_id,
     )
 }
 
@@ -258,10 +264,18 @@ fn build_foreground_wrapper(command_id: &str, command: &str) -> String {
 #[cfg(not(target_os = "windows"))]
 fn build_background_wrapper(command_id: &str, command: &str) -> String {
     let escaped = command.replace('\'', "'\"'\"'");
-    let _ = command_id;
+    // 后台命令必须输出 marker，否则 execute_wrapped_command 会等到 timeout。
+    // marker 的 exit_code 固定为 0（后台进程已成功启动），cwd 为当前目录的 base64。
+    //
+    // 使用 setsid 启动后台进程，使其成为新会话 leader + 新进程组 leader。
+    // 这样后台进程的 pid == pgid，kill_pid 可以用 libc::kill(-pid, SIGTERM)
+    // 杀掉整个进程组（含所有子进程），避免孤儿进程。
+    // setsid 是 util-linux/coreutils 标准命令，几乎所有 Unix 系统自带。
     format!(
-        "sh -lc '{}' >/dev/null 2>&1 &\nprintf '{{\"ok\":true,\"background\":true,\"pid\":%s,\"cwd\":\"%s\"}}\\n' \"$!\" \"$PWD\"\n",
-        escaped
+        "setsid sh -lc '{}' >/dev/null 2>&1 &\nNOVA_BG_PID=$!\nNOVA_BG_CWD_B64=$(pwd | base64 | tr -d '\\n')\nprintf '{{\"ok\":true,\"background\":true,\"pid\":%s,\"cwd\":\"%s\"}}\\n' \"$NOVA_BG_PID\" \"$PWD\"\nprintf '{prefix}{command_id}|0|%s|0\\n' \"$NOVA_BG_CWD_B64\"\nprintf '{prefix}{command_id}|0|%s|0\\n' \"$NOVA_BG_CWD_B64\" >&2\n",
+        escaped,
+        prefix = MARKER_PREFIX,
+        command_id = command_id,
     )
 }
 
@@ -614,6 +628,7 @@ async fn get_or_create_handle(
 fn kill_pid(pid: u32) {
     #[cfg(target_os = "windows")]
     {
+        // Windows: taskkill /T /F 杀整个进程树（Windows 内核跟踪的进程树）
         let mut cmd = std::process::Command::new("taskkill");
         cmd.args(["/PID", &pid.to_string(), "/T", "/F"])
             .stdout(Stdio::null())
@@ -624,11 +639,15 @@ fn kill_pid(pid: u32) {
 
     #[cfg(not(target_os = "windows"))]
     {
-        let _ = std::process::Command::new("kill")
-            .args(["-TERM", &pid.to_string()])
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .status();
+        // Unix: 后台进程通过 setsid 启动，pid == pgid（进程组 leader）。
+        // kill(-pgid, SIGTERM) 发信号给整个进程组，杀掉后台进程及其所有子进程，
+        // 避免子进程变孤儿（父进程被杀后 reparent 到 init）。
+        // 用 libc 直接系统调用，不 fork kill 进程，更可靠。
+        let pgid = pid as i32;
+        unsafe {
+            // 先 SIGTERM 给优雅退出的机会
+            let _ = libc::kill(-pgid, libc::SIGTERM);
+        }
     }
 }
 
@@ -691,6 +710,11 @@ pub async fn run_background(
     result.stdout = background_result_json(pid, &cwd);
     result.background = true;
     result.pid = Some(pid);
+    // 后台命令成功启动后，marker 已正常返回（exit_code=0），不应再标记为 timeout。
+    // 此前由于 background wrapper 未输出 marker 导致 30s 超时，result.timed_out 被置为 true，
+    // BashTool 据此返回 "command timed out" 错误。现在 wrapper 已补 marker，但仍需在此
+    // 显式重置，防止 marker 解析路径与 timeout 路径的边缘竞态。
+    result.timed_out = false;
     Ok(result)
 }
 

@@ -739,6 +739,16 @@ fn check_command(command: &str) -> CommandCheckResult {
     // 3. 路径约束检查（重定向目标 + 路径参数）
     for cmd in &parsed {
         for redirect in &cmd.redirects {
+            // 重定向目标含 shell 变量展开（$VAR 等）时，parser.rs 会把 target 标记为
+            // __DYNAMIC__ 前缀。无法静态确定写入路径，必须 fail-closed 要求审批。
+            // 攻击场景：echo x > $HOME/.ssh/authorized_keys
+            //   bash 实际展开 $HOME 写入 ~/.ssh/authorized_keys，实现 SSH 后门。
+            if redirect.target.starts_with("__DYNAMIC__") {
+                return CommandCheckResult::NeedApproval(format!(
+                    "重定向目标含 shell 变量展开（{}），无法静态确定写入路径，需要确认",
+                    &redirect.target["__DYNAMIC__".len()..]
+                ));
+            }
             if let Err(reason) = protected_path_violation(&redirect.target) {
                 return CommandCheckResult::Deny(format!(
                     "重定向目标命中受保护路径：{}",

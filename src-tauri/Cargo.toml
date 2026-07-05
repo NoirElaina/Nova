@@ -67,3 +67,6 @@ tempfile = "3"
 # too-complex 直接 ask 用户，避免字符串黑名单被 -c/eval/$()/wrapper 绕过。
 tree-sitter = "0.25"
 tree-sitter-bash = "0.23"
+# libc 用于 Unix 上的 setsid（创建新进程组）和 killpg（杀整个进程组）系统调用。
+# 避免通过 fork+exec 调用 kill 命令，直接系统调用更可靠且无额外进程开销。
+libc = "0.2"

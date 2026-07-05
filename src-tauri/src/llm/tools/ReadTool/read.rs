@@ -333,7 +333,7 @@ fn resolve_file_path(raw: &str) -> Result<PathBuf, String> {
 }
 
 async fn execute_async(
-    app: &AppHandle,
+    _app: &AppHandle,
     conversation_id: Option<&str>,
     input: Value,
 ) -> Result<ToolOutcome, ToolFailure> {
@@ -355,23 +355,6 @@ async fn execute_async(
     let pages = input
         .get("pages")
         .and_then(Value::as_str);
-
-    // 识别 session_files: 虚拟路径前缀。
-    // AI 看到 context injection 中的 "session_files:report.pdf" 后，
-    // 调用 Read 工具传入此路径。后端用当前会话 ID 自动拼接实际存储路径，
-    // AI 永远拿不到绝对路径，无法构造路径遍历攻击。
-    if let Some(session_filename) = file_path.strip_prefix("session_files:") {
-        let conv_id = conversation_id.ok_or_else(|| {
-            ToolFailure::new("读取会话文件需要会话 ID，但当前无活跃会话".to_string())
-        })?;
-        let content = crate::llm::services::session_files::read_session_file(
-            app,
-            conv_id,
-            session_filename,
-        )
-        .map_err(ToolFailure::new)?;
-        return Ok(ToolOutcome::text(content));
-    }
 
     let path = resolve_file_path(file_path)
         .map_err(|e| ToolFailure::invalid_input(e))?;

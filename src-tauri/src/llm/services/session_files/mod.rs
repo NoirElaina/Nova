@@ -310,14 +310,13 @@ pub async fn build_session_files_message(
 
     let mut lines = vec![
         "[Session Files]".to_string(),
-        "The following files have been uploaded for this conversation. Use the Read tool to read any of them (pass the session_files: path as file_path):".to_string(),
+        "The following files have been uploaded for this conversation. Use the ReadSessionFile tool to read any of them (pass the filename):".to_string(),
     ];
 
-    // 向 AI 暴露虚拟路径 session_files:{filename}。
-    // AI 调用 Read 工具时传这个路径，ReadTool 识别前缀后自动用当前会话 ID
-    // 拼接实际存储路径读取。AI 永远拿不到绝对路径，无法构造路径遍历攻击。
+    // 只暴露 filename，不暴露绝对路径。
+    // AI 用 ReadSessionFile 工具读取，工具内部用当前会话 ID 自动拼接路径。
     for file in &files {
-        lines.push(format!("- session_files:{} ({})", file.filename, file.filename));
+        lines.push(format!("- {}", file.filename));
     }
 
     Some(crate::llm::types::Message {

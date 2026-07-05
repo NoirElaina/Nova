@@ -73,14 +73,10 @@ async fn execute_async(
     // 保留旧 CRLF 会在覆盖 CRLF 文件时把 bash 脚本写入 \r，损坏脚本。
     // 仅按原文件 encoding 还原字节编码（UTF-8 / UTF-8 BOM / UTF-16 LE/BE）。
     let encoding = if existed {
-        // 覆盖已有文件：要求先读过且未被外部改动，保留原编码。
+        // 覆盖已有文件：读取保留原编码。
         // 行尾不还原，只用 encoding。
-        let (original, meta) = read_file_meta(&target)
+        let (_original, meta) = read_file_meta(&target)
             .map_err(|e| ToolFailure::new(format!("Error reading {}: {}", file_path, e)))?;
-        // TOCTOU 缓解：read→check→write 串成 sync 调用，中间不 await。
-        // ensure_editable 用 mtime+content 二级检测，通过后立即写盘。
-        read_state::ensure_editable(conversation_id, &target, &original)
-            .map_err(ToolFailure::new)?;
         meta.encoding
     } else {
         // 新建文件：UTF-8 / 无 BOM。

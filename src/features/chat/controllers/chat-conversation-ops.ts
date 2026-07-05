@@ -361,6 +361,7 @@ export function createConversationOperations(deps: ConversationOpsDeps) {
           await loadConversation(conversations.value[0].id);
         } else {
           activeConversationId.value = "";
+          activeWorkspacePath.value = "";
           messages.value = [];
           pendingUploads.value = [];
           conversationFiles.value = [];

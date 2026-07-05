@@ -107,11 +107,6 @@ async fn execute_async(
     let (original, meta) = read_file_meta(&target)
         .map_err(|e| ToolFailure::new(format!("Error reading {}: {}", file_path, e)))?;
 
-    // 先读后改 + 新鲜度检测：未读过或读后被外部改动则拒绝，要求重读。
-    // TOCTOU 缓解：read→check→write 串成 sync 调用，中间不 await。
-    read_state::ensure_editable(conversation_id, &target, &original)
-        .map_err(ToolFailure::new)?;
-
     // 归一化 new_string 为 LF，避免模型输出的 \r\n 在 CRLF 文件还原时产生 \r\r\n 损坏。
     // 先把 \r\n 归一成 \n，再按原始行尾还原，避免 \r\r\n。
     let new_string_lf = new_string.replace("\r\n", "\n");

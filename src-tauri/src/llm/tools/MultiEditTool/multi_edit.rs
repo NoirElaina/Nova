@@ -157,11 +157,6 @@ async fn execute_async(
     let (mut content, meta) = read_file_meta(&target)
         .map_err(|e| ToolFailure::new(format!("Error reading {}: {}", file_path, e)))?;
 
-    // 先读后改 + 新鲜度检测。
-    // TOCTOU 缓解：read→check→write 串成 sync 调用，中间不 await。
-    read_state::ensure_editable(conversation_id, &target, &content)
-        .map_err(ToolFailure::new)?;
-
     // 顺序应用所有 edit。任一失败则整批回滚（不写入）。
     // 每个 new_string 归一化为 LF，避免模型输出的 \r\n 在 CRLF 文件还原时产生 \r\r\n 损坏。
     let mut applied_count = 0usize;

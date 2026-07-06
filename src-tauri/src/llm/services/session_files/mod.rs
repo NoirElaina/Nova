@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 use std::path::{Component, Path, PathBuf};
-use tauri::{AppHandle, Manager};
+use tauri::AppHandle;
 use tracing::warn;
 
 /// 会话文件元信息，返回给前端展示。
@@ -19,13 +19,14 @@ pub struct SessionFileMeta {
     pub created_at: i64,
 }
 
-/// 会话文件存储根目录：{app_data_dir}/session_files/{conversation_id}/
+/// 会话文件存储目录：{workspace_root}/{conversation_id}/session/
+///
+/// 独立工作区下：app_data/workspace/{conv_id}/session/，AI 可直接用 Read/Bash 访问。
+/// 手动工作区下：app_data/workspace/{conv_id}/session/（仍存独立目录，避免污染用户项目），
+///   AI 通过绝对路径（见 [Session Files] 注入）用 Read/Bash 访问。
 fn session_files_dir(app: &AppHandle, conversation_id: &str) -> Result<PathBuf, String> {
-    let data_dir = app
-        .path()
-        .app_data_dir()
-        .map_err(|e| format!("Failed to resolve app_data_dir: {}", e))?;
-    Ok(data_dir.join("session_files").join(conversation_id))
+    let base = crate::command::workspace::default_workspace_root(app)?;
+    Ok(base.join(conversation_id).join("session"))
 }
 
 /// 对用户提供的 filename 做严格 sanitize，防止路径遍历攻击（Zip Slip 类）。
@@ -264,25 +265,87 @@ pub fn delete_all_session_files(app: &AppHandle, conversation_id: &str) -> Resul
 /// 安全：不再接受任意 read_path，改为接受 conversation_id + filename。
 /// 后端通过 resolve_session_file_path 推导实际路径，并 canonicalize 验证路径
 /// 在 session_files 目录内。前端永远拿不到绝对路径，无法构造路径遍历攻击。
+///
+/// PDF 文件用 lopdf 解析文本，避免 read_to_string 遇到二进制报 UTF-8 错误。
 pub fn read_session_file(
     app: &AppHandle,
     conversation_id: &str,
     filename: &str,
 ) -> Result<String, String> {
     let path = resolve_session_file_path(app, conversation_id, filename)?;
+    let ext = path
+        .extension()
+        .and_then(|e| e.to_str())
+        .map(|e| e.to_ascii_lowercase())
+        .unwrap_or_default();
+
+    if ext == "pdf" {
+        return read_pdf_text(&path);
+    }
+
     std::fs::read_to_string(&path).map_err(|e| format!("读取文件失败: {}", e))
 }
 
+/// 用 lopdf 解析 PDF 文本。超过 10 页时只读前 10 页并提示剩余页数。
+fn read_pdf_text(path: &Path) -> Result<String, String> {
+    let bytes = std::fs::read(path).map_err(|e| format!("读取 PDF 失败: {}", e))?;
+    let doc = lopdf::Document::load_mem(&bytes)
+        .map_err(|e| format!("解析 PDF 失败: {}", e))?;
+
+    let total_pages = doc.max_id as u32;
+    if total_pages == 0 {
+        return Ok("[PDF 无可读页面]".to_string());
+    }
+
+    let end = total_pages.min(10);
+    let mut output = String::new();
+    for page_num in 1..=end {
+        output.push_str(&format!("\n--- Page {} ---\n", page_num));
+        match doc.extract_text(&[page_num]) {
+            Ok(text) => {
+                let trimmed = text.trim();
+                if trimmed.is_empty() {
+                    output.push_str("[本页无可提取文本]\n");
+                } else {
+                    output.push_str(trimmed);
+                    output.push('\n');
+                }
+            }
+            Err(_) => {
+                output.push_str("[无法提取本页文本]\n");
+            }
+        }
+    }
+
+    if end < total_pages {
+        output.push_str(&format!(
+            "\n... (共 {} 页，已读前 {} 页，剩余 {} 页)\n",
+            total_pages,
+            end,
+            total_pages - end
+        ));
+    }
+
+    Ok(output)
+}
+
 /// 删除所有会话的文件（清空历史时调用）。
+///
+/// 会话文件现在存于 workspace/{conv_id}/session/ 下，遍历 workspace 目录下的所有
+/// conv_id 子目录，删除其中的 session 子目录。
 pub fn delete_all_session_files_all(app: &AppHandle) -> Result<(), String> {
-    let data_dir = app
-        .path()
-        .app_data_dir()
-        .map_err(|e| format!("Failed to resolve app_data_dir: {}", e))?;
-    let root = data_dir.join("session_files");
-    if root.exists() {
-        std::fs::remove_dir_all(&root)
-            .map_err(|e| format!("Failed to remove all session files: {}", e))?;
+    let base = crate::command::workspace::default_workspace_root(app)?;
+    if !base.exists() {
+        return Ok(());
+    }
+
+    for entry in std::fs::read_dir(&base).map_err(|e| format!("读取 workspace 目录失败: {}", e))? {
+        let entry = entry.map_err(|e| format!("读取目录项失败: {}", e))?;
+        let session_dir = entry.path().join("session");
+        if session_dir.is_dir() {
+            std::fs::remove_dir_all(&session_dir)
+                .map_err(|e| format!("删除 session 目录失败: {}", e))?;
+        }
     }
     Ok(())
 }
@@ -308,15 +371,26 @@ pub async fn build_session_files_message(
         return None;
     }
 
+    let dir = match session_files_dir(app, conv_id) {
+        Ok(d) => d,
+        Err(e) => {
+            warn!(error = %e, "Failed to resolve session files dir for context injection");
+            return None;
+        }
+    };
+    let dir_display = crate::command::workspace::display_path_string(&dir);
+
     let mut lines = vec![
         "[Session Files]".to_string(),
-        "The following files have been uploaded for this conversation. Use the ReadSessionFile tool to read any of them (pass the filename):".to_string(),
+        format!("Uploaded files are stored at: {}", dir_display),
+        "Use Read/Bash/Grep/Glob tools to access them via the absolute paths below:".to_string(),
     ];
 
-    // 只暴露 filename，不暴露绝对路径。
-    // AI 用 ReadSessionFile 工具读取，工具内部用当前会话 ID 自动拼接路径。
+    // 暴露绝对路径，AI 用 Read 工具直接访问。
     for file in &files {
-        lines.push(format!("- {}", file.filename));
+        let file_path = dir.join(&file.filename);
+        let file_display = crate::command::workspace::display_path_string(&file_path);
+        lines.push(format!("- {}", file_display));
     }
 
     Some(crate::llm::types::Message {

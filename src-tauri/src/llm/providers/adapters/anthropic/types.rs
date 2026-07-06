@@ -92,7 +92,9 @@ pub(crate) struct AnthropicTool {
 
 #[derive(Debug, Deserialize, Serialize, Clone)]
 pub(crate) struct AnthropicUsage {
+    #[serde(default)]
     pub(crate) input_tokens: u32,
+    #[serde(default)]
     pub(crate) output_tokens: u32,
     #[serde(default)]
     pub(crate) cache_read_input_tokens: u32,

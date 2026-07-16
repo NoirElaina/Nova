@@ -2,6 +2,7 @@ use serde_json::Value;
 use sqlx::{Row, SqlitePool};
 use std::path::{Path, PathBuf};
 use tauri::{AppHandle, Manager};
+use tokio::sync::OnceCell;
 use uuid::Uuid;
 
 use crate::llm::commands::memory;
@@ -26,12 +27,21 @@ fn get_db_url(app: &AppHandle) -> Result<String, String> {
     Ok(format!("sqlite:{}?mode=rwc", db_path.display()))
 }
 
+static DB_POOL: OnceCell<SqlitePool> = OnceCell::const_new();
+
 // Create a sqlx sqlite pool for history DB.
 async fn get_pool(app: &AppHandle) -> Result<SqlitePool, String> {
-    let db_url = get_db_url(app)?;
-    SqlitePool::connect(&db_url)
-        .await
-        .map_err(|e| e.to_string())
+    let pool = DB_POOL
+        .get_or_try_init(|| async {
+            let db_url = get_db_url(app)?;
+            let pool = SqlitePool::connect(&db_url)
+                .await
+                .map_err(|e| e.to_string())?;
+            ensure_schema(&pool).await?;
+            Ok::<SqlitePool, String>(pool)
+        })
+        .await?;
+    Ok(pool.clone())
 }
 
 // Ensure required schema exists.
@@ -153,9 +163,7 @@ async fn ensure_schema(pool: &SqlitePool) -> Result<(), String> {
 // Public helper used by command handlers:
 // open DB pool and guarantee schema is ready before query.
 pub async fn get_pool_with_schema(app: &AppHandle) -> Result<SqlitePool, String> {
-    let pool = get_pool(app).await?;
-    ensure_schema(&pool).await?;
-    Ok(pool)
+    get_pool(app).await
 }
 
 pub async fn list_memory_entries(app: &AppHandle) -> Result<Vec<String>, String> {

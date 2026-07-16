@@ -17,6 +17,7 @@ pub fn tool() -> Tool {
         name: "Edit".into(),
         description: r#"Performs exact string replacement in an existing file.
 
+- IMPORTANT: When editing text from Read tool output, ensure you preserve the exact indentation (tabs/spaces) as it appears AFTER the line number prefix. The line number prefix format is: spaces + line number + tab (e.g., `     1\t`). Everything after that is the actual file content to match. NEVER include any part of the line number prefix in the `old_string` or `new_string`.
 - The `old_string` should match the file content exactly, but the matcher is fault-tolerant: it will also try line-trimmed, block-anchor (with Levenshtein similarity), whitespace-normalized, indentation-flexible, and escape-normalized matching in that order before giving up.
 - Use `replace_all: true` to replace every occurrence of `old_string`; when false (default), the string must appear exactly once in the file (or be uniquely identifiable via the fuzzy matchers).
 - `new_string` must differ from `old_string`.

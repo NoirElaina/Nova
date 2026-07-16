@@ -22,6 +22,7 @@ Use this tool when you need to make 2+ distinct edits to the same file. It is mo
 - The file is read once and written once (atomic batch)
 
 Constraints:
+- IMPORTANT: When editing text from Read tool output, ensure you preserve the exact indentation (tabs/spaces) as it appears AFTER the line number prefix. The line number prefix format is: spaces + line number + tab (e.g., `     1\t`). Everything after that is the actual file content to match. NEVER include any part of the line number prefix in the `old_string` or `new_string`.
 - Each edit's `old_string` must be unique in the file (or use `replace_all: true` for that edit).
 - Edits are applied sequentially in array order. Each subsequent edit sees the result of the previous one, so if edit #1 changes a line, edit #2's `old_string` should match the NEW content (not the original).
 - Same fuzzy matching as Edit: line-trimmed, block-anchor, whitespace-normalized, indentation-flexible, escape-normalized are tried in order when exact match fails.

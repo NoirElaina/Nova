@@ -1,3 +1,4 @@
+use crate::llm::providers::ProviderPromptEstimate;
 use crate::llm::providers::stream_runner::Delta;
 use crate::llm::types::{AgentMode, Message};
 use reqwest::RequestBuilder;
@@ -17,7 +18,7 @@ pub trait ApiAdapter: Send + Sync {
         messages: &[Message],
         agent_mode: AgentMode,
         conversation_id: Option<&str>,
-    ) -> Result<RequestBuilder, String>;
+    ) -> Result<(RequestBuilder, ProviderPromptEstimate), String>;
 
     /// 解析一条 SSE event_data，返回通用 Delta 列表
     fn parse_event(&mut self, data: &str) -> Result<Vec<Delta>, String>;

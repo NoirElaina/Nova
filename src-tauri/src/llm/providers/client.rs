@@ -74,7 +74,7 @@ impl LlmClient {
         messages: &[Message],
         agent_mode: AgentMode,
         conversation_id: Option<&str>,
-    ) -> Result<ProviderTurnResult, ProviderTurnError> {
+    ) -> Result<(ProviderTurnResult, ProviderPromptEstimate), ProviderTurnError> {
         let mut url = self.base_url.trim_end_matches('/').to_string();
 
         let provider_name = self.adapter.provider_name();
@@ -108,7 +108,7 @@ impl LlmClient {
         }
 
         let builder = self.http_client.post(&url);
-        let req_builder =
+        let (req_builder, estimate) =
             self.adapter
                 .build_request(builder, app, messages, agent_mode, conversation_id)?;
 
@@ -129,7 +129,7 @@ impl LlmClient {
         let resp = tokio::select! {
             res = self.http_client.execute(request) => res,
             _ = cancel_token.cancelled() => {
-                return Ok(ProviderTurnResult {
+                return Ok((ProviderTurnResult {
                     messages: Vec::new(),
                     stop_reason: Some("cancelled".into()),
                     input_tokens: None,
@@ -138,7 +138,7 @@ impl LlmClient {
                     cache_creation_tokens: None,
                     cost: None,
                     prevent_continuation: false,
-                });
+                }, estimate));
             }
         };
 
@@ -169,6 +169,7 @@ impl LlmClient {
                     cancel_token,
                 )
                 .await
+                .map(|result| (result, estimate))
             }
             Err(e) => {
                 let msg = e.to_string();

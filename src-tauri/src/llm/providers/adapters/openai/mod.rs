@@ -46,14 +46,13 @@ impl ApiAdapter for OpenAiAdapter {
         messages: &[Message],
         agent_mode: AgentMode,
         conversation_id: Option<&str>,
-    ) -> Result<RequestBuilder, String> {
+    ) -> Result<(RequestBuilder, ProviderPromptEstimate), String> {
         let settings =
             crate::command::settings::get_settings(app.clone()).map_err(|e| e.to_string())?;
         let profile = settings.active_provider_profile();
 
-        let request = prompt::build_request(app, messages, agent_mode, conversation_id)
-            .map_err(|e| e.message)?
-            .request;
+        let built = prompt::build_request(app, messages, agent_mode, conversation_id)
+            .map_err(|e| e.message)?;
 
         builder = builder.header("content-type", "application/json");
 
@@ -61,7 +60,7 @@ impl ApiAdapter for OpenAiAdapter {
             builder = builder.header("Authorization", format!("Bearer {}", profile.api_key));
         }
 
-        Ok(builder.json(&request))
+        Ok((builder.json(&built.request), built.estimate))
     }
 
     fn parse_event(&mut self, data: &str) -> Result<Vec<Delta>, String> {

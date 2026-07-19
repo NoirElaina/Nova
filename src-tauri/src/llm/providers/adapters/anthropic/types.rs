@@ -2,11 +2,33 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 #[derive(Debug, Clone, Serialize)]
+pub(crate) struct CacheControl {
+    #[serde(rename = "type")]
+    pub(crate) cache_type: &'static str,
+}
+impl CacheControl {
+    pub(crate) fn ephemeral() -> Self {
+        Self {
+            cache_type: "ephemeral",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub(crate) struct AnthropicSystemBlock {
+    #[serde(rename = "type")]
+    pub(crate) block_type: &'static str,
+    pub(crate) text: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) cache_control: Option<CacheControl>,
+}
+
+#[derive(Debug, Clone, Serialize)]
 pub(crate) struct AnthropicRequest {
     pub(crate) model: String,
     pub(crate) max_tokens: u32,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub(crate) system: Option<String>,
+    pub(crate) system: Option<Vec<AnthropicSystemBlock>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) thinking: Option<AnthropicThinking>,
     pub(crate) messages: Vec<AnthropicMessage>,
@@ -88,6 +110,8 @@ pub(crate) struct AnthropicTool {
     pub(crate) name: String,
     pub(crate) description: String,
     pub(crate) input_schema: Value,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) cache_control: Option<CacheControl>,
 }
 
 #[derive(Debug, Deserialize, Serialize, Clone)]

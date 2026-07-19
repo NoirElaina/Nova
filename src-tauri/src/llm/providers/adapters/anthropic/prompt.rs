@@ -9,7 +9,7 @@ use crate::llm::utils::system_prompt::load_system_prompt;
 
 use super::types::{
     AnthropicContentBlock, AnthropicImageSource, AnthropicMessage, AnthropicMessageContent,
-    AnthropicRequest, AnthropicThinking, AnthropicTool,
+    AnthropicRequest, AnthropicSystemBlock, AnthropicThinking, AnthropicTool, CacheControl,
 };
 
 pub(crate) struct BuiltAnthropicRequest {
@@ -127,6 +127,7 @@ fn nova_tools_to_anthropic_tools(tools: Vec<Tool>) -> Vec<AnthropicTool> {
             name: tool.name,
             description: tool.description,
             input_schema: tool.input_schema,
+            cache_control: None,
         })
         .collect()
 }
@@ -178,7 +179,11 @@ pub(crate) fn build_request(
     let request = AnthropicRequest {
         model: profile.model.clone(),
         max_tokens,
-        system: Some(load_system_prompt(app, agent_mode, conversation_id)?),
+        system: Some(vec![AnthropicSystemBlock {
+            block_type: "text",
+            text: load_system_prompt(app, agent_mode, conversation_id)?,
+            cache_control: Some(CacheControl::ephemeral()),
+        }]),
         thinking: anthropic_thinking(&profile, max_tokens)?,
         messages: nova_messages_to_anthropic_messages(messages)?,
         tools: nova_tools_to_anthropic_tools(nova_tools),

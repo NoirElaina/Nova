@@ -641,29 +641,8 @@ pub async fn send_chat_message(
             messages_for_provider
         };
 
-        // 请求 provider 前先估算当前 prompt 占用，并通知前端更新 context window UI。
-        // 这是本地估算值，不参与模型调用；provider 返回真实 usage 后会再用 actual 数据校正。
-        // 注意：估算和发送都用 messages_for_provider（可能已剥离图片/编辑工具结果），
-        // 而非 current_messages（保留原始图片供快照保存）。
-        let prompt_estimate = provider
-            .estimate_prompt_tokens(
-                &app,
-                &messages_for_provider,
-                agent_mode,
-                conversation_id.as_deref(),
-            )
-            .map_err(|error| error.message)?;
-        let request_input_estimate = prompt_estimate.input_tokens;
-        emit_context_usage_event(
-            &app,
-            conversation_id.as_deref(),
-            request_input_estimate,
-            window_tokens as u32,
-            prompt_estimate.source,
-        );
-
         // 发起 provider 请求并等待结果。
-        let provider_result = match provider
+        let (provider_result, prompt_estimate) = match provider
             .send_request(
                 &app,
                 &messages_for_provider,
@@ -740,6 +719,15 @@ pub async fn send_chat_message(
                 break TurnOutcome::error(error_text);
             }
         };
+
+        let request_input_estimate = prompt_estimate.input_tokens;
+        emit_context_usage_event(
+            &app,
+            conversation_id.as_deref(),
+            request_input_estimate,
+            window_tokens as u32,
+            prompt_estimate.source,
+        );
 
         // provider 主动报告取消时，统一收敛为 cancelled。
         if provider_result.stop_reason.as_deref() == Some("cancelled") {

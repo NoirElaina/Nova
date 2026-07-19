@@ -52,7 +52,7 @@ impl ApiAdapter for AnthropicAdapter {
         messages: &[Message],
         agent_mode: AgentMode,
         conversation_id: Option<&str>,
-    ) -> Result<RequestBuilder, String> {
+    ) -> Result<(RequestBuilder, ProviderPromptEstimate), String> {
         let settings =
             crate::command::settings::get_settings(app.clone()).map_err(|e| e.to_string())?;
         let profile = settings.active_provider_profile();
@@ -62,16 +62,17 @@ impl ApiAdapter for AnthropicAdapter {
             return Err("API error: No API key configured. Please set it in Settings.".to_string());
         }
 
-        let request = prompt::build_request(app, messages, agent_mode, conversation_id)
-            .map_err(|e| e.message)?
-            .request;
+        let built = prompt::build_request(app, messages, agent_mode, conversation_id)
+            .map_err(|e| e.message)?;
 
-        Ok(builder
+        let builder = builder
             .header("x-api-key", &api_key)
             .header("Authorization", format!("Bearer {}", &api_key))
             .header("anthropic-version", "2023-06-01")
             .header("content-type", "application/json")
-            .json(&request))
+            .json(&built.request);
+
+        Ok((builder, built.estimate))
     }
 
     fn parse_event(&mut self, data: &str) -> Result<Vec<Delta>, String> {

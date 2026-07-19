@@ -4,7 +4,8 @@ use serde_json::Value;
 use tauri::AppHandle;
 
 use crate::llm::providers::adapters::anthropic::types::{
-    AnthropicContentBlock, AnthropicMessage, AnthropicMessageContent, AnthropicRequest, AnthropicResponse,
+    AnthropicContentBlock, AnthropicMessage, AnthropicMessageContent, AnthropicRequest,
+    AnthropicResponse, AnthropicSystemBlock,
 };
 use crate::llm::types::{Content, ContentBlock, Message, Role};
 
@@ -210,7 +211,11 @@ async fn summarize_with_anthropic(app: &AppHandle, user_prompt: &str) -> Result<
     let request = AnthropicRequest {
         model: profile.model.clone(),
         max_tokens: SUMMARY_MAX_TOKENS,
-        system: Some(COMPACT_SUMMARY_SYSTEM_PROMPT.to_string()),
+        system: Some(vec![AnthropicSystemBlock {
+            block_type: "text",
+            text: COMPACT_SUMMARY_SYSTEM_PROMPT.to_string(),
+            cache_control: None,
+        }]),
         thinking: None,
         messages: vec![AnthropicMessage {
             role: "user".to_string(),

@@ -162,18 +162,5 @@ const handleChangeWorkspace = async () => {
     </button>
 
     <div class="flex-1"/>
-
-    <div class="flex items-center justify-center w-7 h-7" title="Nova Pet">
-      <svg width="24" height="24" viewBox="0 0 24 24" fill="#c97b5a">
-        <rect x="4" y="6" width="16" height="10" rx="2"/>
-        <rect x="6" y="3" width="3" height="4" rx="1"/>
-        <rect x="15" y="3" width="3" height="4" rx="1"/>
-        <rect x="7" y="9" width="2.5" height="2.5" rx="0.5" fill="#1a1a1a"/>
-        <rect x="14.5" y="9" width="2.5" height="2.5" rx="0.5" fill="#1a1a1a"/>
-        <rect x="10" y="12" width="4" height="1.5" rx="0.5" fill="#1a1a1a"/>
-        <rect x="5" y="16" width="3" height="3" rx="1"/>
-        <rect x="16" y="16" width="3" height="3" rx="1"/>
-      </svg>
-    </div>
   </div>
 </template>

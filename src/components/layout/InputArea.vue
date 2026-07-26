@@ -58,10 +58,8 @@ const emit = defineEmits<{
 
 const currentInput = ref("");
 const textareaRef = ref<HTMLTextAreaElement | null>(null);
-const mirrorRef = ref<HTMLDivElement | null>(null);
 const fileInputRef = ref<HTMLInputElement | null>(null);
-// IME 合成状态：中文输入法打拼音过程中为 true，此时 textarea 文字需可见，
-// 否则被 text-transparent 隐藏导致用户看不见正在输入的字母。
+// IME 合成状态：中文输入法打拼音过程中为 true，按 Enter 时避免误触发发送消息。
 const isComposing = ref(false);
 
 // + 按钮菜单状态：null=关闭，'main'=主视图，'skill'=技能视图
@@ -545,24 +543,7 @@ const executeSlashCommand = async (parsed: { entry: SlashCommandEntry; rest: str
   return false;
 };
 
-// 转义 HTML 特殊字符，防止镜像层渲染用户输入时出现 XSS 或解析错误
-const escapeHtml = (s: string) =>
-  s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 
-// 输入框镜像层内容：高亮开头的斜杠命令名（如 /skill）
-const highlightedInput = computed(() => {
-  const text = currentInput.value;
-  if (!text) return '';
-  const escaped = escapeHtml(text);
-  // 匹配开头的 /命令名（字母开头，可含连字符）
-  const match = escaped.match(/^(\/[a-zA-Z][\w-]*)/);
-  if (match) {
-    const cmd = match[1];
-    const rest = escaped.slice(cmd.length);
-    return `<span class="text-primary font-semibold">${cmd}</span>${rest}`;
-  }
-  return escaped;
-});
 
 const onModelValueChange = async (value: unknown) => {
   if (typeof value !== 'string' || !settings.value) return;
@@ -884,15 +865,7 @@ const autoResize = () => {
   el.style.height = `${newHeight}px`;
 };
 
-// 镜像层滚动同步：textarea 文字是透明的，可见文字由背后的镜像层渲染。
-// 长文本粘贴后 textarea 内部滚动，镜像层 overflow-hidden 只裁剪不滚动，
-// 会导致可见文字冻结在顶部、与 textarea 滚动位置脱节。这里在 textarea
-// 滚动时把 scrollTop 同步给镜像层（overflow:hidden 元素仍可程序化滚动）。
-const syncMirrorScroll = () => {
-  const ta = textareaRef.value;
-  const mirror = mirrorRef.value;
-  if (ta && mirror) mirror.scrollTop = ta.scrollTop;
-};
+
 
 // textarea 输入事件：先调整高度，再刷新斜杠命令状态
 const onTextareaInput = () => {
@@ -1087,16 +1060,18 @@ defineExpose({
         </div>
       </div>
       <div class="relative w-full">
-        <!-- 高亮镜像层：显示带命令高亮的输入内容，位于 textarea 下方。
-             composition 期间用 opacity 隐藏（不切 display，避免布局重算干扰 IME），textarea 文字同时变为可见。 -->
-        <div
-          ref="mirrorRef"
-          aria-hidden="true"
-          :class="['absolute inset-0 w-full px-4 pt-3 pb-2 text-[0.95rem] text-[#1a1a1a] dark:text-[#ececec] overflow-hidden whitespace-pre-wrap break-words pointer-events-none', isComposing ? 'opacity-0' : 'opacity-100']"
-          v-html="highlightedInput + '\u200b'"></div>
-        <textarea ref="textareaRef" v-model="currentInput" @keydown="onTextareaKeydown" @input="onTextareaInput" @paste="onTextareaPaste" @scroll.passive="syncMirrorScroll" @compositionstart="isComposing = true" @compositionend="isComposing = false"
-          placeholder="Message Nova..." rows="1"
-          :class="['relative w-full bg-transparent border-none text-[0.95rem] caret-[#1a1a1a] dark:caret-[#ececec] resize-none outline-none block max-h-[40vh] px-4 pt-3 pb-2 placeholder:text-[#a3a3a3] z-10', isComposing ? 'text-[#1a1a1a] dark:text-[#ececec]' : 'text-transparent']"></textarea>
+        <textarea
+          ref="textareaRef"
+          v-model="currentInput"
+          @keydown="onTextareaKeydown"
+          @input="onTextareaInput"
+          @paste="onTextareaPaste"
+          @compositionstart="isComposing = true"
+          @compositionend="isComposing = false"
+          placeholder="Message Nova..."
+          rows="1"
+          class="relative w-full bg-transparent border-none text-[0.95rem] text-[#1a1a1a] dark:text-[#ececec] caret-[#1a1a1a] dark:caret-[#ececec] resize-none outline-none block max-h-[40vh] px-4 pt-3 pb-2 placeholder:text-[#a3a3a3]"
+        ></textarea>
 
         <!-- 斜杠命令下拉菜单：向上弹出，与输入框同宽 -->
         <div

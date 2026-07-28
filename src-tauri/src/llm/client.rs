@@ -17,9 +17,18 @@ pub async fn send_chat_message(
 ) -> Result<(), String> {
     // 克隆会话 ID，便于请求前后使用同一作用域 key。
     let conversation_scope = conversation_id.clone();
+    // 同一会话已有进行中的轮次时直接拒绝：否则两条流会并发写入同一
+    // live_turns entry 并重复推送 chat-stream 事件，导致前端把逐块错乱的
+    // 思考/正文落盘（页面刷新后 isGenerating 尚未恢复时的重发/编辑会触发此场景）。
+    if !crate::llm::services::live_turns::begin_turn(conversation_scope.as_deref()) {
+        warn!(
+            conversation_id = %conversation_scope.as_deref().unwrap_or("__default__"),
+            "chat turn rejected: another turn is already running for this conversation"
+        );
+        return Err("该会话已有正在进行的回复，请等待其完成或先停止。".to_string());
+    }
     // 标记本轮开始，初始化取消标志位。
     crate::llm::cancellation::begin_turn(conversation_scope.as_deref());
-    crate::llm::services::live_turns::begin_turn(conversation_scope.as_deref());
 
     // 兼容旧参数：未显式提供 agent_mode 时退化到 plan_mode 开关语义。
     let resolved_mode = agent_mode.unwrap_or_else(|| {

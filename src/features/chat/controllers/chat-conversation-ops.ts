@@ -199,6 +199,19 @@ export function createConversationOperations(deps: ConversationOpsDeps) {
     await ackChatTurnStatus(conversationId);
   }
 
+  /**
+   * 基于后端 live_turns 快照对当前会话再执行一次轮次恢复。
+   * 快照在页面刷新期间也由后端持续累积，始终是完整数据；
+   * 用于启动加载完成后覆盖加载窗口内错过的流式增量。
+   */
+  async function restoreActiveLiveTurn() {
+    const conversationId = activeConversationId.value;
+    if (!conversationId) {
+      return;
+    }
+    await restoreLiveTurnStatus(conversationId);
+  }
+
   async function persistConversationMemory(conversationId: string) {
     const { summary, keyFacts } = extractSessionMemory(messages.value);
     if (!summary.trim()) return;
@@ -428,6 +441,7 @@ export function createConversationOperations(deps: ConversationOpsDeps) {
     refreshConversations,
     createNewConversation,
     loadConversation,
+    restoreActiveLiveTurn,
     persistMessage,
     handleNewChat,
     handleSelectConversation,

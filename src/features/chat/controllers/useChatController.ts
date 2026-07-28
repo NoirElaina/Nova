@@ -279,29 +279,53 @@ export function useChatController() {
     mainView.value = view;
   }
 
+  function routeChatStreamEvent(payload: ChatMessageEvent) {
+    const payloadConversationId = (payload.conversation_id ?? "").trim();
+    const targetConversationId = payloadConversationId || activeConversationId.value;
+    if (!targetConversationId) {
+      return;
+    }
+
+    if (targetConversationId !== activeConversationId.value) {
+      void streamOps.handleChatStreamEvent(targetConversationId, payload, "background");
+      return;
+    }
+    void streamOps.handleChatStreamEvent(targetConversationId, payload, "active");
+  }
+
   onMounted(async () => {
+    // 先确定启动时要恢复的会话，再注册流事件监听。
+    // 刷新页面时后端轮次仍在运行：若在 loadConversation 完成前处理该会话的
+    // 流事件，事件会因 activeConversationId 为空而被当成"后台会话"，用空白
+    // 状态只累积到尾部增量，finalizeBackgroundTurn 会把残缺尾部落盘并 ack 掉
+    // 后端完整快照，恢复机制随之失效（历史中出现被截断的消息）。
+    await conversationOps.refreshConversations();
+    const startupConversationId = conversations.value[0]?.id ?? "";
+    // 恢复完成前丢弃目标会话的流事件：后端 live_turns 快照包含全部增量，
+    // 恢复以快照为准，这些事件是冗余的，处理反而会产生残缺/重复内容。
+    let startupRestorePending = startupConversationId.length > 0;
+
     try {
       unlistenChatStream = await listen<ChatMessageEvent>("chat-stream", (event) => {
         const payload = event.payload;
-        const payloadConversationId = (payload.conversation_id ?? "").trim();
-        const targetConversationId = payloadConversationId || activeConversationId.value;
-        if (!targetConversationId) {
+        if (
+          startupRestorePending &&
+          (payload.conversation_id ?? "").trim() === startupConversationId
+        ) {
           return;
         }
-
-        if (targetConversationId !== activeConversationId.value) {
-          void streamOps.handleChatStreamEvent(targetConversationId, payload, "background");
-          return;
-        }
-        void streamOps.handleChatStreamEvent(targetConversationId, payload, "active");
+        routeChatStreamEvent(payload);
       });
     } catch (err) {
       console.error("Failed to setup listener:", err);
     }
 
-    await conversationOps.refreshConversations();
-    if (conversations.value.length > 0) {
-      await conversationOps.loadConversation(conversations.value[0].id);
+    if (startupConversationId) {
+      await conversationOps.loadConversation(startupConversationId);
+      startupRestorePending = false;
+      // loadConversation 期间后端可能又推进了若干增量，以最新快照再恢复一次，
+      // 避免正文在恢复窗口内出现缺口；若轮次已在窗口内结束，则落盘完整内容。
+      await conversationOps.restoreActiveLiveTurn();
     }
 
     try {

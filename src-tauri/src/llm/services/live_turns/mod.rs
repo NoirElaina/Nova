@@ -33,14 +33,27 @@ fn scope_key(conversation_id: Option<&str>) -> Option<String> {
         .map(str::to_string)
 }
 
-pub fn begin_turn(conversation_id: Option<&str>) {
+/// 标记一轮开始。
+///
+/// 若同一会话已有 state == "running" 的轮次，返回 false 且不覆盖现有状态，
+/// 调用方应拒绝本次发送——并发流会交叉写入同一 entry（append_text /
+/// append_reasoning 没有轮次隔离），导致思考/正文内容逐块错乱。
+pub fn begin_turn(conversation_id: Option<&str>) -> bool {
     let Some(key) = scope_key(conversation_id) else {
-        return;
+        // 无会话 id 时不做并发限制，保持原有行为。
+        return true;
     };
     let now = now_millis();
     let mut state = live_turns()
         .lock()
         .unwrap_or_else(|error| error.into_inner());
+    if state
+        .get(&key)
+        .map(|turn| turn.state == "running")
+        .unwrap_or(false)
+    {
+        return false;
+    }
     state.insert(
         key.clone(),
         LiveTurnStatus {
@@ -52,6 +65,7 @@ pub fn begin_turn(conversation_id: Option<&str>) {
             updated_at: now,
         },
     );
+    true
 }
 
 pub fn append_text(conversation_id: Option<&str>, text: &str) {

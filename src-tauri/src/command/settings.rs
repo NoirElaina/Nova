@@ -147,6 +147,9 @@ pub struct AppSettings {
     // 模型配置页展示顺序（provider id 列表）。
     pub provider_order: Vec<String>,
     #[serde(default)]
+    // 按模型名覆盖上下文窗口（token）。优先于内置 models.json。
+    pub model_context_windows: HashMap<String, u32>,
+    #[serde(default)]
     // 被禁用的技能列表。
     pub disabled_skills: Vec<String>,
     #[serde(default = "default_hook_env")]
@@ -174,6 +177,7 @@ impl Default for AppSettings {
             custom_models: HashMap::new(),
             provider_profiles: HashMap::new(),
             provider_order: Vec::new(),
+            model_context_windows: HashMap::new(),
             disabled_skills: Vec::new(),
             hook_env: HashMap::new(),
             rag: RagSettings::default(),
@@ -185,6 +189,14 @@ impl Default for AppSettings {
 }
 
 impl AppSettings {
+    /// 当前模型最终上下文窗口：用户覆盖 > JSON 库 > 默认。
+    pub fn context_window_for_model(&self, model: &str) -> u32 {
+        crate::llm::utils::model_context::resolve_context_window_tokens(
+            model,
+            &self.model_context_windows,
+        )
+    }
+
     pub fn active_provider_key(&self) -> String {
         // 返回规范化后的当前 provider key。
         normalize_provider_key(&self.provider)
@@ -234,6 +246,19 @@ impl AppSettings {
 
         // 规范化 RAG 配置。
         self.rag.embedding_model = self.rag.embedding_model.trim().to_string();
+
+        // 规范化模型上下文覆盖：去空白键、丢弃 0、钳制到合理范围。
+        const MIN_CTX: u32 = 1_024;
+        const MAX_CTX: u32 = 16_000_000;
+        let mut normalized_windows = HashMap::new();
+        for (model, tokens) in self.model_context_windows.drain() {
+            let name = model.trim().to_string();
+            if name.is_empty() || tokens == 0 {
+                continue;
+            }
+            normalized_windows.insert(name, tokens.clamp(MIN_CTX, MAX_CTX));
+        }
+        self.model_context_windows = normalized_windows;
 
         self.sync_provider_order();
 
@@ -330,47 +355,47 @@ fn validate_provider_profiles(settings: &AppSettings) -> Result<(), String> {
     Ok(())
 }
 
+/// 内部加载设置（不走 command 错误上报），供 query/compact/window tokens 等路径复用。
+pub fn load_settings(app: &AppHandle) -> Result<AppSettings, String> {
+    let path = get_settings_path(app)?;
+
+    // 首次启动还没有 settings.json 时，返回运行时默认配置。
+    if !path.exists() {
+        let mut settings = AppSettings::default();
+        settings.normalize_for_runtime();
+        return Ok(settings);
+    }
+
+    let content = std::fs::read_to_string(&path)
+        .map_err(|error| format!("读取设置文件失败 {}: {}", path.display(), error))?;
+    let mut settings = serde_json::from_str::<AppSettings>(&content)
+        .map_err(|error| format!("解析设置文件失败 {}: {}", path.display(), error))?;
+
+    settings.normalize_for_runtime();
+    if crate::command::settings_secrets::has_plaintext_provider_api_keys(&settings) {
+        let mut persisted = settings.clone();
+        match crate::command::settings_secrets::encrypt_provider_api_keys(&mut persisted)
+            .and_then(|_| {
+                serde_json::to_string_pretty(&persisted).map_err(|error| error.to_string())
+            })
+            .and_then(|content| std::fs::write(&path, content).map_err(|error| error.to_string()))
+        {
+            Ok(()) => {}
+            Err(error) => warn!(
+                operation = "command.settings.load_settings",
+                path = %path.display(),
+                error = %error,
+                "failed to migrate plaintext API keys"
+            ),
+        }
+    }
+    crate::command::settings_secrets::decrypt_provider_api_keys(&mut settings);
+    Ok(settings)
+}
+
 #[tauri::command]
 pub fn get_settings(app: AppHandle) -> Result<AppSettings, String> {
-    let result = (|| {
-        // 获取 settings.json 路径。
-        let path = get_settings_path(&app)?;
-
-        // 首次启动还没有 settings.json 时，返回运行时默认配置。
-        if !path.exists() {
-            let mut settings = AppSettings::default();
-            settings.normalize_for_runtime();
-            return Ok(settings);
-        }
-
-        let content = std::fs::read_to_string(&path)
-            .map_err(|error| format!("读取设置文件失败 {}: {}", path.display(), error))?;
-        let mut settings = serde_json::from_str::<AppSettings>(&content)
-            .map_err(|error| format!("解析设置文件失败 {}: {}", path.display(), error))?;
-
-        settings.normalize_for_runtime();
-        if crate::command::settings_secrets::has_plaintext_provider_api_keys(&settings) {
-            let mut persisted = settings.clone();
-            match crate::command::settings_secrets::encrypt_provider_api_keys(&mut persisted)
-                .and_then(|_| {
-                    serde_json::to_string_pretty(&persisted).map_err(|error| error.to_string())
-                })
-                .and_then(|content| {
-                    std::fs::write(&path, content).map_err(|error| error.to_string())
-                }) {
-                Ok(()) => {}
-                Err(error) => warn!(
-                    operation = "command.settings.get_settings",
-                    path = %path.display(),
-                    error = %error,
-                    "failed to migrate plaintext API keys"
-                ),
-            }
-        }
-        crate::command::settings_secrets::decrypt_provider_api_keys(&mut settings);
-        Ok(settings)
-    })();
-
+    let result = load_settings(&app);
     report_backend_result(&app, "command.settings.get_settings", result, None)
 }
 
@@ -403,10 +428,14 @@ pub fn save_settings(app: AppHandle, settings: AppSettings) -> Result<(), String
 }
 
 /// 返回指定模型名对应的上下文窗口大小（token 数）。
+/// 优先级：用户设置覆盖 > 内置 models.json > 默认 200K。
 /// 前端在无活跃对话时用此命令初始化 ContextUsageIndicator 的分母。
 #[tauri::command]
-pub fn get_model_window_tokens(model: String) -> u32 {
-    crate::llm::utils::model_context::get_context_window_tokens(&model)
+pub fn get_model_window_tokens(app: AppHandle, model: String) -> u32 {
+    match load_settings(&app) {
+        Ok(settings) => settings.context_window_for_model(&model),
+        Err(_) => crate::llm::utils::model_context::get_context_window_tokens(&model),
+    }
 }
 
 /// 按 tokenizer 家族估算文本 token 数。

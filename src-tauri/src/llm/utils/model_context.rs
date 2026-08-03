@@ -1,7 +1,9 @@
 // 从 windowTokens/models.json 中读取模型的上下文窗口大小。
 // JSON 格式为 OpenRouter 模型列表（数组，每个元素有 id / context_length / top_provider.max_completion_tokens）。
 // 文件在编译期嵌入，运行时懒解析一次，之后直接在 Vec 上按名字匹配。
+// 用户可在设置里为任意模型覆盖上下文窗口（优先于 JSON / 默认值）。
 
+use std::collections::HashMap;
 use std::sync::OnceLock;
 
 use serde::Deserialize;
@@ -64,12 +66,38 @@ fn find_entry(model: &str) -> Option<&'static ModelEntry> {
     })
 }
 
-/// 查询模型的输入上下文窗口大小（token 数）。
+/// 查询内置 JSON 中的上下文窗口；未命中返回 DEFAULT_CONTEXT_WINDOW。
 pub fn get_context_window_tokens(model: &str) -> u32 {
     find_entry(model)
         .and_then(|e| e.context_length)
         .and_then(|v| u32::try_from(v).ok())
         .unwrap_or(DEFAULT_CONTEXT_WINDOW)
+}
+
+/// 用户覆盖表查找（精确 → 忽略大小写）。
+fn lookup_user_override(model: &str, overrides: &HashMap<String, u32>) -> Option<u32> {
+    let key = model.trim();
+    if key.is_empty() {
+        return None;
+    }
+    if let Some(&value) = overrides.get(key) {
+        if value > 0 {
+            return Some(value);
+        }
+    }
+    let lower = key.to_ascii_lowercase();
+    for (candidate, &value) in overrides {
+        if value > 0 && candidate.trim().eq_ignore_ascii_case(&lower) {
+            return Some(value);
+        }
+    }
+    None
+}
+
+/// 解析最终上下文窗口：用户设置 > 内置 models.json > 默认 200K。
+/// 新模型未进 JSON 时，只要用户在设置里配了就不会被压到默认值。
+pub fn resolve_context_window_tokens(model: &str, overrides: &HashMap<String, u32>) -> u32 {
+    lookup_user_override(model, overrides).unwrap_or_else(|| get_context_window_tokens(model))
 }
 
 /// 查询模型的最大输出 token 数。

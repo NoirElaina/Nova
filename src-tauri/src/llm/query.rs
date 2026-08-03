@@ -599,12 +599,10 @@ pub async fn send_chat_message(
 
         // 每次请求 provider 前重新读取当前模型配置，拿到该模型的上下文窗口大小。
         // 模型可能在设置中切换，因此这里不复用回合开始时的窗口值。
-        let model = crate::command::settings::get_settings(app.clone())?
-            .active_provider_profile()
-            .model;
-
-        let window_tokens =
-            crate::llm::utils::model_context::get_context_window_tokens(&model) as i64;
+        // 窗口：用户 per-model 覆盖 > 内置 JSON > 默认。
+        let settings = crate::command::settings::load_settings(&app)?;
+        let model = settings.active_provider_profile().model;
+        let window_tokens = settings.context_window_for_model(&model) as i64;
 
         // 不支持图片输入的模型：剥离图片为占位文本，但只在临时变量上操作，
         // 不覆盖 current_messages。否则回合结束后保存的 turn_snapshot 会丢失

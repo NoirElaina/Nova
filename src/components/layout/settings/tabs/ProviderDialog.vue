@@ -1,10 +1,17 @@
 <script setup lang="ts">
 import { ref, watch } from 'vue'
+import { invoke } from '@tauri-apps/api/core'
 import { X } from 'lucide-vue-next'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
+
+export type ModelDraftItem = {
+  name: string
+  /** 用户配置的上下文窗口；空/未填表示跟随内置 JSON 或默认 */
+  contextWindow: number | null
+}
 
 export interface ProviderDraft {
   id: string
@@ -12,7 +19,7 @@ export interface ProviderDraft {
   apiFormat: string
   apiKey: string
   baseUrl: string
-  models: string[]
+  models: ModelDraftItem[]
 }
 
 const props = defineProps<{
@@ -28,6 +35,8 @@ const emit = defineEmits<{
 
 const newModelInput = ref('')
 const saveError = ref('')
+/** 内置/默认解析值，仅作占位提示 */
+const resolvedHints = ref<Record<string, number>>({})
 
 const localDraft = ref<ProviderDraft>({
   id: '',
@@ -38,10 +47,41 @@ const localDraft = ref<ProviderDraft>({
   models: [],
 })
 
-const normalizeModels = (models: string[]) =>
-  Array.from(new Set(models.map((item) => item.trim()).filter(Boolean)))
+const normalizeModels = (models: ModelDraftItem[]): ModelDraftItem[] => {
+  const seen = new Set<string>()
+  const next: ModelDraftItem[] = []
+  for (const item of models) {
+    const name = (item?.name ?? '').trim()
+    if (!name || seen.has(name)) continue
+    seen.add(name)
+    const raw = item.contextWindow
+    const contextWindow =
+      typeof raw === 'number' && Number.isFinite(raw) && raw > 0
+        ? Math.round(raw)
+        : null
+    next.push({ name, contextWindow })
+  }
+  return next
+}
 
-watch(() => props.open, (newVal) => {
+const refreshHints = async (models: ModelDraftItem[]) => {
+  const next: Record<string, number> = { ...resolvedHints.value }
+  await Promise.all(
+    models.map(async (item) => {
+      if (next[item.name] != null) return
+      try {
+        next[item.name] = await invoke<number>('get_model_window_tokens', {
+          model: item.name,
+        })
+      } catch {
+        next[item.name] = 200000
+      }
+    }),
+  )
+  resolvedHints.value = next
+}
+
+watch(() => props.open, async (newVal) => {
   saveError.value = ''
   if (newVal && props.draft) {
     localDraft.value = {
@@ -59,13 +99,26 @@ watch(() => props.open, (newVal) => {
     }
   }
   newModelInput.value = ''
+  if (newVal) {
+    await refreshHints(localDraft.value.models)
+  }
 })
 
-const addModel = () => {
+const addModel = async () => {
   const value = newModelInput.value.trim()
   if (!value) return
-  if (!localDraft.value.models.includes(value)) {
-    localDraft.value.models = [...localDraft.value.models, value]
+  if (!localDraft.value.models.some((item) => item.name === value)) {
+    let hint = 200000
+    try {
+      hint = await invoke<number>('get_model_window_tokens', { model: value })
+    } catch {
+      // keep default
+    }
+    resolvedHints.value = { ...resolvedHints.value, [value]: hint }
+    localDraft.value.models = [
+      ...localDraft.value.models,
+      { name: value, contextWindow: hint },
+    ]
   }
   newModelInput.value = ''
   saveError.value = ''
@@ -73,6 +126,23 @@ const addModel = () => {
 
 const removeModel = (index: number) => {
   localDraft.value.models = localDraft.value.models.filter((_, itemIndex) => itemIndex !== index)
+}
+
+const setContextWindow = (index: number, raw: string) => {
+  const item = localDraft.value.models[index]
+  if (!item) return
+  const trimmed = raw.trim()
+  if (!trimmed) {
+    item.contextWindow = null
+    return
+  }
+  const parsed = Number.parseInt(trimmed.replace(/[,_\s]/g, ''), 10)
+  item.contextWindow = Number.isFinite(parsed) && parsed > 0 ? parsed : null
+}
+
+const contextPlaceholder = (model: ModelDraftItem) => {
+  const hint = resolvedHints.value[model.name]
+  return hint ? `默认 ${hint.toLocaleString()}` : '例如 200000'
 }
 
 const handleSave = () => {
@@ -143,20 +213,39 @@ const handleSave = () => {
 
             <div
               v-if="localDraft.models.length > 0"
-              class="max-h-40 overflow-y-auto rounded-lg border border-border bg-muted/30 p-2"
+              class="max-h-56 overflow-y-auto rounded-lg border border-border bg-muted/30 p-2"
             >
-              <div class="flex flex-wrap gap-2">
+              <div class="flex flex-col gap-2">
                 <div
                   v-for="(model, index) in localDraft.models"
-                  :key="`${model}-${index}`"
-                  class="inline-flex max-w-full items-center gap-1 rounded-md border border-border bg-background py-1 pl-2.5 pr-1 text-sm"
-                  :title="model"
+                  :key="`${model.name}-${index}`"
+                  class="flex flex-wrap items-center gap-2 rounded-md border border-border bg-background px-2.5 py-2"
                 >
-                  <span class="truncate">{{ model }}</span>
-                  <span v-if="index === 0" class="shrink-0 text-[10px] text-muted-foreground">默认</span>
+                  <div class="min-w-0 flex-1">
+                    <div class="flex items-center gap-1.5">
+                      <span class="truncate text-sm font-medium" :title="model.name">{{ model.name }}</span>
+                      <span v-if="index === 0" class="shrink-0 text-[10px] text-muted-foreground">默认</span>
+                    </div>
+                  </div>
+                  <div class="flex items-center gap-1.5">
+                    <Label :for="`ctx-${index}`" class="shrink-0 text-[11px] text-muted-foreground whitespace-nowrap">
+                      上下文
+                    </Label>
+                    <Input
+                      :id="`ctx-${index}`"
+                      class="h-8 w-[7.5rem] text-xs tabular-nums"
+                      type="number"
+                      min="1024"
+                      step="1024"
+                      :placeholder="contextPlaceholder(model)"
+                      :model-value="model.contextWindow ?? ''"
+                      @update:model-value="setContextWindow(index, String($event ?? ''))"
+                    />
+                    <span class="text-[10px] text-muted-foreground">tokens</span>
+                  </div>
                   <button
                     type="button"
-                    class="inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-md text-muted-foreground hover:bg-muted hover:text-foreground"
+                    class="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-muted-foreground hover:bg-muted hover:text-foreground"
                     aria-label="删除模型"
                     @click="removeModel(index)"
                   >
@@ -177,7 +266,9 @@ const handleSave = () => {
               />
               <Button variant="outline" class="shrink-0" @click="addModel">添加</Button>
             </div>
-            <p class="text-xs text-muted-foreground">列表第一项为聊天区默认模型，可在输入框切换</p>
+            <p class="text-xs text-muted-foreground">
+              列表第一项为聊天区默认模型。上下文窗口优先用此处配置；留空则查内置库，仍无则 200K。
+            </p>
             <p v-if="saveError" class="text-xs text-destructive">{{ saveError }}</p>
           </div>
         </div>

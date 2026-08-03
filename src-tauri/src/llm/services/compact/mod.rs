@@ -926,10 +926,9 @@ pub async fn compact_messages_for_turn_with_report(
     messages: &[Message],
 ) -> Result<CompactionOutcome, String> {
     // 从 settings 读取当前模型的上下文窗口大小，用于动态计算压缩阈值。
-    let model = crate::command::settings::get_settings(app.clone())?
-        .active_provider_profile()
-        .model;
-    let window_tokens = crate::llm::utils::model_context::get_context_window_tokens(&model) as i64;
+    let settings = crate::command::settings::load_settings(app)?;
+    let model = settings.active_provider_profile().model;
+    let window_tokens = settings.context_window_for_model(&model) as i64;
 
     // 决策并记录调试信息
     let decision = decide_compact_strategy(messages, window_tokens);

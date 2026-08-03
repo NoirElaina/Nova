@@ -6,7 +6,7 @@ import { Button } from '@/components/ui/button'
 import { ConfirmDialog } from '@/components/ui/confirm-dialog'
 
 import ProviderCard from './ProviderCard.vue'
-import ProviderDialog, { type ProviderDraft } from './ProviderDialog.vue'
+import ProviderDialog, { type ProviderDraft, type ModelDraftItem } from './ProviderDialog.vue'
 
 type ProviderProfile = {
   displayName?: string
@@ -17,6 +17,8 @@ type ProviderProfile = {
 }
 
 const customModels = ref<Record<string, string[]>>({})
+/** model name -> context window tokens */
+const modelContextWindows = ref<Record<string, number>>({})
 const providerOrder = ref<string[]>([])
 
 const builtinProviderIds = new Set(['anthropic', 'openai'])
@@ -35,6 +37,15 @@ const resolveProviderModels = (id: string, profile: ProviderProfile) => {
   }
   return profile.model ? [profile.model] : []
 }
+
+const toModelDraftItems = (names: string[]): ModelDraftItem[] =>
+  names.map((name) => ({
+    name,
+    contextWindow:
+      typeof modelContextWindows.value[name] === 'number' && modelContextWindows.value[name] > 0
+        ? modelContextWindows.value[name]
+        : null,
+  }))
 
 const syncProviderOrder = (profiles: Record<string, ProviderProfile>, order: string[]) => {
   const nextOrder = order.filter((id) => id in profiles)
@@ -65,6 +76,16 @@ const loadSettings = async () => {
       if (settings.customModels && typeof settings.customModels === 'object') {
         customModels.value = settings.customModels
       }
+      if (settings.modelContextWindows && typeof settings.modelContextWindows === 'object') {
+        const next: Record<string, number> = {}
+        for (const [key, value] of Object.entries(settings.modelContextWindows)) {
+          const n = Number(value)
+          if (key.trim() && Number.isFinite(n) && n > 0) {
+            next[key.trim()] = Math.round(n)
+          }
+        }
+        modelContextWindows.value = next
+      }
       if (Array.isArray(settings.providerOrder)) {
         providerOrder.value = settings.providerOrder
       }
@@ -87,6 +108,7 @@ const saveSettings = async () => {
       provider: currentProviderId.value,
       providerProfiles: providerProfiles.value,
       customModels: customModels.value,
+      modelContextWindows: modelContextWindows.value,
       providerOrder: providerOrder.value,
     }
     await invoke('save_settings', { settings })
@@ -134,7 +156,7 @@ const handleEdit = (id: string) => {
     apiFormat: profile.apiFormat || 'openai',
     apiKey: profile.apiKey || '',
     baseUrl: profile.baseUrl || '',
-    models: [...resolveProviderModels(id, profile)],
+    models: toModelDraftItems([...resolveProviderModels(id, profile)]),
   }
   dialogIsNew.value = false
   dialogOpen.value = true
@@ -142,7 +164,8 @@ const handleEdit = (id: string) => {
 
 const handleSaveDraft = async (draft: ProviderDraft, originalId: string | null) => {
   const id = draft.id || 'custom-provider'
-  const models = Array.from(new Set((draft.models || []).map((item) => item.trim()).filter(Boolean)))
+  const modelItems = draft.models || []
+  const models = modelItems.map((item) => item.name.trim()).filter(Boolean)
 
   if (originalId && originalId !== id) {
     delete providerProfiles.value[originalId]
@@ -159,6 +182,19 @@ const handleSaveDraft = async (draft: ProviderDraft, originalId: string | null) 
   }
 
   customModels.value[id] = models
+
+  // 合并本 provider 模型的上下文覆盖；清除本批中显式留空的项
+  const nextWindows = { ...modelContextWindows.value }
+  for (const item of modelItems) {
+    const name = item.name.trim()
+    if (!name) continue
+    if (typeof item.contextWindow === 'number' && item.contextWindow > 0) {
+      nextWindows[name] = Math.round(item.contextWindow)
+    } else {
+      delete nextWindows[name]
+    }
+  }
+  modelContextWindows.value = nextWindows
 
   if (!providerOrder.value.includes(id)) {
     providerOrder.value = [...providerOrder.value, id]
@@ -210,6 +246,9 @@ const deleteDialogDesc = computed(() => {
     <div class="mb-6 flex items-center justify-between">
       <div class="flex flex-col gap-1">
         <h2 class="text-xl font-bold tracking-tight text-foreground">模型配置</h2>
+        <p class="text-xs text-muted-foreground">
+          可为每个模型单独设置上下文窗口，避免新模型未收录时被压到默认值。
+        </p>
       </div>
       <Button @click="handleCreate" class="gap-2">
         <Plus class="h-4 w-4" /> 添加配置

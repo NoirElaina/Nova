@@ -24,11 +24,16 @@ use std::os::windows::process::CommandExt;
 const DEFAULT_TIMEOUT_MS: u64 = 120_000;
 const MAX_TIMEOUT_MS: u64 = 1_800_000;
 const MARKER_PREFIX: &str = "__NOVA_CMD_END__|";
+const READY_MARKER: &str = "__NOVA_SHELL_READY__";
 
 // 卡顿看门狗:输出长时间不增长且末尾命中交互式 prompt 正则时,
 // 判定命令在等待 stdin,提前终止并提示模型改用管道喂输入。
 const STALL_THRESHOLD_MS: u64 = 45_000;
 const STALL_TAIL_BYTES: usize = 1024;
+// 双流 marker 不必死等：管道全缓冲时另一路可能迟迟不刷出。
+// 任一端收到本命令 marker 后，最多再等这么久收另一端，然后结束。
+const MARKER_PEER_GRACE_MS: u64 = 80;
+const BOOTSTRAP_READY_TIMEOUT_MS: u64 = 15_000;
 
 fn prompt_patterns() -> &'static [Regex] {
     static PATTERNS: OnceLock<Vec<Regex>> = OnceLock::new();
@@ -174,24 +179,36 @@ fn encode_pwsh_command(command: &str) -> String {
 }
 
 #[cfg(target_os = "windows")]
-fn build_bootstrap_script() -> String {
-    [
-        "[Console]::InputEncoding = [System.Text.Encoding]::UTF8",
-        "[Console]::OutputEncoding = [System.Text.Encoding]::UTF8",
-        "$OutputEncoding = [System.Text.Encoding]::UTF8",
-        "$ProgressPreference = 'SilentlyContinue'",
-        "$ErrorActionPreference = 'Continue'",
-        "$env:NO_COLOR = '1'",
-        "if ($PSStyle) { $PSStyle.OutputRendering = 'PlainText' }",
-        "function global:prompt { '' }",
-        "",
-    ]
-    .join("\n")
+fn build_bootstrap_init_script() -> String {
+    r#"[Console]::InputEncoding = [System.Text.Encoding]::UTF8
+[Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+$OutputEncoding = [System.Text.Encoding]::UTF8
+$ProgressPreference = 'SilentlyContinue'
+$ErrorActionPreference = 'Continue'
+$env:NO_COLOR = '1'
+if ($PSStyle) { $PSStyle.OutputRendering = 'PlainText' }
+function global:prompt { '' }
+"#
+    .to_string()
+}
+
+#[cfg(target_os = "windows")]
+fn build_ready_marker_script() -> String {
+    // 直写 Console 并 Flush，避免管道全缓冲导致 ready 迟迟不到
+    format!(
+        r#"[Console]::Out.WriteLine('{ready}')
+[Console]::Out.Flush()
+[Console]::Error.WriteLine('{ready}')
+[Console]::Error.Flush()
+"#,
+        ready = READY_MARKER
+    )
 }
 
 #[cfg(target_os = "windows")]
 fn build_foreground_wrapper(command_id: &str, command: &str) -> String {
     let encoded = encode_utf8_base64(command);
+    // 不用 Write-Output 发 marker：成功流在重定向时可能块缓冲，双 marker 死等会拖到 timeout。
     format!(
         r#"$__novaCommandId = '{command_id}'
 $__novaEncodedCommand = '{encoded}'
@@ -213,11 +230,16 @@ try {{
     $__novaExitCode = 1
     Write-Error $_
 }}
+# 先刷出命令输出，再写 marker，避免管道块缓冲把 stdout 和 marker 一起卡住
+[Console]::Out.Flush()
+[Console]::Error.Flush()
 $__novaCwd = (Get-Location).Path
 $__novaCwdB64 = [Convert]::ToBase64String([System.Text.Encoding]::UTF8.GetBytes($__novaCwd))
 $__novaMarker = "{prefix}$__novaCommandId|$__novaExitCode|$__novaCwdB64|0"
-Write-Output $__novaMarker
+[Console]::Out.WriteLine($__novaMarker)
+[Console]::Out.Flush()
 [Console]::Error.WriteLine($__novaMarker)
+[Console]::Error.Flush()
 "#,
         prefix = MARKER_PREFIX
     )
@@ -229,7 +251,7 @@ fn build_background_wrapper(command_id: &str, command: &str) -> String {
     format!(
         r#"$__novaCommandId = '{command_id}'
 $__novaCwd = (Get-Location).Path
-$__nova = Start-Process -FilePath '{pwsh}' -ArgumentList @('-NoLogo','-NonInteractive','-EncodedCommand','{encoded}') -WorkingDirectory $__novaCwd -WindowStyle Hidden -RedirectStandardOutput 'NUL' -RedirectStandardError 'NUL' -PassThru
+$__nova = Start-Process -FilePath '{pwsh}' -ArgumentList @('-NoLogo','-NoProfile','-NonInteractive','-EncodedCommand','{encoded}') -WorkingDirectory $__novaCwd -WindowStyle Hidden -RedirectStandardOutput 'NUL' -RedirectStandardError 'NUL' -PassThru
 [pscustomobject]@{{
     ok = $true
     background = $true
@@ -238,25 +260,39 @@ $__nova = Start-Process -FilePath '{pwsh}' -ArgumentList @('-NoLogo','-NonIntera
 }} | ConvertTo-Json -Compress
 $__novaCwdB64 = [Convert]::ToBase64String([System.Text.Encoding]::UTF8.GetBytes($__novaCwd))
 $__novaMarker = "{prefix}$__novaCommandId|0|$__novaCwdB64|0"
-Write-Output $__novaMarker
+[Console]::Out.WriteLine($__novaMarker)
+[Console]::Out.Flush()
 [Console]::Error.WriteLine($__novaMarker)
+[Console]::Error.Flush()
 "#,
         pwsh = PWSH_PATH,
         prefix = MARKER_PREFIX,
         command_id = command_id,
+        encoded = encoded,
     )
 }
 
 #[cfg(not(target_os = "windows"))]
-fn build_bootstrap_script() -> String {
+fn build_bootstrap_init_script() -> String {
     String::new()
+}
+
+#[cfg(not(target_os = "windows"))]
+fn build_ready_marker_script() -> String {
+    // ready 写到 stdout+stderr，spawn 侧等到任一端即可认为 shell 已可接收命令
+    format!(
+        "printf '%s\\n' '{ready}'\nprintf '%s\\n' '{ready}' >&2\n",
+        ready = READY_MARKER
+    )
 }
 
 #[cfg(not(target_os = "windows"))]
 fn build_foreground_wrapper(command_id: &str, command: &str) -> String {
     let encoded = encode_utf8_base64(command);
+    // 优先 stdbuf 行缓冲；没有则退回普通 printf。结束时再尝试 fflush 不可用，
+    // 依赖 execute 侧「单 marker + grace」避免双流死等。
     format!(
-        "NOVA_CMD_ID='{command_id}'\nNOVA_CMD=$(printf '%s' '{encoded}' | base64 -d)\neval \"$NOVA_CMD\"\nNOVA_EXIT=$?\nNOVA_CWD_B64=$(pwd | base64 | tr -d '\\n')\nNOVA_MARKER='{prefix}'\"$NOVA_CMD_ID|$NOVA_EXIT|$NOVA_CWD_B64|0\"\nprintf '%s\\n' \"$NOVA_MARKER\"\nprintf '%s\\n' \"$NOVA_MARKER\" >&2\n",
+        "NOVA_CMD_ID='{command_id}'\nNOVA_CMD=$(printf '%s' '{encoded}' | base64 -d 2>/dev/null || printf '%s' '{encoded}' | base64 -D)\neval \"$NOVA_CMD\"\nNOVA_EXIT=$?\nNOVA_CWD_B64=$(pwd | base64 | tr -d '\\n')\nNOVA_MARKER='{prefix}'\"$NOVA_CMD_ID|$NOVA_EXIT|$NOVA_CWD_B64|0\"\nprintf '%s\\n' \"$NOVA_MARKER\"\nprintf '%s\\n' \"$NOVA_MARKER\" >&2\n",
         prefix = MARKER_PREFIX
     )
 }
@@ -357,7 +393,8 @@ async fn spawn_session(initial_cwd: Option<&str>) -> Result<ShellSession, String
         background_pids: HashSet::new(),
     };
 
-    let mut bootstrap = build_bootstrap_script();
+    // 顺序：init → cwd → ready。ready 必须最后，表示会话已可接收用户命令。
+    let mut bootstrap = build_bootstrap_init_script();
     if let Some(cwd) = initial_cwd.filter(|value| !value.trim().is_empty()) {
         #[cfg(target_os = "windows")]
         {
@@ -374,19 +411,19 @@ async fn spawn_session(initial_cwd: Option<&str>) -> Result<ShellSession, String
             ));
         }
     }
+    bootstrap.push_str(&build_ready_marker_script());
 
-    if !bootstrap.is_empty() {
-        session
-            .stdin
-            .write_all(bootstrap.as_bytes())
-            .await
-            .map_err(|error| format!("Failed to bootstrap shell session: {}", error))?;
-        session
-            .stdin
-            .flush()
-            .await
-            .map_err(|error| format!("Failed to flush shell bootstrap: {}", error))?;
-    }
+    session
+        .stdin
+        .write_all(bootstrap.as_bytes())
+        .await
+        .map_err(|error| format!("Failed to bootstrap shell session: {}", error))?;
+    session
+        .stdin
+        .flush()
+        .await
+        .map_err(|error| format!("Failed to flush shell bootstrap: {}", error))?;
+    wait_for_ready_marker(&mut session).await?;
 
     session.last_known_cwd = initial_cwd
         .map(crate::command::workspace::display_path_text)
@@ -397,6 +434,70 @@ async fn spawn_session(initial_cwd: Option<&str>) -> Result<ShellSession, String
         });
 
     Ok(session)
+}
+
+fn is_ready_marker_line(line: &str) -> bool {
+    line.trim() == READY_MARKER
+}
+
+/// 等到 bootstrap ready（stdout 或 stderr 任一端）。超时则失败，由上层重建会话。
+async fn wait_for_ready_marker(session: &mut ShellSession) -> Result<(), String> {
+    let deadline =
+        tokio::time::Instant::now() + Duration::from_millis(BOOTSTRAP_READY_TIMEOUT_MS);
+    let mut saw_ready = false;
+    // 双端都可能发 ready；收到第一个即可，再短等另一端以免残留进下一命令。
+    let mut peer_deadline: Option<tokio::time::Instant> = None;
+    let mut ready_count = 0_u8;
+
+    while ready_count < 2 {
+        if saw_ready {
+            if let Some(peer_at) = peer_deadline {
+                if tokio::time::Instant::now() >= peer_at {
+                    break;
+                }
+            }
+        }
+
+        let now = tokio::time::Instant::now();
+        if now >= deadline {
+            return Err("Shell session bootstrap timed out waiting for ready marker".into());
+        }
+
+        let slice = if let Some(peer_at) = peer_deadline {
+            peer_at.saturating_duration_since(now).min(deadline.saturating_duration_since(now))
+        } else {
+            deadline.saturating_duration_since(now)
+        };
+
+        match tokio::time::timeout(slice, session.events.recv()).await {
+            Ok(Some(event)) => {
+                if is_ready_marker_line(&event.text) {
+                    saw_ready = true;
+                    ready_count = ready_count.saturating_add(1);
+                    if peer_deadline.is_none() {
+                        peer_deadline = Some(
+                            tokio::time::Instant::now()
+                                + Duration::from_millis(MARKER_PEER_GRACE_MS),
+                        );
+                    }
+                }
+                // bootstrap 期间其它输出直接丢弃
+            }
+            Ok(None) => {
+                return Err("Shell session closed during bootstrap".into());
+            }
+            Err(_) => {
+                if saw_ready {
+                    break;
+                }
+            }
+        }
+    }
+
+    if !saw_ready {
+        return Err("Shell session bootstrap failed without ready marker".into());
+    }
+    Ok(())
 }
 
 async fn ensure_session_alive(session: &mut ShellSession) -> Result<(), String> {
@@ -483,10 +584,17 @@ async fn execute_wrapped_command(
     let mut stdout_done = false;
     let mut stderr_done = false;
     let mut resolved_marker: Option<CommandMarker> = None;
+    let mut first_marker_at: Option<tokio::time::Instant> = None;
     let mut last_output_growth_at = tokio::time::Instant::now();
 
     loop {
-        if stdout_done && stderr_done {
+        let both_markers = stdout_done && stderr_done;
+        let grace_elapsed = first_marker_at.is_some_and(|at| {
+            tokio::time::Instant::now().duration_since(at)
+                >= Duration::from_millis(MARKER_PEER_GRACE_MS)
+        });
+        // 双 marker 齐了，或已收到一端 marker 且宽限期过：立即结束，避免管道缓冲死等。
+        if both_markers || (resolved_marker.is_some() && grace_elapsed) {
             break;
         }
 
@@ -509,7 +617,9 @@ async fn execute_wrapped_command(
 
         // 卡顿看门狗:输出长时间不增长且末尾命中交互式 prompt 正则时,
         // 判定命令在等待 stdin,提前终止并提示模型改用管道喂输入。
-        if now.duration_since(last_output_growth_at) >= Duration::from_millis(STALL_THRESHOLD_MS) {
+        if resolved_marker.is_none()
+            && now.duration_since(last_output_growth_at) >= Duration::from_millis(STALL_THRESHOLD_MS)
+        {
             let tail = extract_tail(&stdout, &stderr, STALL_TAIL_BYTES);
             if looks_like_prompt(&tail) {
                 warn!("shell command appears blocked on interactive input; restarting");
@@ -532,6 +642,13 @@ async fn execute_wrapped_command(
         }
 
         let remaining = timeout_at.saturating_duration_since(now);
+        let wait_budget = if let Some(at) = first_marker_at {
+            let grace_left = Duration::from_millis(MARKER_PEER_GRACE_MS)
+                .saturating_sub(now.duration_since(at));
+            remaining.min(grace_left.max(Duration::from_millis(1)))
+        } else {
+            remaining
+        };
 
         let maybe_event = tokio::select! {
             biased;
@@ -550,7 +667,7 @@ async fn execute_wrapped_command(
                     pid: None,
                 });
             }
-            result = tokio::time::timeout(remaining, session.events.recv()) => result,
+            result = tokio::time::timeout(wait_budget, session.events.recv()) => result,
         };
 
         let event = match maybe_event {
@@ -561,26 +678,51 @@ async fn execute_wrapped_command(
                 session.last_known_cwd = cwd_before;
                 return Err("Shell session closed unexpectedly".to_string());
             }
-            Err(_) => continue,
+            Err(_) => {
+                // 宽限期到：若已有 marker 则结束；否则继续等命令本身
+                if resolved_marker.is_some() {
+                    break;
+                }
+                continue;
+            }
         };
+
+        if is_ready_marker_line(&event.text) {
+            // 会话重建后的残留 ready，不进输出
+            continue;
+        }
 
         if let Some(marker) = parse_marker_line(&event.text) {
             if marker.command_id == command_id {
                 session.last_known_cwd = Some(marker.cwd.clone());
                 resolved_marker = Some(marker);
+                if first_marker_at.is_none() {
+                    first_marker_at = Some(tokio::time::Instant::now());
+                }
                 match event.stream {
                     StreamKind::Stdout => stdout_done = true,
                     StreamKind::Stderr => stderr_done = true,
                 }
                 continue;
             }
+            // 其它命令的残留 marker：丢弃，绝不写进 stdout/stderr
+            continue;
         }
 
         match event.stream {
-            StreamKind::Stdout => stdout.push_str(&event.text),
-            StreamKind::Stderr => stderr.push_str(&event.text),
+            StreamKind::Stdout => {
+                if !stdout_done {
+                    stdout.push_str(&event.text);
+                    last_output_growth_at = tokio::time::Instant::now();
+                }
+            }
+            StreamKind::Stderr => {
+                if !stderr_done {
+                    stderr.push_str(&event.text);
+                    last_output_growth_at = tokio::time::Instant::now();
+                }
+            }
         }
-        last_output_growth_at = tokio::time::Instant::now();
     }
 
     let marker =

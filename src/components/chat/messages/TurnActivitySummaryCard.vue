@@ -4,7 +4,11 @@ import type { ToolTurnSummary, ToolTurnEntrySnapshot } from "../../../lib/chat-t
 import {
   renderToolTurnSummaryLine,
 } from "../../../features/chat/utils/tool-activity-summary";
-import { summarizeToolInfo } from "../../../features/chat/utils/tool-info";
+import {
+  extractToolPath,
+  fileNameFromPath,
+  summarizeToolInfo,
+} from "../../../features/chat/utils/tool-info";
 import {
   buildHunk,
   type DiffLine,
@@ -32,7 +36,16 @@ function formatToolName(name: string): string {
 
 function rowText(entry: ToolTurnEntrySnapshot): string {
   const info = summarizeToolInfo(entry.toolName, entry.input);
-  return info ? `${formatToolName(entry.toolName)} ${info}` : formatToolName(entry.toolName);
+  return info ? `${formatToolName(entry.toolName)} · ${info}` : formatToolName(entry.toolName);
+}
+
+function rowTitle(entry: ToolTurnEntrySnapshot): string {
+  const path = extractToolPath(entry.input || "");
+  if (path) {
+    const name = fileNameFromPath(path);
+    return name === path ? path : `${name}\n${path}`;
+  }
+  return rowText(entry);
 }
 
 function resultText(entry: ToolTurnEntrySnapshot): string {
@@ -76,9 +89,13 @@ function lineMarker(line: DiffLine): string {
         class="turn-summary-card__tool"
         :class="`turn-summary-card__tool--${entry.status}`"
       >
-        <summary class="turn-summary-card__row">
+        <summary class="turn-summary-card__row" :title="rowTitle(entry)">
           <span class="turn-summary-card__status" aria-hidden="true"></span>
           <span class="turn-summary-card__row-text">{{ rowText(entry) }}</span>
+          <span
+            v-if="entry.status === 'running'"
+            class="turn-summary-card__running-tag"
+          >进行中</span>
           <span class="turn-summary-card__row-chevron">›</span>
         </summary>
         <pre
@@ -223,6 +240,14 @@ function lineMarker(line: DiffLine): string {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+
+.turn-summary-card__running-tag {
+  flex: 0 0 auto;
+  font-size: 11px;
+  color: #2563eb;
+  letter-spacing: 0.02em;
 }
 
 .turn-summary-card__row-chevron {

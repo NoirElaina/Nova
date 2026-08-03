@@ -197,11 +197,43 @@ export async function loadConversationHistory(conversationId: string): Promise<P
   return saved || [];
 }
 
+/** 后端 HistoryMessage.id 是 Option<i64>；前端临时 id 是 "user-..." 字符串，不能原样下发。 */
+function toHistoryMessagePayload(message: ChatMessage): Record<string, unknown> {
+  const payload: Record<string, unknown> = {
+    role: message.role,
+    content: message.content,
+  };
+  if (message.reasoning != null && message.reasoning.trim()) {
+    payload.reasoning = message.reasoning;
+  }
+  if (message.attachments != null && message.attachments.length > 0) {
+    payload.attachments = message.attachments;
+  }
+  if (typeof message.tokenUsage === "number") {
+    payload.tokenUsage = message.tokenUsage;
+  }
+  if (message.cost != null) {
+    payload.cost = message.cost;
+  }
+  // 仅当 id 已是数据库数字主键时才带上；临时 client id 一律省略
+  const rawId = message.id;
+  if (rawId != null && /^\d+$/.test(String(rawId).trim())) {
+    const n = Number.parseInt(String(rawId).trim(), 10);
+    if (Number.isFinite(n) && n > 0) {
+      payload.id = n;
+    }
+  }
+  return payload;
+}
+
 export async function appendConversationMessage(
   conversationId: string,
   message: ChatMessage,
 ): Promise<number> {
-  const id = await invoke<number>("append_history", { conversationId, message });
+  const id = await invoke<number>("append_history", {
+    conversationId,
+    message: toHistoryMessagePayload(message),
+  });
   return typeof id === "number" ? id : 0;
 }
 
@@ -209,7 +241,10 @@ export async function replaceConversationHistory(
   conversationId: string,
   messages: ChatMessage[],
 ): Promise<void> {
-  await invoke("replace_history", { conversationId, messages });
+  await invoke("replace_history", {
+    conversationId,
+    messages: messages.map(toHistoryMessagePayload),
+  });
 }
 
 export async function loadConversationToolLogs(

@@ -13,20 +13,51 @@ const props = withDefaults(
 )
 
 const rendered = computed(() =>
-  renderMarkdown(props.content || '', { cache: !props.live }),
+  renderMarkdown(props.content || '', {
+    cache: !props.live,
+    live: props.live,
+  }),
 )
+
+const COPY_ICON =
+  '<svg class="hljs-copy-icon" aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>'
+const CHECK_ICON =
+  '<svg class="hljs-copy-icon is-check" aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg>'
+
+const handleClick = async (event: MouseEvent) => {
+  const target = event.target
+  if (!(target instanceof Element)) return
+  const btn = target.closest('.hljs-copy')
+  if (!(btn instanceof HTMLButtonElement)) return
+
+  const block = btn.closest('.hljs-block')
+  const code = block?.querySelector('code')
+  const text = code?.textContent ?? ''
+  if (!text) return
+
+  const restore = () => {
+    btn.classList.remove('is-copied')
+  }
+
+  try {
+    await navigator.clipboard.writeText(text)
+    btn.classList.add('is-copied')
+    window.setTimeout(restore, 800)
+  } catch {
+    window.setTimeout(restore, 800)
+  }
+}
 </script>
 
 <template>
   <Card class="border-0 bg-transparent py-0 shadow-none">
     <CardContent class="px-0">
-      <div class="md-body" v-html="rendered" />
+      <div class="md-body" v-html="rendered" @click="handleClick" />
     </CardContent>
   </Card>
 </template>
 
 <style>
-@import 'highlight.js/styles/github-dark.css';
 @import 'katex/dist/katex.min.css';
 
 .md-body {
@@ -35,6 +66,8 @@ const rendered = computed(() =>
   color: inherit;
   word-break: break-word;
   overflow-x: auto;
+  width: 100%;
+  max-width: 100%;
 }
 
 .md-body>*:first-child {
@@ -95,54 +128,261 @@ const rendered = computed(() =>
   box-shadow: inset 0 -1px 0 rgba(120, 92, 64, 0.08);
 }
 
+/* 浅色代码块：GitHub-light 风格，头部与正文有区分 */
 .hljs-block {
-  margin: 0.8em 0;
-  border-radius: 10px;
+  margin: 0.85em 0;
+  width: 100%;
+  max-width: 100%;
+  box-sizing: border-box;
+  border-radius: 12px;
   overflow: hidden;
-  border: 1px solid #1f2937;
-  background: #1e1e1e;
+  border: 1px solid #d0d7de;
+  background: #f6f8fa;
+  display: flex;
+  flex-direction: column;
+  box-shadow: inset 0 0 0 1px rgba(255,255,255,0.6), 0 1px 2px rgba(31,35,40,0.04);
 }
 
 .hljs-header {
+  flex: 0 0 auto;
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 6px 14px;
-  background: #2a2a2a;
-  border-bottom: 1px solid #333;
+  gap: 10px;
+  padding: 5px 12px;
+  background: #eaeef2;
+  border-bottom: 1px solid #d0d7de;
+  z-index: 1;
 }
 
 .hljs-lang {
   font-size: 11px;
-  color: #888;
-  font-family: 'SF Mono', monospace;
+  color: #6e7781;
+  font-family: 'SF Mono', ui-monospace, monospace;
   text-transform: lowercase;
+  letter-spacing: 0.02em;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .hljs-copy {
-  font-size: 11px;
-  color: #888;
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  color: #6e7781;
   background: transparent;
-  border: 1px solid #444;
-  border-radius: 4px;
-  padding: 2px 8px;
+  border: none;
+  border-radius: 8px;
   cursor: pointer;
-  transition: all 0.15s;
-  font-family: system-ui, sans-serif;
+  transition: color 0.15s, background 0.15s, transform 0.1s;
+  position: relative;
 }
 
 .hljs-copy:hover {
-  color: #ccc;
-  border-color: #666;
+  color: #24292f;
+  background: rgba(175,184,193,0.2);
 }
 
-.hljs-block code {
+.hljs-copy:active {
+  transform: scale(0.92);
+}
+
+.hljs-copy.is-copied {
+  color: #1a7f37;
+  background: rgba(34,197,94,0.12);
+}
+
+.hljs-copy-icon {
   display: block;
-  padding: 14px 16px;
-  overflow-x: auto;
+  width: 14px;
+  height: 14px;
+  transition: opacity 0.2s ease, transform 0.2s ease;
+}
+
+.hljs-copy-icon.is-check {
+  position: absolute;
+  opacity: 0;
+  transform: scale(0.6) rotate(-10deg);
+}
+
+.hljs-copy.is-copied .hljs-copy-icon:not(.is-check) {
+  opacity: 0;
+  transform: scale(0.8);
+}
+
+.hljs-copy.is-copied .hljs-copy-icon.is-check {
+  opacity: 1;
+  transform: scale(1) rotate(0deg);
+}
+
+.hljs-pre {
+  margin: 0;
+  padding: 0;
+  flex: 1 1 auto;
+  overflow: visible;
+  background: transparent;
+}
+
+.hljs-pre::-webkit-scrollbar {
+  display: none;
+}
+
+.hljs-block code.hljs {
+  display: block;
+  padding: 12px 14px 14px;
+  overflow: visible;
   font-size: 13px;
-  line-height: 1.6;
-  font-family: 'SF Mono', 'Fira Code', 'Cascadia Code', monospace;
+  line-height: 1.65;
+  font-family: 'SF Mono', 'Fira Code', 'Cascadia Code', ui-monospace, monospace;
+  background: transparent !important;
+  color: #24292f;
+}
+
+/* 浅色语法高亮 - GitHub light 风格 */
+.hljs-block .hljs-comment,
+.hljs-block .hljs-quote {
+  color: #6e7781;
+  font-style: italic;
+}
+
+.hljs-block .hljs-keyword,
+.hljs-block .hljs-selector-tag,
+.hljs-block .hljs-addition {
+  color: #cf222e;
+}
+
+.hljs-block .hljs-built_in,
+.hljs-block .hljs-type,
+.hljs-block .hljs-class .hljs-title {
+  color: #0550ae;
+}
+
+.hljs-block .hljs-number,
+.hljs-block .hljs-literal {
+  color: #0550ae;
+}
+
+.hljs-block .hljs-string,
+.hljs-block .hljs-doctag,
+.hljs-block .hljs-regexp,
+.hljs-block .hljs-meta .hljs-meta-string {
+  color: #0a3069;
+}
+
+.hljs-block .hljs-title,
+.hljs-block .hljs-section,
+.hljs-block .hljs-name,
+.hljs-block .hljs-selector-id,
+.hljs-block .hljs-selector-class {
+  color: #8250df;
+}
+
+.hljs-block .hljs-attr,
+.hljs-block .hljs-attribute,
+.hljs-block .hljs-variable,
+.hljs-block .hljs-template-variable {
+  color: #953800;
+}
+
+.hljs-block .hljs-params {
+  color: #24292f;
+}
+
+.hljs-block .hljs-symbol,
+.hljs-block .hljs-bullet,
+.hljs-block .hljs-link,
+.hljs-block .hljs-meta {
+  color: #1f2328;
+}
+
+.hljs-block .hljs-deletion {
+  color: #82071e;
+}
+
+.hljs-block .hljs-emphasis {
+  font-style: italic;
+}
+
+.hljs-block .hljs-strong {
+  font-weight: 700;
+}
+
+/* 深色模式 */
+.dark .hljs-block {
+  border-color: #30363d;
+  background: #0f172a;
+  box-shadow: none;
+}
+
+.dark .hljs-header {
+  background: #161b22;
+  border-bottom-color: #30363d;
+}
+
+.dark .hljs-lang {
+  color: #7d8590;
+}
+
+.dark .hljs-copy {
+  color: #64748b;
+}
+
+.dark .hljs-copy:hover {
+  color: #cbd5e1;
+  background: rgba(148, 163, 184, 0.12);
+}
+
+.dark .hljs-copy.is-copied {
+  color: #4ade80;
+  background: rgba(34, 197, 94, 0.16);
+}
+
+.dark .hljs-block code.hljs {
+  color: #e2e8f0;
+}
+
+.dark .hljs-block .hljs-comment,
+.dark .hljs-block .hljs-quote {
+  color: #64748b;
+}
+
+.dark .hljs-block .hljs-keyword,
+.dark .hljs-block .hljs-selector-tag,
+.dark .hljs-block .hljs-addition {
+  color: #fb923c;
+}
+
+.dark .hljs-block .hljs-built_in,
+.dark .hljs-block .hljs-type,
+.dark .hljs-block .hljs-title,
+.dark .hljs-block .hljs-name {
+  color: #60a5fa;
+}
+
+.dark .hljs-block .hljs-string,
+.dark .hljs-block .hljs-doctag,
+.dark .hljs-block .hljs-regexp {
+  color: #34d399;
+}
+
+.dark .hljs-block .hljs-number,
+.dark .hljs-block .hljs-literal {
+  color: #c084fc;
+}
+
+.dark .hljs-block .hljs-attr,
+.dark .hljs-block .hljs-variable {
+  color: #fbbf24;
+}
+
+.dark .hljs-block .hljs-params {
+  color: #cbd5e1;
 }
 
 .md-body blockquote {
@@ -180,14 +420,27 @@ const rendered = computed(() =>
   list-style-type: decimal;
 }
 
+.md-body .md-table-wrap {
+  display: block;
+  width: 100%;
+  max-width: 100%;
+  overflow-x: auto;
+  overflow-y: hidden;
+  margin: 0.85em 0;
+  -webkit-overflow-scrolling: touch;
+  overflow-anchor: none;
+}
+
 .md-body table {
   border-collapse: collapse;
-  margin: 0.85em 0;
+  margin: 0;
   font-size: 14px;
   line-height: 1.45;
   display: table;
-  width: 100%;
-  max-width: 100%;
+  width: max-content;
+  min-width: 100%;
+  max-width: none;
+  table-layout: auto;
   background: transparent;
 }
 
@@ -213,7 +466,6 @@ const rendered = computed(() =>
   vertical-align: middle;
 }
 
-/* dark mode table */
 .dark .md-body th {
   background: #30343b;
   color: #f3f4f6;
@@ -263,7 +515,6 @@ const rendered = computed(() =>
   font-size: 1em;
 }
 
-/* details / summary */
 .md-body details {
   margin: 0.8em 0;
   border: 1px solid #e7ded2;
@@ -294,5 +545,52 @@ const rendered = computed(() =>
 
 .md-body .details-body>*:last-child {
   margin-bottom: 0;
+}
+
+.dark .md-body h1,
+.dark .md-body h2,
+.dark .md-body h3,
+.dark .md-body h4,
+.dark .md-body h5,
+.dark .md-body h6,
+.dark .md-body strong {
+  color: #f3f4f6;
+}
+
+.dark .md-body h2 {
+  border-bottom-color: #3f4652;
+}
+
+.dark .md-body code:not(.hljs) {
+  background: #252b34;
+  color: #e5e7eb;
+  border-color: #3f4652;
+  box-shadow: none;
+}
+
+.dark .md-body blockquote {
+  border-left-color: #4b5563;
+  background: #1f2937;
+  color: #d1d5db;
+}
+
+.dark .md-body details {
+  border-color: #3f4652;
+}
+
+.dark .md-body summary {
+  background: #1f2937;
+}
+
+.dark .md-body summary:hover {
+  background: #252b34;
+}
+
+.dark .md-body a {
+  color: #93c5fd;
+}
+
+.dark .md-body hr {
+  border-top-color: #3f4652;
 }
 </style>

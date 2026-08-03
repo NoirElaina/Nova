@@ -103,7 +103,7 @@ const clearPreview = () => {
 }
 
 .message-timeline-lines {
-  width: 36px;
+  width: 28px;
   display: flex;
   flex-direction: column;
   justify-content: space-between;
@@ -133,8 +133,8 @@ const clearPreview = () => {
 }
 
 .message-timeline-line {
-  width: 26px;
-  height: 3px;
+  width: 18px;
+  height: 2.5px;
   flex: 0 0 auto;
   border: 0;
   border-radius: 999px;
@@ -146,7 +146,7 @@ const clearPreview = () => {
 .message-timeline-line:hover,
 .message-timeline-line:focus-visible,
 .message-timeline-line.is-active {
-  width: 28px;
+  width: 22px;
   background: #111827;
 }
 
@@ -158,15 +158,15 @@ const clearPreview = () => {
 .message-timeline-panel {
   position: absolute;
   top: 50%;
-  right: 34px;
-  width: min(420px, calc(100vw - 116px));
-  max-height: min(68vh, 560px);
+  right: 28px;
+  width: min(320px, calc(100vw - 96px));
+  max-height: min(62vh, 480px);
   overflow-y: auto;
-  padding: 10px;
+  padding: 8px;
   border: 1px solid rgba(203, 213, 225, 0.92);
-  border-radius: 18px;
+  border-radius: 14px;
   background: rgba(255, 255, 255, 0.98);
-  box-shadow: 0 22px 54px rgba(15, 23, 42, 0.15), 0 4px 12px rgba(15, 23, 42, 0.08);
+  box-shadow: 0 18px 44px rgba(15, 23, 42, 0.14), 0 3px 10px rgba(15, 23, 42, 0.07);
   transform: translateY(-50%) translateX(8px);
   opacity: 0;
   pointer-events: none;
@@ -201,11 +201,11 @@ const clearPreview = () => {
   align-items: center;
   gap: 8px;
   border: 0;
-  border-radius: 10px;
+  border-radius: 8px;
   background: transparent;
   color: #111827;
   cursor: pointer;
-  padding: 8px 10px;
+  padding: 6px 8px;
   text-align: left;
   transition: background 0.14s ease, color 0.14s ease;
 }
@@ -234,8 +234,8 @@ const clearPreview = () => {
   flex: 1;
   overflow: hidden;
   color: inherit;
-  font-size: 14px;
-  line-height: 1.45;
+  font-size: 13px;
+  line-height: 1.4;
   text-overflow: ellipsis;
   white-space: nowrap;
 }

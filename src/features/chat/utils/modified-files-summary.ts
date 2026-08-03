@@ -1,4 +1,5 @@
 import type { ToolExecutionEntry } from "../../../lib/chat-types";
+import { extractToolPath } from "./tool-info";
 
 export type FileChangeKind = "edit" | "write";
 
@@ -263,12 +264,31 @@ export function buildHunk(entry: ToolExecutionEntry): FileChangeHunk | null {
   if (!kind) return null;
 
   const parsed = parseToolInput(entry.input);
+  // 流式 Write 时 JSON 未闭合，仍尽量从半截 input 抠出路径
   const filePath =
-    readStringField(parsed, ["file_path", "filePath", "path", "uri"]) ?? "(unknown path)";
+    readStringField(parsed, ["file_path", "filePath", "path", "uri"]) ??
+    extractToolPath(entry.input) ??
+    "(unknown path)";
 
   const oldString = readStringField(parsed, ["oldString", "old_string", "search", "find"]);
   const newString = readStringField(parsed, ["newString", "new_string", "replace", "replacement"]);
-  const content = readStringField(parsed, ["content", "new_content", "text"]);
+  let content = readStringField(parsed, ["content", "new_content", "text"]);
+  if (content == null && kind === "write" && entry.input) {
+    const m = entry.input.match(
+      /"(?:content|new_content|text)"\s*:\s*"((?:\\.|[^"\\])*)/i,
+    );
+    if (m?.[1] != null) {
+      try {
+        content = JSON.parse(`"${m[1]}"`) as string;
+      } catch {
+        content = m[1]
+          .replace(/\\n/g, "\n")
+          .replace(/\\t/g, "\t")
+          .replace(/\\"/g, '"')
+          .replace(/\\\\/g, "\\");
+      }
+    }
+  }
 
   let diff: DiffLine[];
   let hunkHeader: DiffHunkHeader | null = null;

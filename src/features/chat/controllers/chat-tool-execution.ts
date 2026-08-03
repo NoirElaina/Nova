@@ -33,27 +33,32 @@ export function startToolExecutionTraceInState(
 ) {
   const idx = findToolExecutionIndexById(state.toolExecutionLogs, toolId);
   if (idx >= 0) {
-    state.toolExecutionLogs[idx] = {
-      ...state.toolExecutionLogs[idx],
-      turnId: state.currentTurnId ?? state.toolExecutionLogs[idx].turnId,
+    const next = state.toolExecutionLogs.slice();
+    next[idx] = {
+      ...next[idx],
+      turnId: state.currentTurnId ?? next[idx].turnId,
       toolName,
       status: "running",
       startedAt: Date.now(),
       finishedAt: undefined,
     };
+    state.toolExecutionLogs = next;
     return;
   }
 
-  state.toolExecutionLogs.push({
-    id: toolId,
-    turnId: state.currentTurnId ?? undefined,
-    toolName,
-    input: "",
-    result: "",
-    status: "running",
-    startedAt: Date.now(),
-    finishedAt: undefined,
-  });
+  state.toolExecutionLogs = [
+    ...state.toolExecutionLogs,
+    {
+      id: toolId,
+      turnId: state.currentTurnId ?? undefined,
+      toolName,
+      input: "",
+      result: "",
+      status: "running",
+      startedAt: Date.now(),
+      finishedAt: undefined,
+    },
+  ];
 }
 
 export function appendToolExecutionInputInState(
@@ -67,10 +72,13 @@ export function appendToolExecutionInputInState(
   }
 
   const entry = state.toolExecutionLogs[idx];
-  state.toolExecutionLogs[idx] = {
+  // 整表替换，确保 computed/子组件在流式 input 时一定刷新（避免只改下标不触发视图）
+  const next = state.toolExecutionLogs.slice();
+  next[idx] = {
     ...entry,
     input: `${entry.input}${inputDelta}`,
   };
+  state.toolExecutionLogs = next;
 }
 
 export function completeToolExecutionTraceInState(
@@ -106,7 +114,9 @@ export function completeToolExecutionTraceInState(
     finishedAt: Date.now(),
   };
 
-  state.toolExecutionLogs[idx] = updatedEntry;
+  const next = state.toolExecutionLogs.slice();
+  next[idx] = updatedEntry;
+  state.toolExecutionLogs = next;
   persistToolExecutionLog(updatedEntry, conversationId);
 }
 

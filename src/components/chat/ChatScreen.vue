@@ -59,8 +59,11 @@ const liveAssistantRef = ref<HTMLElement | null>(null);
 const reactionMap = ref<Record<number, 'up' | 'down' | undefined>>({});
 const copiedMap = ref<Record<string, boolean>>({});
 const showScrollToBottom = ref(false);
+/** 用户是否贴近底部；流式增高时只在 true 时跟滚，避免抢滚动 */
+const stickToBottom = ref(true);
 const activeUserMessageIndex = ref<number | null>(null);
 const copyTimers: Record<string, ReturnType<typeof setTimeout> | undefined> = {};
+let stickToBottomRaf = 0;
 
 /** 会话 token 前缀和：conversationTokenUsage(i) = prefix[i] */
 const tokenPrefixSums = shallowRef<number[]>([]);
@@ -203,9 +206,16 @@ const measureElement = (el: unknown) => {
 
 const scrollToBottom = async () => {
   await nextTick();
+  stickToBottom.value = true;
   const count = virtualRows.value.length;
-  if (count > 0) {
-    rowVirtualizer.value.scrollToIndex(count - 1, { align: 'end' });
+  if (count > 0 && chatAreaRef.value) {
+    chatAreaRef.value.scrollTop = chatAreaRef.value.scrollHeight;
+    // 再对齐一次，等 virtualizer 用真实高度算完 totalSize
+    requestAnimationFrame(() => {
+      if (chatAreaRef.value) {
+        chatAreaRef.value.scrollTop = chatAreaRef.value.scrollHeight;
+      }
+    });
   } else if (chatAreaRef.value) {
     chatAreaRef.value.scrollTop = chatAreaRef.value.scrollHeight;
   }
@@ -247,12 +257,16 @@ const scrollLastUserMessageToBottom = async () => {
 
 const scrollLiveAssistantIntoView = async () => {
   await nextTick();
-  if (hasLiveAssistantTurn.value) {
-    rowVirtualizer.value.scrollToIndex(virtualRows.value.length - 1, { align: 'start' });
-  } else if (chatAreaRef.value) {
-    chatAreaRef.value.scrollTop = chatAreaRef.value.scrollHeight;
-  }
+  // 新一轮生成：贴底跟滚，不要 align:start（表格/长文增高时会把视口顶来顶去）
+  stickToBottom.value = true;
+  pinToBottomIfSticky();
   updateScrollToBottomVisibility();
+};
+
+const distanceFromBottomPx = () => {
+  const el = chatAreaRef.value;
+  if (!el) return 0;
+  return el.scrollHeight - el.clientHeight - el.scrollTop;
 };
 
 const updateScrollToBottomVisibility = () => {
@@ -260,9 +274,21 @@ const updateScrollToBottomVisibility = () => {
     showScrollToBottom.value = false;
     return;
   }
-  const distanceFromBottom =
-    chatAreaRef.value.scrollHeight - chatAreaRef.value.clientHeight - chatAreaRef.value.scrollTop;
-  showScrollToBottom.value = distanceFromBottom > 120;
+  const distance = distanceFromBottomPx();
+  // 阈值内视为贴底，流式内容增高时继续跟滚
+  stickToBottom.value = distance <= 140;
+  showScrollToBottom.value = distance > 120;
+};
+
+/** 仅贴底时把视口钉在列表末尾；不调用 measure()，避免清空虚拟列表尺寸缓存导致狂抖 */
+const pinToBottomIfSticky = () => {
+  if (!stickToBottom.value || !chatAreaRef.value) return;
+  const count = virtualRows.value.length;
+  if (count <= 0) return;
+  // 直接改 scrollTop 比 scrollToIndex 更稳：不触发额外 layout 估算抖动
+  const el = chatAreaRef.value;
+  el.scrollTop = el.scrollHeight;
+  showScrollToBottom.value = false;
 };
 
 const summarizeUserMessage = (content: string) => {
@@ -332,9 +358,12 @@ const handleChatScroll = () => {
 
 const scrollToBottomSmooth = async () => {
   await nextTick();
-  const count = virtualRows.value.length;
-  if (count > 0) {
-    rowVirtualizer.value.scrollToIndex(count - 1, { align: 'end', behavior: 'smooth' });
+  stickToBottom.value = true;
+  if (chatAreaRef.value) {
+    chatAreaRef.value.scrollTo({
+      top: chatAreaRef.value.scrollHeight,
+      behavior: 'smooth',
+    });
   }
 };
 
@@ -346,11 +375,16 @@ const scrollToMessageIndex = async (index: number) => {
 };
 
 onMounted(() => {
+  stickToBottom.value = true;
   void scrollToBottom();
   void nextTick(updateActiveUserMessage);
 });
 
 onBeforeUnmount(() => {
+  if (stickToBottomRaf) {
+    cancelAnimationFrame(stickToBottomRaf);
+    stickToBottomRaf = 0;
+  }
   for (const key of Object.keys(copyTimers)) {
     if (copyTimers[key]) {
       clearTimeout(copyTimers[key]);
@@ -358,21 +392,42 @@ onBeforeUnmount(() => {
   }
 });
 
+// 结构变化（消息条数/是否出现 live 行）才允许轻量同步 UI；
+// 禁止在每个 token 上 virtualizer.measure()——那会清空尺寸缓存，
+// 历史行在 estimate(160) 与真实高度间反复横跳，滚动条上下抽搐。
 watch(
-  () => [
-    props.messages.length,
-    props.assistantResponse.length,
-    props.assistantReasoning?.length ?? 0,
-    props.assistantSegments.length,
-    props.currentTurnToolEntries.length,
-    props.isGenerating,
-  ],
+  () => [props.messages.length, hasLiveAssistantTurn.value] as const,
   async () => {
     await nextTick();
-    // 流式时动态高度变化，重新测量
-    rowVirtualizer.value.measure();
     updateScrollToBottomVisibility();
     updateActiveUserMessage();
+    if (stickToBottom.value) {
+      pinToBottomIfSticky();
+    }
+  },
+);
+
+// 流式正文/工具输出增高：rAF 合并，仅贴底时跟滚；高度交给 measureElement 的 ResizeObserver。
+watch(
+  () =>
+    [
+      props.assistantResponse.length,
+      props.assistantReasoning?.length ?? 0,
+      props.assistantSegments.length,
+      props.currentTurnToolEntries.length,
+      props.isGenerating,
+    ] as const,
+  async () => {
+    if (stickToBottomRaf) return;
+    stickToBottomRaf = requestAnimationFrame(async () => {
+      stickToBottomRaf = 0;
+      await nextTick();
+      if (stickToBottom.value) {
+        pinToBottomIfSticky();
+      } else {
+        updateScrollToBottomVisibility();
+      }
+    });
   },
 );
 
@@ -646,6 +701,8 @@ defineExpose({
 <style scoped>
 .chat-scroll-area {
   position: relative;
+  overflow-anchor: none;
+  scrollbar-gutter: stable;
 }
 
 .custom-scrollbar::-webkit-scrollbar {

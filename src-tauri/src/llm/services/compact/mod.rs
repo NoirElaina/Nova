@@ -1020,6 +1020,7 @@ pub async fn manual_compact(
     let new_history: Vec<HistoryMessage> = new_messages
         .iter()
         .map(|m| HistoryMessage {
+            id: None,
             role: match m.role {
                 Role::User => "user".to_string(),
                 Role::Assistant => "assistant".to_string(),

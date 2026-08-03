@@ -1,5 +1,6 @@
 <script setup lang="ts">
-import { computed, nextTick, onMounted, ref, watch } from 'vue';
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch, shallowRef } from 'vue';
+import { useVirtualizer } from '@tanstack/vue-virtual';
 import type {
   AgentMode,
   AskUserAnswerSubmission,
@@ -43,7 +44,7 @@ const props = defineProps<{
 
 const emit = defineEmits<{
   (e: 'send', msg: string): void;
-  (e: 'save-user-edit', payload: { index: number; content: string }): void;
+  (e: 'save-user-edit', payload: { index: number; content: string; id?: string }): void;
   (e: 'ask-submit', value: AskUserAnswerSubmission): void;
   (e: 'ask-skip'): void;
   (e: 'cancel'): void;
@@ -61,6 +62,27 @@ const showScrollToBottom = ref(false);
 const activeUserMessageIndex = ref<number | null>(null);
 const copyTimers: Record<string, ReturnType<typeof setTimeout> | undefined> = {};
 
+/** 会话 token 前缀和：conversationTokenUsage(i) = prefix[i] */
+const tokenPrefixSums = shallowRef<number[]>([]);
+
+const rebuildTokenPrefixSums = () => {
+  const sums: number[] = new Array(props.messages.length);
+  let running = 0;
+  for (let i = 0; i < props.messages.length; i += 1) {
+    const m = props.messages[i];
+    const costTotal = (m.cost?.inputTokens ?? 0) + (m.cost?.outputTokens ?? 0);
+    running += costTotal > 0 ? costTotal : (m.tokenUsage ?? 0);
+    sums[i] = running;
+  }
+  tokenPrefixSums.value = sums;
+};
+
+watch(
+  () => props.messages,
+  () => rebuildTokenPrefixSums(),
+  { immediate: true },
+);
+
 const formatNowTime = () => {
   const now = new Date();
   const hh = String(now.getHours()).padStart(2, '0');
@@ -68,10 +90,6 @@ const formatNowTime = () => {
   return `${hh}:${mm}`;
 };
 
-// 格式化消息发送时间。优先用后端返回的 createdAt（Unix 毫秒），
-// 缺失时回退到当前时间（兼容旧消息）。
-// 此前直接用 formatNowTime() 导致所有用户消息显示相同时间，
-// 且每次组件重新渲染（流式更新等）所有消息时间都会变为"现在"。
 const formatMessageTime = (createdAt?: number) => {
   if (!createdAt || createdAt <= 0) {
     return formatNowTime();
@@ -121,9 +139,74 @@ const buildAssistantCopyText = (message: ChatMessage) => {
   return message.content?.trim() || '';
 };
 
+const hasStreamingReasoning = () => !!props.assistantReasoning?.trim();
+const streamingBodyText = () => props.assistantResponse.trim();
+
+// 流式 segments 已由 controller 维护；避免每 token 再 build/clone
+const streamingSegments = computed(() => {
+  if (props.assistantSegments.length > 0) {
+    return props.assistantSegments;
+  }
+  return buildAssistantTranscriptSegments([], {
+    reasoning: props.assistantReasoning,
+    text: props.assistantResponse,
+  });
+});
+
+const hasLiveAssistantTurn = computed(
+  () =>
+    props.isGenerating ||
+    streamingSegments.value.length > 0 ||
+    props.currentTurnToolEntries.length > 0,
+);
+
+/** 虚拟列表行：历史消息 + 可选 live 行 */
+type VirtualRow =
+  | { kind: 'message'; index: number; message: ChatMessage }
+  | { kind: 'live' };
+
+const virtualRows = computed<VirtualRow[]>(() => {
+  const rows: VirtualRow[] = props.messages.map((message, index) => ({
+    kind: 'message',
+    index,
+    message,
+  }));
+  if (hasLiveAssistantTurn.value) {
+    rows.push({ kind: 'live' });
+  }
+  return rows;
+});
+
+const rowVirtualizer = useVirtualizer(
+  computed(() => ({
+    count: virtualRows.value.length,
+    getScrollElement: () => chatAreaRef.value,
+    estimateSize: () => 160,
+    overscan: 10,
+    getItemKey: (index: number) => {
+      const row = virtualRows.value[index];
+      if (!row) return index;
+      if (row.kind === 'live') return 'live-assistant';
+      return row.message.id || `msg-${row.index}`;
+    },
+  })),
+);
+
+const virtualItems = computed(() => rowVirtualizer.value.getVirtualItems());
+const totalSize = computed(() => rowVirtualizer.value.getTotalSize());
+
+const measureElement = (el: unknown) => {
+  if (el instanceof Element) {
+    rowVirtualizer.value.measureElement(el);
+  }
+};
+
 const scrollToBottom = async () => {
   await nextTick();
-  if (chatAreaRef.value) {
+  const count = virtualRows.value.length;
+  if (count > 0) {
+    rowVirtualizer.value.scrollToIndex(count - 1, { align: 'end' });
+  } else if (chatAreaRef.value) {
     chatAreaRef.value.scrollTop = chatAreaRef.value.scrollHeight;
   }
   updateScrollToBottomVisibility();
@@ -131,34 +214,41 @@ const scrollToBottom = async () => {
 
 const scrollLastUserMessageToTop = async () => {
   await nextTick();
-  if (!chatAreaRef.value) return;
-  const rows = chatAreaRef.value.querySelectorAll<HTMLElement>('[data-role="user"]');
-  const last = rows[rows.length - 1];
-  if (last) {
-    last.scrollIntoView({ block: 'start', behavior: 'smooth' });
+  let lastUser = -1;
+  for (let i = props.messages.length - 1; i >= 0; i -= 1) {
+    if (props.messages[i]?.role === 'user') {
+      lastUser = i;
+      break;
+    }
+  }
+  if (lastUser >= 0) {
+    rowVirtualizer.value.scrollToIndex(lastUser, { align: 'start' });
   } else {
-    chatAreaRef.value.scrollTop = chatAreaRef.value.scrollHeight;
+    await scrollToBottom();
   }
 };
 
 const scrollLastUserMessageToBottom = async () => {
   await nextTick();
-  if (!chatAreaRef.value) return;
-  const rows = chatAreaRef.value.querySelectorAll<HTMLElement>('[data-role="user"]');
-  const last = rows[rows.length - 1];
-  if (last) {
-    last.scrollIntoView({ block: 'end', behavior: 'smooth' });
+  let lastUser = -1;
+  for (let i = props.messages.length - 1; i >= 0; i -= 1) {
+    if (props.messages[i]?.role === 'user') {
+      lastUser = i;
+      break;
+    }
+  }
+  if (lastUser >= 0) {
+    rowVirtualizer.value.scrollToIndex(lastUser, { align: 'end' });
   } else {
-    chatAreaRef.value.scrollTop = chatAreaRef.value.scrollHeight;
+    await scrollToBottom();
   }
   updateScrollToBottomVisibility();
 };
 
 const scrollLiveAssistantIntoView = async () => {
   await nextTick();
-  const target = liveAssistantRef.value;
-  if (target) {
-    target.scrollIntoView({ block: 'start', behavior: 'smooth' });
+  if (hasLiveAssistantTurn.value) {
+    rowVirtualizer.value.scrollToIndex(virtualRows.value.length - 1, { align: 'start' });
   } else if (chatAreaRef.value) {
     chatAreaRef.value.scrollTop = chatAreaRef.value.scrollHeight;
   }
@@ -202,7 +292,16 @@ const updateActiveUserMessage = () => {
     container.querySelectorAll<HTMLElement>('[data-role="user"][data-message-index]'),
   );
   if (rows.length === 0) {
-    activeUserMessageIndex.value = null;
+    // 虚拟列表可能未挂载目标，按滚动比例估算
+    const items = userTimelineItems.value;
+    if (items.length === 0) {
+      activeUserMessageIndex.value = null;
+      return;
+    }
+    const maxScroll = Math.max(1, container.scrollHeight - container.clientHeight);
+    const ratio = container.scrollTop / maxScroll;
+    const approx = Math.min(items.length - 1, Math.floor(ratio * items.length));
+    activeUserMessageIndex.value = items[approx]?.index ?? null;
     return;
   }
 
@@ -233,19 +332,17 @@ const handleChatScroll = () => {
 
 const scrollToBottomSmooth = async () => {
   await nextTick();
-  chatAreaRef.value?.scrollTo({
-    top: chatAreaRef.value.scrollHeight,
-    behavior: 'smooth',
-  });
+  const count = virtualRows.value.length;
+  if (count > 0) {
+    rowVirtualizer.value.scrollToIndex(count - 1, { align: 'end', behavior: 'smooth' });
+  }
 };
 
 const scrollToMessageIndex = async (index: number) => {
   await nextTick();
-  const container = chatAreaRef.value;
-  const target = container?.querySelector<HTMLElement>(`[data-message-index="${index}"]`);
-  if (!target) return;
+  if (index < 0 || index >= props.messages.length) return;
   activeUserMessageIndex.value = index;
-  target.scrollIntoView({ block: 'start', behavior: 'smooth' });
+  rowVirtualizer.value.scrollToIndex(index, { align: 'start', behavior: 'smooth' });
 };
 
 onMounted(() => {
@@ -253,21 +350,31 @@ onMounted(() => {
   void nextTick(updateActiveUserMessage);
 });
 
+onBeforeUnmount(() => {
+  for (const key of Object.keys(copyTimers)) {
+    if (copyTimers[key]) {
+      clearTimeout(copyTimers[key]);
+    }
+  }
+});
+
 watch(
   () => [
     props.messages.length,
-    props.assistantResponse,
-    props.assistantReasoning,
+    props.assistantResponse.length,
+    props.assistantReasoning?.length ?? 0,
     props.assistantSegments.length,
     props.currentTurnToolEntries.length,
     props.isGenerating,
   ],
-    async () => {
-      await nextTick();
-      updateScrollToBottomVisibility();
-      updateActiveUserMessage();
-    },
-  );
+  async () => {
+    await nextTick();
+    // 流式时动态高度变化，重新测量
+    rowVirtualizer.value.measure();
+    updateScrollToBottomVisibility();
+    updateActiveUserMessage();
+  },
+);
 
 const handleSend = (msg: string) => {
   emit('send', msg);
@@ -282,10 +389,7 @@ const handleRemoveUpload = (index: number) => {
 };
 
 const conversationTokenUsage = (index: number): number => {
-  return props.messages.slice(0, index + 1).reduce((sum, m) => {
-    const costTotal = (m.cost?.inputTokens ?? 0) + (m.cost?.outputTokens ?? 0);
-    return sum + (costTotal > 0 ? costTotal : (m.tokenUsage ?? 0));
-  }, 0);
+  return tokenPrefixSums.value[index] ?? 0;
 };
 
 const estimateTokensFromContent = (content: string): number => {
@@ -313,25 +417,13 @@ const streamingTokenUsage = (): number => {
 };
 
 const streamingConversationTokenUsage = (): number => {
-  const base = props.messages.reduce((sum, m) => {
-    const costTotal = (m.cost?.inputTokens ?? 0) + (m.cost?.outputTokens ?? 0);
-    return sum + (costTotal > 0 ? costTotal : (m.tokenUsage ?? 0));
-  }, 0);
+  const base =
+    tokenPrefixSums.value.length > 0
+      ? tokenPrefixSums.value[tokenPrefixSums.value.length - 1]
+      : 0;
   return base + streamingTokenUsage();
 };
 
-const hasStreamingReasoning = () => !!props.assistantReasoning?.trim();
-const streamingBodyText = () => props.assistantResponse.trim();
-const streamingSegments = computed(() =>
-  buildAssistantTranscriptSegments(props.assistantSegments, {
-    reasoning: props.assistantReasoning,
-    text: props.assistantResponse,
-  }),
-);
-const hasLiveAssistantTurn = () =>
-  props.isGenerating ||
-  streamingSegments.value.length > 0 ||
-  props.currentTurnToolEntries.length > 0;
 const liveWaitKind = () => {
   if (!props.pendingQuestion) return null;
   return props.pendingPermissionRequestId ? 'permission' : 'question';
@@ -385,6 +477,12 @@ const liveStatusText = computed(() => {
   return '正在处理你的请求';
 });
 
+function messageRowAt(virtualIndex: number) {
+  const row = virtualRows.value[virtualIndex];
+  if (!row || row.kind !== 'message') return null;
+  return row;
+}
+
 defineExpose({
   scrollToBottom,
   scrollLastUserMessageToTop,
@@ -400,80 +498,96 @@ defineExpose({
       ref="chatAreaRef"
       @scroll.passive="handleChatScroll"
     >
-      <div class="w-full flex flex-col gap-6">
+      <div
+        class="w-full relative"
+        :style="{ height: `${totalSize}px` }"
+      >
         <div
-          v-for="(msg, index) in messages"
-          :key="index"
-          :data-role="msg.role"
-          :data-message-index="index"
-          class="flex w-full group"
+          v-for="vItem in virtualItems"
+          :key="String(vItem.key)"
+          :ref="measureElement"
+          :data-index="vItem.index"
+          class="absolute left-0 w-full pb-6"
+          :style="{
+            transform: `translateY(${vItem.start}px)`,
+          }"
         >
-          <UserMessageBubble
-            v-if="msg.role === 'user'"
-            :message="msg"
-            :index="index"
-            :copied="!!copiedMap[`user-${index}`]"
-            :timeText="formatMessageTime(msg.createdAt)"
-            @retry="retryFromUser"
-            @save-edit="emit('save-user-edit', $event)"
-            @copy="copyText(msg.content, `user-${index}`)"
-          />
-
-          <AssistantMessageBubble
-            v-else
-            :message="msg"
-            :index="index"
-            :copied="!!copiedMap[`assistant-${index}`]"
-            :conversationTokenUsage="conversationTokenUsage(index)"
-            :reaction="reactionMap[index]"
-            @copy="copyText(buildAssistantCopyText(msg), `assistant-${index}`)"
-            @retry="retryFromAssistant"
-            @react="setReaction($event.index, $event.value)"
-          />
-        </div>
-
-        <div
-          v-if="hasLiveAssistantTurn()"
-          ref="liveAssistantRef"
-          class="flex w-full justify-start group"
-        >
-          <div class="w-full max-w-[85%]">
-            <div class="min-w-0 flex-1 text-[0.95rem] leading-relaxed break-words text-[#1a1a1a] dark:text-[#ececec]">
-              <ContextCompactNotice
-                v-if="props.contextCompacts && props.contextCompacts.length > 0"
-                :items="props.contextCompacts"
-                compact
+          <template v-if="messageRowAt(vItem.index)">
+            <div
+              class="flex w-full group"
+              :data-role="messageRowAt(vItem.index)!.message.role"
+              :data-message-index="messageRowAt(vItem.index)!.index"
+            >
+              <UserMessageBubble
+                v-if="messageRowAt(vItem.index)!.message.role === 'user'"
+                :message="messageRowAt(vItem.index)!.message"
+                :index="messageRowAt(vItem.index)!.index"
+                :copied="!!copiedMap[`user-${messageRowAt(vItem.index)!.index}`]"
+                :timeText="formatMessageTime(messageRowAt(vItem.index)!.message.createdAt)"
+                @retry="retryFromUser"
+                @save-edit="emit('save-user-edit', $event)"
+                @copy="copyText(messageRowAt(vItem.index)!.message.content, `user-${messageRowAt(vItem.index)!.index}`)"
               />
-              <AssistantTranscript
-                v-if="streamingSegments.length > 0"
-                :segments="streamingSegments"
-                :entries="props.currentTurnToolEntries"
+
+              <AssistantMessageBubble
+                v-else
+                :message="messageRowAt(vItem.index)!.message"
+                :index="messageRowAt(vItem.index)!.index"
+                :copied="!!copiedMap[`assistant-${messageRowAt(vItem.index)!.index}`]"
+                :conversationTokenUsage="conversationTokenUsage(messageRowAt(vItem.index)!.index)"
+                :reaction="reactionMap[messageRowAt(vItem.index)!.index]"
+                @copy="copyText(buildAssistantCopyText(messageRowAt(vItem.index)!.message), `assistant-${messageRowAt(vItem.index)!.index}`)"
+                @retry="retryFromAssistant"
+                @react="setReaction($event.index, $event.value)"
               />
-              <p
-                v-else-if="props.isGenerating || !!liveWaitKind()"
-                class="live-status text-[13px] text-[#64748b] dark:text-[#cbd5e1]"
-              >
-                <span>{{ liveStatusText }}</span>
-                <span class="live-status-dots" aria-hidden="true">
-                  <span></span>
-                  <span></span>
-                  <span></span>
-                </span>
-              </p>
-              <span
-                v-if="isGenerating"
-                class="inline-block w-1.5 h-[1em] bg-current ml-1 align-middle animate-pulse opacity-70"
-              ></span>
-              <div
-                v-if="streamingTokenUsage() > 0 || streamingConversationTokenUsage() > 0"
-                class="token-badge mt-2"
-              >
-                <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
-                  <ellipse cx="12" cy="5" rx="9" ry="3"></ellipse>
-                  <path d="M21 12c0 1.66-4 3-9 3s-9-1.34-9-3"></path>
-                  <path d="M3 5v14c0 1.66 4 3 9 3s9-1.34 9-3V5"></path>
-                </svg>
-                本次 {{ streamingTokenUsage() }} · 会话 {{ streamingConversationTokenUsage() }}
+            </div>
+          </template>
+
+          <div
+            v-else-if="virtualRows[vItem.index]?.kind === 'live'"
+            ref="liveAssistantRef"
+            class="flex w-full justify-start group"
+            data-role="assistant-live"
+          >
+            <div class="w-full max-w-[85%]">
+              <div class="min-w-0 flex-1 text-[0.95rem] leading-relaxed break-words text-[#1a1a1a] dark:text-[#ececec]">
+                <ContextCompactNotice
+                  v-if="props.contextCompacts && props.contextCompacts.length > 0"
+                  :items="props.contextCompacts"
+                  compact
+                />
+                <AssistantTranscript
+                  v-if="streamingSegments.length > 0"
+                  :segments="streamingSegments"
+                  :entries="props.currentTurnToolEntries"
+                  live
+                />
+                <p
+                  v-else-if="props.isGenerating || !!liveWaitKind()"
+                  class="live-status text-[13px] text-[#64748b] dark:text-[#cbd5e1]"
+                >
+                  <span>{{ liveStatusText }}</span>
+                  <span class="live-status-dots" aria-hidden="true">
+                    <span></span>
+                    <span></span>
+                    <span></span>
+                  </span>
+                </p>
+                <span
+                  v-if="isGenerating"
+                  class="inline-block w-1.5 h-[1em] bg-current ml-1 align-middle animate-pulse opacity-70"
+                ></span>
+                <div
+                  v-if="streamingTokenUsage() > 0 || streamingConversationTokenUsage() > 0"
+                  class="token-badge mt-2"
+                >
+                  <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+                    <ellipse cx="12" cy="5" rx="9" ry="3"></ellipse>
+                    <path d="M21 12c0 1.66-4 3-9 3s-9-1.34-9-3"></path>
+                    <path d="M3 5v14c0 1.66 4 3 9 3s9-1.34 9-3V5"></path>
+                  </svg>
+                  本次 {{ streamingTokenUsage() }} · 会话 {{ streamingConversationTokenUsage() }}
+                </div>
               </div>
             </div>
           </div>

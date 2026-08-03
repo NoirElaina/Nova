@@ -204,7 +204,7 @@ type StreamOpsDeps = {
   submitPermissionDecision: (
     conversationId: string | null,
     requestId: string,
-    action: "deny_once",
+    action: "deny_once" | "allow_once" | "allow_session",
   ) => Promise<boolean>;
 };
 
@@ -272,6 +272,7 @@ export function createChatStreamOperations(deps: StreamOpsDeps) {
 
     if (finalText || finalReasoning) {
       const assistantMessage: ChatMessage = {
+        id: `assistant-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
         role: "assistant",
         content: finalText || "（本轮没有返回可显示的文本内容）",
         reasoning: finalReasoning || undefined,
@@ -281,6 +282,7 @@ export function createChatStreamOperations(deps: StreamOpsDeps) {
           ...buildAssistantCostForState(state, toolSummary),
           transcriptSegments,
         },
+        createdAt: Date.now(),
       };
       await persistMessage(assistantMessage, conversationId);
     }
@@ -358,18 +360,21 @@ export function createChatStreamOperations(deps: StreamOpsDeps) {
     activeRuntimeRefs.assistantTurnCost.value = cost;
 
     const assistantMessage: ChatMessage = {
+      id: `assistant-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
       role: "assistant",
       content: finalText || "（本轮没有返回可显示的文本内容）",
       reasoning: finalReasoning || undefined,
       transcriptSegments,
       tokenUsage: resolvedTokenUsage > 0 ? resolvedTokenUsage : undefined,
       cost,
+      createdAt: Date.now(),
     };
     const conversationId = activeConversationId.value || null;
-    messages.value.push(assistantMessage);
-    void persistMessage(assistantMessage, conversationId ?? undefined).then(() =>
-      ackChatTurnStatus(conversationId),
-    );
+    // shallowRef：必须替换数组引用才能触发视图更新
+    messages.value = [...messages.value, assistantMessage];
+    // 先 ack 再异步持久化：避免崩溃后 live_turn 永久卡住无法发新消息
+    void ackChatTurnStatus(conversationId);
+    void persistMessage(assistantMessage, conversationId ?? undefined);
     if (conversationId) {
       void persistConversationMemory(conversationId);
     }
@@ -425,18 +430,19 @@ export function createChatStreamOperations(deps: StreamOpsDeps) {
     cost.transcriptSegments = transcriptSegments;
 
     const assistantMessage: ChatMessage = {
+      id: `assistant-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
       role: "assistant",
       content: cancelledText,
       reasoning: finalReasoning || undefined,
       transcriptSegments,
       tokenUsage: resolvedTokenUsage > 0 ? resolvedTokenUsage : undefined,
       cost,
+      createdAt: Date.now(),
     };
     const conversationId = activeConversationId.value || null;
-    messages.value.push(assistantMessage);
-    void persistMessage(assistantMessage, conversationId ?? undefined).then(() =>
-      ackChatTurnStatus(conversationId),
-    );
+    messages.value = [...messages.value, assistantMessage];
+    void ackChatTurnStatus(conversationId);
+    void persistMessage(assistantMessage, conversationId ?? undefined);
     activeRuntimeRefs.assistantResponse.value = "";
     activeRuntimeRefs.assistantReasoning.value = "";
     activeRuntimeRefs.assistantSegments.value = [];
@@ -496,7 +502,9 @@ export function createChatStreamOperations(deps: StreamOpsDeps) {
       state.isGenerating = true;
       switchStage(state, "processing");
       state.assistantResponse += payload.text;
-      state.assistantSegments = appendTranscriptText(state.assistantSegments, payload.text);
+      // 就地改 segment 文本；slice 换数组壳以触发子组件更新（不深拷贝内容）
+      appendTranscriptText(state.assistantSegments, payload.text);
+      state.assistantSegments = state.assistantSegments.slice();
       return;
     }
 
@@ -504,7 +512,8 @@ export function createChatStreamOperations(deps: StreamOpsDeps) {
       state.isGenerating = true;
       switchStage(state, "processing");
       state.assistantReasoning += payload.text;
-      state.assistantSegments = appendTranscriptReasoning(state.assistantSegments, payload.text);
+      appendTranscriptReasoning(state.assistantSegments, payload.text);
+      state.assistantSegments = state.assistantSegments.slice();
       return;
     }
 
@@ -525,7 +534,8 @@ export function createChatStreamOperations(deps: StreamOpsDeps) {
       if (!state.currentTurnToolIds.includes(toolId)) {
         state.currentTurnToolIds = [...state.currentTurnToolIds, toolId];
       }
-      state.assistantSegments = appendTranscriptTool(state.assistantSegments, toolId);
+      appendTranscriptTool(state.assistantSegments, toolId);
+      state.assistantSegments = state.assistantSegments.slice();
 
       startToolExecutionTraceInState(state, toolId, toolName);
       return;
@@ -545,6 +555,7 @@ export function createChatStreamOperations(deps: StreamOpsDeps) {
       const requestId = (payload.tool_use_id ?? "").trim();
       const promptPayload = (payload.text ?? "").trim();
       const parsed = parseNeedsUserInput(promptPayload);
+      const turnAgentMode = isActive ? agentMode.value : state.agentMode || "agent";
 
       if (!requestId) {
         emitToast({
@@ -582,6 +593,18 @@ export function createChatStreamOperations(deps: StreamOpsDeps) {
         if (isActive) {
           resetPendingPromptState(activeRuntimeRefs);
         }
+        return;
+      }
+
+      // Auto 模式：前端双保险，直接 allow_session，不弹审批框。
+      if (turnAgentMode === "auto") {
+        void submitPermissionDecision(
+          isActive ? activeConversationId.value || null : conversationId,
+          requestId,
+          "allow_session",
+        ).catch((err) => {
+          console.error("Failed to auto-allow permission in auto mode:", err);
+        });
         return;
       }
 
@@ -655,10 +678,8 @@ export function createChatStreamOperations(deps: StreamOpsDeps) {
           const preview =
             rendered.length > 1200 ? `${rendered.slice(0, 1200)}\n...(truncated)` : rendered;
           state.assistantResponse += `\n${preview}\n`;
-          state.assistantSegments = appendTranscriptText(
-            state.assistantSegments,
-            `\n${preview}\n`,
-          );
+          appendTranscriptText(state.assistantSegments, `\n${preview}\n`);
+          state.assistantSegments = state.assistantSegments.slice();
 
           if (!isActive) {
             emitToast({

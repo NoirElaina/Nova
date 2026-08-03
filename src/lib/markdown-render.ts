@@ -40,7 +40,32 @@ md.renderer.rules.link_open = function (
   return defaultLinkOpenRender(tokens, idx, options, env, self);
 };
 
-export function renderMarkdown(content: string): string {
+/** 闭合正文 HTML 缓存：历史气泡与已闭合 segment 复用，避免重复 parse。 */
+const RENDER_CACHE_LIMIT = 200;
+const renderCache = new Map<string, string>();
+
+function cacheGet(key: string): string | undefined {
+  const hit = renderCache.get(key);
+  if (hit === undefined) return undefined;
+  // 简单 LRU：命中后挪到末尾
+  renderCache.delete(key);
+  renderCache.set(key, hit);
+  return hit;
+}
+
+function cacheSet(key: string, value: string) {
+  if (renderCache.has(key)) {
+    renderCache.delete(key);
+  }
+  renderCache.set(key, value);
+  while (renderCache.size > RENDER_CACHE_LIMIT) {
+    const oldest = renderCache.keys().next().value;
+    if (oldest === undefined) break;
+    renderCache.delete(oldest);
+  }
+}
+
+function renderMarkdownUncached(content: string): string {
   let html = md.render(content || "");
 
   html = html.replace(
@@ -58,5 +83,26 @@ export function renderMarkdown(content: string): string {
     },
   );
 
+  return html;
+}
+
+/**
+ * @param content markdown 原文
+ * @param options.cache 为 true 时缓存结果（历史/已闭合 segment）；流式 open segment 应传 false
+ */
+export function renderMarkdown(
+  content: string,
+  options: { cache?: boolean } = {},
+): string {
+  const source = content || "";
+  if (!options.cache) {
+    return renderMarkdownUncached(source);
+  }
+  const hit = cacheGet(source);
+  if (hit !== undefined) {
+    return hit;
+  }
+  const html = renderMarkdownUncached(source);
+  cacheSet(source, html);
   return html;
 }

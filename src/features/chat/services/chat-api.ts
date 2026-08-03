@@ -200,8 +200,9 @@ export async function loadConversationHistory(conversationId: string): Promise<P
 export async function appendConversationMessage(
   conversationId: string,
   message: ChatMessage,
-): Promise<void> {
-  await invoke("append_history", { conversationId, message });
+): Promise<number> {
+  const id = await invoke<number>("append_history", { conversationId, message });
+  return typeof id === "number" ? id : 0;
 }
 
 export async function replaceConversationHistory(

@@ -72,6 +72,7 @@ async fn append_trigger_prompt_to_bound_conversation(
         app,
         conversation_id,
         HistoryMessage {
+            id: None,
             role: "user".to_string(),
             content,
             reasoning: None,
@@ -81,6 +82,7 @@ async fn append_trigger_prompt_to_bound_conversation(
         },
     )
     .await
+    .map(|_| ())
 }
 
 fn build_scheduled_trigger_user_content(job: &CronJob, triggered_at: &str) -> String {

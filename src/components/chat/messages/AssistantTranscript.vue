@@ -5,22 +5,25 @@ import type {
   ToolExecutionEntry,
   ToolTurnSummary,
 } from "../../../lib/chat-types";
-import {
-  buildToolSummaryForSegment,
-  cloneTranscriptSegments,
-} from "../../../features/chat/utils/assistant-transcript";
+import { buildToolSummaryForSegment } from "../../../features/chat/utils/assistant-transcript";
 import MarkdownRenderer from "../MarkdownRenderer.vue";
 import TurnActivitySummaryCard from "./TurnActivitySummaryCard.vue";
 import ModifiedFilesCard from "./ModifiedFilesCard.vue";
 
-const props = defineProps<{
-  segments: AssistantTranscriptSegment[];
-  entries?: ToolExecutionEntry[];
-  toolSummary?: ToolTurnSummary;
-}>();
+const props = withDefaults(
+  defineProps<{
+    segments: AssistantTranscriptSegment[];
+    entries?: ToolExecutionEntry[];
+    toolSummary?: ToolTurnSummary;
+    /** 流式 live turn：仅最后一个 text/reasoning 段走 live 渲染 */
+    live?: boolean;
+  }>(),
+  { live: false },
+);
 
+// 不深拷贝：直接过滤，降低每 token 分配
 const renderSegments = computed(() =>
-  cloneTranscriptSegments(props.segments).filter((segment) => {
+  props.segments.filter((segment) => {
     if (segment.type === "reasoning") {
       return segment.text.trim().length > 0;
     }
@@ -48,9 +51,23 @@ const aggregatedToolEntries = computed<ToolExecutionEntry[]>(() => {
 
 function segmentKey(segment: AssistantTranscriptSegment, index: number): string {
   if (segment.type === "tools") {
-    return `${index}-tools-${segment.toolIds.join("-")}`;
+    return `${index}-tools-${segment.toolIds[0] ?? "x"}-${segment.toolIds.length}`;
   }
   return `${index}-${segment.type}`;
+}
+
+function isLiveSegment(segment: AssistantTranscriptSegment, index: number): boolean {
+  if (!props.live) return false;
+  if (segment.type === "tools") return false;
+  // 仅最后一个 text/reasoning 段实时重渲染；前面的闭合段走缓存
+  const segs = renderSegments.value;
+  for (let i = segs.length - 1; i >= 0; i -= 1) {
+    const s = segs[i];
+    if (s.type === "text" || s.type === "reasoning") {
+      return i === index;
+    }
+  }
+  return false;
 }
 
 function toolSegmentSummary(segment: Extract<AssistantTranscriptSegment, { type: "tools" }>) {
@@ -75,6 +92,7 @@ function reasoningSummary(text: string): string {
       <MarkdownRenderer
         v-if="segment.type === 'text'"
         :content="segment.text"
+        :live="isLiveSegment(segment, index)"
       />
 
       <details
@@ -86,7 +104,10 @@ function reasoningSummary(text: string): string {
           <span class="transcript-reasoning__chevron">›</span>
         </summary>
         <div class="transcript-reasoning__body">
-          <MarkdownRenderer :content="segment.text" />
+          <MarkdownRenderer
+            :content="segment.text"
+            :live="isLiveSegment(segment, index)"
+          />
         </div>
       </details>
 

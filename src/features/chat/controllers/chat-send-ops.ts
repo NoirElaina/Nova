@@ -146,6 +146,9 @@ export function createSendOperations(deps: SendOpsDeps) {
     currentInputTokens.value = 0;
     resetToolTrackingState(activeRuntimeRefs);
     currentTurnId.value = `turn-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    // 记录本轮 mode，切到后台会话时 permission 双保险可读到
+    const turnRuntime = ensureRuntimeState(runtimeStateByConversation, sendingConversationId);
+    turnRuntime.agentMode = agentMode.value;
     void chatScreenRef.value?.scrollLiveAssistantIntoView();
 
     const rustMessages = nextMessages.map((message) => buildModelMessage(message));
@@ -281,9 +284,11 @@ export function createSendOperations(deps: SendOpsDeps) {
     const imageAttachments = toAttachmentMeta(imageFiles, { includeImageData: true });
     const uploadedAttachments = [...documentAttachments, ...imageAttachments];
     const userMessage: ChatMessage = {
+      id: `user-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
       role: "user",
       content: text,
       attachments: uploadedAttachments.length > 0 ? uploadedAttachments : undefined,
+      createdAt: Date.now(),
     };
     const nextMessages = [...messages.value, userMessage];
 
@@ -296,14 +301,38 @@ export function createSendOperations(deps: SendOpsDeps) {
     await dispatchConversationMessages(sendingConversationId, nextMessages);
   }
 
-  async function handleEditMessage(messageIndex: number, nextContent: string) {
+  async function handleEditMessage(
+    payload: { index: number; content: string; id?: string },
+  ) {
     if (isGenerating.value) return;
     const conversationId = activeConversationId.value.trim();
-    const trimmedContent = nextContent.trim();
+    const trimmedContent = payload.content.trim();
     if (!conversationId || !trimmedContent) return;
+
+    // 优先用稳定 id 定位，避免虚拟列表/过滤导致 index 指错而多删前面消息。
+    let messageIndex = -1;
+    if (payload.id) {
+      messageIndex = messages.value.findIndex((item) => item.id === payload.id);
+    }
+    if (messageIndex < 0) {
+      messageIndex = payload.index;
+    }
 
     const originalMessage = messages.value[messageIndex];
     if (!originalMessage || originalMessage.role !== "user") {
+      return;
+    }
+    // id 命中时再校验 index 是否离谱（防止错删）
+    if (
+      payload.id &&
+      originalMessage.id &&
+      originalMessage.id !== payload.id
+    ) {
+      emitToast({
+        variant: "error",
+        source: "edit-message",
+        message: "无法定位要编辑的消息，请刷新会话后重试。",
+      });
       return;
     }
 

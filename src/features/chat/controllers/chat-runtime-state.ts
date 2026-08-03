@@ -45,7 +45,10 @@ export type ActiveRuntimeRefs = {
   toolNameById: Map<string, string>;
 };
 
-export function bindActiveRuntimeState(active: ActiveRuntimeRefs): ConversationTurnRuntimeState {
+export function bindActiveRuntimeState(
+  active: ActiveRuntimeRefs,
+  getAgentMode: () => import("../../../lib/chat-types").AgentMode = () => "agent",
+): ConversationTurnRuntimeState {
   return {
     get isGenerating() {
       return active.isGenerating.value;
@@ -58,6 +61,12 @@ export function bindActiveRuntimeState(active: ActiveRuntimeRefs): ConversationT
     },
     set currentStage(value: LiveTurnStage) {
       active.currentStage.value = value;
+    },
+    get agentMode() {
+      return getAgentMode();
+    },
+    set agentMode(_value: import("../../../lib/chat-types").AgentMode) {
+      // active 会话的 mode 由 agentMode ref 管理，此处忽略写回
     },
     get assistantResponse() {
       return active.assistantResponse.value;
@@ -75,9 +84,13 @@ export function bindActiveRuntimeState(active: ActiveRuntimeRefs): ConversationT
       return active.assistantSegments.value;
     },
     set assistantSegments(value: AssistantTranscriptSegment[]) {
-      active.assistantSegments.value = value.map((segment) =>
-        segment.type === "tools" ? { type: "tools", toolIds: [...segment.toolIds] } : { ...segment },
-      );
+      // 流式路径就地改 segment 内容；仅在引用变化时替换数组，避免每 token 深拷贝。
+      if (active.assistantSegments.value !== value) {
+        active.assistantSegments.value = value;
+      } else {
+        // 同引用就地更新时仍触发依赖 assistantSegments 的渲染（text 字段已变）。
+        active.assistantSegments.value = value;
+      }
     },
     get assistantTokenUsage() {
       return active.assistantTokenUsage.value;
@@ -190,10 +203,13 @@ export function bindActiveRuntimeState(active: ActiveRuntimeRefs): ConversationT
   };
 }
 
-export function createEmptyRuntimeState(): ConversationTurnRuntimeState {
+export function createEmptyRuntimeState(
+  agentMode: import("../../../lib/chat-types").AgentMode = "agent",
+): ConversationTurnRuntimeState {
   return {
     isGenerating: false,
     currentStage: "processing",
+    agentMode,
     assistantResponse: "",
     assistantReasoning: "",
     assistantSegments: [],
@@ -240,10 +256,12 @@ export function cloneRuntimeState(
 
 export function snapshotActiveRuntimeState(
   active: ActiveRuntimeRefs,
+  agentMode: import("../../../lib/chat-types").AgentMode = "agent",
 ): ConversationTurnRuntimeState {
   return {
     isGenerating: active.isGenerating.value,
     currentStage: active.currentStage.value,
+    agentMode,
     assistantResponse: active.assistantResponse.value,
     assistantReasoning: active.assistantReasoning.value,
     assistantSegments: active.assistantSegments.value.map((segment) =>
@@ -355,9 +373,10 @@ export function stashRuntimeState(
   runtimeStateByConversation: Map<string, ConversationTurnRuntimeState>,
   conversationId: string,
   active: ActiveRuntimeRefs,
+  agentMode: import("../../../lib/chat-types").AgentMode = "agent",
 ) {
   const key = normalizeConversationId(conversationId);
-  runtimeStateByConversation.set(key, snapshotActiveRuntimeState(active));
+  runtimeStateByConversation.set(key, snapshotActiveRuntimeState(active, agentMode));
   cleanupRuntimeStateIfIdle(runtimeStateByConversation, key);
 }
 

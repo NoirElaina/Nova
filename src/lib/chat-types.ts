@@ -85,6 +85,8 @@ export interface ChatAttachment {
 }
 
 export interface ChatMessage {
+  /** 稳定 UI key；缺失时由加载/创建路径补齐 */
+  id?: string;
   role: "user" | "assistant";
   content: string;
   reasoning?: string;
@@ -114,6 +116,8 @@ export interface UploadedImageFile extends ChatAttachment {
 export type PendingUploadFile = UploadedDocumentFile | UploadedImageFile;
 
 export interface PersistedMessage {
+  /** SQLite conversation_messages.id */
+  id?: number | null;
   role: string;
   content: string;
   reasoning?: string;

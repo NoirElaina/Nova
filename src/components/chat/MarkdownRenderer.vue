@@ -3,9 +3,18 @@ import { computed } from 'vue'
 import { Card, CardContent } from '@/components/ui/card'
 import { renderMarkdown } from '@/lib/markdown-render'
 
-const props = defineProps<{ content: string }>()
+const props = withDefaults(
+  defineProps<{
+    content: string
+    /** 流式未闭合段：不走缓存，保证实时；历史/已闭合段：缓存 HTML */
+    live?: boolean
+  }>(),
+  { live: false },
+)
 
-const rendered = computed(() => renderMarkdown(props.content || ''))
+const rendered = computed(() =>
+  renderMarkdown(props.content || '', { cache: !props.live }),
+)
 </script>
 
 <template>

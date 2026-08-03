@@ -18,6 +18,10 @@ export function cloneTranscriptSegments(
   );
 }
 
+/**
+ * 就地追加正文。同类型末段直接改 text，避免每 token 深拷贝整表。
+ * 结构变化（新开 segment）时 push；调用方若用 shallowRef 需在结构变化时触发替换。
+ */
 export function appendTranscriptText(
   segments: AssistantTranscriptSegment[],
   text: string,
@@ -26,15 +30,14 @@ export function appendTranscriptText(
     return segments;
   }
 
-  const next = cloneTranscriptSegments(segments);
-  const last = next[next.length - 1];
+  const last = segments[segments.length - 1];
   if (last?.type === "text") {
     last.text += text;
-    return next;
+    return segments;
   }
 
-  next.push({ type: "text", text });
-  return next;
+  segments.push({ type: "text", text });
+  return segments;
 }
 
 export function appendTranscriptReasoning(
@@ -45,15 +48,14 @@ export function appendTranscriptReasoning(
     return segments;
   }
 
-  const next = cloneTranscriptSegments(segments);
-  const last = next[next.length - 1];
+  const last = segments[segments.length - 1];
   if (last?.type === "reasoning") {
     last.text += text;
-    return next;
+    return segments;
   }
 
-  next.push({ type: "reasoning", text });
-  return next;
+  segments.push({ type: "reasoning", text });
+  return segments;
 }
 
 export function appendTranscriptTool(
@@ -64,17 +66,16 @@ export function appendTranscriptTool(
     return segments;
   }
 
-  const next = cloneTranscriptSegments(segments);
-  const last = next[next.length - 1];
+  const last = segments[segments.length - 1];
   if (last?.type === "tools") {
     if (!last.toolIds.includes(toolId)) {
       last.toolIds.push(toolId);
     }
-    return next;
+    return segments;
   }
 
-  next.push({ type: "tools", toolIds: [toolId] });
-  return next;
+  segments.push({ type: "tools", toolIds: [toolId] });
+  return segments;
 }
 
 function hasDisplayableSegment(segment: AssistantTranscriptSegment): boolean {

@@ -12,7 +12,7 @@ const props = defineProps<{
 
 const emit = defineEmits<{
   (e: 'retry', index: number): void;
-  (e: 'save-edit', payload: { index: number; content: string }): void;
+  (e: 'save-edit', payload: { index: number; content: string; id?: string }): void;
   (e: 'copy', index: number): void;
 }>();
 
@@ -56,7 +56,11 @@ const saveEdit = () => {
     return;
   }
   isEditing.value = false;
-  emit('save-edit', { index: props.index, content });
+  emit('save-edit', {
+    index: props.index,
+    content,
+    id: props.message.id,
+  });
 };
 
 watch(

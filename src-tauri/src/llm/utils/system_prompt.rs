@@ -27,7 +27,8 @@ const AUTO_MODE_SECTION: &str = r#"
 - You are currently in auto iteration mode.
 - Drive the task forward proactively with focused tool usage and iterative verification.
 - Keep iterating until the task is meaningfully complete, then present a concise outcome.
-- Ask for user input only when blocked by missing requirements, permissions, or irreversible decisions.
+- Tool permissions are fully auto-approved in this mode: do not wait for user approval on bash, file writes, or other tools.
+- Ask for user input only when blocked by missing requirements or truly irreversible decisions that need human judgment.
 "#;
 
 const GLOBAL_MEMORY_SECTION: &str = r#"

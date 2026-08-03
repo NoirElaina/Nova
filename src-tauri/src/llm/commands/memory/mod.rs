@@ -143,6 +143,7 @@ pub async fn refresh_conversation_memory(
     let mut messages = rows
         .into_iter()
         .map(|row| HistoryMessage {
+            id: None,
             // 读取 role。
             role: row.get::<String, _>("role"),
             // 读取 content。
@@ -263,6 +264,7 @@ pub async fn get_conversation_handover_by_pool(
     let mut recent_messages = rows
         .into_iter()
         .map(|row| HistoryMessage {
+            id: None,
             role: row.get::<String, _>("role"),
             content: row.get::<String, _>("content"),
             reasoning: row.get::<Option<String>, _>("reasoning"),

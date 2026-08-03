@@ -182,6 +182,7 @@ export function createConversationOperations(deps: ConversationOpsDeps) {
 
       if (!isDuplicateAssistantMessage(content, finalReasoning)) {
         const assistantMessage: ChatMessage = {
+          id: `assistant-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
           role: "assistant",
           content,
           reasoning: finalReasoning || undefined,
@@ -189,8 +190,9 @@ export function createConversationOperations(deps: ConversationOpsDeps) {
             reasoning: finalReasoning,
             text: finalText,
           }),
+          createdAt: Date.now(),
         };
-        messages.value.push(assistantMessage);
+        messages.value = [...messages.value, assistantMessage];
         await persistMessage(assistantMessage, conversationId);
       }
     }
@@ -258,7 +260,12 @@ export function createConversationOperations(deps: ConversationOpsDeps) {
 
     const previousConversationId = activeConversationId.value;
     if (previousConversationId && previousConversationId !== targetConversationId) {
-      stashRuntimeState(runtimeStateByConversation, previousConversationId, activeRuntimeRefs);
+      stashRuntimeState(
+        runtimeStateByConversation,
+        previousConversationId,
+        activeRuntimeRefs,
+        agentMode.value,
+      );
     }
 
     activeConversationId.value = targetConversationId;
@@ -276,7 +283,11 @@ export function createConversationOperations(deps: ConversationOpsDeps) {
             (message.role === "user" || message.role === "assistant") &&
             (!!message.content || !!message.reasoning || (message.attachments?.length ?? 0) > 0),
         )
-        .map((message) => ({
+        .map((message, index) => ({
+          id:
+            message.id != null && message.id > 0
+              ? String(message.id)
+              : `hist-${targetConversationId}-${index}`,
           role: message.role as "user" | "assistant",
           content: message.content,
           reasoning: message.reasoning,
@@ -309,7 +320,21 @@ export function createConversationOperations(deps: ConversationOpsDeps) {
   async function persistMessage(message: ChatMessage, conversationId = activeConversationId.value) {
     if (!conversationId) return;
     try {
-      await appendConversationMessage(conversationId, message);
+      const dbId = await appendConversationMessage(conversationId, message);
+      // 回写稳定数据库 id，编辑截断不再依赖易漂移的数组下标。
+      if (dbId > 0) {
+        const nextId = String(dbId);
+        const idx = messages.value.findIndex(
+          (item) => item === message || (!!message.id && item.id === message.id),
+        );
+        if (idx >= 0 && messages.value[idx]?.id !== nextId) {
+          const next = messages.value.slice();
+          next[idx] = { ...next[idx], id: nextId };
+          messages.value = next;
+        } else if (message.id !== nextId) {
+          message.id = nextId;
+        }
+      }
       await refreshConversations();
     } catch (err) {
       console.error("Failed to persist message:", err);

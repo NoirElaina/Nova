@@ -197,19 +197,73 @@ async fn conversation_exists(pool: &SqlitePool, conversation_id: &str) -> Result
     Ok(exists != 0)
 }
 
-fn is_actual_user_message(message: &Message) -> bool {
+fn message_plain_text(content: &Content) -> String {
+    match content {
+        Content::Text(text) => text.clone(),
+        Content::Blocks(blocks) => blocks
+            .iter()
+            .filter_map(|block| match block {
+                ContentBlock::Text { text } => Some(text.as_str()),
+                _ => None,
+            })
+            .collect::<Vec<_>>()
+            .join("\n"),
+    }
+}
+
+/// 与前端 UI 可见的 user 气泡对齐的“对话用户轮次”。
+/// 排除：tool_result 专用消息、纯图片 side-channel、compact 摘要、hook/注入标记。
+/// 旧实现把 Image/摘要也算进 ordinal，编辑第 N 条用户消息时会截到更早位置，
+/// 表现为模型上下文（甚至配合错误 index 时 UI）丢掉更前面的轮次。
+fn is_conversation_user_turn(message: &Message) -> bool {
     if message.role != Role::User {
         return false;
     }
 
+    const SYNTHETIC_PREFIXES: &[&str] = &[
+        "[Auto Compact Summary]",
+        "[Session Restore Context]",
+        "[Global Memory]",
+        "[Session Files]",
+        "[Project Context]",
+        "[Phase]",
+        "[SessionStart]",
+        "[UserPromptSubmit]",
+        "[PreCompact]",
+        "[PostCompact]",
+        "[SubagentStart]",
+        "[SubagentStop]",
+        "[PreToolUse]",
+        "[PostToolUse]",
+        "[PostToolUseFailure]",
+        "[StopHookContext]",
+        "[MCP",
+    ];
+
     match &message.content {
-        Content::Text(text) => !text.trim().is_empty(),
-        Content::Blocks(blocks) => blocks.iter().any(|block| {
-            matches!(
-                block,
-                ContentBlock::Text { .. } | ContentBlock::Image { .. }
-            )
-        }),
+        Content::Text(text) => {
+            let trimmed = text.trim();
+            if trimmed.is_empty() {
+                return false;
+            }
+            !SYNTHETIC_PREFIXES
+                .iter()
+                .any(|prefix| trimmed.starts_with(prefix))
+        }
+        Content::Blocks(blocks) => {
+            // 必须有可见文本；纯 tool_result / 纯 image 不计为 UI 用户轮次
+            let has_text = blocks.iter().any(|block| {
+                matches!(block, ContentBlock::Text { text } if !text.trim().is_empty())
+            });
+            if !has_text {
+                return false;
+            }
+            let text = message_plain_text(&message.content);
+            let trimmed = text.trim();
+            !SYNTHETIC_PREFIXES
+                .iter()
+                .any(|prefix| trimmed.starts_with(prefix))
+        }
     }
 }
 
@@ -220,7 +274,7 @@ fn snapshot_before_user_ordinal(snapshot: &[Message], user_ordinal: usize) -> Ve
 
     let mut seen_users = 0usize;
     for (index, message) in snapshot.iter().enumerate() {
-        if is_actual_user_message(message) {
+        if is_conversation_user_turn(message) {
             seen_users += 1;
             if seen_users == user_ordinal {
                 return snapshot[..index].to_vec();
@@ -228,6 +282,8 @@ fn snapshot_before_user_ordinal(snapshot: &[Message], user_ordinal: usize) -> Ve
         }
     }
 
+    // 找不到对应 ordinal：保守清空后续不可靠尾部，避免把“编辑点之后”的旧上下文留给模型。
+    // 若 snapshot 用户轮次少于 UI，说明已 compact/漂移，保留全部已知前缀胜于截错。
     snapshot.to_vec()
 }
 
@@ -640,7 +696,7 @@ pub async fn load_history(
     let pool = get_pool_with_schema(app).await?;
 
     let rows = sqlx::query(
-        "SELECT role, content, reasoning, attachments_json, token_usage, cost_json FROM conversation_messages WHERE conversation_id = ? ORDER BY created_at ASC, id ASC",
+        "SELECT id, role, content, reasoning, attachments_json, token_usage, cost_json, created_at FROM conversation_messages WHERE conversation_id = ? ORDER BY created_at ASC, id ASC",
     )
     .bind(conversation_id)
     .fetch_all(&pool)
@@ -650,6 +706,7 @@ pub async fn load_history(
     let result = rows
         .into_iter()
         .map(|row| HistoryMessage {
+            id: Some(row.get::<i64, _>("id")),
             role: row.get::<String, _>("role"),
             content: row.get::<String, _>("content"),
             reasoning: row.get::<Option<String>, _>("reasoning"),
@@ -675,16 +732,17 @@ pub async fn append_history(
     app: &AppHandle,
     conversation_id: &str,
     message: HistoryMessage,
-) -> Result<(), String> {
+) -> Result<i64, String> {
     let pool = get_pool_with_schema(app).await?;
     let normalized_conversation_id = conversation_id.trim();
 
     // Stream callbacks may outlive a conversation (reload/delete/clear); skip stale writes.
     if !conversation_exists(&pool, normalized_conversation_id).await? {
-        return Ok(());
+        return Ok(0);
     }
 
-    let now = chrono::Utc::now().timestamp();
+    // 毫秒时间戳，避免同一秒内多条消息仅靠 id 排序时与 UI 观感不一致。
+    let now = chrono::Utc::now().timestamp_millis();
     let role = message.role.clone();
     let content = message.content.clone();
     let reasoning = message
@@ -697,7 +755,7 @@ pub async fn append_history(
     let token_usage = message.token_usage;
     let cost_json = message.cost.and_then(|v| serde_json::to_string(&v).ok());
 
-    sqlx::query(
+    let result = sqlx::query(
         "INSERT INTO conversation_messages (conversation_id, role, content, reasoning, attachments_json, token_usage, cost_json, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
     )
     .bind(normalized_conversation_id)
@@ -711,6 +769,7 @@ pub async fn append_history(
     .execute(&pool)
     .await
     .map_err(|e| e.to_string())?;
+    let inserted_id = result.last_insert_rowid();
 
     // Auto-title whenever a placeholder title is still present.
     if role.eq_ignore_ascii_case("user") {
@@ -751,18 +810,19 @@ pub async fn append_history(
         }
     }
 
+    let now_secs = now / 1000;
     // Touch conversation timestamp so list order reflects latest activity.
     sqlx::query("UPDATE conversations SET updated_at = ? WHERE id = ?")
-        .bind(now)
+        .bind(now_secs)
         .bind(normalized_conversation_id)
         .execute(&pool)
         .await
         .map_err(|e| e.to_string())?;
 
     // Keep summary memory in sync after each append.
-    memory::refresh_conversation_memory(&pool, normalized_conversation_id, now).await?;
+    memory::refresh_conversation_memory(&pool, normalized_conversation_id, now_secs).await?;
 
-    Ok(())
+    Ok(inserted_id)
 }
 
 pub async fn replace_history(
@@ -777,7 +837,8 @@ pub async fn replace_history(
         return Ok(());
     }
 
-    let now = chrono::Utc::now().timestamp();
+    let now = chrono::Utc::now().timestamp_millis();
+    let now_secs = now / 1000;
     let current_title: Option<String> =
         sqlx::query_scalar("SELECT title FROM conversations WHERE id = ?")
             .bind(normalized_conversation_id)
@@ -789,9 +850,12 @@ pub async fn replace_history(
         .map(|message| message.role.eq_ignore_ascii_case("user"))
         .unwrap_or(false)
     {
+        // 与 UI 一致：只按可见 user 气泡计数（有正文的 user 行）。
         let user_ordinal = messages
             .iter()
-            .filter(|message| message.role.eq_ignore_ascii_case("user"))
+            .filter(|message| {
+                message.role.eq_ignore_ascii_case("user") && !message.content.trim().is_empty()
+            })
             .count();
         if user_ordinal <= 1 {
             Some(Vec::new())
@@ -839,6 +903,7 @@ pub async fn replace_history(
         .map_err(|e| e.to_string())?;
 
     for (index, message) in messages.iter().enumerate() {
+        // 稳定递增毫秒，保证 ORDER BY created_at, id 与传入顺序一致。
         let created_at = now + index as i64;
         let reasoning = message
             .reasoning
@@ -887,14 +952,14 @@ pub async fn replace_history(
 
         sqlx::query("UPDATE conversations SET title = ?, updated_at = ? WHERE id = ?")
             .bind(next_title)
-            .bind(now)
+            .bind(now_secs)
             .bind(normalized_conversation_id)
             .execute(&mut *tx)
             .await
             .map_err(|e| e.to_string())?;
     } else {
         sqlx::query("UPDATE conversations SET updated_at = ? WHERE id = ?")
-            .bind(now)
+            .bind(now_secs)
             .bind(normalized_conversation_id)
             .execute(&mut *tx)
             .await
@@ -904,7 +969,7 @@ pub async fn replace_history(
     tx.commit().await.map_err(|e| e.to_string())?;
 
     if !messages.is_empty() {
-        memory::refresh_conversation_memory(&pool, normalized_conversation_id, now).await?;
+        memory::refresh_conversation_memory(&pool, normalized_conversation_id, now_secs).await?;
     }
     if let Some(snapshot) = replacement_snapshot {
         save_turn_snapshot(app, normalized_conversation_id, &snapshot).await?;

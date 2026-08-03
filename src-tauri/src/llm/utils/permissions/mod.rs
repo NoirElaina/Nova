@@ -83,6 +83,8 @@ struct ConversationPermissionState {
     allow_once: HashSet<String>,
     allow_session: HashSet<String>,
     resolved_by_request: HashMap<String, RecordedDecision>,
+    /// Auto 模式下本轮工具权限全放行（会话级，随 turn 启停更新）。
+    auto_bypass: bool,
 }
 
 #[derive(Debug, Default)]
@@ -835,15 +837,36 @@ fn check_file_path(path: &str) -> Result<(), String> {
     Ok(())
 }
 
+/// 设置/清除当前会话是否处于 Auto 全放行（由 send_chat_message 在 turn 边界调用）。
+pub fn set_conversation_auto_bypass(conversation_id: Option<&str>, enabled: bool) {
+    let Ok(mut guard) = permission_state().lock() else {
+        return;
+    };
+    let state = conversation_state_mut(&mut guard, conversation_id);
+    state.auto_bypass = enabled;
+}
+
+fn conversation_auto_bypass_enabled(conversation_id: Option<&str>) -> bool {
+    let Ok(mut guard) = permission_state().lock() else {
+        return false;
+    };
+    conversation_state_mut(&mut guard, conversation_id).auto_bypass
+}
+
 pub fn enforce_tool_permission(
     _app: &AppHandle,
     conversation_id: Option<&str>,
     tool_name: &str,
     input: &Value,
 ) -> PermissionEnforcement {
-    // Decision order: unsafe override > deny cache > session allow > one-time allow > ask user.
+    // Decision order: unsafe override > auto bypass > session allow > one-time allow > ask user.
     if unsafe_override_enabled() {
         // 显式调试开关打开时直接放行，不进入任何审批状态机。
+        return PermissionEnforcement::Allow;
+    }
+
+    // Auto 模式：本轮全部工具直接放行，不弹审批、不写 allow 缓存。
+    if conversation_auto_bypass_enabled(conversation_id) {
         return PermissionEnforcement::Allow;
     }
 

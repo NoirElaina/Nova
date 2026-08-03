@@ -97,8 +97,8 @@ pub async fn append_history(
     app: AppHandle,
     conversation_id: String,
     message: HistoryMessage,
-) -> Result<(), String> {
-    // 向指定会话追加一条历史消息。
+) -> Result<i64, String> {
+    // 向指定会话追加一条历史消息，返回数据库行 id。
     report_backend_result(
         &app,
         "command.history.append_history",

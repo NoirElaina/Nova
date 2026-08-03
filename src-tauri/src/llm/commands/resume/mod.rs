@@ -30,6 +30,7 @@ pub async fn get_conversation_resume_context_by_pool(
     let messages_since_boundary = rows
         .into_iter()
         .map(|row| HistoryMessage {
+            id: None,
             // 读取 role。
             role: row.get::<String, _>("role"),
             // 读取 content。

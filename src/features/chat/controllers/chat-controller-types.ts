@@ -60,6 +60,8 @@ export const SCHEDULED_CONVERSATION_TITLE_PREFIX = "Scheduled [";
 export type ConversationTurnRuntimeState = {
   isGenerating: boolean;
   currentStage: LiveTurnStage;
+  /** 本轮发起时的 agent 模式（后台会话权限自动放行依赖此字段） */
+  agentMode: import("../../../lib/chat-types").AgentMode;
   assistantResponse: string;
   assistantReasoning: string;
   assistantSegments: AssistantTranscriptSegment[];

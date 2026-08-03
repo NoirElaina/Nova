@@ -36,6 +36,9 @@ pub struct HistoryAttachment {
 #[derive(Debug, Serialize, Deserialize, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct HistoryMessage {
+    // 数据库主键（conversation_messages.id）；写入时可选，读取时回填。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub id: Option<i64>,
     // 消息角色（user/assistant）。
     pub role: String,
     // 消息文本内容。

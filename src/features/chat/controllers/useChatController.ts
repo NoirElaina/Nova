@@ -1,4 +1,4 @@
-import { computed, onMounted, onUnmounted, ref } from "vue";
+import { computed, onMounted, onUnmounted, ref, shallowRef } from "vue";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { emitToast } from "../../../lib/toast";
 import {
@@ -37,7 +37,7 @@ import { createChatStreamOperations } from "./chat-stream-ops";
 import { createSendOperations } from "./chat-send-ops";
 
 export function useChatController() {
-  const messages = ref<ChatMessage[]>([]);
+  const messages = shallowRef<ChatMessage[]>([]);
   const isGenerating = ref(false);
   const currentStage = ref<LiveTurnStage>("processing");
   const assistantResponse = ref("");
@@ -98,7 +98,7 @@ export function useChatController() {
     toolInputById,
     toolNameById,
   };
-  const activeRuntimeState = bindActiveRuntimeState(activeRuntimeRefs);
+  const activeRuntimeState = bindActiveRuntimeState(activeRuntimeRefs, () => agentMode.value);
   const currentTurnToolExecutionLogs = computed(() => {
     const ids = new Set(currentTurnToolIds.value);
     return toolExecutionLogs.value.filter((entry) => ids.has(entry.id));

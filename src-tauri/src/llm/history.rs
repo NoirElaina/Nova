@@ -1138,6 +1138,7 @@ pub async fn clear_history(app: &AppHandle, conversation_id: Option<String>) -> 
 
         tx.commit().await.map_err(|e| e.to_string())?;
         crate::command::session_files::delete_all_session_files(app, &id).await?;
+        let _ = crate::llm::services::plan_files::delete_conversation_plan(app, Some(&id));
         crate::llm::services::shell_sessions::close_session(Some(&id)).await;
         let _ = crate::llm::services::user_terminal::stop_session(Some(&id));
     } else {
@@ -1250,6 +1251,7 @@ pub async fn delete_conversation(app: &AppHandle, conversation_id: &str) -> Resu
         .map_err(|e| e.to_string())?;
 
     crate::command::session_files::delete_all_session_files(app, conversation_id).await?;
+    let _ = crate::llm::services::plan_files::delete_conversation_plan(app, Some(conversation_id));
     crate::llm::services::shell_sessions::close_session(Some(conversation_id)).await;
     let _ = crate::llm::services::user_terminal::stop_session(Some(conversation_id));
 

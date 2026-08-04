@@ -225,4 +225,7 @@ export interface PlanModeChangePayload {
   goal?: string;
   summary?: string;
   message?: string;
+  /** exit_plan_mode 保存的完整计划文本（Markdown）。 */
+  plan?: string;
+  planUpdatedAt?: number;
 }

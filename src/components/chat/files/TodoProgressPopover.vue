@@ -92,14 +92,17 @@ watch(
   () => props.conversationId,
   () => {
     todos.value = [];
-    if (isOpen.value) {
-      fetchTodos();
-    }
+    // 切换会话后立即拉取，保证徽标上的进度计数始终可见，
+    // 而不是要等用户点开面板才加载。
+    fetchTodos();
   },
 );
 
 onMounted(async () => {
   document.addEventListener("mousedown", onPointerDownDocument);
+  // 挂载时立即拉取一次：刷新页面后徽标（done/total）直接可见，
+  // 不需要点开面板才能看到任务进度。
+  fetchTodos();
   unlistenFn = await listen<{ conversationId: string | null }>(
     "todo-updated",
     (event) => {
@@ -129,8 +132,8 @@ onBeforeUnmount(() => {
     <Button
       variant="outline"
       size="sm"
-      class="h-8 px-3 rounded-md border border-[#e6e3dd] dark:border-[#444] bg-white/95 dark:bg-[#262626] text-[12px] text-[#4f5f73] dark:text-[#d5dbe3] inline-flex items-center gap-2 hover:bg-[#faf8f4] dark:hover:bg-[#2f2f2f] transition-colors"
-      :class="{ 'bg-[#faf8f4] dark:bg-[#2f2f2f]': isOpen }"
+      class="h-8 px-1.5 rounded-md border-transparent bg-transparent text-[#4f5f73] dark:text-[#d5dbe3] inline-flex items-center gap-1.5 shadow-none hover:bg-black/5 dark:hover:bg-white/5 transition-colors"
+      :class="{ 'bg-black/5 dark:bg-white/10': isOpen }"
       @click="togglePanel"
       :title="total > 0 ? `任务进度 ${done}/${total}` : '任务清单'"
     >
@@ -138,7 +141,6 @@ onBeforeUnmount(() => {
         <path d="M9 11l3 3L22 4" />
         <path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11" />
       </svg>
-      任务
       <span
         v-if="total > 0"
         class="inline-flex items-center justify-center min-w-[18px] h-[18px] px-1 rounded-full text-[11px] leading-none"

@@ -32,3 +32,5 @@ pub mod workspace;
 pub mod usage;
 // TodoWrite 工具状态查询命令入口。
 pub mod todo;
+// 会话 plan 查询命令入口。
+pub mod plan;

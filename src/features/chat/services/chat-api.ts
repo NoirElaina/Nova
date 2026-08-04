@@ -76,6 +76,12 @@ export type SessionFileMeta = {
   createdAt: number;
 };
 
+/** 会话计划：exit_plan_mode 工具写入应用数据 plans 目录，每会话仅一份。 */
+export type ConversationPlan = {
+  content: string;
+  updatedAt: number;
+};
+
 export type ShellSessionStatus = {
   exists: boolean;
   alive: boolean;
@@ -452,6 +458,15 @@ export async function readSessionFile(
   return invoke<string>("read_session_file", {
     conversationId,
     filename,
+  });
+}
+
+/** 读取会话 plan；会话还没有 plan 时返回 null。 */
+export async function getConversationPlan(
+  conversationId: string | null,
+): Promise<ConversationPlan | null> {
+  return invoke<ConversationPlan | null>("get_conversation_plan", {
+    conversationId,
   });
 }
 

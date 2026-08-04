@@ -110,15 +110,15 @@ onBeforeUnmount(() => {
     <Button
       variant="outline"
       size="sm"
-      class="h-8 px-3 rounded-md border border-[#e6e3dd] dark:border-[#444] bg-white/95 dark:bg-[#262626] text-[12px] text-[#4f5f73] dark:text-[#d5dbe3] inline-flex items-center gap-2 hover:bg-[#faf8f4] dark:hover:bg-[#2f2f2f] transition-colors"
+      class="h-8 px-1.5 rounded-md border-transparent bg-transparent text-[#4f5f73] dark:text-[#d5dbe3] inline-flex items-center gap-1.5 shadow-none hover:bg-black/5 dark:hover:bg-white/5 transition-colors"
       @click="togglePanel"
+      title="AI 执行日志"
     >
       <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
         <path d="M3 12h18" />
         <path d="M3 6h18" />
         <path d="M3 18h18" />
       </svg>
-      执行日志
       <span class="inline-flex items-center justify-center min-w-[18px] h-[18px] px-1 rounded-full bg-[#f2f0ec] dark:bg-[#334155] text-[11px] leading-none">
         {{ props.entries.length }}
       </span>

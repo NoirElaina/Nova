@@ -252,11 +252,21 @@ export function createConversationOperations(deps: ConversationOpsDeps) {
     }
   }
 
+  // 会话加载序号：快速切换会话时多个 loadConversation 会并发飞行，
+  // 后发先至的旧结果会覆盖新会话的 UI（消息/记忆/文件串台），
+  // 每个 await 之后都校验序号，过期的加载直接放弃写入。
+  let conversationLoadSequence = 0;
+
   async function loadConversation(id: string) {
     const targetConversationId = id.trim();
     if (!targetConversationId) {
       return;
     }
+
+    const loadToken = ++conversationLoadSequence;
+    const isStaleLoad = () =>
+      loadToken !== conversationLoadSequence ||
+      activeConversationId.value !== targetConversationId;
 
     const previousConversationId = activeConversationId.value;
     if (previousConversationId && previousConversationId !== targetConversationId) {
@@ -276,7 +286,9 @@ export function createConversationOperations(deps: ConversationOpsDeps) {
 
     try {
       const saved = await loadConversationHistory(targetConversationId);
+      if (isStaleLoad()) return;
       const savedToolLogs = await loadConversationToolLogs(targetConversationId);
+      if (isStaleLoad()) return;
       messages.value = (saved || [])
         .filter(
           (message) =>
@@ -306,11 +318,14 @@ export function createConversationOperations(deps: ConversationOpsDeps) {
         toolExecutionLogs.value = savedToolLogs;
       }
       await restoreLiveTurnStatus(targetConversationId);
+      if (isStaleLoad()) return;
 
       await loadConversationMemory(targetConversationId);
+      if (isStaleLoad()) return;
       await refreshConversationFiles(targetConversationId);
     } catch (err) {
       console.error("Failed to load conversation messages:", err);
+      if (isStaleLoad()) return;
       messages.value = [];
       clearActiveRuntimeState(activeRuntimeRefs);
       conversationFiles.value = [];

@@ -16,7 +16,7 @@ const PLAN_MODE_SECTION: &str = r#"
 - You are currently in plan mode.
 - In this mode, prioritize understanding the problem, exploring the codebase, identifying constraints, and proposing a concrete implementation strategy.
 - Do not edit files or run implementation tools before explicit user approval.
-- When your plan is ready, use `exit_plan_mode` to present it to the user for approval.
+- When your plan is ready, call `exit_plan_mode` and pass the full final plan in its required `plan` argument (Markdown: title, context/background, goal, numbered implementation steps, verification notes). The plan is saved automatically and shown to the user as a structured panel — you do not need to manage plan files yourself.
 - Use `ask_user_question` for extra clarifications only when needed to unblock planning decisions.
 "#;
 

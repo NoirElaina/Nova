@@ -18,6 +18,7 @@ const props = defineProps<{
   activeMainView?: MainView;
   exportingConversationId: string | null;
   exportingFormat: ConversationExportFormat | null;
+  width?: number;
 }>();
 
 const emit = defineEmits<{
@@ -28,6 +29,8 @@ const emit = defineEmits<{
   (e: "pin-conversation", id: string, pinned: boolean): void;
   (e: "export-conversation", id: string, format: ConversationExportFormat): void;
   (e: "change-main-view", view: MainView): void;
+  (e: "resize", width: number): void;
+  (e: "resize-end"): void;
 }>();
 
 const sidebarRef = ref<HTMLElement | null>(null);
@@ -256,10 +259,53 @@ watch(
     }
   },
 );
+
+// 侧边栏宽度拖拽：按下右缘手柄后按指针位移实时 emit（指针捕获在手柄元素上，
+// 保证拖动到其它区域上方也不会丢事件）；由 App 层持有宽度并持久化。
+const isResizing = ref(false);
+let resizeStartX = 0;
+let resizeStartWidth = 0;
+
+const sidebarWidthStyle = computed(() => ({
+  width: `${props.width ?? 225}px`,
+}));
+
+const onResizeMove = (event: PointerEvent) => {
+  if (!isResizing.value) return;
+  event.preventDefault();
+  emit("resize", resizeStartWidth + (event.clientX - resizeStartX));
+};
+
+const stopResize = () => {
+  if (!isResizing.value) return;
+  isResizing.value = false;
+  document.body.style.cursor = "";
+  document.body.style.userSelect = "";
+  emit("resize-end");
+};
+
+const startResize = (event: PointerEvent) => {
+  event.preventDefault();
+  (event.currentTarget as HTMLElement | null)?.setPointerCapture?.(event.pointerId);
+  resizeStartX = event.clientX;
+  resizeStartWidth = props.width ?? 225;
+  isResizing.value = true;
+  document.body.style.cursor = "col-resize";
+  document.body.style.userSelect = "none";
+};
+
+onBeforeUnmount(() => {
+  stopResize();
+});
 </script>
 
 <template>
-  <aside ref="sidebarRef" class="w-[225px] shrink-0 flex flex-col bg-[#f4f7fb] dark:bg-[#1f1f1f] border-r border-[#dfe6ee] dark:border-[#333] transition-all duration-300">
+  <aside
+    ref="sidebarRef"
+    class="relative z-20 shrink-0 flex flex-col bg-[#f4f7fb] dark:bg-[#1f1f1f] border-r border-[#dfe6ee] dark:border-[#333]"
+    :class="isResizing ? '' : 'transition-all duration-300'"
+    :style="sidebarWidthStyle"
+  >
     <div class="flex flex-1 flex-col gap-0.5 overflow-y-auto px-2 py-2 custom-scrollbar">
       <!-- Top Actions -->
       <Button variant="ghost" :class="[sidebarItemClass, sidebarItemIdleClass]" @click="emit('new-chat')">
@@ -543,6 +589,21 @@ watch(
         </div>
       </Transition>
     </Teleport>
+
+    <!-- 右缘拖拽手柄：调整侧边栏宽度。命中区 12px 横跨边界，视觉线仅 2px。 -->
+    <div
+      class="absolute -right-1.5 top-0 z-40 h-full w-3 cursor-col-resize"
+      title="拖动调整侧边栏宽度"
+      @pointerdown="startResize"
+      @pointermove="onResizeMove"
+      @pointerup="stopResize"
+      @pointercancel="stopResize"
+    >
+      <div
+        class="absolute left-1/2 top-0 h-full w-[2px] -translate-x-1/2 transition-colors"
+        :class="isResizing ? 'bg-[#94a3b8]/70' : 'bg-transparent hover:bg-[#94a3b8]/40'"
+      />
+    </div>
   </aside>
 </template>
 

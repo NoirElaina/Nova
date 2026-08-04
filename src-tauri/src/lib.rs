@@ -149,7 +149,8 @@ pub fn run() {
             command::workspace::workspace_read_text_file,
             command::usage::get_usage_stats,
             command::usage::list_token_usage,
-            command::todo::list_todos
+            command::todo::list_todos,
+            command::plan::get_conversation_plan
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application");

@@ -20,6 +20,7 @@ import {
   type BrowserAnnotationSelectedPayload,
 } from "./features/browser/browser-annotation";
 import type { PendingUploadFile } from "./lib/chat-types";
+import { buildPendingUploadFiles, notifyRejectedUploads } from "./lib/upload-files";
 import {
   exportConversation,
   exportRenderedConversationPdf,
@@ -28,8 +29,17 @@ import {
 } from "./features/chat/services/chat-api";
 import { buildConversationExportHtml } from "./features/chat/utils/conversation-export-html";
 import { emitToast } from "./lib/toast";
+import {
+  getStoredSidebarWidth,
+  setStoredSidebarWidth,
+  SIDEBAR_MIN_WIDTH,
+  SIDEBAR_MAX_WIDTH,
+  getStoredDrawerWidth,
+  setStoredDrawerWidth,
+  clampDrawerWidth,
+} from "./lib/ui-preferences";
 
-type WorkspaceTabId = "workspace" | "diff" | "usage" | "files" | "terminal" | "browser";
+type WorkspaceTabId = "workspace" | "plan" | "diff" | "usage" | "files" | "terminal" | "browser";
 type BrowserOpenRequest = {
   conversationId?: string;
 };
@@ -83,17 +93,87 @@ const activeWorkspaceName = computed(() => {
   const path = activeWorkspacePath.value?.trim();
   if (!path) return '';
   const parts = path.replace(/\\/g, '/').split('/');
-  return parts[parts.length - 1] || '';
+  const last = parts[parts.length - 1] || '';
+  // 默认工作区目录名是会话 uuid，直接显示太长；换成友好名称。
+  if (/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(last)) {
+    return '默认工作区';
+  }
+  return last;
 });
 
 
 const isDrawerOpen = ref(false);
 const activeWorkspaceTab = ref<WorkspaceTabId>("workspace");
 const browserOpenRequestKey = ref(0);
+
+// 侧边栏宽度：拖动时实时更新，松手后持久化到 localStorage。
+const sidebarWidth = ref(getStoredSidebarWidth());
+const handleSidebarResize = (width: number) => {
+  sidebarWidth.value = Math.min(Math.max(width, SIDEBAR_MIN_WIDTH), SIDEBAR_MAX_WIDTH);
+};
+const handleSidebarResizeEnd = () => {
+  setStoredSidebarWidth(sidebarWidth.value);
+};
+
+// 工作区抽屉宽度：同样拖动实时生效、松手持久化。
+const drawerWidth = ref(getStoredDrawerWidth());
+const handleDrawerResize = (width: number) => {
+  drawerWidth.value = clampDrawerWidth(width);
+};
+const handleDrawerResizeEnd = () => {
+  setStoredDrawerWidth(drawerWidth.value);
+};
 const exportingConversationId = ref<string | null>(null);
 const exportingFormat = ref<ConversationExportFormat | null>(null);
 let unlistenBrowserOpenRequest: UnlistenFn | null = null;
 let unlistenBrowserAnnotationSelected: UnlistenFn | null = null;
+let unlistenPlanUpdated: UnlistenFn | null = null;
+
+// 拖拽文件到聊天面板直接导入。dragenter/dragleave 会在子元素间频繁冒泡，
+// 用计数器而不是布尔值判断"是否仍在拖拽悬停"。
+const isDraggingFiles = ref(false);
+let dragDepth = 0;
+
+const hasDraggedFiles = (event: DragEvent) =>
+  Array.from(event.dataTransfer?.types ?? []).includes("Files");
+
+const handleChatDragEnter = (event: DragEvent) => {
+  if (mainView.value !== 'chat' || !hasDraggedFiles(event)) return;
+  dragDepth += 1;
+  isDraggingFiles.value = true;
+};
+
+const handleChatDragOver = (event: DragEvent) => {
+  if (!hasDraggedFiles(event)) return;
+  event.preventDefault();
+  if (event.dataTransfer) {
+    event.dataTransfer.dropEffect = "copy";
+  }
+};
+
+const handleChatDragLeave = (event: DragEvent) => {
+  if (!hasDraggedFiles(event)) return;
+  dragDepth = Math.max(0, dragDepth - 1);
+  if (dragDepth === 0) {
+    isDraggingFiles.value = false;
+  }
+};
+
+const handleChatDrop = async (event: DragEvent) => {
+  if (mainView.value !== 'chat' || !hasDraggedFiles(event)) return;
+  event.preventDefault();
+  dragDepth = 0;
+  isDraggingFiles.value = false;
+
+  const files = Array.from(event.dataTransfer?.files ?? []);
+  if (files.length === 0) return;
+
+  const { accepted, rejected } = await buildPendingUploadFiles(files);
+  if (accepted.length > 0) {
+    await handleUploadFiles(accepted);
+  }
+  notifyRejectedUploads(rejected);
+};
 
 const formatExportLabel = (format: ConversationExportFormat) => format.toUpperCase();
 
@@ -184,6 +264,14 @@ const handleBrowserAnnotationSelected = async (payload: BrowserAnnotationSelecte
 };
 
 onMounted(() => {
+  // 阻止 webview 默认行为：在非拖拽区松手会直接导航打开该文件，把整个应用界面替换掉。
+  const preventDefaultDrag = (event: DragEvent) => {
+    if (!hasDraggedFiles(event)) return;
+    event.preventDefault();
+  };
+  window.addEventListener("dragover", preventDefaultDrag);
+  window.addEventListener("drop", preventDefaultDrag);
+
   void listen<BrowserOpenRequest>("nova-browser-open-request", (event) => {
     void handleBrowserOpenRequest(event.payload);
   }).then((unlisten) => {
@@ -198,11 +286,31 @@ onMounted(() => {
   }).catch((error) => {
     console.warn("Browser annotation listener failed:", error);
   });
+
+  // exit_plan_mode 保存 plan 后自动打开抽屉的「计划」页，让计划直接可见。
+  void listen<{ conversationId?: string | null }>("plan-updated", (event) => {
+    const payloadConversationId = event.payload?.conversationId?.trim();
+    if (
+      payloadConversationId &&
+      payloadConversationId !== "__default__" &&
+      payloadConversationId !== activeConversationId.value
+    ) {
+      return;
+    }
+    if (mainView.value !== "chat") return;
+    activeWorkspaceTab.value = "plan";
+    isDrawerOpen.value = true;
+  }).then((unlisten) => {
+    unlistenPlanUpdated = unlisten;
+  }).catch((error) => {
+    console.warn("Plan updated listener failed:", error);
+  });
 });
 
 onBeforeUnmount(() => {
   unlistenBrowserOpenRequest?.();
   unlistenBrowserAnnotationSelected?.();
+  unlistenPlanUpdated?.();
 });
 </script>
 
@@ -223,6 +331,7 @@ onBeforeUnmount(() => {
         :activeMainView="mainView"
         :exportingConversationId="exportingConversationId"
         :exportingFormat="exportingFormat"
+        :width="sidebarWidth"
         @new-chat="handleNewChat"
         @select-conversation="handleSelectConversation"
         @delete-conversation="handleDeleteConversation"
@@ -230,11 +339,19 @@ onBeforeUnmount(() => {
         @export-conversation="handleExportConversation"
         @change-main-view="handleChangeMainView"
         @toggle-sidebar="isSidebarOpen = !isSidebarOpen"
+        @resize="handleSidebarResize"
+        @resize-end="handleSidebarResizeEnd"
       />
 
       <!-- Main Content Area -->
-      <main class="flex h-full min-w-0 flex-1 overflow-hidden">
-      <section class="app-chat-pane relative flex h-full min-w-0 flex-1 flex-col">
+      <main class="relative flex h-full min-w-0 flex-1 overflow-hidden">
+      <section
+        class="app-chat-pane relative flex h-full min-w-0 flex-1 flex-col"
+        @dragenter="handleChatDragEnter"
+        @dragover="handleChatDragOver"
+        @dragleave="handleChatDragLeave"
+        @drop="handleChatDrop"
+      >
         <!-- Top Title Bar -->
         <header class="h-14 flex items-center justify-between px-4 absolute top-0 w-full z-10 pointer-events-none">
           <div class="flex items-center gap-2 pointer-events-auto">
@@ -259,12 +376,12 @@ onBeforeUnmount(() => {
             <Button
               variant="ghost"
               size="icon-sm"
-              class="h-8 w-8 text-muted-foreground hover:bg-black/5 dark:hover:bg-white/5"
+              class="h-8 w-8 rounded-md text-[#4f5f73] hover:bg-black/5 dark:text-[#d5dbe3] dark:hover:bg-white/5"
               :class="{ 'bg-black/5 dark:bg-white/10': isDrawerOpen }"
               title="工作区面板"
               @click="isDrawerOpen = !isDrawerOpen"
             >
-              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
                 <rect x="3" y="3" width="18" height="18" rx="2"/>
                 <line x1="15" y1="3" x2="15" y2="21"/>
               </svg>
@@ -341,6 +458,21 @@ onBeforeUnmount(() => {
             @compact="handleCompactConversation"
           />
         </template>
+
+        <!-- 拖拽文件悬停提示层：pointer-events-none 保证 drop 仍落在面板上 -->
+        <div
+          v-if="isDraggingFiles && mainView === 'chat'"
+          class="pointer-events-none absolute inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-[2px]"
+        >
+          <div class="flex items-center gap-2.5 rounded-xl border-2 border-dashed border-white/80 px-6 py-4 text-[15px] font-medium text-white">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
+              <polyline points="17 8 12 3 7 8" />
+              <line x1="12" y1="3" x2="12" y2="15" />
+            </svg>
+            松开以添加文件到对话
+          </div>
+        </div>
       </section>
 
       <WorkspaceDrawer
@@ -354,7 +486,10 @@ onBeforeUnmount(() => {
         :assistantTurnCost="assistantTurnCost"
         :conversationId="activeConversationId || null"
         :browserOpenRequestKey="browserOpenRequestKey"
+        :width="drawerWidth"
         @close="isDrawerOpen = false"
+        @resize="handleDrawerResize"
+        @resize-end="handleDrawerResizeEnd"
       />
     </main>
     </template>
@@ -368,9 +503,5 @@ html, body, #app {
   padding: 0;
   width: 100%;
   height: 100%;
-}
-
-.app-chat-pane {
-  transition: flex-basis 0.28s cubic-bezier(0.22, 1, 0.36, 1), width 0.28s cubic-bezier(0.22, 1, 0.36, 1);
 }
 </style>

@@ -67,11 +67,11 @@ const statusLabelMap: Record<ToolExecutionEntry["status"], string> = {
   cancelled: "已取消",
 };
 
-const statusClassMap: Record<ToolExecutionEntry["status"], string> = {
-  running: "trace-status-running",
-  completed: "trace-status-completed",
-  error: "trace-status-error",
-  cancelled: "trace-status-cancelled",
+const statusTextClassMap: Record<ToolExecutionEntry["status"], string> = {
+  running: "text-[#315f8f] dark:text-[#bfdbfe]",
+  completed: "text-[#24704f] dark:text-[#99d3b3]",
+  error: "text-[#9b3c35] dark:text-[#f0a8a1]",
+  cancelled: "text-[#98a2b3] dark:text-[#9d9589]",
 };
 
 const formatTime = (ts: number) => {
@@ -119,7 +119,8 @@ onBeforeUnmount(() => {
         <path d="M3 6h18" />
         <path d="M3 18h18" />
       </svg>
-      <span class="inline-flex items-center justify-center min-w-[18px] h-[18px] px-1 rounded-full bg-[#f2f0ec] dark:bg-[#334155] text-[11px] leading-none">
+      <!-- 轻量计数：纯文字，无背景徽标 -->
+      <span class="text-[11px] leading-none text-[#8a94a6] dark:text-[#9aa3b2]">
         {{ props.entries.length }}
       </span>
     </Button>
@@ -137,11 +138,11 @@ onBeforeUnmount(() => {
         当前会话还没有工具执行记录。
       </div>
 
-      <div v-else class="max-h-[60vh] overflow-y-auto px-2.5 py-2 space-y-2">
+      <div v-else class="max-h-[60vh] overflow-y-auto px-2.5 py-2 space-y-1.5">
         <div
           v-for="entry in displayedEntries"
           :key="entry.id"
-          class="rounded-xl border border-[#e7e3dc] dark:border-[#3a3a3a] bg-[#fdfcf9] dark:bg-[#2b2b2b] px-3 py-2.5"
+          class="rounded-lg border border-[#eceae5] bg-[#fafaf8] px-2.5 py-2 dark:border-[#383838] dark:bg-[#2a2a2a]"
         >
           <div class="flex items-center justify-between gap-2">
             <Button
@@ -166,13 +167,13 @@ onBeforeUnmount(() => {
               >
                 <polyline points="9 18 15 12 9 6" />
               </svg>
-              <span class="text-[12px] font-medium text-[#111827] dark:text-[#e2dbcf] truncate">
+              <span class="text-[13px] font-semibold text-[#111827] dark:text-[#e2dbcf] truncate">
                 {{ entry.toolName }}
               </span>
             </Button>
-            <div class="inline-flex items-center gap-1">
-              <span class="trace-status" :class="statusClassMap[entry.status]">{{ statusLabelMap[entry.status] }}</span>
-              <span class="text-[10px] text-[#98a2b3] dark:text-[#9d9589] shrink-0">{{ formatTime(entry.startedAt) }}</span>
+            <div class="inline-flex items-center gap-2 shrink-0">
+              <span class="text-[11px] font-medium" :class="statusTextClassMap[entry.status]">{{ statusLabelMap[entry.status] }}</span>
+              <span class="text-[10px] text-[#98a2b3] dark:text-[#9d9589]">{{ formatTime(entry.startedAt) }}</span>
             </div>
           </div>
 
@@ -205,20 +206,20 @@ onBeforeUnmount(() => {
 .trace-collapsed-preview {
   font-size: 11px;
   line-height: 1.5;
-  color: #667085;
-  border: 1px dashed #d8d3ca;
-  border-radius: 8px;
-  padding: 6px 8px;
-  background: rgba(255, 255, 255, 0.82);
-  white-space: nowrap;
+  color: #4b5563;
+  background: rgba(0, 0, 0, 0.03);
+  border-radius: 6px;
+  padding: 4px 8px;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
   overflow: hidden;
-  text-overflow: ellipsis;
+  word-break: break-all;
 }
 
 .dark .trace-collapsed-preview {
   color: #cbd5e1;
-  border-color: #475569;
-  background: rgba(0, 0, 0, 0.18);
+  background: rgba(255, 255, 255, 0.05);
 }
 
 .trace-content {
@@ -227,72 +228,16 @@ onBeforeUnmount(() => {
   word-break: break-word;
   font-family: "SF Mono", "Fira Code", "Cascadia Mono", monospace;
   color: #334155;
-  background: rgba(255, 255, 255, 0.86);
-  border: 1px solid #e8e3dc;
-  border-radius: 8px;
+  background: rgba(0, 0, 0, 0.03);
+  border-radius: 6px;
   padding: 6px 8px;
   max-height: 160px;
   overflow: auto;
 }
 
 .dark .trace-content {
-  background: rgba(0, 0, 0, 0.2);
-  border-color: #434343;
-}
-
-.trace-status {
-  font-size: 10px;
-  line-height: 1;
-  padding: 3px 6px;
-  border-radius: 999px;
-  border: 1px solid transparent;
-}
-
-.trace-status-running {
-  color: #315f8f;
-  background: #f3f7fb;
-  border-color: #d7e2ed;
-}
-
-.trace-status-completed {
-  color: #24704f;
-  background: #f1faf4;
-  border-color: #cfead8;
-}
-
-.trace-status-error {
-  color: #9b3c35;
-  background: #fff5f3;
-  border-color: #efd4ce;
-}
-
-.trace-status-cancelled {
-  color: #667085;
-  background: #f6f5f2;
-  border-color: #d8d3ca;
-}
-
-.dark .trace-status-running {
-  color: #bfdbfe;
-  background: #172554;
-  border-color: #1e40af;
-}
-
-.dark .trace-status-completed {
-  color: #99d3b3;
-  background: #1f3b2e;
-  border-color: #315845;
-}
-
-.dark .trace-status-error {
-  color: #f0a8a1;
-  background: #4a2723;
-  border-color: #6a3732;
-}
-
-.dark .trace-status-cancelled {
   color: #cbd5e1;
-  background: #1e293b;
-  border-color: #475569;
+  background: rgba(255, 255, 255, 0.05);
 }
+
 </style>

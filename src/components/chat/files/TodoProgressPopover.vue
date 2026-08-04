@@ -23,10 +23,6 @@ let unlistenFn: UnlistenFn | null = null;
 
 const total = computed(() => todos.value.length);
 const done = computed(() => todos.value.filter((t) => t.status === "completed").length);
-const progressPct = computed(() => {
-  if (total.value === 0) return 0;
-  return Math.round((done.value / total.value) * 100);
-});
 
 async function fetchTodos() {
   if (!props.conversationId) {
@@ -70,12 +66,6 @@ const priorityClass = (priority: string) => {
   if (priority === "high") return "text-[#9b3c35] dark:text-[#f0a8a1]";
   if (priority === "low") return "text-[#64748b] dark:text-[#94a3b8]";
   return "text-[#b58605] dark:text-[#d4a72c]";
-};
-
-const statusClass = (status: string) => {
-  if (status === "completed") return "todo-status-completed";
-  if (status === "in_progress") return "todo-status-running";
-  return "todo-status-pending";
 };
 
 const onPointerDownDocument = (event: MouseEvent) => {
@@ -141,12 +131,13 @@ onBeforeUnmount(() => {
         <path d="M9 11l3 3L22 4" />
         <path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11" />
       </svg>
+      <!-- 轻量计数：纯文字，无背景徽标 -->
       <span
         v-if="total > 0"
-        class="inline-flex items-center justify-center min-w-[18px] h-[18px] px-1 rounded-full text-[11px] leading-none"
+        class="text-[11px] leading-none"
         :class="done === total
-          ? 'bg-[#dcfce7] text-[#24704f] dark:bg-[#1f3b2e] dark:text-[#99d3b3]'
-          : 'bg-[#f2f0ec] text-[#4f5f73] dark:bg-[#334155] dark:text-[#d5dbe3]'"
+          ? 'text-[#24704f] dark:text-[#99d3b3]'
+          : 'text-[#8a94a6] dark:text-[#9aa3b2]'"
       >
         {{ done }}/{{ total }}
       </span>
@@ -162,19 +153,6 @@ onBeforeUnmount(() => {
         <span v-if="total > 0" class="text-[11px] text-[#667085] dark:text-[#cbd5e1]">{{ done }}/{{ total }} 完成</span>
       </div>
 
-      <!-- Progress bar -->
-      <div v-if="total > 0" class="px-3 pt-2.5">
-        <div class="h-1.5 w-full rounded-full bg-[#eeeae3] dark:bg-[#3a3a3a] overflow-hidden">
-          <div
-            class="h-full rounded-full transition-all duration-300"
-            :class="done === total
-              ? 'bg-[#24704f] dark:bg-[#99d3b3]'
-              : 'bg-[#315f8f] dark:bg-[#bfdbfe]'"
-            :style="{ width: `${progressPct}%` }"
-          />
-        </div>
-      </div>
-
       <!-- Empty state -->
       <div v-if="loading" class="px-3 py-5 text-[12px] text-[#94a3b8] dark:text-[#9b9489]">
         加载中...
@@ -183,17 +161,12 @@ onBeforeUnmount(() => {
         当前会话还没有任务清单。
       </div>
 
-      <!-- Todo list -->
+      <!-- Todo list：轻量卡片，细边框 + 淡背景区分每条任务 -->
       <div v-else class="max-h-[52vh] overflow-y-auto px-2.5 py-2 space-y-1.5">
         <div
           v-for="(todo, idx) in todos"
           :key="todo.id"
-          class="rounded-xl border px-3 py-2 flex items-start gap-2"
-          :class="todo.status === 'completed'
-            ? 'border-[#cfead8] bg-[#f1faf4] dark:border-[#315845] dark:bg-[#1f3b2e]'
-            : todo.status === 'in_progress'
-              ? 'border-[#d7e2ed] bg-[#f3f7fb] dark:border-[#1e40af] dark:bg-[#172554]'
-              : 'border-[#e7e3dc] bg-[#fdfcf9] dark:border-[#3a3a3a] dark:bg-[#2b2b2b]'"
+          class="rounded-lg border border-[#eceae5] bg-[#fafaf8] px-2.5 py-2 flex items-start gap-2 dark:border-[#383838] dark:bg-[#2a2a2a]"
         >
           <span
             class="font-mono text-[12px] mt-0.5 shrink-0"
@@ -213,9 +186,9 @@ onBeforeUnmount(() => {
                 : 'text-[#111827] dark:text-[#e2dbcf]'"
               >{{ todo.content }}</span>
             </div>
-            <div class="mt-1 flex items-center gap-2">
+            <div class="mt-0.5 flex items-center gap-2">
               <span class="text-[10px] font-medium" :class="priorityClass(todo.priority)">{{ priorityLabel(todo.priority) }}</span>
-              <span class="todo-status" :class="statusClass(todo.status)">
+              <span class="text-[11px] font-medium" :class="todo.status === 'completed' ? 'text-[#24704f] dark:text-[#99d3b3]' : todo.status === 'in_progress' ? 'text-[#315f8f] dark:text-[#bfdbfe]' : 'text-[#98a2b3] dark:text-[#9d9589]'">
                 {{ todo.status === 'completed' ? '已完成' : todo.status === 'in_progress' ? '进行中' : '待开始' }}
               </span>
             </div>
@@ -225,49 +198,3 @@ onBeforeUnmount(() => {
     </div>
   </div>
 </template>
-
-<style scoped>
-.todo-status {
-  font-size: 10px;
-  line-height: 1;
-  padding: 3px 6px;
-  border-radius: 999px;
-  border: 1px solid transparent;
-}
-
-.todo-status-pending {
-  color: #667085;
-  background: #f6f5f2;
-  border-color: #d8d3ca;
-}
-
-.todo-status-running {
-  color: #315f8f;
-  background: #f3f7fb;
-  border-color: #d7e2ed;
-}
-
-.todo-status-completed {
-  color: #24704f;
-  background: #f1faf4;
-  border-color: #cfead8;
-}
-
-.dark .todo-status-pending {
-  color: #cbd5e1;
-  background: #1e293b;
-  border-color: #475569;
-}
-
-.dark .todo-status-running {
-  color: #bfdbfe;
-  background: #172554;
-  border-color: #1e40af;
-}
-
-.dark .todo-status-completed {
-  color: #99d3b3;
-  background: #1f3b2e;
-  border-color: #315845;
-}
-</style>

@@ -434,15 +434,15 @@ onBeforeUnmount(() => {
         </Button>
         <div
           v-if="openActionMenuId === recent.id"
-          class="absolute right-1 top-8 z-40 w-40 rounded-xl border border-[#e5e7eb] bg-white p-1 text-[13px] shadow-[0_12px_28px_rgba(15,23,42,0.12)] dark:border-[#3b3b3b] dark:bg-[#252525]"
+          class="absolute right-1 top-8 z-40 w-36 rounded-lg border border-[#e5e7eb] bg-white p-1 text-[12px] shadow-[0_6px_20px_rgba(15,23,42,0.10)] dark:border-[#3b3b3b] dark:bg-[#252525]"
           @click.stop
         >
           <button
             type="button"
-            class="flex w-full items-center gap-2 rounded-lg px-2.5 py-1.5 text-left text-[#334155] hover:bg-[#f3f6fa] dark:text-[#ececec] dark:hover:bg-[#333]"
+            class="flex w-full items-center gap-2 rounded-md px-2 py-1 text-left text-[#334155] hover:bg-[#f3f6fa] dark:text-[#ececec] dark:hover:bg-[#333]"
             @click.stop="handlePinConversation(recent)"
           >
-            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
               <path d="M12 17v5"/>
               <path d="M5 17h14"/>
               <path d="m7 9 5-5 5 5"/>
@@ -452,24 +452,23 @@ onBeforeUnmount(() => {
           </button>
           <button
             type="button"
-            class="flex w-full items-center gap-2 rounded-lg px-2.5 py-1.5 text-left text-[#334155] hover:bg-[#f3f6fa] dark:text-[#ececec] dark:hover:bg-[#333]"
+            class="flex w-full items-center gap-2 rounded-md px-2 py-1 text-left text-[#334155] hover:bg-[#f3f6fa] dark:text-[#ececec] dark:hover:bg-[#333]"
             @click.stop="openExportDialog(recent.id)"
           >
-            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
               <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
               <path d="M7 10l5 5 5-5"/>
               <path d="M12 15V3"/>
             </svg>
-            <span class="flex-1">导出</span>
-            <span class="text-[11px] text-[#94a3b8]">选择</span>
+            <span>导出</span>
           </button>
-          <div class="my-1 h-px bg-[#e5e7eb] dark:bg-[#3a3a3a]" />
+          <div class="my-0.5 h-px bg-[#eef0f3] dark:bg-[#3a3a3a]" />
           <button
             type="button"
-            class="flex w-full items-center gap-2 rounded-lg px-2.5 py-1.5 text-left text-[#dc2626] hover:bg-[#fef2f2] dark:hover:bg-[#3a2924]"
+            class="flex w-full items-center gap-2 rounded-md px-2 py-1 text-left text-[#dc2626] hover:bg-[#fef2f2] dark:hover:bg-[#3a2924]"
             @click.stop="handleDeleteConversation(recent.id)"
           >
-            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
               <path d="M3 6h18"/>
               <path d="M8 6V4h8v2"/>
               <path d="M19 6l-1 14H6L5 6"/>

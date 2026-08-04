@@ -145,10 +145,12 @@ const buildAssistantCopyText = (message: ChatMessage) => {
 const hasStreamingReasoning = () => !!props.assistantReasoning?.trim();
 const streamingBodyText = () => props.assistantResponse.trim();
 
-// 流式 segments 已由 controller 维护；避免每 token 再 build/clone
+// 流式 segments 由 controller 维护；渲染前同样走 buildAssistantTranscriptSegments 的
+// "按正文分组"合并：没有被正文分隔的 thinking/工具块合并展示，
+// 保证流式中和回复完成后的分组视图一致，不会每轮思考/工具都单独成块。
 const streamingSegments = computed(() => {
   if (props.assistantSegments.length > 0) {
-    return props.assistantSegments;
+    return buildAssistantTranscriptSegments(props.assistantSegments);
   }
   return buildAssistantTranscriptSegments([], {
     reasoning: props.assistantReasoning,
@@ -275,9 +277,21 @@ const updateScrollToBottomVisibility = () => {
     return;
   }
   const distance = distanceFromBottomPx();
-  // 阈值内视为贴底，流式内容增高时继续跟滚
-  stickToBottom.value = distance <= 140;
+  // 只有真正贴近底部才算"贴底"；阈值太大会在用户刚往上滚一点时
+  // 被流式跟滚反复拉回底部，产生"拉扯好几下才能上去"的体感。
+  stickToBottom.value = distance <= 40;
   showScrollToBottom.value = distance > 120;
+};
+
+/** 滚轮手势感知：用户主动上滑时立刻解除贴底跟滚，避免流式内容把视口拽回去 */
+const handleChatWheel = (event: WheelEvent) => {
+  if (event.deltaY < 0) {
+    // 只解除跟滚；此刻滚动尚未生效，不能立刻重算距离，否则又会被判回贴底
+    stickToBottom.value = false;
+  } else if (event.deltaY > 0) {
+    // 下滑滚回底部附近时恢复跟滚
+    updateScrollToBottomVisibility();
+  }
 };
 
 /** 仅贴底时把视口钉在列表末尾；不调用 measure()，避免清空虚拟列表尺寸缓存导致狂抖 */
@@ -552,6 +566,7 @@ defineExpose({
       class="chat-scroll-area flex-1 overflow-y-auto px-4 pb-4 custom-scrollbar"
       ref="chatAreaRef"
       @scroll.passive="handleChatScroll"
+      @wheel.passive="handleChatWheel"
     >
       <div
         class="w-full relative"

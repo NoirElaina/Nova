@@ -1,8 +1,8 @@
 //! MemoryStore: 单文件 § 分隔的纯文本记忆库
 //!
 //! 移植自 hermes-agent tools/memory_tool.py，简化为单文件 MEMORY.md：
-//! - 启动时（首次访问）加载 + 捕获 frozen snapshot（用于 system prompt 注入）
-//! - 写入实时落盘但不动 snapshot（保持 prompt cache 稳定）
+//! - 启动时（首次访问）加载 + 生成 snapshot（用于 system prompt 注入）
+//! - 写入实时落盘并同步重建 snapshot，删除记忆后立即生效
 //! - threat scan (strict scope) 写入前 + 加载时双重防护
 //! - drift 检测：round-trip mismatch + 单条超限（reject + log，不写 .bak）
 //! - 进程内 Mutex 防止并发 async 任务竞争（Nova 单进程，无需 fs2）
@@ -31,8 +31,8 @@ static STORE: Lazy<Mutex<Option<MemoryStore>>> = Lazy::new(|| Mutex::new(None));
 struct MemoryStore {
     // 实时状态：可被工具写入改变。每次 mutate 前 reload from disk。
     entries: Vec<String>,
-    // 启动时捕获的 frozen snapshot，用于 system prompt 注入。
-    // 写入不更新这个，保持 prompt cache 稳定。snapshot 在 app 生命周期内不变。
+    // 注入 system prompt 用的 snapshot。每次写入/删除/清空后重建，
+    // 保证被删除的记忆不会继续注入新对话。
     snapshot: String,
 }
 
@@ -259,8 +259,13 @@ fn render_snapshot_block(entries: &[String]) -> String {
     )
 }
 
+/// 按当前 entries 重建 snapshot（threat scan + 渲染）。
+fn rebuild_snapshot(entries: &[String]) -> String {
+    let sanitized = sanitize_for_snapshot(entries);
+    render_snapshot_block(&sanitized)
+}
+
 /// 首次访问时懒加载 MemoryStore。后续调用直接返回。
-/// app 生命周期内 snapshot 不刷新，保持 prompt cache 稳定（对齐 hermes "session start" 语义）。
 fn ensure_loaded(app: &AppHandle) -> Result<(), String> {
     let mut guard = STORE.lock().unwrap();
     if guard.is_some() {
@@ -273,15 +278,14 @@ fn ensure_loaded(app: &AppHandle) -> Result<(), String> {
     let mut seen = HashSet::new();
     entries.retain(|e| seen.insert(e.clone()));
 
-    let sanitized = sanitize_for_snapshot(&entries);
-    let snapshot = render_snapshot_block(&sanitized);
+    let snapshot = rebuild_snapshot(&entries);
 
     *guard = Some(MemoryStore { entries, snapshot });
     Ok(())
 }
 
-/// 获取 frozen snapshot 字符串（用于 system prompt 注入）。
-/// 启动时捕获，写入不更新。空 snapshot 返回 None。
+/// 获取当前 snapshot 字符串（用于 system prompt 注入）。
+/// 随增删改实时重建；删除记忆后立即生效，无需重启应用。空 snapshot 返回 None。
 pub fn snapshot(app: &AppHandle) -> Option<String> {
     ensure_loaded(app).ok()?;
     let guard = STORE.lock().unwrap();
@@ -342,7 +346,10 @@ fn mutate<F: FnOnce(&mut MemoryStore) -> Result<(), String>>(
 
     let _ = app; // 保留参数签名一致
     op(store)?;
-    store.save_to_disk(memory_file)
+    store.save_to_disk(memory_file)?;
+    // 落盘成功后同步重建 snapshot，否则被删除的记忆会继续注入新对话的 system prompt。
+    store.snapshot = rebuild_snapshot(&store.entries);
+    Ok(())
 }
 
 // ── 前端管理 API：list/clear ─────────────────────────────────────────────
@@ -367,5 +374,8 @@ pub async fn memory_clear(app: &AppHandle) -> Result<(), String> {
         .as_mut()
         .ok_or_else(|| "memory store not loaded".to_string())?;
     store.entries.clear();
-    store.save_to_disk(&path)
+    store.save_to_disk(&path)?;
+    // 清空后 snapshot 同步置空，避免已清空的记忆继续注入。
+    store.snapshot = rebuild_snapshot(&store.entries);
+    Ok(())
 }

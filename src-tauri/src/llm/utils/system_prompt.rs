@@ -107,8 +107,7 @@ pub fn load_system_prompt(
 
     let prompt_with_memory = format!("{}{}", prompt, GLOBAL_MEMORY_SECTION);
 
-    // 注入 frozen memory snapshot：app 生命周期内不变，保持 prompt cache 稳定。
-    // 写入只动 live state + disk，不刷新 snapshot（对齐 hermes "session start" 语义）。
+    // 注入全局记忆 snapshot：随记忆增删改实时重建，删除记忆后立即不再注入。
     let prompt_with_memory = match crate::llm::services::memory_dir::snapshot(app) {
         Some(snapshot_block) => format!("{}\n\n{}\n", prompt_with_memory, snapshot_block),
         None => prompt_with_memory,

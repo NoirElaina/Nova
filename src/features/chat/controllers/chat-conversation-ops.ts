@@ -398,11 +398,16 @@ export function createConversationOperations(deps: ConversationOpsDeps) {
         if (conversations.value.length > 0) {
           await loadConversation(conversations.value[0].id);
         } else {
+          // 删到没有会话了：回到欢迎页前必须清干净所有会话态，
+          // 否则右上角执行日志/会话记忆会残留已删除会话的内容。
+          resetTurnRuntimeState(activeRuntimeRefs);
           activeConversationId.value = "";
           activeWorkspacePath.value = "";
           messages.value = [];
           pendingUploads.value = [];
           conversationFiles.value = [];
+          conversationMemory.value = null;
+          toolExecutionLogs.value = [];
         }
       }
     } catch (err) {

@@ -200,6 +200,9 @@ async function saveHookConfig() {
       hookEnv: buildHookEnvFromForm(),
     };
     await invoke("save_settings", { settings: nextSettings });
+    // 必须广播 settings-updated：InputArea 等组件持有 get_settings 的缓存副本，
+    // 不刷新会导致后续任意一次保存用旧 hookEnv 覆写刚删除的挂钩配置。
+    window.dispatchEvent(new CustomEvent("settings-updated"));
 
     lastSavedAt.value = Date.now();
     emitToast({

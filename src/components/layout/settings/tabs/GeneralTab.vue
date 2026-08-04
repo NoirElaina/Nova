@@ -103,7 +103,9 @@ const persistPreferences = async () => {
 
   isSavingPreferences.value = true
   try {
-    const baseSettings = cachedSettings.value ?? await invoke<Record<string, unknown>>('get_settings')
+    // 始终取最新设置作为基底：挂载时缓存的副本可能已过期（如挂钩配置刚被删除），
+    // 用旧副本展开保存会把 hookEnv 等其他字段回滚。
+    const baseSettings = await invoke<Record<string, unknown>>('get_settings')
     const nextSettings: Record<string, unknown> = {
       ...baseSettings,
       uiLanguage: language.value,

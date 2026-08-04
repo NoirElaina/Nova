@@ -65,13 +65,16 @@ const save = async () => {
     const preservedDisabled = existingDisabled.filter((name: string) => !listed.has(normalize(name)))
     const currentDisabled = skills.value.filter((s) => !s.enabled).map((s) => s.name)
 
+    // 保存前重新取最新设置作为基底，避免用打开页面时的旧缓存回滚 hookEnv 等其他字段
+    const latest: any = (await invoke('get_settings')) || {}
     const settings = {
-      ...rawSettings.value,
+      ...latest,
       disabledSkills: [...preservedDisabled, ...currentDisabled],
     }
 
     await invoke('save_settings', { settings })
     rawSettings.value = settings
+    window.dispatchEvent(new CustomEvent('settings-updated'))
     savedTip.value = true
     setTimeout(() => (savedTip.value = false), 2000)
   } catch (e) {

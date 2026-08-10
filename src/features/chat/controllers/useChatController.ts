@@ -1,6 +1,6 @@
 import { computed, onMounted, onUnmounted, ref, shallowRef } from "vue";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
-import { emitToast } from "../../../lib/toast";
+import { emitToast, NOVA_CHAT_ERROR_EVENT, type ChatErrorPayload } from "../../../lib/toast";
 import {
   cancelChatMessage,
   submitPermissionDecision,
@@ -71,6 +71,8 @@ export function useChatController() {
   const toolExecutionLogs = ref<ToolExecutionEntry[]>([]);
   const currentTurnToolIds = ref<string[]>([]);
   const chatScreenRef = ref<ChatScreenHandle | null>(null);
+  /** AI 主流程错误的临时展示状态：不进消息数组，只保留最新一条，下次发送时清空。 */
+  const chatError = ref<string | null>(null);
   const toolInputById = new Map<string, string>();
   const toolNameById = new Map<string, string>();
   const runtimeStateByConversation = new Map<string, ConversationTurnRuntimeState>();
@@ -275,6 +277,31 @@ export function useChatController() {
     await conversationOps.handleSelectConversation(id);
   }
 
+  async function handleSendMessageWithErrorReset(userText: string) {
+    chatError.value = null;
+    await sendOps.handleSendMessage(userText);
+  }
+
+  async function handleEditMessageWithErrorReset(
+    payload: { index: number; content: string; id?: string },
+  ) {
+    chatError.value = null;
+    await sendOps.handleEditMessage(payload);
+  }
+
+  function dismissChatError() {
+    chatError.value = null;
+  }
+
+  function onChatErrorEvent(event: Event) {
+    const detail = (event as CustomEvent<ChatErrorPayload>).detail;
+    const message = detail?.message?.trim();
+    if (!message) return;
+    // 一个会话同一时刻只保留最新一条错误，新错误直接覆盖旧错误。
+    chatError.value = message;
+    void chatScreenRef.value?.scrollLiveAssistantIntoView();
+  }
+
   function handleChangeMainView(view: MainView) {
     mainView.value = view;
   }
@@ -351,12 +378,14 @@ export function useChatController() {
     }
 
     window.addEventListener("history-cleared", conversationOps.handleHistoryCleared as EventListener);
+    window.addEventListener(NOVA_CHAT_ERROR_EVENT, onChatErrorEvent as EventListener);
   });
 
   onUnmounted(() => {
     if (unlistenChatStream) unlistenChatStream();
     if (unlistenScheduledTaskTrigger) unlistenScheduledTaskTrigger();
     window.removeEventListener("history-cleared", conversationOps.handleHistoryCleared as EventListener);
+    window.removeEventListener(NOVA_CHAT_ERROR_EVENT, onChatErrorEvent as EventListener);
   });
 
   return {
@@ -385,9 +414,11 @@ export function useChatController() {
     mainView,
     isSidebarOpen,
     chatScreenRef,
+    chatError,
+    dismissChatError,
     refreshActiveConversationFiles: conversationOps.refreshActiveConversationFiles,
-    handleSendMessage: sendOps.handleSendMessage,
-    handleEditMessage: sendOps.handleEditMessage,
+    handleSendMessage: handleSendMessageWithErrorReset,
+    handleEditMessage: handleEditMessageWithErrorReset,
     handleUploadFiles: sendOps.handleUploadFiles,
     handleRemovePendingUpload: sendOps.handleRemovePendingUpload,
     handleCancelGeneration: sendOps.handleCancelGeneration,

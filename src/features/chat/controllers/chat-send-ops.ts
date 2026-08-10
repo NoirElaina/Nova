@@ -1,5 +1,6 @@
 import type { Ref } from "vue";
-import { emitToast } from "../../../lib/toast";
+import { emitToast, emitChatError } from "../../../lib/toast";
+import { getRawErrorText } from "../../../lib/error-display";
 import {
   buildPendingQuestionReply,
   extractPermissionActionFromAnswers,
@@ -168,10 +169,11 @@ export function createSendOperations(deps: SendOpsDeps) {
 
       console.error("Chat error:", err);
       if (isActiveFailedConversation) {
-        emitToast({
-          variant: "error",
+        // 发送失败属于 AI 主流程错误：在对话框内以红色块展示错误原文。
+        const raw = getRawErrorText(err);
+        emitChatError({
           source: "send",
-          message: "消息发送失败，请检查后端日志后重试。",
+          message: raw || "消息发送失败，请检查后端日志后重试。",
         });
         assistantResponse.value = "";
         assistantReasoning.value = "";

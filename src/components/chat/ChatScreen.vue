@@ -40,6 +40,8 @@ const props = defineProps<{
   contextCompacts?: ContextCompactSummary[];
   contextTokens?: number;
   compacting?: boolean;
+  /** AI 主流程错误原文：临时展示，不进入消息数组，下次发送时清空。 */
+  chatError?: string | null;
 }>();
 
 const emit = defineEmits<{
@@ -52,6 +54,7 @@ const emit = defineEmits<{
   (e: 'upload-files', files: PendingUploadFile[]): void;
   (e: 'remove-upload', index: number): void;
   (e: 'compact'): void;
+  (e: 'dismiss-error'): void;
 }>();
 
 const chatAreaRef = ref<HTMLElement | null>(null);
@@ -684,6 +687,39 @@ defineExpose({
         <path d="m5 12 7 7 7-7" />
       </svg>
     </button>
+
+    <div
+      v-if="chatError"
+      class="w-full px-4 pt-3"
+    >
+      <div class="mx-auto w-full max-w-[900px] rounded-lg border border-red-300 bg-red-50 px-4 py-3 text-red-700 dark:border-red-900/60 dark:bg-red-950/40 dark:text-red-300">
+        <div class="flex items-start justify-between gap-3">
+          <div class="min-w-0 flex-1">
+            <div class="mb-1 flex items-center gap-1.5 text-xs font-semibold">
+              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <circle cx="12" cy="12" r="10" />
+                <path d="M12 8v4" />
+                <path d="M12 16h.01" />
+              </svg>
+              报错
+            </div>
+            <pre class="whitespace-pre-wrap break-words font-mono text-xs leading-relaxed">{{ chatError }}</pre>
+          </div>
+          <button
+            type="button"
+            class="shrink-0 rounded p-0.5 opacity-70 transition-opacity hover:opacity-100"
+            title="关闭"
+            aria-label="关闭错误提示"
+            @click="emit('dismiss-error')"
+          >
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <line x1="18" y1="6" x2="6" y2="18" />
+              <line x1="6" y1="6" x2="18" y2="18" />
+            </svg>
+          </button>
+        </div>
+      </div>
+    </div>
 
     <div class="w-full bg-transparent px-4 pt-6 pb-6">
       <div class="w-full max-w-[900px] mx-auto">

@@ -85,6 +85,8 @@ const {
   handleChangeMainView,
   isCompacting,
   handleCompactConversation,
+  chatError,
+  dismissChatError,
 } = useChatController();
 
 void chatScreenRef;
@@ -447,6 +449,7 @@ onBeforeUnmount(() => {
             :contextCompacts="currentContextCompacts"
             :contextTokens="currentContextTokens"
             :compacting="isCompacting"
+            :chatError="chatError"
             @send="handleSendMessage"
             @save-user-edit="handleEditMessage($event)"
             @cancel="handleCancelGeneration"
@@ -456,6 +459,7 @@ onBeforeUnmount(() => {
             @ask-submit="handlePendingQuestionSubmit"
             @ask-skip="handlePendingQuestionSkip"
             @compact="handleCompactConversation"
+            @dismiss-error="dismissChatError"
           />
         </template>
 

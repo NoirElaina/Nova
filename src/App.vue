@@ -348,14 +348,14 @@ onBeforeUnmount(() => {
       <!-- Main Content Area -->
       <main class="relative flex h-full min-w-0 flex-1 overflow-hidden">
       <section
-        class="app-chat-pane relative flex h-full min-w-0 flex-1 flex-col"
+        class="app-chat-pane relative flex h-full min-w-0 flex-1 flex-col overflow-hidden"
         @dragenter="handleChatDragEnter"
         @dragover="handleChatDragOver"
         @dragleave="handleChatDragLeave"
         @drop="handleChatDrop"
       >
         <!-- Top Title Bar -->
-        <header class="h-14 flex items-center justify-between px-4 absolute top-0 w-full z-10 pointer-events-none">
+        <header class="h-14 flex items-center justify-between px-4 absolute top-0 w-full z-10 pointer-events-none overflow-hidden">
           <div class="flex items-center gap-2 pointer-events-auto">
             <Button
               variant="ghost"

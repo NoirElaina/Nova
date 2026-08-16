@@ -26,6 +26,7 @@ import {
   upsertConversationMemory,
 } from "../services/chat-api";
 import { extractSessionMemory } from "../utils/session-memory";
+import { clearBrowserTabState } from "../../browser/browser-tab-state";
 import type { ConversationTurnRuntimeState } from "./chat-controller-types";
 import type { ActiveRuntimeRefs } from "./chat-runtime-state";
 import {
@@ -33,7 +34,6 @@ import {
   hasAnyGeneratingConversations,
   isSpecificConversationGenerating,
   normalizeConversationId,
-  resetTurnRuntimeState,
   restoreRuntimeState,
   stashRuntimeState,
 } from "./chat-runtime-state";
@@ -356,26 +356,41 @@ export function createConversationOperations(deps: ConversationOpsDeps) {
     }
   }
 
+  function clearAllSessionState() {
+    clearActiveRuntimeState(activeRuntimeRefs);
+    activeConversationId.value = "";
+    activeWorkspacePath.value = "";
+    messages.value = [];
+    pendingUploads.value = [];
+    conversationFiles.value = [];
+    conversationMemory.value = null;
+    toolExecutionLogs.value = [];
+    planMode.value = agentMode.value === "plan";
+  }
+
   async function handleNewChat() {
     if (isCreatingNewChat.value) return;
 
-    resetTurnRuntimeState(activeRuntimeRefs);
-
-    // 已在空白欢迎界面：无需重复清理。
-    if (!activeConversationId.value && !hasConversationContent() && !assistantResponse.value.trim()) {
+    // 已在空白欢迎界面：直接确保会话态彻底清理，无需重复创建流程
+    if (!activeConversationId.value && messages.value.length === 0 && !hasConversationContent() && !assistantResponse.value.trim()) {
+      clearAllSessionState();
       return;
+    }
+
+    const previousConversationId = activeConversationId.value;
+    if (previousConversationId) {
+      stashRuntimeState(
+        runtimeStateByConversation,
+        previousConversationId,
+        activeRuntimeRefs,
+        agentMode.value,
+      );
     }
 
     isCreatingNewChat.value = true;
     try {
       // 不立即创建会话；让用户在欢迎页选择工作区，发消息时再创建。
-      activeConversationId.value = "";
-      messages.value = [];
-      pendingUploads.value = [];
-      conversationFiles.value = [];
-      conversationMemory.value = null;
-      toolExecutionLogs.value = [];
-      activeWorkspacePath.value = "";
+      clearAllSessionState();
     } finally {
       isCreatingNewChat.value = false;
     }
@@ -404,25 +419,26 @@ export function createConversationOperations(deps: ConversationOpsDeps) {
       return;
     }
 
-    runtimeStateByConversation.delete(normalizeConversationId(id));
+    const normalizedId = normalizeConversationId(id);
+    runtimeStateByConversation.delete(normalizedId);
+    void clearBrowserTabState(id);
+
+    const isCurrentActive = activeConversationId.value === id;
+    if (isCurrentActive) {
+      // 提前清空 activeConversationId 和运行时会话态，
+      // 避免随后 loadConversation 把被删除会话的状态重新 stash 进去。
+      clearAllSessionState();
+    }
+
     try {
       await deleteConversation(id);
       await refreshConversations();
 
-      if (activeConversationId.value === id) {
+      if (isCurrentActive) {
         if (conversations.value.length > 0) {
           await loadConversation(conversations.value[0].id);
         } else {
-          // 删到没有会话了：回到欢迎页前必须清干净所有会话态，
-          // 否则右上角执行日志/会话记忆会残留已删除会话的内容。
-          resetTurnRuntimeState(activeRuntimeRefs);
-          activeConversationId.value = "";
-          activeWorkspacePath.value = "";
-          messages.value = [];
-          pendingUploads.value = [];
-          conversationFiles.value = [];
-          conversationMemory.value = null;
-          toolExecutionLogs.value = [];
+          clearAllSessionState();
         }
       }
     } catch (err) {
@@ -457,21 +473,11 @@ export function createConversationOperations(deps: ConversationOpsDeps) {
     }
 
     runtimeStateByConversation.clear();
-    resetTurnRuntimeState(activeRuntimeRefs);
-    assistantResponse.value = "";
-    assistantReasoning.value = "";
-    assistantSegments.value = [];
-    assistantTokenUsage.value = undefined;
-    assistantTurnCost.value = undefined;
-    pendingUploads.value = [];
-    toolExecutionLogs.value = [];
-    conversationFiles.value = [];
-    conversationMemory.value = null;
-    messages.value = [];
+    clearAllSessionState();
 
     await refreshConversations();
     if (conversations.value.length === 0) {
-      activeConversationId.value = "";
+      clearAllSessionState();
       return;
     }
 

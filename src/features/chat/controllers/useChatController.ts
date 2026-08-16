@@ -268,13 +268,20 @@ export function useChatController() {
 
   async function handleNewChat() {
     mainView.value = "chat";
+    chatError.value = null;
     resetPendingPromptState(activeRuntimeRefs);
     await conversationOps.handleNewChat();
   }
 
   async function handleSelectConversation(id: string) {
     mainView.value = "chat";
+    chatError.value = null;
     await conversationOps.handleSelectConversation(id);
+  }
+
+  async function handleDeleteConversation(id: string) {
+    chatError.value = null;
+    await conversationOps.handleDeleteConversation(id);
   }
 
   async function handleSendMessageWithErrorReset(userText: string) {
@@ -427,7 +434,7 @@ export function useChatController() {
     handleAgentModeChange,
     handleNewChat,
     handleSelectConversation,
-    handleDeleteConversation: conversationOps.handleDeleteConversation,
+    handleDeleteConversation,
     handlePinConversation: conversationOps.handlePinConversation,
     handleChangeMainView,
     isCompacting,

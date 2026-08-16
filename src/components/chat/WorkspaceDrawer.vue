@@ -111,7 +111,7 @@ onBeforeUnmount(() => {
   <Transition name="slide-right">
     <aside
       v-show="open"
-      class="workspace-drawer-docked relative shrink-0 flex h-full flex-col"
+      class="workspace-drawer-docked relative z-20 shrink-0 flex h-full flex-col"
       :class="isResizing ? '' : 'transition-[width] duration-200'"
       :style="drawerWidthStyle"
     >

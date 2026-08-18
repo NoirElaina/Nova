@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { onMounted, ref } from 'vue'
+import { onBeforeUnmount, onMounted, ref } from 'vue'
 import { invoke } from '@tauri-apps/api/core'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
@@ -50,23 +50,27 @@ const refresh = async () => {
 
 const setAllEnabled = (enabled: boolean) => {
   skills.value = skills.value.map((s) => ({ ...s, enabled }))
+  schedulePersist()
 }
 
-const save = async () => {
+const toggleSkill = (skill: SkillItem) => {
+  skill.enabled = !skill.enabled
+  schedulePersist()
+}
+
+/** 立即持久化当前停用列表：以最新设置为基底合并，避免回滚其他字段 */
+const persistDisabledSkills = async () => {
   saving.value = true
   error.value = ''
   try {
     const listed = new Set(skills.value.map((s) => normalize(s.name)))
-    const existingDisabled = (Array.isArray(rawSettings.value?.disabledSkills)
-      ? rawSettings.value.disabledSkills
-      : [])
+    const latest: any = (await invoke('get_settings')) || {}
+    const existingDisabled = (Array.isArray(latest.disabledSkills) ? latest.disabledSkills : [])
       .filter((v: unknown) => typeof v === 'string')
 
     const preservedDisabled = existingDisabled.filter((name: string) => !listed.has(normalize(name)))
     const currentDisabled = skills.value.filter((s) => !s.enabled).map((s) => s.name)
 
-    // 保存前重新取最新设置作为基底，避免用打开页面时的旧缓存回滚 hookEnv 等其他字段
-    const latest: any = (await invoke('get_settings')) || {}
     const settings = {
       ...latest,
       disabledSkills: [...preservedDisabled, ...currentDisabled],
@@ -78,13 +82,32 @@ const save = async () => {
     savedTip.value = true
     setTimeout(() => (savedTip.value = false), 2000)
   } catch (e) {
+    error.value = '保存停用状态失败，请重试'
     console.error('Failed to save skill settings:', e)
   } finally {
     saving.value = false
   }
 }
 
+/** 防抖合并连续开关，避免快速点击多次时并发读写互相覆盖 */
+let persistTimer: ReturnType<typeof setTimeout> | null = null
+const schedulePersist = () => {
+  if (persistTimer) clearTimeout(persistTimer)
+  persistTimer = setTimeout(() => {
+    persistTimer = null
+    void persistDisabledSkills()
+  }, 300)
+}
+
 onMounted(refresh)
+
+onBeforeUnmount(() => {
+  if (persistTimer) {
+    clearTimeout(persistTimer)
+    persistTimer = null
+    void persistDisabledSkills()
+  }
+})
 
 const deleteSkill = async (skill: SkillItem) => {
   if (!confirm(`确定要删除技能「${skill.name}」吗？此操作将永久删除该技能目录，无法恢复。`)) return
@@ -168,7 +191,7 @@ const deleteSkill = async (skill: SkillItem) => {
                 variant="outline"
                 size="sm"
                 class="h-7 px-3 text-[12px]"
-                @click="skill.enabled = !skill.enabled"
+                @click="toggleSkill(skill)"
               >{{ skill.enabled ? '停用' : '启用' }}</Button>
               <Button
                 variant="outline"
@@ -189,14 +212,9 @@ const deleteSkill = async (skill: SkillItem) => {
     <div class="mt-auto border-t border-[#e5e7eb] pt-4 dark:border-[#333]">
       <div v-if="error" class="mb-2 text-[12.5px] text-red-600 dark:text-red-400">{{ error }}</div>
       <div v-if="deleteError" class="mb-2 text-[12.5px] text-red-600 dark:text-red-400">{{ deleteError }}</div>
-      <div class="flex items-center justify-end gap-3">
-        <span v-if="savedTip" class="text-[13px] text-[#4f9c64] dark:text-[#62c07a]">✓ 已保存</span>
-        <Button
-          size="sm"
-          class="bg-primary text-primary-foreground hover:bg-primary/90"
-          :disabled="saving"
-          @click="save"
-        >{{ saving ? '保存中...' : '保存设置' }}</Button>
+      <div class="flex items-center justify-end">
+        <span v-if="saving" class="text-[13px] text-[#64748b] dark:text-[#a3a3a3]">保存中...</span>
+        <span v-else-if="savedTip" class="text-[13px] text-[#4f9c64] dark:text-[#62c07a]">✓ 已保存</span>
       </div>
     </div>
   </div>

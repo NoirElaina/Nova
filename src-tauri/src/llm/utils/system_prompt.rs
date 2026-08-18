@@ -2,7 +2,7 @@ use std::path::PathBuf;
 
 use tauri::AppHandle;
 
-use crate::llm::services::skills::list_skill_summaries_with_app;
+use crate::llm::services::skills::list_enabled_skill_summaries_with_app;
 use crate::llm::types::AgentMode;
 
 // 系统提示文件名（相对工程目录 src/prompt）
@@ -114,7 +114,8 @@ pub fn load_system_prompt(
     };
 
     // 注入可用 skill 元数据，AI 无需先 list 即可直接 run。
-    let prompt_with_memory = match list_skill_summaries_with_app(app) {
+    // 已停用的技能不注入：对模型不可见，也不消耗 token。
+    let prompt_with_memory = match list_enabled_skill_summaries_with_app(app) {
         Ok(skills) if !skills.is_empty() => {
             let lines: String = skills
                 .iter()

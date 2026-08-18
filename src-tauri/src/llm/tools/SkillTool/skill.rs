@@ -1,6 +1,6 @@
 use crate::llm::services::skills::{
-    collect_skill_sibling_files, load_skills_with_app, normalize_skill_name, truncate_chars,
-    SkillEntry,
+    collect_skill_sibling_files, load_enabled_skills_with_app, normalize_skill_name,
+    truncate_chars, SkillEntry,
 };
 use crate::llm::tools::{app_tool, AppExecuteFuture, ToolFailure, ToolOutcome, ToolRegistration};
 use crate::llm::types::Tool;
@@ -129,7 +129,7 @@ fn run_skill(
 }
 
 // 根据 action 执行 `list` 或 `run`。
-// `skills` 是当前磁盘上实际存在的技能集合，`skill` 是模型请求运行的目标技能名。
+// `skills` 是已启用（未被设置停用）的技能集合，`skill` 是模型请求运行的目标技能名。
 async fn execute_with_app(app: &AppHandle, input: Value) -> Result<ToolOutcome, ToolFailure> {
     let action = input
         .get("action")
@@ -138,7 +138,7 @@ async fn execute_with_app(app: &AppHandle, input: Value) -> Result<ToolOutcome, 
         .trim()
         .to_ascii_lowercase();
 
-    let skills = match load_skills_with_app(app) {
+    let skills = match load_enabled_skills_with_app(app) {
         Ok(skills) => skills,
         Err(e) => return Err(ToolFailure::new(e)),
     };

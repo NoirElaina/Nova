@@ -1,4 +1,5 @@
 use serde::Serialize;
+use std::collections::HashSet;
 use std::fs;
 use std::path::{Path, PathBuf};
 use tauri::{AppHandle, Manager};
@@ -136,6 +137,7 @@ fn skills_root_dir(app: &AppHandle) -> Result<PathBuf, String> {
 }
 
 // 从本地 skills 目录加载全部 skill 元数据和正文内容。
+// 不过滤停用状态：设置页需要展示全部技能（含已停用）。
 pub(crate) fn load_skills_with_app(app: &AppHandle) -> Result<Vec<SkillEntry>, String> {
     let mut skill_files = Vec::new();
     let skills_root = skills_root_dir(app)?;
@@ -167,16 +169,53 @@ pub(crate) fn load_skills_with_app(app: &AppHandle) -> Result<Vec<SkillEntry>, S
     Ok(out)
 }
 
+// 从设置读取被停用的技能名集合（归一化小写）。
+fn disabled_skill_names(app: &AppHandle) -> HashSet<String> {
+    crate::command::settings::load_settings(app)
+        .map(|settings| {
+            settings
+                .disabled_skills
+                .into_iter()
+                .map(|name| normalize_skill_name(&name))
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+// 仅加载已启用的技能：系统提示词注入与 SkillTool 执行都走这里，
+// 停用的技能对模型完全不可见、不可运行。
+pub(crate) fn load_enabled_skills_with_app(app: &AppHandle) -> Result<Vec<SkillEntry>, String> {
+    let disabled = disabled_skill_names(app);
+    if disabled.is_empty() {
+        return load_skills_with_app(app);
+    }
+    Ok(load_skills_with_app(app)?
+        .into_iter()
+        .filter(|s| !disabled.contains(&normalize_skill_name(&s.name)))
+        .collect())
+}
+
 // 返回给前端、系统提示词等模块使用的轻量 skill 摘要。
 pub fn list_skill_summaries_with_app(app: &AppHandle) -> Result<Vec<SkillSummary>, String> {
-    Ok(load_skills_with_app(app)?
+    Ok(to_summaries(load_skills_with_app(app)?))
+}
+
+// 仅返回已启用技能的摘要：系统提示词注入用。
+pub fn list_enabled_skill_summaries_with_app(
+    app: &AppHandle,
+) -> Result<Vec<SkillSummary>, String> {
+    Ok(to_summaries(load_enabled_skills_with_app(app)?))
+}
+
+fn to_summaries(skills: Vec<SkillEntry>) -> Vec<SkillSummary> {
+    skills
         .into_iter()
         .map(|s| SkillSummary {
             name: s.name,
             description: s.description,
             path: s.path.display().to_string(),
         })
-        .collect())
+        .collect()
 }
 
 // 收集某个 skill 所在目录下的附属文件列表。

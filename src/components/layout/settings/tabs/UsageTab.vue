@@ -1,11 +1,13 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue';
 import { invoke } from '@tauri-apps/api/core';
-import { LineChart } from 'echarts/charts';
+import { HeatmapChart, LineChart } from 'echarts/charts';
 import {
+  CalendarComponent,
   GridComponent,
   LegendComponent,
   TooltipComponent,
+  VisualMapComponent,
   type GridComponentOption,
   type TooltipComponentOption,
 } from 'echarts/components';
@@ -13,7 +15,16 @@ import * as echarts from 'echarts/core';
 import type { ECharts, EChartsCoreOption } from 'echarts/core';
 import { CanvasRenderer } from 'echarts/renderers';
 
-echarts.use([LineChart, GridComponent, LegendComponent, TooltipComponent, CanvasRenderer]);
+echarts.use([
+  LineChart,
+  HeatmapChart,
+  GridComponent,
+  LegendComponent,
+  TooltipComponent,
+  CalendarComponent,
+  VisualMapComponent,
+  CanvasRenderer,
+]);
 
 interface HeatmapPoint {
   date: string;
@@ -268,57 +279,39 @@ const buildTrendOption = (): UsageChartOption => {
 const trendChartRef = ref<HTMLElement | null>(null);
 let trendChart: ECharts | null = null;
 
+const heatmapChartRef = ref<HTMLElement | null>(null);
+let heatmapChart: ECharts | null = null;
+
+const isDarkMode = () => document.documentElement.classList.contains('dark');
+
 const renderCharts = async () => {
   await nextTick();
   trendChart?.dispose();
   trendChart = null;
-  if (!trendChartRef.value || filteredRecords.value.length === 0) return;
-  trendChart = echarts.init(trendChartRef.value);
-  trendChart.setOption(buildTrendOption(), true);
-  trendChart.resize();
+  if (trendChartRef.value && filteredRecords.value.length > 0) {
+    trendChart = echarts.init(trendChartRef.value);
+    trendChart.setOption(buildTrendOption(), true);
+    trendChart.resize();
+  }
+  heatmapChart?.dispose();
+  heatmapChart = null;
+  if (heatmapChartRef.value && hasHeatmapData.value) {
+    heatmapChart = echarts.init(heatmapChartRef.value);
+    heatmapChart.setOption(buildHeatmapOption(), true);
+    heatmapChart.resize();
+  }
 };
 
 const resizeCharts = () => {
-  trendChart?.resize();
+  void renderCharts();
 };
 
-watch(
-  () => [selectedTokenRange.value, filteredRecords.value.length],
-  () => {
-    void renderCharts();
-  },
-  { immediate: true },
+// Heatmap (GitHub-style calendar) via ECharts calendar coordinate.
+const heatmapEntries = computed(() => stats.value?.heatmap ?? []);
+const hasHeatmapData = computed(() => heatmapEntries.value.length > 0);
+const heatmapSessionsMap = computed(
+  () => new Map(heatmapEntries.value.map((h) => [h.date, h.sessions])),
 );
-
-// Heatmap grid (GitHub-style calendar): week columns x 7 day rows.
-type HeatmapCell = { date: string; tokens: number; count: number };
-const heatmapGrid = computed<HeatmapCell[][]>(() => {
-  const map = new Map(stats.value?.heatmap.map((h) => [h.date, h.tokens]) ?? []);
-  const today = new Date();
-  today.setHours(0, 0, 0, 0);
-  const start = new Date(today);
-  start.setDate(start.getDate() - 364);
-  // Align start to Sunday.
-  start.setDate(start.getDate() - start.getDay());
-
-  const weeks: HeatmapCell[][] = [];
-  let week: HeatmapCell[] = [];
-  const cursor = new Date(start);
-  while (cursor <= today) {
-    const key = formatDayKey(cursor);
-    const tokens = map.get(key) ?? 0;
-    const count = clampBucket(tokens);
-    const cell: HeatmapCell = { date: key, tokens, count };
-    if (cursor < today && cursor.getDay() === 0 && week.length > 0) {
-      weeks.push(week);
-      week = [];
-    }
-    week.push(cell);
-    cursor.setDate(cursor.getDate() + 1);
-  }
-  if (week.length > 0) weeks.push(week);
-  return weeks;
-});
 
 const formatDayKey = (d: Date) => {
   const y = d.getFullYear();
@@ -327,15 +320,131 @@ const formatDayKey = (d: Date) => {
   return `${y}-${m}-${day}`;
 };
 
-const clampBucket = (tokens: number) => {
-  if (tokens <= 0) return 0;
-  if (tokens < 1000) return 1;
-  if (tokens < 10000) return 2;
-  if (tokens < 100000) return 3;
-  return 4;
-};
+// Calendar range: fixed last 365 days (GitHub-style), aligned to Monday.
+const heatmapRange = computed<[string, string]>(() => {
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  const start = new Date(today);
+  start.setDate(start.getDate() - 364);
+  const dow = (start.getDay() + 6) % 7;
+  start.setDate(start.getDate() - dow);
+  return [formatDayKey(start), formatDayKey(today)];
+});
 
-const heatCellClass = (count: number) => `heat-cell lv-${count}`;
+// Fill every day in the range (0 for empty days) so all cells are hoverable.
+const heatmapData = computed<[string, number][]>(() => {
+  const map = new Map(heatmapEntries.value.map((h) => [h.date, h.tokens]));
+  const [start, end] = heatmapRange.value;
+  const data: [string, number][] = [];
+  const cursor = new Date(`${start}T00:00:00`);
+  const endMs = new Date(`${end}T00:00:00`).getTime();
+  while (cursor.getTime() <= endMs) {
+    const key = formatDayKey(cursor);
+    data.push([key, map.get(key) ?? 0]);
+    cursor.setDate(cursor.getDate() + 1);
+  }
+  return data;
+});
+
+const buildHeatmapOption = (): EChartsCoreOption => {
+  const dark = isDarkMode();
+  const emptyColor = dark ? '#2d2d2d' : '#eef0ee';
+  const levels = dark
+    ? ['#0e4429', '#006d32', '#26a641', '#39d353']
+    : ['#c9e6b8', '#8ecf6f', '#4caf50', '#2e7d32'];
+  const labelColor = dark ? '#a99f90' : '#8b816f';
+  const borderColor = dark ? '#252525' : '#ffffff';
+
+  const data = heatmapData.value;
+  const maxTokens = Math.max(...data.map((d) => d[1]), 1);
+  const q1 = Math.max(1, Math.round(maxTokens * 0.25));
+  const q2 = Math.max(q1 + 1, Math.round(maxTokens * 0.5));
+  const q3 = Math.max(q2 + 1, Math.round(maxTokens * 0.75));
+
+  const [rangeStart, rangeEnd] = heatmapRange.value;
+  const startMs = new Date(`${rangeStart}T00:00:00`).getTime();
+  const weeks = Math.ceil((Date.parse(rangeEnd) - startMs) / (7 * 24 * 60 * 60 * 1000)) + 1;
+  const containerWidth = heatmapChartRef.value?.clientWidth ?? 640;
+  const cell = Math.max(8, Math.min(12, Math.floor((containerWidth - 44) / weeks)));
+  const borderWidth = cell >= 11 ? 2 : 1;
+
+  return {
+    animation: true,
+    animationDuration: 400,
+    tooltip: {
+      appendToBody: true,
+      borderWidth: 0,
+      backgroundColor: 'rgba(32, 28, 23, 0.94)',
+      textStyle: { color: '#fff', fontSize: 12 },
+      padding: [8, 12],
+      formatter: (params: unknown) => {
+        const p = params as { value?: [string, number] };
+        const [date, tokens] = p.value ?? ['', 0];
+        const dayLabel = new Date(`${date}T00:00:00`).toLocaleDateString('zh-CN', {
+          month: 'long',
+          day: 'numeric',
+          weekday: 'short',
+        });
+        if (!tokens) return `<b>${dayLabel}</b><br/>当天无用量`;
+        const sessions = heatmapSessionsMap.value.get(date) ?? 0;
+        return `<b>${dayLabel}</b><br/>${formatNumber(tokens)} tokens · ${sessions} 个会话`;
+      },
+    },
+    visualMap: {
+      type: 'piecewise',
+      orient: 'horizontal',
+      left: 'center',
+      bottom: 0,
+      itemWidth: 11,
+      itemHeight: 11,
+      itemGap: 6,
+      textStyle: { color: labelColor, fontSize: 10 },
+      pieces: [
+        { lte: 0, color: emptyColor, label: '无' },
+        { gt: 0, lte: q1, color: levels[0], label: `≤${formatCompactNumber(q1)}` },
+        { gt: q1, lte: q2, color: levels[1], label: `≤${formatCompactNumber(q2)}` },
+        { gt: q2, lte: q3, color: levels[2], label: `≤${formatCompactNumber(q3)}` },
+        { gt: q3, color: levels[3], label: `${formatCompactNumber(q3)}+` },
+      ],
+    },
+    calendar: {
+      top: 28,
+      left: 32,
+      range: [rangeStart, rangeEnd],
+      cellSize: [cell, cell],
+      itemStyle: {
+        color: emptyColor,
+        borderWidth,
+        borderColor,
+      },
+      splitLine: { show: false },
+      yearLabel: { show: false },
+      monthLabel: {
+        color: labelColor,
+        fontSize: 10,
+        nameMap: 'cn',
+      },
+      dayLabel: {
+        firstDay: 1,
+        color: labelColor,
+        fontSize: 9,
+        nameMap: 'cn',
+      },
+    },
+    series: [
+      {
+        type: 'heatmap',
+        coordinateSystem: 'calendar',
+        data,
+        itemStyle: {
+          borderWidth,
+          borderColor,
+          borderRadius: 2,
+        },
+      },
+    ],
+  };
+};
 
 const sortedBreakdown = computed(() =>
   [...(stats.value?.modelBreakdown ?? [])].sort((a, b) => b.tokens - a.tokens),
@@ -360,15 +469,33 @@ const formatModel = (m: string | null) => {
   return m.length > 28 ? m.slice(0, 26) + '…' : m;
 };
 
+let darkObserver: MutationObserver | null = null;
+
+watch(
+  () => [selectedTokenRange.value, filteredRecords.value.length, hasHeatmapData.value],
+  () => {
+    void renderCharts();
+  },
+  { immediate: true },
+);
+
 onMounted(() => {
   window.addEventListener('resize', resizeCharts);
+  darkObserver = new MutationObserver(() => {
+    void renderCharts();
+  });
+  darkObserver.observe(document.documentElement, { attributes: true, attributeFilter: ['class'] });
   void loadAll().then(() => renderCharts());
 });
 
 onBeforeUnmount(() => {
   window.removeEventListener('resize', resizeCharts);
+  darkObserver?.disconnect();
+  darkObserver = null;
   trendChart?.dispose();
   trendChart = null;
+  heatmapChart?.dispose();
+  heatmapChart = null;
 });
 </script>
 
@@ -474,26 +601,9 @@ onBeforeUnmount(() => {
     <div class="mt-4 usage-card">
       <div class="usage-card-head">
         <div class="usage-label">每日用量热力图</div>
-        <div class="heat-legend">
-          <span class="heat-legend-text">少</span>
-          <span class="heat-cell lv-0" />
-          <span class="heat-cell lv-1" />
-          <span class="heat-cell lv-2" />
-          <span class="heat-cell lv-3" />
-          <span class="heat-cell lv-4" />
-          <span class="heat-legend-text">多</span>
-        </div>
       </div>
-      <div class="heat-grid">
-        <div v-for="(week, wi) in heatmapGrid" :key="wi" class="heat-week">
-          <div
-            v-for="cell in week"
-            :key="cell.date"
-            :class="heatCellClass(cell.count)"
-            :title="`${cell.date} · ${formatNumber(cell.tokens)} tokens`"
-          />
-        </div>
-      </div>
+      <div v-if="hasHeatmapData" ref="heatmapChartRef" class="usage-echart usage-echart--heatmap" />
+      <div v-else class="usage-chart-empty">还没有可展示的用量数据。</div>
     </div>
 
     <!-- Model breakdown -->
@@ -766,51 +876,9 @@ onBeforeUnmount(() => {
   height: 320px;
 }
 
-/* Heatmap */
-.heat-grid {
-  display: flex;
-  gap: 3px;
-  overflow-x: auto;
-  padding-bottom: 4px;
-}
-
-.heat-week {
-  display: grid;
-  grid-template-rows: repeat(7, 1fr);
-  gap: 3px;
-}
-
-.heat-cell {
-  width: 11px;
-  height: 11px;
-  border-radius: 2px;
-  background: #ebedf0;
-}
-
-.dark .heat-cell {
-  background: #2d2d2d;
-}
-
-.heat-cell.lv-1 { background: #c6e9c0; }
-.heat-cell.lv-2 { background: #7bc77b; }
-.heat-cell.lv-3 { background: #2a9d3f; }
-.heat-cell.lv-4 { background: #167e2c; }
-
-.dark .heat-cell.lv-1 { background: #0e4429; }
-.dark .heat-cell.lv-2 { background: #006d32; }
-.dark .heat-cell.lv-3 { background: #26a641; }
-.dark .heat-cell.lv-4 { background: #39d353; }
-
-.heat-legend {
-  display: inline-flex;
-  align-items: center;
-  gap: 3px;
-}
-
-.heat-legend-text {
-  color: #8b816f;
-  font-size: 10px;
-  margin: 0 2px;
+/* Heatmap chart */
+.usage-echart--heatmap {
+  height: 168px;
 }
 
 /* Model breakdown table */

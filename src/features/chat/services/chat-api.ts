@@ -497,11 +497,8 @@ export async function getActiveModelRuntime(): Promise<ActiveModelRuntime> {
   };
 }
 
-export async function estimateTextTokens(
-  text: string,
-  protocol = "anthropic",
-): Promise<number> {
-  return invoke<number>("estimate_text_tokens", { text, protocol });
+export async function estimateTextTokens(text: string): Promise<number> {
+  return invoke<number>("estimate_text_tokens", { text });
 }
 
 export async function cancelChatMessage(conversationId: string | null): Promise<boolean> {

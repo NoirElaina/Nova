@@ -3,24 +3,13 @@ mod summary;
 
 use std::collections::HashSet;
 
-use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
 use serde::Serialize;
-use serde_json::Map;
 use serde_json::{json, Value};
 use tauri::AppHandle;
 
 use crate::llm::commands::types::{CompactContext, HistoryMessage};
 use crate::llm::types::{Content, ContentBlock, Message, Role};
-
-// 每条消息、块、工具使用/工具结果的静态开销。用于 token 估算近似，防止只依赖字符数导致低估。
-const TOKEN_OVERHEAD_PER_MESSAGE: i64 = 6;
-const TOKEN_OVERHEAD_PER_BLOCK: i64 = 3;
-const TOKEN_OVERHEAD_TOOL_USE: i64 = 20;
-const TOKEN_OVERHEAD_TOOL_RESULT: i64 = 14;
-const IMAGE_TOKEN_PIXEL_DIVISOR: u64 = 750;
-const IMAGE_TOKEN_MIN: i64 = 256;
-const IMAGE_TOKEN_MAX: i64 = 8192;
-const IMAGE_TOKEN_FALLBACK: i64 = 1536;
+use crate::llm::utils::token_counter;
 
 // 策略阈值：完全按 token 比例触发。
 // 不再使用消息条数或工具结果字符数等硬编码阈值，也不使用绝对值 buffer，
@@ -86,197 +75,6 @@ pub struct ToolResultContextEditingOutcome {
     pub original_estimated_tokens: i64,
     pub edited_estimated_tokens: i64,
     pub cleared_tool_pairs: usize,
-}
-
-// 判断字符是否属于中日韩Unicode块。此处通过字节范围直接判断，避免调用 heavy regex。
-fn is_cjk_char(ch: char) -> bool {
-    let cp = ch as u32;
-    // cp: Unicode code point of the character，用于范围匹配判断是否为 CJK 字符块。
-    // 通过匹配 Unicode 范围判断，避免使用复杂或重量级的正则库。
-    matches!(cp, 0x3400..=0x4DBF | 0x4E00..=0x9FFF | 0x3040..=0x30FF | 0xAC00..=0xD7AF | 0xF900..=0xFAFF)
-}
-
-// 估算纯文本片段的 token 数量。
-// 规则：
-// - CJK 每字符计 1 token
-// - ASCII 字母数字 视为平均 4 个字符 1 token
-// - 标点/符号按 2 字符 1 token
-// - 空白按 16 字符 1 token
-fn estimate_text_tokens(text: &str) -> i64 {
-    // 统计各类字符数量，用于按经验规则估算 token 数。
-    // cjk: 中日韩字符计数（每字符 ~1 token）
-    let mut cjk = 0_i64;
-    // latin_or_digit: ASCII 字母或数字计数，约 4 字符 = 1 token
-    let mut latin_or_digit = 0_i64;
-    // punctuation_or_symbol: 标点或符号计数，约 2 字符 = 1 token
-    let mut punctuation_or_symbol = 0_i64;
-    // whitespace: 空白字符计数，按更低权重合并
-    let mut whitespace = 0_i64;
-
-    for ch in text.chars() {
-        // ch: 当前遍历到的字符
-        if ch.is_whitespace() {
-            // 空白字符（空格、换行等）按更低权重计算
-            whitespace += 1;
-        } else if is_cjk_char(ch) {
-            // 中日韩字符每个近似 1 token
-            cjk += 1;
-        } else if ch.is_ascii_alphanumeric() {
-            // ASCII 字母数字日常出现频率高：4 字符约 1 token
-            latin_or_digit += 1;
-        } else {
-            // 标点/符号按 2 字符约 1 token
-            punctuation_or_symbol += 1;
-        }
-    }
-
-    // 最终汇总：按经验系数合并各类计数，使用上取整技巧避免低估
-    // cjk + ceil(latin_or_digit/4) + ceil(punctuation_or_symbol/2) + ceil(whitespace/16)
-    cjk + (latin_or_digit + 3) / 4 + (punctuation_or_symbol + 1) / 2 + (whitespace + 15) / 16
-}
-
-fn estimate_image_tokens_from_dimensions(width: u32, height: u32) -> i64 {
-    if width == 0 || height == 0 {
-        return IMAGE_TOKEN_FALLBACK;
-    }
-
-    let area = u64::from(width).saturating_mul(u64::from(height));
-    let tokens = area.div_ceil(IMAGE_TOKEN_PIXEL_DIVISOR) as i64;
-    tokens.clamp(IMAGE_TOKEN_MIN, IMAGE_TOKEN_MAX)
-}
-
-fn estimate_image_tokens_from_bytes(bytes: &[u8]) -> Option<i64> {
-    let image = screenshots::image::load_from_memory(bytes).ok()?;
-    Some(estimate_image_tokens_from_dimensions(
-        image.width(),
-        image.height(),
-    ))
-}
-
-fn estimate_image_tokens_from_base64(data: &str) -> Option<i64> {
-    let normalized = data.trim();
-    if normalized.is_empty() {
-        return None;
-    }
-    let bytes = BASE64.decode(normalized).ok()?;
-    estimate_image_tokens_from_bytes(&bytes)
-}
-
-fn estimate_image_tokens_from_data_url(value: &str) -> Option<i64> {
-    let trimmed = value.trim();
-    let lower = trimmed.get(..trimmed.len().min(32))?.to_ascii_lowercase();
-    if !lower.starts_with("data:image/") {
-        return None;
-    }
-    let (_, data) = trimmed.split_once(";base64,")?;
-    estimate_image_tokens_from_base64(data).or(Some(IMAGE_TOKEN_FALLBACK))
-}
-
-fn estimate_image_tokens_from_json_object(map: &Map<String, Value>) -> Option<i64> {
-    let media_type = map
-        .get("media_type")
-        .or_else(|| map.get("mime_type"))
-        .and_then(Value::as_str)
-        .unwrap_or_default()
-        .trim()
-        .to_ascii_lowercase();
-    let source_type = map
-        .get("type")
-        .or_else(|| map.get("source_type"))
-        .and_then(Value::as_str)
-        .unwrap_or_default()
-        .trim()
-        .to_ascii_lowercase();
-    let data = map.get("data").and_then(Value::as_str)?.trim();
-
-    if data.is_empty() || (!source_type.eq("base64") && !media_type.starts_with("image/")) {
-        return None;
-    }
-
-    Some(
-        estimate_image_tokens_from_base64(data)
-            .unwrap_or(IMAGE_TOKEN_FALLBACK)
-            .saturating_add(TOKEN_OVERHEAD_PER_BLOCK + estimate_text_tokens(&media_type) + 4),
-    )
-}
-
-// 估算 JSON 数据结构的 token 大小，包含结构符号 + 键值 + 嵌套内容。
-// 用于 tool_use / tool_result 中包含结构化 JSON 字符串时提供更加合理的估算。
-fn estimate_json_tokens(value: &Value) -> i64 {
-    match value {
-        // 基本类型成本估算：Null/Bool/Number 使用低位成本
-        Value::Null => 1,
-        Value::Bool(_) => 1,
-        Value::Number(_) => 2,
-        // data:image URL 是图片输入，不是普通文本；按图片像素面积估算，避免 base64 炸穿上下文预测。
-        Value::String(s) => {
-            estimate_image_tokens_from_data_url(s).unwrap_or_else(|| estimate_text_tokens(s) + 1)
-        }
-        Value::Array(items) => {
-            // array: 计算头尾符号成本 + 每个项目的递归成本 + 项目分隔符成本
-            2 + items.iter().map(estimate_json_tokens).sum::<i64>() + items.len() as i64
-        }
-        Value::Object(map) => {
-            if let Some(tokens) = estimate_image_tokens_from_json_object(map) {
-                return tokens;
-            }
-            // object: 头尾成本 + 每个 key 的文本成本 + 对应 value 的递归成本 + 分隔符
-            3 + map
-                .iter()
-                .map(|(k, v)| estimate_text_tokens(k) + estimate_json_tokens(v) + 2)
-                .sum::<i64>()
-        }
-    }
-}
-
-// 估算一个 ContentBlock 的 token。对不同块类型使用差异化计算：
-// - Text 按 text 字符内容估算
-// - ToolUse 带 json 参数，需要额外估算 JSON 结构
-// - ToolResult 递归估算嵌套块，并加上工具结果固定开销
-fn estimate_block_tokens(block: &ContentBlock) -> i64 {
-    match block {
-        // 文本块：块开销 + 文本估算
-        ContentBlock::Text { text } => TOKEN_OVERHEAD_PER_BLOCK + estimate_text_tokens(text),
-        ContentBlock::Thinking { thinking, .. } => {
-            TOKEN_OVERHEAD_PER_BLOCK + estimate_text_tokens(thinking)
-        }
-        // 图片块：统一使用 Claude 风格面积公式 ceil(width * height / 750)，不按 base64 字符长度估算。
-        ContentBlock::Image { source } => {
-            TOKEN_OVERHEAD_PER_BLOCK
-                + estimate_image_tokens_from_base64(&source.data).unwrap_or(IMAGE_TOKEN_FALLBACK)
-        }
-        // 工具调用：块开销 + 固定工具使用开销 + 输入 JSON 的结构化估算
-        ContentBlock::ToolUse { input, .. } => {
-            TOKEN_OVERHEAD_PER_BLOCK + TOKEN_OVERHEAD_TOOL_USE + estimate_json_tokens(input)
-        }
-        // 工具结果：块开销 + 工具结果固定开销 + 嵌套内容的递归估算
-        ContentBlock::ToolResult { content, .. } => {
-            TOKEN_OVERHEAD_PER_BLOCK
-                + TOKEN_OVERHEAD_TOOL_RESULT
-                + content.iter().map(estimate_block_tokens).sum::<i64>()
-        }
-    }
-}
-
-// 更细颗粒度 token 估算：
-// - 文本按 CJK/ASCII/符号分桶估算
-// - 工具结构按 message/block/json 增加固定结构开销
-fn estimate_message_tokens(messages: &[Message]) -> i64 {
-    // 逐条消息估算：每条消息包含固定开销 + 消息体开销
-    messages
-        .iter()
-        .map(|m| {
-            // m: 当前消息引用
-            let body = match &m.content {
-                // 文本消息直接估算字符 token
-                Content::Text(text) => estimate_text_tokens(text),
-                // 块消息对每个块递归估算并求和
-                Content::Blocks(blocks) => blocks.iter().map(estimate_block_tokens).sum::<i64>(),
-            };
-            // 每条消息的总估算 = 消息开销 + 内容开销
-            TOKEN_OVERHEAD_PER_MESSAGE + body
-        })
-        .sum::<i64>()
 }
 
 fn message_has_session_restore_marker(message: &Message) -> bool {
@@ -378,7 +176,7 @@ pub fn apply_tool_result_context_editing(
     messages: &[Message],
     window_tokens: i64,
 ) -> ToolResultContextEditingOutcome {
-    let original_estimated_tokens = estimate_message_tokens(messages);
+    let original_estimated_tokens = token_counter::count_messages(messages);
     // 触发阈值 = 50% 窗口大小，比例与 decide_compact_strategy 的 Micro 阈值对齐。
     let context_edit_trigger = (window_tokens * 50) / 100;
     if original_estimated_tokens < context_edit_trigger {
@@ -478,7 +276,7 @@ pub fn apply_tool_result_context_editing(
         })
         .collect::<Vec<_>>();
 
-    let edited_estimated_tokens = estimate_message_tokens(&edited_messages);
+    let edited_estimated_tokens = token_counter::count_messages(&edited_messages);
     let applied = edited_estimated_tokens < original_estimated_tokens && cleared_tool_pairs > 0;
 
     ToolResultContextEditingOutcome {
@@ -509,21 +307,11 @@ fn build_auto_compact_summary_message(summary: &str) -> Message {
     }
 }
 
-pub fn estimate_tokens_for_messages(messages: &[Message]) -> i64 {
-    estimate_message_tokens(messages)
-}
-
-pub fn estimate_tokens_for_serializable<T: Serialize>(value: &T) -> Result<i64, String> {
-    let value = serde_json::to_value(value)
-        .map_err(|error| format!("Failed to serialize value for token estimate: {}", error))?;
-    Ok(estimate_json_tokens(&value))
-}
-
 // 根据消息数量、估算 token 数和是否存在超大工具结果文本来决定压缩策略。
 fn decide_compact_strategy(messages: &[Message], window_tokens: i64) -> CompactDecision {
     // 估算消息总体 token，纯粹基于 token 用量决定压缩等级。
     // 不使用消息条数或工具结果字符数等辅助条件。
-    let estimated_tokens = estimate_message_tokens(messages);
+    let estimated_tokens = token_counter::count_messages(messages);
 
     // Micro: 80% 窗口触发本地工具结果截断（不调用模型）
     // Full: 90% 窗口触发模型摘要压缩
@@ -766,7 +554,7 @@ async fn try_model_driven_full_compact(
             recent_limit,
             omitted_message_count: handover.omitted_message_count,
             total_message_count: handover.total_message_count,
-            estimated_tokens: estimate_text_tokens(&summary),
+            estimated_tokens: token_counter::count_text(&summary),
             updated_at: handover.updated_at,
         };
 
@@ -1000,7 +788,7 @@ pub async fn manual_compact(
         })
         .collect();
 
-    let before_tokens = estimate_tokens_for_messages(&messages) as u32;
+    let before_tokens = token_counter::count_messages(&messages) as u32;
 
     let split_index = messages
         .len()
@@ -1014,7 +802,7 @@ pub async fn manual_compact(
     let mut new_messages = vec![compact_message];
     new_messages.extend(recent_messages.iter().cloned());
 
-    let after_tokens = estimate_tokens_for_messages(&new_messages) as u32;
+    let after_tokens = token_counter::count_messages(&new_messages) as u32;
 
     let new_history: Vec<HistoryMessage> = new_messages
         .iter()

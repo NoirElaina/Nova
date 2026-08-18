@@ -14,7 +14,6 @@ import type {
   ToolExecutionEntry,
   TurnCost,
 } from "../../../lib/chat-types";
-import { estimateTokens } from "../utils/session-memory";
 import { buildToolTurnSummary } from "../utils/tool-activity-summary";
 import {
   appendTranscriptReasoning,
@@ -47,7 +46,7 @@ import {
   buildAssistantCostForState,
   shouldPreservePendingPromptOnStop,
 } from "./chat-message-helpers";
-import { ackChatTurnStatus } from "../services/chat-api";
+import { ackChatTurnStatus, estimateTextTokens } from "../services/chat-api";
 
 type PersistToolExecutionLog = (
   entry: ToolExecutionEntry,
@@ -224,12 +223,12 @@ export function createChatStreamOperations(deps: StreamOpsDeps) {
     submitPermissionDecision,
   } = deps;
 
-  function finalizeOrStopTurn(tokenUsage?: number) {
+  async function finalizeOrStopTurn(tokenUsage?: number) {
     if (
       activeRuntimeRefs.assistantResponse.value.trim().length > 0 ||
       activeRuntimeRefs.assistantReasoning.value.trim().length > 0
     ) {
-      finalizeAssistantTurn(tokenUsage);
+      await finalizeAssistantTurn(tokenUsage);
       return;
     }
     activeRuntimeRefs.assistantResponse.value = "";
@@ -250,7 +249,9 @@ export function createChatStreamOperations(deps: StreamOpsDeps) {
   ) {
     const finalText = state.assistantResponse.trim();
     const finalReasoning = state.assistantReasoning.trim();
-    const fallbackTokenUsage = finalText ? estimateTokens(finalText) : 0;
+    const fallbackTokenUsage = finalText
+      ? await estimateTextTokens(finalText).catch(() => 0)
+      : 0;
     const resolvedTokenUsage =
       typeof tokenUsage === "number" && tokenUsage > 0
         ? tokenUsage
@@ -318,10 +319,12 @@ export function createChatStreamOperations(deps: StreamOpsDeps) {
     }
   }
 
-  function finalizeAssistantTurn(tokenUsage?: number) {
+  async function finalizeAssistantTurn(tokenUsage?: number) {
     const finalText = activeRuntimeRefs.assistantResponse.value.trim();
     const finalReasoning = activeRuntimeRefs.assistantReasoning.value.trim();
-    const fallbackTokenUsage = finalText ? estimateTokens(finalText) : 0;
+    const fallbackTokenUsage = finalText
+      ? await estimateTextTokens(finalText).catch(() => 0)
+      : 0;
     const resolvedTokenUsage =
       typeof tokenUsage === "number" && tokenUsage > 0
         ? tokenUsage
@@ -389,11 +392,11 @@ export function createChatStreamOperations(deps: StreamOpsDeps) {
     }
   }
 
-  function finalizeCancelledTurn(tokenUsage?: number) {
+  async function finalizeCancelledTurn(tokenUsage?: number) {
     const finalText = activeRuntimeRefs.assistantResponse.value.trim();
     const finalReasoning = activeRuntimeRefs.assistantReasoning.value.trim();
     const cancelledText = finalText ? `${finalText}\n\n（已取消当前轮）` : "已取消当前轮。";
-    const fallbackTokenUsage = estimateTokens(cancelledText);
+    const fallbackTokenUsage = await estimateTextTokens(cancelledText).catch(() => 0);
     const resolvedTokenUsage =
       typeof tokenUsage === "number" && tokenUsage > 0
         ? tokenUsage
@@ -780,7 +783,7 @@ export function createChatStreamOperations(deps: StreamOpsDeps) {
       );
 
       if (isActive) {
-        finalizeCancelledTurn(payload.token_usage);
+        await finalizeCancelledTurn(payload.token_usage);
         resetTurnRuntimeState(activeRuntimeRefs);
         if (activeConversationId.value) {
           runtimeStateByConversation.delete(normalizeConversationId(activeConversationId.value));
@@ -805,7 +808,7 @@ export function createChatStreamOperations(deps: StreamOpsDeps) {
           activeRuntimeRefs.assistantResponse.value.trim().length > 0 ||
           activeRuntimeRefs.assistantReasoning.value.trim().length > 0
         ) {
-          finalizeOrStopTurn(undefined);
+          await finalizeOrStopTurn(undefined);
         } else {
           state.isGenerating = false;
           switchStage(state, "processing");
@@ -852,7 +855,7 @@ export function createChatStreamOperations(deps: StreamOpsDeps) {
     );
 
     if (isActive) {
-      finalizeOrStopTurn(payload.token_usage);
+      await finalizeOrStopTurn(payload.token_usage);
 
       if (!preservePendingPrompt) {
         resetTurnRuntimeState(activeRuntimeRefs);

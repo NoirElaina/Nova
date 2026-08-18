@@ -1,11 +1,11 @@
 use tauri::AppHandle;
 
 use crate::llm::providers::{ProviderPromptEstimate, ProviderTurnError};
-use crate::llm::services::compact;
 use crate::llm::tools;
 use crate::llm::types::{AgentMode, Content, ContentBlock, ImageSource, Message, Role, Tool};
 use crate::llm::utils::model_context;
 use crate::llm::utils::system_prompt::load_system_prompt;
+use crate::llm::utils::token_counter;
 
 use super::types::{
     AnthropicContentBlock, AnthropicImageSource, AnthropicMessage, AnthropicMessageContent,
@@ -191,7 +191,7 @@ pub(crate) fn build_request(
         stream: true,
     };
 
-    let input_tokens = compact::estimate_tokens_for_serializable(&request)
+    let input_tokens = token_counter::estimate_tokens_for_serializable(&request)
         .map(clamp_i64_to_u32)
         .map_err(ProviderTurnError::new)?;
 

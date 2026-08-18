@@ -47,6 +47,9 @@ pub fn run() {
                 }
             });
 
+            // 后台预热 BPE 词表（约几百毫秒），避免首次 token 计算时同步加载。
+            tauri::async_runtime::spawn_blocking(crate::llm::utils::token_counter::warmup);
+
             let scheduler_handle = app.handle().clone();
             tauri::async_runtime::spawn(async move {
                 info!("scheduler loop starting");

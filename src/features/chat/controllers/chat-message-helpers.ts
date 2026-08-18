@@ -1,9 +1,7 @@
-import { estimateTokens } from "../utils/session-memory";
 import type {
   ChatAttachment,
   ChatMessage,
   ContextCompactSummary,
-  ConversationMemory,
   PendingUploadFile,
   ToolTurnSummary,
   TurnCost,
@@ -81,25 +79,6 @@ export function shouldPreservePendingPromptOnStop(
     turnState === "needs_user_input" ||
     stopReason === "needs_user_input"
   );
-}
-
-export function estimateInputTokensForTurn(
-  messages: ChatMessage[],
-  conversationMemory: ConversationMemory | null,
-  userText: string,
-  attachmentNames: string[],
-): number {
-  const historyText = messages
-    .slice(-12)
-    .map((m) => m.content)
-    .join("\n");
-  const memoryText = conversationMemory
-    ? `Summary: ${conversationMemory.summary}\nFacts: ${conversationMemory.keyFacts.join("; ")}`
-    : "";
-  const attachmentText = attachmentNames.length
-    ? `Attachments: ${attachmentNames.join(", ")}`
-    : "";
-  return estimateTokens(`${historyText}\n${memoryText}\n${attachmentText}\n${userText}`);
 }
 
 export function formatMessageContentForModel(

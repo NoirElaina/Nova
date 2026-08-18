@@ -438,32 +438,9 @@ pub fn get_model_window_tokens(app: AppHandle, model: String) -> u32 {
     }
 }
 
-/// 按 tokenizer 家族估算文本 token 数。
-/// protocol: "anthropic" | "openai" | "openai_responses"（其余视为 openai）
-/// 算法：
-///   - CJK / 日韩 / 全角（U+2E80+）：~1.5 tokens/字
-///   - 其他多字节（拉丁扩展、阿拉伯、西里尔等）：~1 token/字
-///   - ASCII 空白：0（不计）
-///   - 其余 ASCII：~0.25 tokens/字（4字符≈1token）
-/// Anthropic 与 OpenAI 在 CJK 上比率几乎相同，此函数暂统一处理。
+/// 文本 token 数：全项目标准计数器（o200k_base BPE 分词器）。
+/// 不区分协议/模型——分词是模型能力而非协议差异，统一基准即可。
 #[tauri::command]
-pub fn estimate_text_tokens(text: String, _protocol: String) -> u32 {
-    let mut tokens: f64 = 0.0;
-    for ch in text.chars() {
-        let cp = ch as u32;
-        if ch.is_ascii_whitespace() {
-            // 空白单独不产生 token（会合并到相邻词里）
-            tokens += 0.0;
-        } else if cp >= 0x2E80 {
-            // CJK 统一表意文字、假名、谚文、全角符号等
-            tokens += 1.5;
-        } else if cp >= 0x0080 {
-            // 拉丁扩展、阿拉伯、西里尔、希腊等多字节字符
-            tokens += 1.0;
-        } else {
-            // ASCII 可见字符（字母、数字、标点）
-            tokens += 0.25;
-        }
-    }
-    tokens.ceil() as u32
+pub fn estimate_text_tokens(text: String) -> u32 {
+    crate::llm::utils::token_counter::count_text(&text).clamp(0, u32::MAX as i64) as u32
 }

@@ -20,6 +20,9 @@ pub mod model_context;
 // 模型价格与每轮 token 成本计算。使用 windowTokens/models.json 的内置价格数据。
 pub mod pricing;
 
+// 全项目唯一的 token 计数器（o200k_base BPE 分词器）。
+pub mod token_counter;
+
 // 上下文组装入口：整合会话恢复与可选扩展上下文。
 pub mod context_assembler;
 

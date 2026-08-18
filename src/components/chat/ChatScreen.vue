@@ -22,6 +22,7 @@ import ContextCompactNotice from './messages/ContextCompactNotice.vue';
 import MessageTimelineNavigator from './MessageTimelineNavigator.vue';
 import UserMessageBubble from './messages/UserMessageBubble.vue';
 import { buildAssistantTranscriptSegments } from '../../features/chat/utils/assistant-transcript';
+import { estimateTextTokens } from '../../features/chat/services/chat-api';
 
 const props = defineProps<{
   messages: ChatMessage[];
@@ -404,6 +405,10 @@ onBeforeUnmount(() => {
     cancelAnimationFrame(stickToBottomRaf);
     stickToBottomRaf = 0;
   }
+  if (streamingEstimateTimer !== null) {
+    clearTimeout(streamingEstimateTimer);
+    streamingEstimateTimer = null;
+  }
   for (const key of Object.keys(copyTimers)) {
     if (copyTimers[key]) {
       clearTimeout(copyTimers[key]);
@@ -466,18 +471,46 @@ const conversationTokenUsage = (index: number): number => {
   return tokenPrefixSums.value[index] ?? 0;
 };
 
-const estimateTokensFromContent = (content: string): number => {
-  const normalized = content.replace(/\s+/g, ' ').trim();
-  if (!normalized) return 0;
-  return Math.max(1, Math.ceil(normalized.length / 4));
+/** 流式输出期间的临时 token 估算：节流调后端标准计数器，真实 usage 到达后由 assistantTokenUsage 覆盖 */
+const streamingEstimateTokens = ref(0);
+let streamingEstimateTimer: ReturnType<typeof setTimeout> | null = null;
+
+const refreshStreamingEstimate = () => {
+  if (streamingEstimateTimer !== null) return;
+  streamingEstimateTimer = setTimeout(() => {
+    streamingEstimateTimer = null;
+    const text = props.assistantResponse;
+    if (!text.trim() || !props.isGenerating) return;
+    if (typeof props.assistantTokenUsage === 'number' && props.assistantTokenUsage > 0) return;
+    void estimateTextTokens(text)
+      .then((tokens) => {
+        streamingEstimateTokens.value = tokens;
+      })
+      .catch(() => 0);
+  }, 800);
 };
+
+watch(
+  () => [props.assistantResponse, props.isGenerating] as const,
+  ([, generating]) => {
+    if (generating) {
+      refreshStreamingEstimate();
+      return;
+    }
+    if (streamingEstimateTimer !== null) {
+      clearTimeout(streamingEstimateTimer);
+      streamingEstimateTimer = null;
+    }
+    streamingEstimateTokens.value = 0;
+  },
+);
 
 const streamingTokenUsage = (): number => {
   const outputTokens =
     typeof props.assistantTokenUsage === 'number' && props.assistantTokenUsage > 0
       ? props.assistantTokenUsage
       : props.isGenerating
-        ? estimateTokensFromContent(props.assistantResponse)
+        ? streamingEstimateTokens.value
         : 0;
   const inputTokens =
     typeof props.contextUsage?.usedTokens === 'number' && props.contextUsage.usedTokens > 0

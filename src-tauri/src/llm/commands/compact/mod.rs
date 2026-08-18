@@ -1,28 +1,7 @@
 use sqlx::{Row, SqlitePool};
 
 use crate::llm::commands::types::{CompactBoundary, CompactContext, ConversationHandover};
-
-pub fn estimate_tokens(text: &str) -> i64 {
-    let trimmed = text.trim();
-    if trimmed.is_empty() {
-        return 0;
-    }
-    // 按 tokenizer 家族分流估算，与 command::settings::estimate_text_tokens 保持一致。
-    let mut tokens: f64 = 0.0;
-    for ch in trimmed.chars() {
-        let cp = ch as u32;
-        if (ch as u8 as char).is_ascii_whitespace() && cp < 0x80 {
-            tokens += 0.0;
-        } else if cp >= 0x2E80 {
-            tokens += 1.5;
-        } else if cp >= 0x0080 {
-            tokens += 1.0;
-        } else {
-            tokens += 0.25;
-        }
-    }
-    tokens.ceil() as i64
-}
+use crate::llm::utils::token_counter;
 
 pub fn build_compact_context(
     conversation_id: String,
@@ -94,17 +73,11 @@ pub fn build_compact_context(
         context_text.push_str(&recent_section);
     }
 
-    // 估算当前全文 token。
-    let estimated_tokens = estimate_tokens(&context_text);
-    // 超预算则按字符粗略截断。
+    // 估算当前全文 token；超预算则按 token 预算精确截断。
+    let estimated_tokens = token_counter::count_text(&context_text);
     let final_text = if estimated_tokens > token_budget {
-        context_text
-            .chars()
-            // 近似按 token_budget*4 截断字符。
-            .take((token_budget * 4) as usize)
-            .collect::<String>()
+        token_counter::truncate_to_token_budget(&context_text, token_budget)
     } else {
-        // 未超预算时直接保留全文。
         context_text
     };
 
@@ -116,8 +89,8 @@ pub fn build_compact_context(
         recent_limit,
         omitted_message_count: handover.omitted_message_count,
         total_message_count: handover.total_message_count,
-        // 对最终文本重新估算 token。
-        estimated_tokens: estimate_tokens(&final_text),
+        // 对最终文本重新计数。
+        estimated_tokens: token_counter::count_text(&final_text),
         updated_at: handover.updated_at,
     }
 }

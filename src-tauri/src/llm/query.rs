@@ -6,6 +6,7 @@ use std::collections::HashSet;
 use crate::llm::providers::LlmClient;
 use crate::llm::query_engine::ChatMessageEvent;
 use crate::llm::services::compact;
+use crate::llm::utils::token_counter;
 use crate::llm::types::{AgentMode, Content, ContentBlock, Message, Role};
 use crate::llm::utils::context_assembler::{self, AssembleOptions};
 use crate::llm::utils::error_event::emit_backend_error;
@@ -561,8 +562,7 @@ pub async fn send_chat_message(
     let mut current_messages = compact_outcome.messages;
     if did_compact {
         apply_post_compact_hook(&app, conversation_id.as_deref(), &mut current_messages)?;
-        let after_tokens =
-            clamp_i64_to_u32(compact::estimate_tokens_for_messages(&current_messages));
+        let after_tokens = clamp_i64_to_u32(token_counter::count_messages(&current_messages));
         emit_context_compact_event(
             &app,
             conversation_id.as_deref(),
@@ -657,12 +657,10 @@ pub async fn send_chat_message(
                     )
                     .await
                     {
-                        let before_tokens = clamp_i64_to_u32(
-                            compact::estimate_tokens_for_messages(&messages_for_provider),
-                        );
-                        let after_tokens = clamp_i64_to_u32(compact::estimate_tokens_for_messages(
-                            &recovered_messages,
-                        ));
+                        let before_tokens =
+                            clamp_i64_to_u32(token_counter::count_messages(&messages_for_provider));
+                        let after_tokens =
+                            clamp_i64_to_u32(token_counter::count_messages(&recovered_messages));
                         // reactive_compact 是真正的上下文压缩恢复，压缩后的 messages
                         // 应该持久化（原始过长消息已无意义），所以覆盖 current_messages。
                         current_messages = recovered_messages;

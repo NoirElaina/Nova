@@ -357,7 +357,7 @@ onBeforeUnmount(() => {
         @drop="handleChatDrop"
       >
         <!-- Top Title Bar -->
-        <header class="h-14 flex items-center justify-between px-4 absolute top-0 w-full z-10 pointer-events-none overflow-hidden">
+        <header class="h-14 flex items-center justify-between px-4 absolute top-0 w-full z-10 pointer-events-none">
           <div class="flex items-center gap-2 pointer-events-auto">
             <Button
               variant="ghost"

@@ -33,6 +33,17 @@ export interface ContextUsage {
   source?: string;
 }
 
+/** 按会话聚合的 token 用量统计（来自 token_usage_log 表）。 */
+export interface ConversationUsageSummary {
+  requests: number;
+  inputTokens: number;
+  outputTokens: number;
+  cacheReadTokens: number;
+  cacheCreationTokens: number;
+  totalTokens: number;
+  totalCostUsd: string;
+}
+
 export interface ToolTurnCategoryCount {
   label: string;
   count: number;

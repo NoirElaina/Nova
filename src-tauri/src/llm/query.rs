@@ -340,17 +340,13 @@ async fn build_mcp_server_context_message(app: &AppHandle) -> Option<Message> {
 }
 
 // 判断是否是会话开始回合
-// 作用：检查消息列表是否是新会话的第一轮对话。
-// 判断标准：没有 assistant 消息，且 user 消息不超过 1 条。
-// 用途：决定是否注入 session_start_hooks（会话开始时的初始化上下文）。
+// 作用：检查消息列表是否从未成功完成过一轮对话。
+// 判断标准：没有任何 assistant 消息（不限制 user 数量）。
+// 用途：决定是否注入 session_start_hooks，以及无快照时是否允许用前端历史启动。
+// 不限制 user 数量的原因：首轮发送失败后重发，历史里会有 2 条 user 消息，
+// 若按数量判定会被误判为非首轮，撞上"缺少 turn snapshot"错误且 hooks 不再注入。
 fn is_session_start_turn(messages: &[Message]) -> bool {
-    let assistant_count = messages
-        .iter()
-        .filter(|m| m.role == Role::Assistant)
-        .count();
-    let user_count = messages.iter().filter(|m| m.role == Role::User).count();
-
-    assistant_count == 0 && user_count <= 1
+    messages.iter().all(|m| m.role != Role::Assistant)
 }
 
 fn apply_post_compact_hook(

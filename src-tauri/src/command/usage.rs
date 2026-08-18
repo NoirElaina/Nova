@@ -1,5 +1,5 @@
 pub use crate::llm::services::token_usage_log::{
-    TokenUsageRecord, UsageStats,
+    ConversationUsageSummary, TokenUsageRecord, UsageStats,
 };
 
 use tauri::AppHandle;
@@ -19,4 +19,14 @@ pub async fn list_token_usage(
 ) -> Result<Vec<TokenUsageRecord>, String> {
     let result = crate::llm::services::token_usage_log::list_token_usage(&app, limit).await;
     report_backend_result(&app, "command.usage.list_token_usage", result, None)
+}
+
+#[tauri::command]
+pub async fn get_conversation_usage(
+    app: AppHandle,
+    conversation_id: String,
+) -> Result<ConversationUsageSummary, String> {
+    let result =
+        crate::llm::services::token_usage_log::get_conversation_usage(&app, &conversation_id).await;
+    report_backend_result(&app, "command.usage.get_conversation_usage", result, None)
 }

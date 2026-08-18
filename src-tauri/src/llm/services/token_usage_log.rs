@@ -144,6 +144,62 @@ pub async fn list_token_usage(
         .collect())
 }
 
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ConversationUsageSummary {
+    pub requests: i64,
+    pub input_tokens: i64,
+    pub output_tokens: i64,
+    pub cache_read_tokens: i64,
+    pub cache_creation_tokens: i64,
+    pub total_tokens: i64,
+    pub total_cost_usd: String,
+}
+
+/// 按会话聚合 token 用量，供输入框下方的会话统计条展示。
+pub async fn get_conversation_usage(
+    app: &AppHandle,
+    conversation_id: &str,
+) -> Result<ConversationUsageSummary, String> {
+    let pool = get_pool_with_schema(app).await?;
+    let normalized_conversation_id = conversation_id.trim();
+
+    let totals = sqlx::query(
+        r#"
+        SELECT
+            COUNT(*) AS requests,
+            COALESCE(SUM(input_tokens), 0) AS input_tokens,
+            COALESCE(SUM(output_tokens), 0) AS output_tokens,
+            COALESCE(SUM(cache_read_tokens), 0) AS cache_read_tokens,
+            COALESCE(SUM(cache_creation_tokens), 0) AS cache_creation_tokens,
+            COALESCE(SUM(total_tokens), 0) AS total_tokens
+        FROM token_usage_log
+        WHERE conversation_id = ?
+        "#,
+    )
+    .bind(normalized_conversation_id)
+    .fetch_one(&pool)
+    .await
+    .map_err(|e| e.to_string())?;
+
+    let total_cost_usd = sum_cost_rows(
+        &pool,
+        "SELECT cost_usd FROM token_usage_log WHERE conversation_id = ? AND cost_usd IS NOT NULL AND cost_usd != ''",
+        &[normalized_conversation_id],
+    )
+    .await?;
+
+    Ok(ConversationUsageSummary {
+        requests: totals.get("requests"),
+        input_tokens: totals.get("input_tokens"),
+        output_tokens: totals.get("output_tokens"),
+        cache_read_tokens: totals.get("cache_read_tokens"),
+        cache_creation_tokens: totals.get("cache_creation_tokens"),
+        total_tokens: totals.get("total_tokens"),
+        total_cost_usd,
+    })
+}
+
 pub async fn get_usage_stats(app: &AppHandle) -> Result<UsageStats, String> {
     let pool = get_pool_with_schema(app).await?;
 

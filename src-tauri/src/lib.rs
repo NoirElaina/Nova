@@ -149,6 +149,7 @@ pub fn run() {
             command::workspace::workspace_read_text_file,
             command::usage::get_usage_stats,
             command::usage::list_token_usage,
+            command::usage::get_conversation_usage,
             command::todo::list_todos,
             command::plan::get_conversation_plan
         ])

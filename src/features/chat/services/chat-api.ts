@@ -4,6 +4,7 @@ import type {
   ChatMessage,
   ConversationMemory,
   ConversationMeta,
+  ConversationUsageSummary,
   PersistedMessage,
   ScheduledTask,
   ToolExecutionEntry,
@@ -151,6 +152,12 @@ export type WorkspaceDiff = {
 export async function listConversations(): Promise<ConversationMeta[]> {
   const items = await invoke<ConversationMeta[]>("list_conversations");
   return items || [];
+}
+
+export async function getConversationUsage(
+  conversationId: string,
+): Promise<ConversationUsageSummary> {
+  return invoke<ConversationUsageSummary>("get_conversation_usage", { conversationId });
 }
 
 export async function setConversationPinned(

@@ -6,6 +6,7 @@ import type {
   ChatMessage,
   ConversationMemory,
   ConversationMeta,
+  ConversationUsageSummary,
   PendingUploadFile,
   ToolExecutionEntry,
   TurnCost,
@@ -17,6 +18,7 @@ import {
   deleteConversation,
   getChatTurnStatus,
   getConversationMemory,
+  getConversationUsage,
   listSessionFiles,
   listConversations,
   loadConversationHistory,
@@ -53,6 +55,7 @@ type ConversationOpsDeps = {
   conversationFiles: Ref<SessionFileMeta[]>;
   pendingUploads: Ref<PendingUploadFile[]>;
   conversationMemory: Ref<ConversationMemory | null>;
+  conversationUsage: Ref<ConversationUsageSummary | null>;
   assistantResponse: Ref<string>;
   assistantReasoning: Ref<string>;
   assistantSegments: Ref<AssistantTranscriptSegment[]>;
@@ -77,6 +80,7 @@ export function createConversationOperations(deps: ConversationOpsDeps) {
     conversationFiles,
     pendingUploads,
     conversationMemory,
+    conversationUsage,
     assistantResponse,
     assistantReasoning,
     assistantSegments,
@@ -323,6 +327,12 @@ export function createConversationOperations(deps: ConversationOpsDeps) {
       await loadConversationMemory(targetConversationId);
       if (isStaleLoad()) return;
       await refreshConversationFiles(targetConversationId);
+      // 用量统计独立加载失败时保留旧值，不阻断会话恢复。
+      try {
+        conversationUsage.value = await getConversationUsage(targetConversationId);
+      } catch (err) {
+        console.error("Failed to load conversation usage:", err);
+      }
     } catch (err) {
       console.error("Failed to load conversation messages:", err);
       if (isStaleLoad()) return;
@@ -364,6 +374,7 @@ export function createConversationOperations(deps: ConversationOpsDeps) {
     pendingUploads.value = [];
     conversationFiles.value = [];
     conversationMemory.value = null;
+    conversationUsage.value = null;
     toolExecutionLogs.value = [];
     planMode.value = agentMode.value === "plan";
   }

@@ -3,6 +3,7 @@ import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { emitToast, NOVA_CHAT_ERROR_EVENT, type ChatErrorPayload } from "../../../lib/toast";
 import {
   cancelChatMessage,
+  getConversationUsage,
   submitPermissionDecision,
   type SessionFileMeta,
   upsertConversationToolLog,
@@ -15,6 +16,7 @@ import type {
   ContextCompactSummary,
   ConversationMemory,
   ConversationMeta,
+  ConversationUsageSummary,
   NeedsUserInputPayload,
   PendingUploadFile,
   ToolExecutionEntry,
@@ -54,6 +56,7 @@ export function useChatController() {
   const pendingQuestion = ref<NeedsUserInputPayload | null>(null);
   const pendingPermissionRequestId = ref<string | null>(null);
   const conversationMemory = ref<ConversationMemory | null>(null);
+  const conversationUsage = ref<ConversationUsageSummary | null>(null);
   const mainView = ref<MainView>("chat");
   const currentToolStartedAt = ref<number | null>(null);
   const currentToolCalls = ref(0);
@@ -207,6 +210,7 @@ export function useChatController() {
     conversationFiles,
     pendingUploads,
     conversationMemory,
+    conversationUsage,
     assistantResponse,
     assistantReasoning,
     assistantSegments,
@@ -324,6 +328,17 @@ export function useChatController() {
       void streamOps.handleChatStreamEvent(targetConversationId, payload, "background");
       return;
     }
+    // 本轮结束（无论正常/取消/出错）后刷新会话累计用量；后台会话切回时由
+    // loadConversation 重新加载，这里不覆盖当前显示值。
+    if (payload.type === "stop") {
+      void getConversationUsage(targetConversationId)
+        .then((usage) => {
+          if (activeConversationId.value === targetConversationId) {
+            conversationUsage.value = usage;
+          }
+        })
+        .catch((err) => console.error("Failed to refresh conversation usage:", err));
+    }
     void streamOps.handleChatStreamEvent(targetConversationId, payload, "active");
   }
 
@@ -415,6 +430,7 @@ export function useChatController() {
     currentContextUsage: displayContextUsage,
     currentContextCompacts,
     currentContextTokens: displayContextTokens,
+    conversationUsage,
     agentMode,
     planMode,
     currentTurnToolExecutionLogs,

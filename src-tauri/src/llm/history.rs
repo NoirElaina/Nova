@@ -520,6 +520,10 @@ pub async fn create_conversation(
         }
     };
 
+    // 会话行与空 turn snapshot 同事务写入，维持不变式：会话存在 ⇔ 快照存在。
+    // 这样首轮发送失败（provider 错误时 partial 为空、不落快照）也不会让会话
+    // 陷入"无快照且非首轮"的永久报错状态；快照会在每轮结束时正常覆盖更新。
+    let mut tx = pool.begin().await.map_err(|e| e.to_string())?;
     sqlx::query(
         "INSERT INTO conversations (id, title, created_at, updated_at, workspace_path) VALUES (?, ?, ?, ?, ?)",
     )
@@ -528,9 +532,19 @@ pub async fn create_conversation(
     .bind(now)
     .bind(now)
     .bind(&ws_path)
-    .execute(&pool)
+    .execute(&mut *tx)
     .await
     .map_err(|e| e.to_string())?;
+    sqlx::query(
+        "INSERT INTO conversation_turn_snapshots (conversation_id, snapshot_json, updated_at) VALUES (?, ?, ?)",
+    )
+    .bind(&id)
+    .bind("[]")
+    .bind(now)
+    .execute(&mut *tx)
+    .await
+    .map_err(|e| e.to_string())?;
+    tx.commit().await.map_err(|e| e.to_string())?;
 
     // 写入进程内缓存，供同步热路径读取。
     crate::command::workspace::cache_conversation_workspace(&id, &ws_path);

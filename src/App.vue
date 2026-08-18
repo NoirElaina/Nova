@@ -63,6 +63,7 @@ const {
   currentContextUsage,
   currentContextCompacts,
   currentContextTokens,
+  conversationUsage,
   pendingQuestion,
   pendingPermissionRequestId,
   agentMode,
@@ -448,6 +449,7 @@ onBeforeUnmount(() => {
             :contextUsage="currentContextUsage"
             :contextCompacts="currentContextCompacts"
             :contextTokens="currentContextTokens"
+            :conversationUsage="conversationUsage"
             :compacting="isCompacting"
             :chatError="chatError"
             @send="handleSendMessage"

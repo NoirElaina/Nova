@@ -5,6 +5,7 @@ import type {
   AgentMode,
   PendingUploadFile,
   ContextUsage,
+  ConversationUsageSummary,
 } from '../../lib/chat-types';
 import {
   buildDocumentAcceptAttribute,
@@ -17,6 +18,7 @@ import {
 import { emitToast, emitErrorToast } from '../../lib/toast';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import ContextUsageIndicator from './ContextUsageIndicator.vue';
+import ConversationUsageBar from './ConversationUsageBar.vue';
 import { getWorkspaceDiff } from '../../features/chat/services/chat-api';
 import {
   SLASH_COMMANDS,
@@ -45,6 +47,7 @@ const props = defineProps<{
   pendingUploads?: PendingUploadFile[];
   contextUsage?: ContextUsage;
   contextTokens?: number;
+  conversationUsage?: ConversationUsageSummary | null;
   compacting?: boolean;
 }>();
 
@@ -994,5 +997,8 @@ defineExpose({
         </button>
       </div>
     </div>
+
+    <!-- 会话用量统计条：位于整个输入框卡片的外部下方 -->
+    <ConversationUsageBar :usage="conversationUsage" />
   </div>
 </template>

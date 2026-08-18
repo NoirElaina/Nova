@@ -8,6 +8,7 @@ import type {
   ChatMessage,
   ContextCompactSummary,
   ContextUsage,
+  ConversationUsageSummary,
   NeedsUserInputPayload,
   PendingUploadFile,
   ToolExecutionEntry,
@@ -39,6 +40,7 @@ const props = defineProps<{
   contextUsage?: ContextUsage;
   contextCompacts?: ContextCompactSummary[];
   contextTokens?: number;
+  conversationUsage?: ConversationUsageSummary | null;
   compacting?: boolean;
   /** AI 主流程错误原文：临时展示，不进入消息数组，下次发送时清空。 */
   chatError?: string | null;
@@ -736,6 +738,7 @@ defineExpose({
           :pendingUploads="pendingUploads"
           :contextUsage="contextUsage"
           :contextTokens="contextTokens"
+          :conversationUsage="conversationUsage"
           :compacting="compacting"
           @send="handleSend"
           @cancel="emit('cancel')"

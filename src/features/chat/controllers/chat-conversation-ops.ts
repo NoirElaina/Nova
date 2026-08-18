@@ -129,6 +129,7 @@ export function createConversationOperations(deps: ConversationOpsDeps) {
     assistantTurnCost.value = undefined;
     activeRuntimeRefs.pendingQuestion.value = null;
     activeRuntimeRefs.pendingPermissionRequestId.value = null;
+    activeRuntimeRefs.currentTurnStartedAt.value = null;
     activeRuntimeRefs.currentToolStartedAt.value = null;
     activeRuntimeRefs.currentToolCalls.value = 0;
     activeRuntimeRefs.currentToolDurationMs.value = 0;
@@ -163,6 +164,9 @@ export function createConversationOperations(deps: ConversationOpsDeps) {
     if (liveTurn.state === "running") {
       isGenerating.value = true;
       activeRuntimeRefs.currentStage.value = "processing";
+      // 计时起点用后端 live_turns 的 startedAt，页面刷新后仍从真实起点继续走
+      activeRuntimeRefs.currentTurnStartedAt.value =
+        liveTurn.startedAt > 0 ? liveTurn.startedAt : Date.now();
       assistantResponse.value = response;
       assistantReasoning.value = reasoning;
       assistantSegments.value = buildAssistantTranscriptSegments(undefined, {

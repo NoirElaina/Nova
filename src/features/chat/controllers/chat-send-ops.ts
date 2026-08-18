@@ -60,6 +60,7 @@ type SendOpsDeps = {
   assistantSegments: Ref<AssistantTranscriptSegment[]>;
   assistantTokenUsage: Ref<number | undefined>;
   assistantTurnCost: Ref<TurnCost | undefined>;
+  currentTurnStartedAt: Ref<number | null>;
   currentToolStartedAt: Ref<number | null>;
   currentToolCalls: Ref<number>;
   currentToolDurationMs: Ref<number>;
@@ -99,6 +100,7 @@ export function createSendOperations(deps: SendOpsDeps) {
     assistantSegments,
     assistantTokenUsage,
     assistantTurnCost,
+    currentTurnStartedAt,
     currentToolStartedAt,
     currentToolCalls,
     currentToolDurationMs,
@@ -132,6 +134,7 @@ export function createSendOperations(deps: SendOpsDeps) {
 
     isGenerating.value = true;
     currentStage.value = "processing";
+    currentTurnStartedAt.value = Date.now();
     assistantResponse.value = "";
     assistantReasoning.value = "";
     assistantSegments.value = [];

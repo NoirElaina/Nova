@@ -67,6 +67,7 @@ export function useChatController() {
   const currentInputTokens = ref(0);
   const currentOutputTokens = ref(0);
   const currentTurnId = ref<string | null>(null);
+  const currentTurnStartedAt = ref<number | null>(null);
   const agentMode = ref<AgentMode>("agent");
   const planMode = ref(false);
   const isCreatingNewChat = ref(false);
@@ -89,6 +90,7 @@ export function useChatController() {
     assistantTurnCost,
     pendingQuestion,
     pendingPermissionRequestId,
+    currentTurnStartedAt,
     currentToolStartedAt,
     currentToolCalls,
     currentToolDurationMs,
@@ -261,6 +263,7 @@ export function useChatController() {
     currentInputTokens,
     currentOutputTokens,
     currentTurnId,
+    currentTurnStartedAt,
     chatScreenRef,
     runtimeStateByConversation,
     activeRuntimeRefs,
@@ -433,6 +436,7 @@ export function useChatController() {
     conversationUsage,
     agentMode,
     planMode,
+    currentTurnStartedAt,
     currentTurnToolExecutionLogs,
     mainView,
     isSidebarOpen,

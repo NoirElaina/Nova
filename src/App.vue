@@ -68,6 +68,7 @@ const {
   pendingPermissionRequestId,
   agentMode,
   planMode,
+  currentTurnStartedAt,
   mainView,
   isSidebarOpen,
   chatScreenRef,
@@ -440,6 +441,7 @@ onBeforeUnmount(() => {
             :assistantReasoning="assistantReasoning"
             :assistantSegments="assistantSegments"
             :assistantTokenUsage="assistantTokenUsage"
+            :turnStartedAt="currentTurnStartedAt"
             :currentTurnToolEntries="currentTurnToolExecutionLogs"
             :pendingQuestion="pendingQuestion"
             :pendingPermissionRequestId="pendingPermissionRequestId"

@@ -69,6 +69,8 @@ export type ConversationTurnRuntimeState = {
   assistantTurnCost?: TurnCost;
   pendingQuestion: NeedsUserInputPayload | null;
   pendingPermissionRequestId: string | null;
+  /** 本轮开始时间（ms epoch）：发送时打点，恢复时取后端 live_turns.startedAt */
+  currentTurnStartedAt: number | null;
   currentToolStartedAt: number | null;
   currentToolCalls: number;
   currentToolDurationMs: number;

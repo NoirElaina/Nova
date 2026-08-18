@@ -30,6 +30,7 @@ export type ActiveRuntimeRefs = {
   assistantTurnCost: Ref<TurnCost | undefined>;
   pendingQuestion: Ref<NeedsUserInputPayload | null>;
   pendingPermissionRequestId: Ref<string | null>;
+  currentTurnStartedAt: Ref<number | null>;
   currentToolStartedAt: Ref<number | null>;
   currentToolCalls: Ref<number>;
   currentToolDurationMs: Ref<number>;
@@ -115,6 +116,12 @@ export function bindActiveRuntimeState(
     },
     set pendingPermissionRequestId(value: string | null) {
       active.pendingPermissionRequestId.value = value;
+    },
+    get currentTurnStartedAt() {
+      return active.currentTurnStartedAt.value;
+    },
+    set currentTurnStartedAt(value: number | null) {
+      active.currentTurnStartedAt.value = value;
     },
     get currentToolStartedAt() {
       return active.currentToolStartedAt.value;
@@ -217,6 +224,7 @@ export function createEmptyRuntimeState(
     assistantTurnCost: undefined,
     pendingQuestion: null,
     pendingPermissionRequestId: null,
+    currentTurnStartedAt: null,
     currentToolStartedAt: null,
     currentToolCalls: 0,
     currentToolDurationMs: 0,
@@ -271,6 +279,7 @@ export function snapshotActiveRuntimeState(
     assistantTurnCost: active.assistantTurnCost.value,
     pendingQuestion: active.pendingQuestion.value,
     pendingPermissionRequestId: active.pendingPermissionRequestId.value,
+    currentTurnStartedAt: active.currentTurnStartedAt.value,
     currentToolStartedAt: active.currentToolStartedAt.value,
     currentToolCalls: active.currentToolCalls.value,
     currentToolDurationMs: active.currentToolDurationMs.value,
@@ -302,6 +311,7 @@ export function applyRuntimeStateToActive(
   active.assistantTurnCost.value = state.assistantTurnCost;
   active.pendingQuestion.value = state.pendingQuestion;
   active.pendingPermissionRequestId.value = state.pendingPermissionRequestId;
+  active.currentTurnStartedAt.value = state.currentTurnStartedAt;
   active.currentToolStartedAt.value = state.currentToolStartedAt;
   active.currentToolCalls.value = state.currentToolCalls;
   active.currentToolDurationMs.value = state.currentToolDurationMs;
@@ -335,6 +345,7 @@ export function clearActiveRuntimeState(active: ActiveRuntimeRefs) {
   active.assistantTurnCost.value = undefined;
   active.pendingQuestion.value = null;
   active.pendingPermissionRequestId.value = null;
+  active.currentTurnStartedAt.value = null;
   active.currentToolStartedAt.value = null;
   active.currentToolCalls.value = 0;
   active.currentToolDurationMs.value = 0;
@@ -458,4 +469,5 @@ export function resetPendingPromptState(active: ActiveRuntimeRefs) {
 export function resetTurnRuntimeState(active: ActiveRuntimeRefs) {
   resetToolTrackingState(active);
   resetPendingPromptState(active);
+  active.currentTurnStartedAt.value = null;
 }

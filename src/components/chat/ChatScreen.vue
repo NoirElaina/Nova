@@ -32,6 +32,8 @@ const props = defineProps<{
   assistantReasoning?: string;
   assistantSegments: AssistantTranscriptSegment[];
   assistantTokenUsage?: number;
+  /** 本轮开始时间（ms epoch）：发送时打点，页面刷新恢复时取后端 live_turns.startedAt */
+  turnStartedAt?: number | null;
   currentTurnToolEntries: ToolExecutionEntry[];
   pendingQuestion?: NeedsUserInputPayload | null;
   pendingPermissionRequestId?: string | null;
@@ -409,6 +411,7 @@ onBeforeUnmount(() => {
     clearTimeout(streamingEstimateTimer);
     streamingEstimateTimer = null;
   }
+  stopLiveElapsedTimer();
   for (const key of Object.keys(copyTimers)) {
     if (copyTimers[key]) {
       clearTimeout(copyTimers[key]);
@@ -503,6 +506,54 @@ watch(
     }
     streamingEstimateTokens.value = 0;
   },
+);
+
+/** 本轮实时执行时长：本地定时器刷新，起点来自 controller 的 turnStartedAt */
+const liveElapsedMs = ref(0);
+let liveElapsedTimer: ReturnType<typeof setInterval> | null = null;
+
+const formatElapsedMs = (ms: number): string => {
+  const totalSeconds = Math.floor(ms / 1000);
+  if (totalSeconds < 60) {
+    return `${(ms / 1000).toFixed(1)}s`;
+  }
+  const minutes = Math.floor(totalSeconds / 60);
+  const seconds = totalSeconds % 60;
+  if (minutes < 60) {
+    return `${minutes}m${String(seconds).padStart(2, '0')}s`;
+  }
+  const hours = Math.floor(minutes / 60);
+  return `${hours}h${String(minutes % 60).padStart(2, '0')}m`;
+};
+
+const stopLiveElapsedTimer = () => {
+  if (liveElapsedTimer !== null) {
+    clearInterval(liveElapsedTimer);
+    liveElapsedTimer = null;
+  }
+  liveElapsedMs.value = 0;
+};
+
+watch(
+  () => [props.isGenerating, props.turnStartedAt] as const,
+  ([generating, startedAt]) => {
+    if (generating && startedAt && startedAt > 0) {
+      liveElapsedMs.value = Math.max(0, Date.now() - startedAt);
+      if (liveElapsedTimer === null) {
+        liveElapsedTimer = setInterval(() => {
+          const current = props.turnStartedAt;
+          if (props.isGenerating && current && current > 0) {
+            liveElapsedMs.value = Math.max(0, Date.now() - current);
+            return;
+          }
+          stopLiveElapsedTimer();
+        }, 250);
+      }
+      return;
+    }
+    stopLiveElapsedTimer();
+  },
+  { immediate: true },
 );
 
 const streamingTokenUsage = (): number => {
@@ -686,15 +737,27 @@ defineExpose({
                   class="inline-block w-1.5 h-[1em] bg-current ml-1 align-middle animate-pulse opacity-70"
                 ></span>
                 <div
-                  v-if="streamingTokenUsage() > 0 || streamingConversationTokenUsage() > 0"
-                  class="token-badge mt-2"
+                  v-if="liveElapsedMs > 0 || streamingTokenUsage() > 0 || streamingConversationTokenUsage() > 0"
+                  class="mt-2 flex flex-wrap items-center gap-2"
                 >
-                  <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
-                    <ellipse cx="12" cy="5" rx="9" ry="3"></ellipse>
-                    <path d="M21 12c0 1.66-4 3-9 3s-9-1.34-9-3"></path>
-                    <path d="M3 5v14c0 1.66 4 3 9 3s9-1.34 9-3V5"></path>
-                  </svg>
-                  本次 {{ streamingTokenUsage() }} · 会话 {{ streamingConversationTokenUsage() }}
+                  <span v-if="liveElapsedMs > 0" class="token-badge">
+                    <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+                      <circle cx="12" cy="12" r="10"></circle>
+                      <polyline points="12 6 12 12 15 14"></polyline>
+                    </svg>
+                    {{ formatElapsedMs(liveElapsedMs) }}
+                  </span>
+                  <span
+                    v-if="streamingTokenUsage() > 0 || streamingConversationTokenUsage() > 0"
+                    class="token-badge"
+                  >
+                    <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+                      <ellipse cx="12" cy="5" rx="9" ry="3"></ellipse>
+                      <path d="M21 12c0 1.66-4 3-9 3s-9-1.34-9-3"></path>
+                      <path d="M3 5v14c0 1.66 4 3 9 3s9-1.34 9-3V5"></path>
+                    </svg>
+                    本次 {{ streamingTokenUsage() }} · 会话 {{ streamingConversationTokenUsage() }}
+                  </span>
                 </div>
               </div>
             </div>

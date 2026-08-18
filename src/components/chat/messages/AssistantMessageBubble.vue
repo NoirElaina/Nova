@@ -31,6 +31,22 @@ const formatUsd = (value?: string) => {
   return `$${amount.toFixed(4)}`;
 };
 
+/** 与流式计时徽章同格式：12.3s / 1m05s / 1h02m */
+const formatElapsedMs = (ms?: number): string => {
+  if (!ms || ms <= 0) return '';
+  const totalSeconds = Math.floor(ms / 1000);
+  if (totalSeconds < 60) {
+    return `${(ms / 1000).toFixed(1)}s`;
+  }
+  const minutes = Math.floor(totalSeconds / 60);
+  const seconds = totalSeconds % 60;
+  if (minutes < 60) {
+    return `${minutes}m${String(seconds).padStart(2, '0')}s`;
+  }
+  const hours = Math.floor(minutes / 60);
+  return `${hours}h${String(minutes % 60).padStart(2, '0')}m`;
+};
+
 const triggerReaction = (value: 'up' | 'down') => {
   animatingReaction.value = value;
   emit('react', { index: props.index, value });
@@ -54,9 +70,16 @@ const triggerReaction = (value: 'up' | 'down') => {
         :toolSummary="message.cost?.toolSummary"
       />
       <div
-        v-if="((message.cost?.inputTokens ?? 0) + (message.cost?.outputTokens ?? 0) > 0) || (message.tokenUsage && message.tokenUsage > 0) || (conversationTokenUsage && conversationTokenUsage > 0)"
+        v-if="((message.cost?.inputTokens ?? 0) + (message.cost?.outputTokens ?? 0) > 0) || (message.tokenUsage && message.tokenUsage > 0) || (conversationTokenUsage && conversationTokenUsage > 0) || (message.cost?.turnDurationMs ?? 0) > 0"
         class="token-badge mt-2"
       >
+        <template v-if="formatElapsedMs(message.cost?.turnDurationMs)">
+          <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+            <circle cx="12" cy="12" r="10"></circle>
+            <polyline points="12 6 12 12 15 14"></polyline>
+          </svg>
+          {{ formatElapsedMs(message.cost?.turnDurationMs) }} ·
+        </template>
         <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
           <ellipse cx="12" cy="5" rx="9" ry="3"></ellipse>
           <path d="M21 12c0 1.66-4 3-9 3s-9-1.34-9-3"></path>

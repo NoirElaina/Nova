@@ -188,6 +188,11 @@ function switchStage(state: ConversationTurnRuntimeState, nextStage: LiveTurnSta
   state.currentStage = nextStage;
 }
 
+/** 本轮墙钟耗时：finalize 时计算并写入 cost.turnDurationMs */
+function computeTurnDurationMs(startedAt: number | null): number {
+  return startedAt && startedAt > 0 ? Math.max(0, Date.now() - startedAt) : 0;
+}
+
 type StreamOpsDeps = {
   activeRuntimeRefs: ActiveRuntimeRefs;
   activeRuntimeState: ConversationTurnRuntimeState;
@@ -236,6 +241,7 @@ export function createChatStreamOperations(deps: StreamOpsDeps) {
     activeRuntimeRefs.assistantSegments.value = [];
     activeRuntimeRefs.assistantTokenUsage.value = undefined;
     activeRuntimeRefs.assistantTurnCost.value = undefined;
+    activeRuntimeRefs.currentTurnStartedAt.value = null;
     activeRuntimeRefs.isGenerating.value = false;
     activeRuntimeRefs.currentStage.value = "processing";
     void ackChatTurnStatus(activeConversationId.value || null);
@@ -272,6 +278,7 @@ export function createChatStreamOperations(deps: StreamOpsDeps) {
     });
 
     if (finalText || finalReasoning) {
+      const turnDurationMs = computeTurnDurationMs(state.currentTurnStartedAt);
       const assistantMessage: ChatMessage = {
         id: `assistant-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
         role: "assistant",
@@ -281,6 +288,7 @@ export function createChatStreamOperations(deps: StreamOpsDeps) {
         tokenUsage: resolvedTokenUsage > 0 ? resolvedTokenUsage : undefined,
         cost: {
           ...buildAssistantCostForState(state, toolSummary),
+          turnDurationMs,
           transcriptSegments,
         },
         createdAt: Date.now(),
@@ -295,6 +303,7 @@ export function createChatStreamOperations(deps: StreamOpsDeps) {
     state.assistantTurnCost = undefined;
     state.isGenerating = false;
     state.currentStage = "processing";
+    state.currentTurnStartedAt = null;
     state.currentToolStartedAt = null;
     state.currentToolCalls = 0;
     state.currentToolDurationMs = 0;
@@ -360,6 +369,7 @@ export function createChatStreamOperations(deps: StreamOpsDeps) {
       activeRuntimeRefs.assistantTurnCost.value,
     );
     cost.transcriptSegments = transcriptSegments;
+    cost.turnDurationMs = computeTurnDurationMs(activeRuntimeRefs.currentTurnStartedAt.value);
     activeRuntimeRefs.assistantTurnCost.value = cost;
 
     const assistantMessage: ChatMessage = {
@@ -385,6 +395,7 @@ export function createChatStreamOperations(deps: StreamOpsDeps) {
     activeRuntimeRefs.assistantReasoning.value = "";
     activeRuntimeRefs.assistantSegments.value = [];
     activeRuntimeRefs.assistantTokenUsage.value = undefined;
+    activeRuntimeRefs.currentTurnStartedAt.value = null;
     activeRuntimeRefs.isGenerating.value = false;
     activeRuntimeRefs.currentStage.value = "processing";
     if (activeConversationId.value) {
@@ -431,6 +442,7 @@ export function createChatStreamOperations(deps: StreamOpsDeps) {
       activeRuntimeRefs.assistantTurnCost.value,
     );
     cost.transcriptSegments = transcriptSegments;
+    cost.turnDurationMs = computeTurnDurationMs(activeRuntimeRefs.currentTurnStartedAt.value);
 
     const assistantMessage: ChatMessage = {
       id: `assistant-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
@@ -451,6 +463,7 @@ export function createChatStreamOperations(deps: StreamOpsDeps) {
     activeRuntimeRefs.assistantSegments.value = [];
     activeRuntimeRefs.assistantTokenUsage.value = undefined;
     activeRuntimeRefs.assistantTurnCost.value = undefined;
+    activeRuntimeRefs.currentTurnStartedAt.value = null;
     activeRuntimeRefs.isGenerating.value = false;
     activeRuntimeRefs.currentStage.value = "processing";
     if (activeConversationId.value) {
@@ -474,6 +487,7 @@ export function createChatStreamOperations(deps: StreamOpsDeps) {
       state.pendingPermissionRequestId = null;
       state.pendingQuestion = null;
     }
+    state.currentTurnStartedAt = null;
     state.currentToolStartedAt = null;
     state.currentToolCalls = 0;
     state.currentToolDurationMs = 0;

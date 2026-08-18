@@ -13,6 +13,8 @@ export interface TurnCost {
   pricingModel?: string;
   toolCalls: number;
   toolDurationMs: number;
+  /** 本轮总耗时（发送到结束的墙钟差值），finalize 时写入 */
+  turnDurationMs?: number;
   toolSummary?: ToolTurnSummary;
   transcriptSegments?: AssistantTranscriptSegment[];
   contextCompacts: ContextCompactSummary[];

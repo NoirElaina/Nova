@@ -399,31 +399,34 @@ pub fn get_settings(app: AppHandle) -> Result<AppSettings, String> {
     report_backend_result(&app, "command.settings.get_settings", result, None)
 }
 
+/// 内部保存设置：Rust 侧调用（如 agent bundle 激活切换），不走 command 错误上报。
+pub fn save_settings_inner(app: &AppHandle, settings: AppSettings) -> Result<(), String> {
+    // 获取 settings.json 路径。
+    let path = get_settings_path(app)?;
+    // 确保父目录存在。
+    if let Some(parent) = path.parent() {
+        if let Err(e) = std::fs::create_dir_all(parent) {
+            return Err(e.to_string());
+        }
+    }
+    // 对传入设置做运行时规范化。
+    let mut normalized = settings;
+    normalized.normalize_for_runtime();
+    validate_hook_env(&normalized)?;
+    validate_rag_settings(&normalized)?;
+    validate_provider_profiles(&normalized)?;
+    crate::command::settings_secrets::encrypt_provider_api_keys(&mut normalized)?;
+    // 序列化为美化 JSON。
+    let content = serde_json::to_string_pretty(&normalized).map_err(|e| e.to_string())?;
+    // 写入文件。
+    std::fs::write(path, content).map_err(|e| e.to_string())?;
+    crate::logging::set_file_logging_enabled(normalized.enable_app_log);
+    Ok(())
+}
+
 #[tauri::command]
 pub fn save_settings(app: AppHandle, settings: AppSettings) -> Result<(), String> {
-    let result = (|| {
-        // 获取 settings.json 路径。
-        let path = get_settings_path(&app)?;
-        // 确保父目录存在。
-        if let Some(parent) = path.parent() {
-            if let Err(e) = std::fs::create_dir_all(parent) {
-                return Err(e.to_string());
-            }
-        }
-        // 对传入设置做运行时规范化。
-        let mut normalized = settings;
-        normalized.normalize_for_runtime();
-        validate_hook_env(&normalized)?;
-        validate_rag_settings(&normalized)?;
-        validate_provider_profiles(&normalized)?;
-        crate::command::settings_secrets::encrypt_provider_api_keys(&mut normalized)?;
-        // 序列化为美化 JSON。
-        let content = serde_json::to_string_pretty(&normalized).map_err(|e| e.to_string())?;
-        // 写入文件。
-        std::fs::write(path, content).map_err(|e| e.to_string())?;
-        crate::logging::set_file_logging_enabled(normalized.enable_app_log);
-        Ok(())
-    })();
+    let result = save_settings_inner(&app, settings);
     report_backend_result(&app, "command.settings.save_settings", result, None)
 }
 

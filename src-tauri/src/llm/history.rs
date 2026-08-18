@@ -157,6 +157,12 @@ async fn ensure_schema(pool: &SqlitePool) -> Result<(), String> {
     .await
     .map_err(|e| e.to_string())?;
 
+    // 会话级智能体：旧库补列（已存在则忽略报错）。
+    sqlx::query("ALTER TABLE conversations ADD COLUMN active_agent_id TEXT")
+        .execute(pool)
+        .await
+        .ok();
+
     Ok(())
 }
 
@@ -555,6 +561,7 @@ pub async fn create_conversation(
         updated_at: now,
         pinned_at: None,
         workspace_path: Some(ws_path),
+        active_agent_id: None,
     })
 }
 
@@ -570,6 +577,7 @@ pub async fn list_conversations(app: &AppHandle) -> Result<Vec<ConversationMeta>
             c.updated_at,
             c.pinned_at,
             c.workspace_path,
+            c.active_agent_id,
             (
                 SELECT m.content
                 FROM conversation_messages m
@@ -604,6 +612,9 @@ pub async fn list_conversations(app: &AppHandle) -> Result<Vec<ConversationMeta>
                 updated_at: row.get::<i64, _>("updated_at"),
                 pinned_at: row.get::<Option<i64>, _>("pinned_at"),
                 workspace_path: ws_path,
+                active_agent_id: row
+                    .get::<Option<String>, _>("active_agent_id")
+                    .filter(|v| !v.trim().is_empty()),
             }
         })
         .collect();
@@ -615,7 +626,98 @@ pub async fn list_conversations(app: &AppHandle) -> Result<Vec<ConversationMeta>
         .collect();
     crate::command::workspace::refresh_workspace_cache(&cache_entries).await;
 
+    // 会话级智能体缓存同样批量刷新（写穿透模式的兜底刷新点之一）。
+    let agent_entries: Vec<(String, Option<String>)> = rows_agent_entries(&items);
+    crate::llm::services::agent_bundles::refresh_conversation_agent_cache(&agent_entries);
+
     Ok(items)
+}
+
+// 从行数据提取 (会话id, 智能体id) 对，供缓存批量刷新。
+fn rows_agent_entries(items: &[ConversationMeta]) -> Vec<(String, Option<String>)> {
+    items
+        .iter()
+        .map(|c| (c.id.clone(), c.active_agent_id.clone()))
+        .collect()
+}
+
+/// 设置/移除会话挂载的智能体（bundle_id 为 None = 回到默认 Nova）。
+/// 写库后同步更新进程内缓存（写穿透）。
+pub async fn set_conversation_agent(
+    app: &AppHandle,
+    conversation_id: &str,
+    bundle_id: Option<&str>,
+) -> Result<(), String> {
+    let pool = get_pool_with_schema(app).await?;
+    let normalized = conversation_id.trim();
+    if normalized.is_empty() {
+        return Err("conversation_id is required".to_string());
+    }
+
+    let agent = bundle_id.map(str::trim).filter(|v| !v.is_empty());
+    sqlx::query("UPDATE conversations SET active_agent_id = ? WHERE id = ?")
+        .bind(&agent)
+        .bind(normalized)
+        .execute(&pool)
+        .await
+        .map_err(|e| e.to_string())?;
+
+    // 写穿透：立刻同步缓存，provider 同步热路径马上可见。
+    crate::llm::services::agent_bundles::cache_conversation_agent(normalized, agent);
+    Ok(())
+}
+
+/// 读取会话挂载的智能体 id（无会话/未挂载返回 None）。
+pub async fn get_conversation_agent(
+    app: &AppHandle,
+    conversation_id: &str,
+) -> Result<Option<String>, String> {
+    let pool = get_pool_with_schema(app).await?;
+    let normalized = conversation_id.trim();
+    if normalized.is_empty() {
+        return Ok(None);
+    }
+
+    let agent: Option<Option<String>> =
+        sqlx::query_scalar("SELECT active_agent_id FROM conversations WHERE id = ?")
+            .bind(normalized)
+            .fetch_optional(&pool)
+            .await
+            .map_err(|e| e.to_string())?;
+    Ok(agent.flatten().filter(|v| !v.trim().is_empty()))
+}
+
+/// 删除 bundle 后清空所有引用它的会话（回到默认 Nova），并刷新缓存。
+pub async fn clear_conversation_agent_references(
+    app: &AppHandle,
+    bundle_id: &str,
+) -> Result<Vec<String>, String> {
+    let pool = get_pool_with_schema(app).await?;
+    let normalized = bundle_id.trim();
+    if normalized.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    // 先找出受影响会话，再清引用（不 bump updated_at，避免会话列表顺序被打乱）。
+    let affected: Vec<String> = sqlx::query_scalar(
+        "SELECT id FROM conversations WHERE active_agent_id = ?",
+    )
+    .bind(normalized)
+    .fetch_all(&pool)
+    .await
+    .map_err(|e| e.to_string())?;
+
+    sqlx::query("UPDATE conversations SET active_agent_id = NULL WHERE active_agent_id = ?")
+        .bind(normalized)
+        .execute(&pool)
+        .await
+        .map_err(|e| e.to_string())?;
+
+    for conversation_id in &affected {
+        crate::llm::services::agent_bundles::cache_conversation_agent(conversation_id, None);
+    }
+
+    Ok(affected)
 }
 
 pub async fn set_conversation_pinned(

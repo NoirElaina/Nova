@@ -47,10 +47,13 @@ const props = defineProps<{
   compacting?: boolean;
   /** AI 主流程错误原文：临时展示，不进入消息数组，下次发送时清空。 */
   chatError?: string | null;
+  /** 当前对话挂载的智能体（会话级）。null = 默认 Nova。 */
+  activeAgent?: { id: string; name: string; description?: string } | null;
 }>();
 
 const emit = defineEmits<{
   (e: 'send', msg: string): void;
+  (e: 'remove-agent'): void;
   (e: 'save-user-edit', payload: { index: number; content: string; id?: string }): void;
   (e: 'ask-submit', value: AskUserAnswerSubmission): void;
   (e: 'ask-skip'): void;
@@ -836,8 +839,10 @@ defineExpose({
           :contextTokens="contextTokens"
           :conversationUsage="conversationUsage"
           :compacting="compacting"
+          :activeAgent="activeAgent"
           @send="handleSend"
           @cancel="emit('cancel')"
+          @remove-agent="emit('remove-agent')"
           @mode-change="emit('mode-change', $event)"
           @upload-files="handleUploadFiles"
           @remove-upload="handleRemoveUpload"

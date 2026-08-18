@@ -2,6 +2,7 @@ use std::path::PathBuf;
 
 use tauri::AppHandle;
 
+use crate::llm::services::agent_bundles;
 use crate::llm::services::skills::list_enabled_skill_summaries_with_app;
 use crate::llm::types::AgentMode;
 
@@ -76,17 +77,26 @@ pub fn load_system_prompt(
     agent_mode: AgentMode,
     conversation_id: Option<&str>,
 ) -> Result<String, String> {
-    // 计算系统提示文件路径。
-    let path = main_prompt_path();
-    // 读取并校验主提示词文件，失败时拒绝 fallback。
-    let prompt = read_non_empty_file(&path).ok_or_else(|| {
-        format!(
-            "System prompt file is missing or empty: {}. Refusing to use fallback.",
-            path.display()
-        )
-    })?;
+    let bundle = agent_bundles::active_bundle(app, conversation_id);
 
-    // 将 workspace 路径注入提示词。
+    // 基础提示词：挂载了带提示词的智能体套件时**完整替换**默认系统提示词——
+    // 用户定义的是独立智能体，不叠加 Nova 默认的工程协议；为空时回落默认 system_prompt.md。
+    let prompt = match &bundle {
+        Some(b) if !b.prompt.trim().is_empty() => b.prompt.trim().to_string(),
+        _ => {
+            // 计算系统提示文件路径。
+            let path = main_prompt_path();
+            // 读取并校验主提示词文件，失败时拒绝 fallback。
+            read_non_empty_file(&path).ok_or_else(|| {
+                format!(
+                    "System prompt file is missing or empty: {}. Refusing to use fallback.",
+                    path.display()
+                )
+            })?
+        }
+    };
+
+    // 将 workspace 路径注入提示词（bundle 提示词同样支持占位符）。
     let ws = crate::command::workspace::workspace_root_for_conversation(app, conversation_id)?;
     let prompt = prompt.replace("{{NOVA_WORKSPACE}}", &ws.display().to_string());
 
@@ -105,7 +115,17 @@ pub fn load_system_prompt(
     let rg_path = crate::llm::tools::grep_tool::find_rg_path(app);
     let prompt = prompt.replace("{{RG_PATH}}", &rg_path);
 
-    let prompt_with_memory = format!("{}{}", prompt, GLOBAL_MEMORY_SECTION);
+    // Memory 使用说明只有 memory 工具对当前智能体可见时才注入
+    //（bundle 自定义工具清单排除了 memory 时，写它就是误导）。
+    let memory_tool_visible = match &bundle {
+        Some(b) => b.is_tool_enabled("memory"),
+        None => true,
+    };
+    let prompt_with_memory = if memory_tool_visible {
+        format!("{}{}", prompt, GLOBAL_MEMORY_SECTION)
+    } else {
+        prompt
+    };
 
     // 注入全局记忆 snapshot：随记忆增删改实时重建，删除记忆后立即不再注入。
     let prompt_with_memory = match crate::llm::services::memory_dir::snapshot(app) {
@@ -114,17 +134,37 @@ pub fn load_system_prompt(
     };
 
     // 注入可用 skill 元数据，AI 无需先 list 即可直接 run。
-    // 已停用的技能不注入：对模型不可见，也不消耗 token。
-    let prompt_with_memory = match list_enabled_skill_summaries_with_app(app) {
-        Ok(skills) if !skills.is_empty() => {
-            let lines: String = skills
-                .iter()
-                .map(|s| format!("- **{}**: {}", s.name, s.description))
-                .collect::<Vec<String>>()
-                .join("\n");
-            format!("{}\n\n## Available Skills\n{}\n", prompt_with_memory, lines)
+    // 已停用（全局设置）、不在当前 bundle 白名单内、或 Skill 工具本身被 bundle
+    // 排除时（列出来模型也调不了），一律不注入。
+    let skill_tool_visible = match &bundle {
+        Some(b) => b.is_tool_enabled("Skill"),
+        None => true,
+    };
+    let prompt_with_memory = if skill_tool_visible {
+        match list_enabled_skill_summaries_with_app(app) {
+            Ok(skills) if !skills.is_empty() => {
+                let visible: Vec<_> = match &bundle {
+                    Some(bundle) => skills
+                        .into_iter()
+                        .filter(|s| bundle.is_skill_enabled(&s.name))
+                        .collect(),
+                    None => skills,
+                };
+                if visible.is_empty() {
+                    prompt_with_memory
+                } else {
+                    let lines: String = visible
+                        .iter()
+                        .map(|s| format!("- **{}**: {}", s.name, s.description))
+                        .collect::<Vec<String>>()
+                        .join("\n");
+                    format!("{}\n\n## Available Skills\n{}\n", prompt_with_memory, lines)
+                }
+            }
+            _ => prompt_with_memory,
         }
-        _ => prompt_with_memory,
+    } else {
+        prompt_with_memory
     };
 
     // 按执行模式拼接附加段。

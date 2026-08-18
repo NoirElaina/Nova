@@ -14,6 +14,8 @@ pub struct ConversationMeta {
     pub pinned_at: Option<i64>,
     // 该会话绑定的项目工作区目录绝对路径，为空表示用内置默认工作区。
     pub workspace_path: Option<String>,
+    // 该会话挂载的智能体套件 id，为空表示默认 Nova。
+    pub active_agent_id: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]

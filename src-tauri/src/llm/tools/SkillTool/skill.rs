@@ -8,13 +8,13 @@ use serde_json::{json, Value};
 use tauri::AppHandle;
 
 // 把 Skill 工具的 async 执行逻辑包装成统一 future。
-// `app` 只用来定位 skills 根目录，`input` 里带 action/skill/args。
+// `conversation_id` 用于会话级智能体套件的技能白名单过滤，`input` 里带 action/skill/args。
 fn execute_with_app_boxed(
     app: AppHandle,
-    _conversation_id: Option<String>,
+    conversation_id: Option<String>,
     input: Value,
 ) -> AppExecuteFuture {
-    Box::pin(async move { execute_with_app(&app, input).await })
+    Box::pin(async move { execute_with_app(&app, conversation_id.as_deref(), input).await })
 }
 
 // 返回 Skill 工具的注册信息。
@@ -129,8 +129,12 @@ fn run_skill(
 }
 
 // 根据 action 执行 `list` 或 `run`。
-// `skills` 是已启用（未被设置停用）的技能集合，`skill` 是模型请求运行的目标技能名。
-async fn execute_with_app(app: &AppHandle, input: Value) -> Result<ToolOutcome, ToolFailure> {
+// `skills` 是已启用（未被设置停用、且在会话挂载 bundle 白名单内）的技能集合。
+async fn execute_with_app(
+    app: &AppHandle,
+    conversation_id: Option<&str>,
+    input: Value,
+) -> Result<ToolOutcome, ToolFailure> {
     let action = input
         .get("action")
         .and_then(|v| v.as_str())
@@ -139,7 +143,15 @@ async fn execute_with_app(app: &AppHandle, input: Value) -> Result<ToolOutcome, 
         .to_ascii_lowercase();
 
     let skills = match load_enabled_skills_with_app(app) {
-        Ok(skills) => skills,
+        Ok(skills) => {
+            match crate::llm::services::agent_bundles::active_bundle(app, conversation_id) {
+                Some(bundle) => skills
+                    .into_iter()
+                    .filter(|s| bundle.is_skill_enabled(&s.name))
+                    .collect(),
+                None => skills,
+            }
+        }
         Err(e) => return Err(ToolFailure::new(e)),
     };
 

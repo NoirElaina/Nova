@@ -1,5 +1,6 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, ref } from 'vue';
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue';
+import { invoke } from '@tauri-apps/api/core';
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { Button } from "@/components/ui/button";
 import Sidebar from "./components/layout/Sidebar.vue";
@@ -74,6 +75,9 @@ const {
   chatScreenRef,
   handleSendMessage,
   handleEditMessage,
+  handleLaunchAgentConversation,
+  clearPendingAgent,
+  pendingAgentBundleId,
   handleUploadFiles,
   handleRemovePendingUpload,
   handleCancelGeneration,
@@ -92,6 +96,84 @@ const {
 } = useChatController();
 
 void chatScreenRef;
+
+// ---------------- 会话级智能体（bundle）：输入框下方左侧标签展示，点 × 卸载 ----------------
+
+type ConversationAgent = { id: string; name: string; description?: string } | null;
+const conversationAgent = ref<ConversationAgent>(null);
+/** 暂存智能体的名称缓存：id -> bundle（跟随 controller 的 pendingAgentBundleId 生命周期）。 */
+const pendingAgentMeta = ref<ConversationAgent>(null);
+
+/** 展示用的智能体：已有会话取会话挂载值，否则取暂存值（欢迎页）。 */
+const displayAgent = computed<ConversationAgent>(() => {
+  if (conversationAgent.value) return conversationAgent.value;
+  // controller 暂存被清（新对话/发送完成/切换会话）时标签随之消失。
+  if (!pendingAgentBundleId.value) return null;
+  return pendingAgentMeta.value?.id === pendingAgentBundleId.value ? pendingAgentMeta.value : null;
+});
+
+const refreshConversationAgent = async () => {
+  const convId = activeConversationId.value?.trim();
+  if (!convId) {
+    conversationAgent.value = null;
+    return;
+  }
+  try {
+    const bundle = await invoke<ConversationAgent>("get_conversation_agent", {
+      conversationId: convId,
+    });
+    conversationAgent.value = bundle ? { id: bundle.id, name: bundle.name, description: bundle.description } : null;
+  } catch {
+    conversationAgent.value = null;
+  }
+};
+
+const removeConversationAgent = async () => {
+  const convId = activeConversationId.value?.trim();
+  if (convId) {
+    try {
+      await invoke("set_conversation_agent", { conversationId: convId, bundleId: null });
+      conversationAgent.value = null;
+    } catch (err) {
+      console.error("Failed to remove conversation agent:", err);
+    }
+    return;
+  }
+  // 欢迎页（对话未创建）：清掉 controller 的暂存智能体即可。
+  clearPendingAgent();
+};
+
+/** 智能体页点「启用」：暂存智能体回到欢迎页（不建会话）；首次发送时才创建对话并挂载。 */
+const handleLaunchAgent = async (bundleId: string) => {
+  try {
+    const bundle = await invoke<ConversationAgent>("load_agent_bundle", {
+      bundleId,
+    });
+    pendingAgentMeta.value = bundle ? { id: bundle.id, name: bundle.name, description: bundle.description } : null;
+  } catch {
+    pendingAgentMeta.value = null;
+  }
+  await handleLaunchAgentConversation(bundleId);
+};
+
+const onAgentBundleChanged = () => {
+  // 挂载/卸载/首次发送后刷新会话挂载值；暂存标签由 displayAgent 依据
+  // pendingAgentBundleId 自动失效（发送成功后 controller 已清空暂存）。
+  void refreshConversationAgent();
+};
+
+watch(activeConversationId, () => {
+  void refreshConversationAgent();
+});
+
+onMounted(() => {
+  void refreshConversationAgent();
+  window.addEventListener("agent-bundle-changed", onAgentBundleChanged);
+});
+
+onBeforeUnmount(() => {
+  window.removeEventListener("agent-bundle-changed", onAgentBundleChanged);
+});
 
 const activeWorkspaceName = computed(() => {
   const path = activeWorkspacePath.value?.trim();
@@ -400,7 +482,9 @@ onBeforeUnmount(() => {
 
         <AgentConfigScreen
           v-else-if="mainView === 'agent'"
+          :conversation-id="activeConversationId || null"
           @change-main-view="handleChangeMainView"
+          @launch-agent="handleLaunchAgent"
         />
 
         <AgentMarketScreen
@@ -424,8 +508,10 @@ onBeforeUnmount(() => {
             :contextTokens="currentContextTokens"
             :workspacePath="activeWorkspacePath"
             :conversationId="activeConversationId"
+            :activeAgent="displayAgent"
             @update:workspacePath="activeWorkspacePath = $event"
             @send="handleSendMessage"
+            @remove-agent="removeConversationAgent"
             @mode-change="handleAgentModeChange"
             @upload-files="handleUploadFiles"
             @remove-upload="handleRemovePendingUpload"
@@ -454,6 +540,8 @@ onBeforeUnmount(() => {
             :conversationUsage="conversationUsage"
             :compacting="isCompacting"
             :chatError="chatError"
+            :activeAgent="displayAgent"
+            @remove-agent="removeConversationAgent"
             @send="handleSendMessage"
             @save-user-edit="handleEditMessage($event)"
             @cancel="handleCancelGeneration"

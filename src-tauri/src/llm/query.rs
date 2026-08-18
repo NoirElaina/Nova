@@ -314,8 +314,22 @@ fn truncate_chars(input: &str, limit: usize) -> String {
 // 2. 如果没有服务器则返回 None
 // 3. 格式化为带标记的上下文消息，包含服务器名称、类型、工具数量
 // 用途：让 AI 知道可以调用哪些 MCP 工具，但不直接暴露工具细节。
-async fn build_mcp_server_context_message(app: &AppHandle) -> Option<Message> {
+async fn build_mcp_server_context_message(
+    app: &AppHandle,
+    conversation_id: Option<&str>,
+) -> Option<Message> {
     let statuses = crate::llm::services::mcp_tools::connected_server_catalog(app).await;
+    // 会话挂载的智能体套件限制可见的 MCP server 白名单。
+    let statuses: Vec<_> = match crate::llm::services::agent_bundles::active_bundle(
+        app,
+        conversation_id,
+    ) {
+        Some(bundle) => statuses
+            .into_iter()
+            .filter(|s| bundle.is_mcp_server_enabled(&s.name))
+            .collect(),
+        None => statuses,
+    };
     if statuses.is_empty() {
         return None;
     }
@@ -456,6 +470,13 @@ pub async fn send_chat_message(
     messages: Vec<Message>,
     agent_mode: AgentMode,
 ) -> Result<(), String> {
+    // 轮次开始：从 DB 刷新该会话挂载的智能体缓存（写穿透兜底，防冷启动读不到）。
+    // 之后 provider adapter / system_prompt / SkillTool 的同步读都命中缓存。
+    if let Some(conv_id) = conversation_id.as_deref() {
+        crate::llm::services::agent_bundles::refresh_single_conversation_agent(&app, conv_id)
+            .await;
+    }
+
     // 判断是否是会话第一轮，决定是否注入 session_start_hooks
     let session_start_turn = is_session_start_turn(&messages);
     // 记录前端传入消息数量，用于之后从 turn_messages 中定位"本轮新消息"起始位置。
@@ -576,7 +597,7 @@ pub async fn send_chat_message(
     // MCP catalog 也是本轮临时上下文：
     // 告诉模型当前连接了哪些 MCP server，但不提前展开具体工具。
     // 模型后续需要时再通过 mcp_auth/list_tools/call_tool 走正式工具流。
-    if let Some(mcp_context) = build_mcp_server_context_message(&app).await {
+    if let Some(mcp_context) = build_mcp_server_context_message(&app, conversation_id.as_deref()).await {
         current_messages.push(mcp_context);
     }
     // println!("current_messages:{:?}", current_messages);

@@ -57,30 +57,34 @@ onUnmounted(() => {
     <Transition name="confirm-backdrop">
       <div
         v-if="modelValue"
-        class="fixed inset-0 z-[95] flex items-center justify-center bg-[rgba(24,18,10,0.36)] px-5 backdrop-blur-[4px]"
+        class="fixed inset-0 z-[95] flex items-center justify-center bg-[rgba(15,18,24,0.36)] px-5 backdrop-blur-[4px]"
         @click.self="close"
       >
         <Transition name="confirm-card">
           <div
             v-if="modelValue"
-            class="w-full max-w-[460px] rounded-[24px] border border-[#e8dfd1] bg-[linear-gradient(180deg,#fffdf9_0%,#fbf7f1_100%)] p-6 shadow-[0_24px_70px_rgba(40,28,16,0.18)] dark:border-[#3d3932] dark:bg-[linear-gradient(180deg,#2d2a26_0%,#24221f_100%)]"
+            class="w-full max-w-[460px] rounded-[20px] border border-[#e5e7eb] bg-white p-6 shadow-[0_24px_70px_rgba(15,23,42,0.16)] dark:border-[#3a3a3a] dark:bg-[#242424]"
           >
             <div class="flex items-start justify-between gap-4">
               <div>
-                <div class="text-[19px] font-semibold tracking-[-0.02em] text-[#211d17] dark:text-[#f3eee7]">
+                <div class="text-[18px] font-semibold tracking-[-0.01em] text-[#111827] dark:text-[#f3f4f6]">
                   {{ title }}
                 </div>
                 <div
                   v-if="description"
-                  class="mt-3 text-[14px] leading-6 text-[#756d62] dark:text-[#b5aea4]"
+                  class="mt-2.5 text-[13.5px] leading-6 text-[#64748b] dark:text-[#a3a3a3]"
                 >
                   {{ description }}
+                </div>
+                <!-- 可选自定义内容：如新建场景的输入框，插在描述和按钮之间 -->
+                <div v-if="$slots.default" class="mt-3">
+                  <slot />
                 </div>
               </div>
 
               <button
                 type="button"
-                class="flex h-9 w-9 shrink-0 items-center justify-center rounded-full text-[#8f8577] transition-colors hover:bg-[#efe7da] hover:text-[#352d23] dark:text-[#9e9588] dark:hover:bg-[#3a362f] dark:hover:text-[#f3eee7]"
+                class="flex h-9 w-9 shrink-0 items-center justify-center rounded-full text-[#94a3b8] transition-colors hover:bg-[#f1f5f9] hover:text-[#334155] dark:text-[#8b8b8b] dark:hover:bg-[#2f2f2f] dark:hover:text-[#e5e5e5]"
                 :disabled="busy"
                 @click="close"
               >
@@ -94,7 +98,7 @@ onUnmounted(() => {
               <Button
                 variant="outline"
                 size="sm"
-                class="border-[#ddd3c5] bg-white/70 text-[#5b5449] hover:bg-[#f5efe5] dark:border-[#4a453e] dark:bg-[#2d2b27] dark:text-[#d2cbc2] dark:hover:bg-[#35322d]"
+                class="border-[#d8dee8] bg-white text-[#475569] hover:bg-[#f4f7fb] dark:border-[#3a3a3a] dark:bg-[#242424] dark:text-[#d7d7d7] dark:hover:bg-[#2d2d2d]"
                 :disabled="busy"
                 @click="close"
               >

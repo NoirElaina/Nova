@@ -68,6 +68,8 @@ export function useChatController() {
   const currentOutputTokens = ref(0);
   const currentTurnId = ref<string | null>(null);
   const currentTurnStartedAt = ref<number | null>(null);
+  /** 智能体页「启用」暂存的智能体 id：首次发送创建对话时挂载，之后清空。 */
+  const pendingAgentBundleId = ref<string | null>(null);
   const agentMode = ref<AgentMode>("agent");
   const planMode = ref(false);
   const isCreatingNewChat = ref(false);
@@ -264,6 +266,7 @@ export function useChatController() {
     currentOutputTokens,
     currentTurnId,
     currentTurnStartedAt,
+    pendingAgentBundleId,
     chatScreenRef,
     runtimeStateByConversation,
     activeRuntimeRefs,
@@ -276,13 +279,28 @@ export function useChatController() {
   async function handleNewChat() {
     mainView.value = "chat";
     chatError.value = null;
+    pendingAgentBundleId.value = null;
     resetPendingPromptState(activeRuntimeRefs);
     await conversationOps.handleNewChat();
+  }
+
+  /** 智能体页点「启用」：不建会话，只暂存智能体并回到欢迎页；首次发送时才创建对话并挂载。 */
+  async function handleLaunchAgentConversation(bundleId: string) {
+    mainView.value = "chat";
+    chatError.value = null;
+    pendingAgentBundleId.value = bundleId;
+    resetPendingPromptState(activeRuntimeRefs);
+    await conversationOps.handleNewChat();
+  }
+
+  function clearPendingAgent() {
+    pendingAgentBundleId.value = null;
   }
 
   async function handleSelectConversation(id: string) {
     mainView.value = "chat";
     chatError.value = null;
+    pendingAgentBundleId.value = null;
     await conversationOps.handleSelectConversation(id);
   }
 
@@ -446,6 +464,9 @@ export function useChatController() {
     refreshActiveConversationFiles: conversationOps.refreshActiveConversationFiles,
     handleSendMessage: handleSendMessageWithErrorReset,
     handleEditMessage: handleEditMessageWithErrorReset,
+    handleLaunchAgentConversation,
+    clearPendingAgent,
+    pendingAgentBundleId,
     handleUploadFiles: sendOps.handleUploadFiles,
     handleRemovePendingUpload: sendOps.handleRemovePendingUpload,
     handleCancelGeneration: sendOps.handleCancelGeneration,

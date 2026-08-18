@@ -81,7 +81,6 @@ const formatTokens = (value: number) => {
   align-items: center;
   justify-content: flex-end;
   gap: 12px;
-  margin-top: 6px;
   min-height: 18px;
   font-size: 12px;
   line-height: 1.2;

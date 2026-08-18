@@ -1,3 +1,4 @@
+pub mod agent_bundles;
 pub mod browser_sessions;
 pub mod compact;
 pub mod cron_schedule;

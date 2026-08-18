@@ -248,7 +248,7 @@ pub(crate) fn build_request(
     let settings =
         crate::command::settings::get_settings(app.clone()).map_err(ProviderTurnError::new)?;
     let profile = settings.active_provider_profile();
-    let builtin_tools = tools::get_available_tools();
+    let builtin_tools = tools::get_available_tools_for_agent(app, conversation_id);
     let tool_count = builtin_tools.len();
     let max_output_tokens = model_context::get_max_output_tokens(&profile.model);
 

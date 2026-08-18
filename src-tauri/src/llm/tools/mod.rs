@@ -680,6 +680,42 @@ pub fn get_available_tools() -> Vec<Tool> {
         .collect()
 }
 
+/// 按会话挂载的智能体套件过滤后的工具列表。
+/// 会话未挂载 bundle 或 bundle 工具清单为 null 时等价于 get_available_tools()；
+/// provider adapter 一律走这里。
+pub fn get_available_tools_for_agent(app: &AppHandle, conversation_id: Option<&str>) -> Vec<Tool> {
+    let all = get_available_tools();
+    match crate::llm::services::agent_bundles::active_bundle(app, conversation_id) {
+        None => all,
+        Some(bundle) => all
+            .into_iter()
+            .filter(|tool| bundle.is_tool_enabled(&tool.name))
+            .collect(),
+    }
+}
+
+/// 前端智能体配置页展示的工具目录（含 always_on 标记）。
+pub fn configurable_tool_catalog(
+    app: &AppHandle,
+) -> Result<Vec<crate::command::agent_config::ConfigurableTool>, String> {
+    // 目录与当前激活 bundle 无关：配置的是任意 bundle 的勾选清单。
+    let _ = app;
+    let catalog = registered_tools()
+        .iter()
+        .map(|entry| {
+            let tool = (entry.tool)();
+            crate::command::agent_config::ConfigurableTool {
+                name: tool.name.clone(),
+                description: tool.description.clone(),
+                read_only: entry.read_only,
+                always_on: crate::llm::services::agent_bundles::ALWAYS_ON_TOOLS
+                    .contains(&tool.name.as_str()),
+            }
+        })
+        .collect();
+    Ok(catalog)
+}
+
 // 在带 AppHandle 的环境中执行工具，附带权限校验和 MCP 代理能力。
 pub(crate) async fn execute_tool_with_app(
     app: &AppHandle,

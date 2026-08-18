@@ -1,4 +1,5 @@
 import type { Ref } from "vue";
+import { invoke } from "@tauri-apps/api/core";
 import { emitToast, emitChatError } from "../../../lib/toast";
 import { getRawErrorText } from "../../../lib/error-display";
 import {
@@ -70,6 +71,7 @@ type SendOpsDeps = {
   currentInputTokens: Ref<number>;
   currentOutputTokens: Ref<number>;
   currentTurnId: Ref<string | null>;
+  pendingAgentBundleId: Ref<string | null>;
   chatScreenRef: Ref<ChatScreenHandle | null>;
   runtimeStateByConversation: Map<string, ConversationTurnRuntimeState>;
   activeRuntimeRefs: ActiveRuntimeRefs;
@@ -110,6 +112,7 @@ export function createSendOperations(deps: SendOpsDeps) {
     currentInputTokens,
     currentOutputTokens,
     currentTurnId,
+    pendingAgentBundleId,
     chatScreenRef,
     runtimeStateByConversation,
     activeRuntimeRefs,
@@ -250,6 +253,21 @@ export function createSendOperations(deps: SendOpsDeps) {
       if (!id) return;
       activeConversationId.value = id;
       messages.value = [];
+      // 智能体页「启用」暂存的智能体：对话真正创建时才挂载（延迟创建语义），挂载后清空暂存。
+      const pendingAgentId = pendingAgentBundleId.value;
+      if (pendingAgentId) {
+        try {
+          await invoke("set_conversation_agent", {
+            conversationId: id,
+            bundleId: pendingAgentId,
+          });
+          window.dispatchEvent(new CustomEvent("agent-bundle-changed"));
+        } catch (err) {
+          console.error("Failed to attach pending agent to new conversation:", err);
+        } finally {
+          pendingAgentBundleId.value = null;
+        }
+      }
     }
 
     const sendingConversationId = activeConversationId.value;

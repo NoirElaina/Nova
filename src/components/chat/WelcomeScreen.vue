@@ -17,10 +17,13 @@ defineProps<{
   contextTokens?: number;
   workspacePath?: string;
   conversationId?: string | null;
+  /** 暂存的智能体（会话未创建时展示，首次发送时挂载到新对话）。 */
+  activeAgent?: { id: string; name: string; description?: string } | null;
 }>();
 
 const emit = defineEmits<{
   (e: 'send', msg: string): void;
+  (e: 'remove-agent'): void;
   (e: 'mode-change', mode: AgentMode): void;
   (e: 'upload-files', files: PendingUploadFile[]): void;
   (e: 'remove-upload', index: number): void;
@@ -55,7 +58,9 @@ const handleSend = (msg: string) => {
         :pendingUploads="pendingUploads"
         :contextUsage="contextUsage"
         :contextTokens="contextTokens"
+        :activeAgent="activeAgent"
         @send="handleSend"
+        @remove-agent="emit('remove-agent')"
         @mode-change="emit('mode-change', $event)"
         @upload-files="emit('upload-files', $event)"
         @remove-upload="emit('remove-upload', $event)"

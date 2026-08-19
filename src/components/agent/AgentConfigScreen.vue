@@ -2,7 +2,7 @@
 import { computed, nextTick, onMounted, ref } from "vue";
 import { invoke } from "@tauri-apps/api/core";
 import { Button } from "@/components/ui/button";
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { Card, CardContent } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { ConfirmDialog } from "@/components/ui/confirm-dialog";
@@ -51,6 +51,9 @@ const showCreatePanel = ref(false);
 const showDeletePanel = ref(false);
 const newBundleName = ref("new-agent");
 const createInputRef = ref<HTMLInputElement | null>(null);
+
+/** 页面两级视图：grid = 卡片列表；editor = 单个套件的配置页。 */
+const view = ref<"grid" | "editor">("grid");
 
 const bundles = ref<AgentBundle[]>([]);
 const conversationAgentId = ref<string | null>(null);
@@ -151,33 +154,46 @@ async function loadConversationAgent() {
   }
 }
 
-async function loadBundles(selectId?: string) {
+async function loadBundles() {
   loading.value = true;
   try {
     const items = await invoke<AgentBundle[]>("list_agent_bundles");
     bundles.value = items ?? [];
 
-    if (bundles.value.length === 0) {
+    // 编辑器打开中：选中项已不存在（如被删除）则退回卡片列表。
+    if (view.value === "editor" && !bundles.value.some((b) => b.id === selectedId.value)) {
       selectedId.value = "";
       draft.value = null;
       original.value = "";
-      return;
+      view.value = "grid";
     }
-
-    const target =
-      selectId && bundles.value.some((b) => b.id === selectId)
-        ? selectId
-        : bundles.value.some((b) => b.id === selectedId.value)
-          ? selectedId.value
-          : bundles.value[0].id;
-    selectedId.value = target;
-    const bundle = bundles.value.find((b) => b.id === target);
-    if (bundle) applyBundleToEditor(bundle);
   } catch (err) {
     console.error("Failed to load agent bundles:", err);
   } finally {
     loading.value = false;
   }
+}
+
+/** 点击卡片：进入该套件的配置页。 */
+function openBundleEditor(id: string) {
+  const bundle = bundles.value.find((b) => b.id === id);
+  if (!bundle) return;
+  selectedId.value = id;
+  applyBundleToEditor(bundle);
+  view.value = "editor";
+}
+
+/** 配置页返回卡片列表（有未保存改动时拦截）。 */
+function backToGrid() {
+  if (hasChanges.value) {
+    emitToast({
+      variant: "error",
+      source: "agent-config",
+      message: "当前有未保存改动，请先保存或放弃后再返回。",
+    });
+    return;
+  }
+  view.value = "grid";
 }
 
 type SelectionKey = "tools" | "skills" | "mcp";
@@ -228,21 +244,6 @@ function setAllSelection(key: SelectionKey, all: boolean) {
   mcpSelection.value = all ? new Set(mcpServers.value.map((s) => s.name)) : new Set();
 }
 
-function handleSelectBundle(id: string) {
-  if (!id || id === selectedId.value) return;
-  if (hasChanges.value) {
-    emitToast({
-      variant: "error",
-      source: "agent-config",
-      message: "当前有未保存改动，请先保存或放弃后再切换。",
-    });
-    return;
-  }
-  selectedId.value = id;
-  const bundle = bundles.value.find((b) => b.id === id);
-  if (bundle) applyBundleToEditor(bundle);
-}
-
 function openCreateDialog() {
   newBundleName.value = "";
   showCreatePanel.value = true;
@@ -263,7 +264,9 @@ async function createBundle() {
   try {
     const created = await invoke<AgentBundle>("create_agent_bundle", { name });
     showCreatePanel.value = false;
-    await loadBundles(created?.id);
+    await loadBundles();
+    // 创建完成后直接进入配置页。
+    if (created?.id) openBundleEditor(created.id);
     emitToast({ variant: "success", source: "agent-config", message: "已创建智能体套件。" });
   } catch (err) {
     console.error("Failed to create agent bundle:", err);
@@ -283,7 +286,9 @@ async function saveBundle() {
       enabledMcpServers: useCustomMcp.value ? [...mcpSelection.value] : null,
     };
     const saved = await invoke<AgentBundle>("save_agent_bundle", { bundle });
-    await loadBundles(saved?.id ?? bundle.id);
+    await loadBundles();
+    // 用服务端返回值重置草稿基线，清除“未保存改动”状态。
+    if (saved) applyBundleToEditor(saved);
     emitToast({ variant: "success", source: "agent-config", message: "智能体套件已保存。" });
   } catch (err) {
     console.error("Failed to save agent bundle:", err);
@@ -311,30 +316,6 @@ function launchAgent() {
   }, 600);
 }
 
-/** 点击 Nova 默认项：当前对话挂载了智能体时卸载，复位为默认 Nova。 */
-async function resetConversationToNova() {
-  if (conversationAgentId.value === null || activating.value) return;
-  if (!hasConversation.value) return;
-  activating.value = true;
-  try {
-    await invoke("set_conversation_agent", {
-      conversationId: props.conversationId,
-      bundleId: null,
-    });
-    conversationAgentId.value = null;
-    emitToast({
-      variant: "success",
-      source: "agent-config",
-      message: "当前对话已切回默认 Nova。",
-    });
-    window.dispatchEvent(new CustomEvent("agent-bundle-changed"));
-  } catch (err) {
-    console.error("Failed to reset conversation agent:", err);
-  } finally {
-    activating.value = false;
-  }
-}
-
 async function deleteBundle() {
   if (!selectedId.value) return;
   try {
@@ -345,6 +326,11 @@ async function deleteBundle() {
       window.dispatchEvent(new CustomEvent("agent-bundle-changed"));
     }
     emitToast({ variant: "success", source: "agent-config", message: "已删除智能体套件。" });
+    // 删除后回到卡片列表。
+    selectedId.value = "";
+    draft.value = null;
+    original.value = "";
+    view.value = "grid";
     await loadBundles();
   } catch (err) {
     console.error("Failed to delete agent bundle:", err);
@@ -363,11 +349,11 @@ onMounted(async () => {
 
 <template>
   <div :class="pageClass">
-    <header class="flex flex-wrap items-start justify-between gap-3">
+    <header v-if="view === 'grid'" class="flex flex-wrap items-start justify-between gap-3">
       <div class="space-y-1">
         <h2 class="text-base font-semibold text-[#111827] dark:text-[#f3f4f6]">智能体套件</h2>
         <p class="text-sm text-[#64748b] dark:text-[#a3a3a3]">
-          每个套件 = 附加提示词 + 工具/技能/MCP 装备清单。点击「启用」新开一个对话并使用该智能体。
+          每个套件 = 提示词 + 工具/技能/MCP 装备清单。点击卡片进入配置，启用后新开对话使用该智能体。
         </p>
       </div>
 
@@ -417,87 +403,97 @@ onMounted(async () => {
       <CardContent class="px-3 text-sm text-[#64748b] dark:text-[#a3a3a3]">正在读取智能体套件...</CardContent>
     </Card>
 
-    <div v-else class="grid min-h-[420px] flex-1 grid-cols-[200px_minmax(0,1fr)] gap-3">
-      <!-- 左：套件列表（原生 button，明确的选中/悬浮反馈） -->
-      <Card :class="panelClass">
-        <CardHeader class="space-y-1 px-3 pb-0">
-          <CardTitle class="text-sm text-[#111827] dark:text-[#f3f4f6]">套件</CardTitle>
-          <CardDescription>共 {{ bundles.length }} 个</CardDescription>
-        </CardHeader>
-        <CardContent class="px-2.5">
-          <div class="max-h-[calc(100vh-300px)] space-y-1 overflow-y-auto pr-1 custom-scrollbar">
-            <!-- Nova 默认项：当前对话未挂载智能体时绿点亮起；点击可把对话复位为默认 Nova -->
-            <button
-              type="button"
-              class="block w-full cursor-pointer rounded-lg border px-2.5 py-2 text-left transition-colors"
-              :class="conversationAgentId === null
-                ? 'border-[#86efac] bg-[#f0fdf4] hover:bg-[#f0fdf4] dark:border-[#166534] dark:bg-[#052e16]/40 dark:hover:bg-[#052e16]/40'
-                : 'border-transparent hover:border-[#c7d4e8] hover:bg-[#f4f7fb] dark:border-transparent dark:hover:border-[#3f3f3f] dark:hover:bg-[#2a2a2a]'"
-              :title="conversationAgentId ? '点击将当前对话复位为默认 Nova' : '当前对话正在使用默认 Nova'"
-              @click="resetConversationToNova"
-            >
-              <div class="flex items-center gap-1.5">
-                <span
-                  class="inline-block h-1.5 w-1.5 shrink-0 rounded-full"
-                  :class="conversationAgentId === null ? 'bg-[#22c55e]' : 'bg-transparent'"
-                ></span>
-                <span
-                  class="truncate text-[13px] font-medium"
-                  :class="conversationAgentId === null
-                    ? 'text-[#15803d] dark:text-[#86efac]'
-                    : 'text-[#111827] dark:text-[#e2dbcf]'"
-                >Nova（默认）</span>
-              </div>
-              <div class="mt-0.5 truncate pl-3 text-[11px] text-[#98a2b3] dark:text-[#9d9589]">
-                {{ conversationAgentId === null ? '当前对话使用中' : '全部能力，无附加配置' }}
-              </div>
-            </button>
+    <!-- 卡片网格视图：每个套件一张卡，点击进入配置页 -->
+    <div v-else-if="view === 'grid'" class="grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-3">
+      <button
+        v-for="item in bundles"
+        :key="item.id"
+        type="button"
+        class="flex min-h-[120px] cursor-pointer flex-col rounded-xl border border-[#e5e7eb] bg-white p-4 text-left transition-all hover:border-[#2563eb]/60 hover:shadow-[0_6px_20px_rgba(37,99,235,0.10)] dark:border-[#333] dark:bg-[#242424] dark:hover:border-[#60a5fa]/50 dark:hover:shadow-none"
+        :title="`配置「${item.name}」`"
+        @click="openBundleEditor(item.id)"
+      >
+        <div class="flex items-center justify-between gap-2">
+          <span class="truncate text-[14px] font-semibold text-[#111827] dark:text-[#f3f4f6]">{{ item.name }}</span>
+          <span
+            v-if="item.id === conversationAgentId"
+            class="inline-flex shrink-0 items-center gap-1 rounded-full bg-[#f0fdf4] px-2 py-0.5 text-[10.5px] font-medium text-[#15803d] dark:bg-[#052e16]/60 dark:text-[#86efac]"
+          >
+            <span class="h-1.5 w-1.5 rounded-full bg-[#22c55e]"></span>
+            当前对话
+          </span>
+        </div>
+        <p class="mt-1.5 line-clamp-2 flex-1 text-[12.5px] leading-5 text-[#64748b] dark:text-[#a3a3a3]">
+          {{ item.description?.trim() || "暂无描述" }}
+        </p>
+        <div class="mt-2 text-[11px] text-[#98a2b3] dark:text-[#9d9589]">更新于 {{ formatUpdatedAt(item.updatedAt) }}</div>
+      </button>
 
-            <button
-              v-for="item in bundles"
-              :key="item.id"
-              type="button"
-              class="block w-full cursor-pointer rounded-lg border px-2.5 py-2 text-left transition-colors"
-              :class="item.id === selectedId
-                ? 'border-[#2563eb] bg-[#eff6ff] dark:border-[#1d4ed8] dark:bg-[#1e293b]'
-                : 'border-transparent hover:border-[#c7d4e8] hover:bg-[#f4f7fb] dark:border-transparent dark:hover:border-[#3f3f3f] dark:hover:bg-[#2a2a2a]'"
-              @click="handleSelectBundle(item.id)"
-            >
-              <div class="flex items-center gap-1.5">
-                <span
-                  class="inline-block h-1.5 w-1.5 shrink-0 rounded-full"
-                  :class="item.id === conversationAgentId ? 'bg-[#22c55e]' : 'bg-transparent'"
-                ></span>
-                <span
-                  class="truncate text-[13px] font-medium"
-                  :class="item.id === selectedId
-                    ? 'text-[#1d4ed8] dark:text-[#93c5fd]'
-                    : 'text-[#111827] dark:text-[#e2dbcf]'"
-                >{{ item.name }}</span>
-              </div>
-              <div class="mt-0.5 truncate pl-3 text-[11px] text-[#98a2b3] dark:text-[#9d9589]">
-                {{ item.id === conversationAgentId ? '当前对话使用中' : formatUpdatedAt(item.updatedAt) }}
-              </div>
-            </button>
+      <!-- 新建卡片 -->
+      <button
+        type="button"
+        class="flex min-h-[120px] cursor-pointer flex-col items-center justify-center gap-2 rounded-xl border border-dashed border-[#c7d4e8] bg-white/40 p-4 text-[#64748b] transition-colors hover:border-[#2563eb] hover:bg-[#f8fafc] hover:text-[#2563eb] dark:border-[#3f3f3f] dark:bg-transparent dark:text-[#a3a3a3] dark:hover:border-[#60a5fa] dark:hover:bg-[#2a2a2a] dark:hover:text-[#93c5fd]"
+        @click="openCreateDialog"
+      >
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <line x1="12" y1="5" x2="12" y2="19" />
+          <line x1="5" y1="12" x2="19" y2="12" />
+        </svg>
+        <span class="text-[13px] font-medium">新建套件</span>
+      </button>
+    </div>
 
-            <div
-              v-if="bundles.length === 0"
-              class="rounded-lg border border-dashed border-[#d8dee8] px-3 py-4 text-xs text-[#64748b] dark:border-[#3a3a3a] dark:text-[#a3a3a3]"
-            >
-              暂无套件，点击上方“新建套件”。
+    <!-- 配置页视图：单个套件 -->
+    <Card v-else-if="draft" :class="panelClass">
+      <CardContent class="space-y-4 px-4 pb-4">
+        <!-- 顶部：返回 + 套件信息 + 操作 -->
+        <div class="flex flex-wrap items-center justify-between gap-3 border-b border-[#e5e7eb] pb-3 dark:border-[#333]">
+          <div class="flex min-w-0 items-center gap-2.5">
+            <Button variant="outline" size="sm" :class="headerButtonClass" @click="backToGrid">
+              ← 返回
+            </Button>
+            <div class="min-w-0">
+              <div class="truncate text-[15px] font-semibold text-[#111827] dark:text-[#f3f4f6]">
+                {{ draft.name?.trim() || "未命名套件" }}
+              </div>
+              <div class="mt-0.5 text-[11.5px] text-[#98a2b3] dark:text-[#9d9589]">
+                {{ draft.id === conversationAgentId ? "当前对话正在使用该智能体" : `更新于 ${formatUpdatedAt(draft.updatedAt)}` }}
+              </div>
             </div>
           </div>
-        </CardContent>
-      </Card>
+          <div class="flex flex-wrap items-center gap-2">
+            <Button
+              v-if="isConversationAgent"
+              variant="outline"
+              size="sm"
+              :class="headerButtonClass"
+              :disabled="activating"
+              title="当前对话正在使用该智能体"
+            >
+              当前对话使用中
+            </Button>
+            <Button
+              v-else
+              size="sm"
+              :class="primaryButtonClass"
+              :disabled="hasChanges || activating"
+              :title="hasChanges ? '请先保存改动' : '新开一个对话并启用该智能体'"
+              @click="launchAgent"
+            >
+              {{ activating ? "处理中..." : "启用" }}
+            </Button>
+            <Button
+              variant="outline"
+              size="sm"
+              class="h-8 border border-[#fecaca] bg-white px-3 text-[13px] text-[#dc2626] shadow-none hover:bg-[#fef2f2] dark:border-[#513030] dark:bg-[#242424] dark:text-[#fca5a5] dark:hover:bg-[#3a1f1f]"
+              @click="showDeletePanel = true"
+            >
+              删除
+            </Button>
+          </div>
+        </div>
 
-      <!-- 右：编辑器 -->
-      <Card :class="panelClass">
-        <CardContent v-if="!draft" class="flex h-full min-h-[440px] items-center justify-center px-3 text-sm text-[#64748b] dark:text-[#a3a3a3]">
-          请选择或创建一个智能体套件。
-        </CardContent>
-
-        <div v-else class="flex h-full flex-col gap-4 px-3 pb-3">
-          <!-- 基本信息 -->
+        <!-- 基本信息 -->
           <div class="grid grid-cols-[160px_minmax(0,1fr)] gap-2">
             <Input v-model="draft.name" :class="fieldClass" placeholder="套件名称" />
             <Input v-model="draft.description" :class="fieldClass" placeholder="一句话描述（可选）" />
@@ -681,50 +677,17 @@ onMounted(async () => {
             </template>
           </div>
 
-          <!-- 底部操作 -->
-          <div class="mt-auto flex flex-wrap items-center justify-between gap-2 border-t border-[#e5e7eb] pt-3 dark:border-[#333]">
-            <div class="flex items-center gap-2">
-              <Button
-                v-if="isConversationAgent"
-                variant="outline"
-                size="sm"
-                :class="headerButtonClass"
-                :disabled="activating"
-                title="当前对话正在使用该智能体"
-              >
-                当前对话使用中
-              </Button>
-              <Button
-                v-else
-                size="sm"
-                :class="primaryButtonClass"
-                :disabled="hasChanges || activating"
-                :title="hasChanges ? '请先保存改动' : '新开一个对话并启用该智能体'"
-                @click="launchAgent"
-              >
-                {{ activating ? "处理中..." : "启用" }}
-              </Button>
-              <Button
-                variant="outline"
-                size="sm"
-                class="h-8 border border-[#fecaca] bg-white px-3 text-[13px] text-[#dc2626] shadow-none hover:bg-[#fef2f2] dark:border-[#513030] dark:bg-[#242424] dark:text-[#fca5a5] dark:hover:bg-[#3a1f1f]"
-                @click="showDeletePanel = true"
-              >
-                删除
-              </Button>
-            </div>
-            <div class="flex items-center gap-2">
-              <span v-if="hasChanges" class="text-[12px] text-[#2563eb] dark:text-[#93c5fd]">有未保存改动</span>
-              <Button variant="outline" size="sm" :class="headerButtonClass" :disabled="!hasChanges" @click="discardChanges">
-                放弃改动
-              </Button>
-              <Button size="sm" :class="primaryButtonClass" :disabled="!hasChanges || saving" @click="saveBundle">
-                {{ saving ? "保存中..." : "保存" }}
-              </Button>
-            </div>
+          <!-- 底部：保存操作 -->
+          <div class="flex flex-wrap items-center justify-end gap-2 border-t border-[#e5e7eb] pt-3 dark:border-[#333]">
+            <span v-if="hasChanges" class="mr-auto text-[12px] text-[#2563eb] dark:text-[#93c5fd]">有未保存改动</span>
+            <Button variant="outline" size="sm" :class="headerButtonClass" :disabled="!hasChanges" @click="discardChanges">
+              放弃改动
+            </Button>
+            <Button size="sm" :class="primaryButtonClass" :disabled="!hasChanges || saving" @click="saveBundle">
+              {{ saving ? "保存中..." : "保存" }}
+            </Button>
           </div>
-        </div>
-      </Card>
-    </div>
+      </CardContent>
+    </Card>
   </div>
 </template>

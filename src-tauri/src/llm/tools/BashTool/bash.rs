@@ -22,18 +22,32 @@ fn permission(input: &Value) -> Option<ToolPermissionDescriptor> {
 pub fn tool() -> Tool {
     Tool {
         name: "Bash".into(),
-        description: r#"Execute a bash/zsh/pwsh command in a conversation-scoped persistent shell session. The session keeps its working directory and environment between calls.
+        description: r#"Executes a shell command in a conversation-scoped persistent shell session. The working directory and environment persist between calls, so `cd` and exported variables carry over.
 
-- `command`: the command to execute (required).
-- `description`: a short (3-5 word) description of what this command does in active voice. Helps the user understand what's happening.
-- `timeout`: optional timeout in milliseconds (max 1800000, i.e. 30 minutes). Defaults to 120000 (2 minutes).
-- `run_in_background`: set to true to run the command in the background. The shell session stays alive for subsequent calls.
+**Platform**: PowerShell 7 (pwsh) on Windows; sh on Linux/macOS. Write commands for the current platform — do not assume bash syntax on Windows.
 
-On Windows this runs PowerShell 7 (pwsh). On Linux/macOS it runs sh. Interactive TUI programs are not supported.
+## When to use this tool
+- Running builds, tests, linters, type checkers, package managers, and git commands.
+- System operations with no dedicated tool (process/environment inspection, file permissions).
+- NOT for reading files (use Read), searching content (use Grep), or finding files by name (use Glob) — dedicated tools are structured, permission-aware, and cheaper.
 
-If a command appears to be waiting on an interactive prompt (e.g. `(y/n)`, `Continue?`), the run is aborted; retry with piped input such as `echo y | command` or a non-interactive flag.
+## Parameters
+- `command` (required): the command to execute. Prefer focused single commands; chain only trivial sequences.
+- `description`: a short (3-5 word) active-voice summary shown to the user.
+- `timeout`: milliseconds, default 120000 (2 min), max 1800000 (30 min). Long builds and test suites need an explicit larger timeout.
+- `run_in_background`: keep the session usable while the command runs — use for dev servers and file watchers.
 
-Command output is capped at 30000 characters per stream (stdout/stderr); excess is truncated with a marker. Avoid commands that emit huge output; redirect to a file and inspect with Read/Grep instead."#
+## Output and failure semantics
+- The result includes exit code, stdout, stderr, and the final working directory. A non-zero exit is a failure — read stderr before retrying; do not blindly re-run the same command.
+- Output is capped at 30000 characters per stream (stdout/stderr); excess is truncated with a marker. For huge output, redirect to a file and inspect it with Read/Grep.
+- Commands that appear to wait on an interactive prompt (e.g. `(y/n)`, `Continue?`) are aborted — retry with piped input (`echo y | command`) or a non-interactive flag (`-y`, `--yes`).
+- Interactive TUI programs (vim, top, REPLs) are not supported; use non-interactive modes.
+
+## Common mistakes
+- Writing files via shell redirects (Out-File, Set-Content, echo >, here-strings) — they introduce BOM/CRLF encoding problems; use Write/Edit instead.
+- Long-running foreground commands without a raised timeout.
+- Assuming Unix syntax on Windows (pwsh uses `$env:VAR`, `Get-Content`, backtick escapes).
+- Reading files with cat/Get-Content instead of the Read tool."#
             .into(),
         input_schema: json!({
             "type": "object",

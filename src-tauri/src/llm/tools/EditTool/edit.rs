@@ -15,15 +15,30 @@ pub(super) fn registration() -> ToolRegistration {
 pub fn tool() -> Tool {
     Tool {
         name: "Edit".into(),
-        description: r#"Performs exact string replacement in an existing file.
+        description: r#"Performs exact string replacement in an existing file. This is the precision tool for surgical changes — use Write for new files or full rewrites, and MultiEdit for several edits to the same file in one atomic call.
 
-- IMPORTANT: When editing text from Read tool output, ensure you preserve the exact indentation (tabs/spaces) as it appears AFTER the line number prefix. The line number prefix format is: spaces + line number + tab (e.g., `     1\t`). Everything after that is the actual file content to match. NEVER include any part of the line number prefix in the `old_string` or `new_string`.
-- The `old_string` should match the file content exactly, but the matcher is fault-tolerant: it will also try line-trimmed, block-anchor (with Levenshtein similarity), whitespace-normalized, indentation-flexible, and escape-normalized matching in that order before giving up.
-- Use `replace_all: true` to replace every occurrence of `old_string`; when false (default), the string must appear exactly once in the file (or be uniquely identifiable via the fuzzy matchers).
-- `new_string` must differ from `old_string`.
-- `file_path` must be an absolute path.
+## Before you edit
+- Base `old_string` on the file's actual current content, ideally from a recent Read — editing from memory risks stale, mismatched text.
+- Copy text character-for-character, including all indentation, spaces, and newlines.
 
-This is the precision editing tool — use it for surgical changes. For full-file writes or new files, use Write. For multiple edits to the same file in one call, use MultiEdit."#
+## Line-number prefix (critical)
+Read tool output prefixes each line with: spaces + line number + tab (e.g. `     1\t`). Everything AFTER the tab is the real file content. NEVER include any part of the line number prefix in `old_string` or `new_string`.
+
+## Matching rules
+- With `replace_all: false` (default), `old_string` must be unique in the file — if it appears multiple times, include surrounding context lines to disambiguate, or set `replace_all: true` to replace every occurrence.
+- `new_string` must differ from `old_string`; an empty `old_string` is rejected.
+- The matcher is fault-tolerant: after exact matching fails, it tries line-trimmed, block-anchor (Levenshtein similarity), whitespace-normalized, indentation-flexible, and escape-normalized matching in that order. Prefer exact matches — fuzzy matching is a safety net, not a shortcut.
+- `file_path` must be an absolute path to an existing file (creating files is Write's job).
+
+## Failure recovery
+- If an edit fails, the file content differs from what you expect. Re-Read the file (or the relevant range), then retry with a corrected `old_string` — do not blindly resubmit the identical failed edit.
+- After three consecutive failures on the same file, stop patching: rewrite the whole file (or the containing function) with Write instead of a fourth attempt.
+
+## Common mistakes
+- Including the Read output's line-number prefix in `old_string`.
+- Choosing an `old_string` that occurs multiple times (ambiguous match).
+- Re-indenting or trimming code when copying it into `old_string`.
+- Using Edit on a file that does not exist yet."#
             .into(),
         input_schema: json!({
             "type": "object",

@@ -77,15 +77,29 @@ fn is_blocked_device_path(path: &str) -> bool {
 pub fn tool() -> Tool {
     Tool {
         name: "Read".into(),
-        description: r#"Read a file from the local filesystem. Returns the file content with line numbers (like `cat -n`).
+        description: r#"Reads a file from the local filesystem. Returns the file content with line numbers (like `cat -n`), with each line prefixed by its line number and a tab.
 
-- Reads text files with optional line range via `offset` and `limit`.
-- Reads image files (PNG, JPG, JPEG) — the image is attached to the conversation so you can see it directly.
-- Reads PDF files via the `pages` parameter (e.g. "1-5", max 20 pages/request).
+## When to use this tool:
+- Always prefer this tool over shell commands (cat, head, tail, Get-Content) when reading file contents.
+- Read a file before editing it if you have not seen its current content — editing from memory risks stale, mismatched diffs. Partial reads count too; there is no hard read-before-edit gate.
+- When exploring an unfamiliar codebase, start with Glob (find files by name) and Grep (find code by content), then Read the most relevant files. Do not Read files speculatively when a Grep with context lines would answer the question.
+- When referencing specific lines in your reply or in an Edit `old_string`, use the exact content AFTER the line-number prefix (format: spaces + line number + tab). Everything after that tab is the real file content.
+
+## File type support:
+- Text files: returned with line numbers. Full reads of files larger than 2 MB are rejected — read them in chunks with offset/limit.
+- Images (PNG/JPG/JPEG): the image is attached to the conversation so you can see it directly. Do not pass offset/limit/pages for images.
+- PDF files: use the `pages` parameter (e.g. "1-5", max 20 pages per request).
+
+## Parameters:
 - `file_path` must be an absolute path.
 - `offset` is 1-based (line 1 is the first line). When both `offset` and `limit` are omitted, the entire file is returned.
+- `limit` is the number of lines to read. Only provide it when the file is too large to read at once.
 - Reading a directory, a missing file, or an empty file returns an error.
-- You must read a file (full read, no offset/limit) before you can edit it with the Edit tool."#
+
+## Reading strategy:
+- For files up to a few hundred lines, read the whole file at once — piecemeal reads of small files waste turns and miss context.
+- For very long files, first Grep for the key symbols to get line numbers, then Read targeted ranges around the hits.
+- Partial reads report how many lines remain after the returned range, so you can plan follow-up reads without re-reading from the top."#
             .into(),
         input_schema: json!({
             "type": "object",
@@ -158,7 +172,8 @@ fn read_text(
     if !metadata.is_file() {
         return Err(format!("Not a regular file: {}", path.display()));
     }
-    if metadata.len() > MAX_TEXT_SIZE {
+    // 大小上限只约束整文件读取；带 offset/limit 的分段读取放行（输出量由 limit 控制）。
+    if metadata.len() > MAX_TEXT_SIZE && offset.is_none() && limit.is_none() {
         return Err(format!(
             "File is too large ({} bytes, max {} bytes). Use offset/limit to read in chunks.",
             metadata.len(),

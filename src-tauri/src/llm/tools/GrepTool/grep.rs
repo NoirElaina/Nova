@@ -39,20 +39,32 @@ fn grep_permission(input: &Value) -> Option<ToolPermissionDescriptor> {
 pub fn tool() -> Tool {
     Tool {
         name: "Grep".into(),
-        description: r#"Content search built on ripgrep (rg). Prefer this over shell grep/rg.
+        description: r#"Content search built on ripgrep (rg) — the primary tool for finding where code, symbols, strings, or patterns live in a codebase. Always prefer it over shell grep/rg/findstr.
 
-- `pattern`: a regular expression to search for in file contents.
-- `path`: file or directory to search in. Defaults to the workspace root if not specified.
-- `glob`: optional file filter pattern (e.g. `"*.rs"`, `"*.{ts,tsx}"`).
-- `output_mode`: `"content"` (matching lines with line numbers), `"files_with_matches"` (file paths only, default), or `"count"` (match counts per file).
-- `-A`: number of lines to show after each match (rg -A).
-- `-B`: number of lines to show before each match (rg -B).
-- `-C`: number of lines to show before and after each match (rg -C).
-- `-i`: set to true for case-insensitive search.
-- `-n`: show line numbers in output (rg -n). Defaults to true when output_mode is "content".
-- `multiline`: enable multiline mode where `.` matches newlines and patterns can span lines (rg -U --multiline-dotall).
-- `head_limit`: limit output to the first N lines/entries. Defaults to 250.
-- `offset`: skip first N lines/entries before applying head_limit."#
+## When to use this tool
+- Finding where a function/class/variable is defined, referenced, or called.
+- Finding string literals, error messages, or configuration keys.
+- Locating code by content when the file name is unknown (use Glob when you know the name).
+- Gauging the blast radius of a rename or API change before editing.
+
+## How to search effectively
+- `pattern` is a ripgrep-flavored regular expression. Escape regex metacharacters (`( ) [ ] { } . + * ? $ ^ | \`) with a backslash when searching for them literally.
+- Search broadly first (omit `path` to search the workspace root), then narrow with `path` and `glob` if there is too much noise.
+- For "where is X defined" queries, search definition-shaped patterns: `fn X`, `struct X`, `class X`, `def X`, `const X`, `interface X`, etc.
+- Combine with Read: Grep locates the lines; Read shows the full surrounding context.
+
+## Output control
+- `output_mode`: `"files_with_matches"` (default — file paths only), `"content"` (matching lines with line numbers), or `"count"` (match counts per file).
+- `-A`/`-B`/`-C`: context lines after/before/around each match (content mode only) — often cheaper than a follow-up Read.
+- `-i`: case-insensitive. `-n`: line numbers (defaults to true in content mode).
+- `head_limit` (default 250) caps output; `offset` skips earlier entries for paging.
+- `multiline`: `.` matches newlines and patterns can span lines (rg -U --multiline-dotall).
+
+## Common mistakes
+- Unescaped metacharacters when searching literal text (e.g. `foo.bar` also matches `fooxbar`).
+- Searching a single directory when the symbol may live elsewhere — default to the workspace root.
+- Requesting content mode on patterns with thousands of hits without a `head_limit`.
+- Using shell grep via Bash instead of this tool."#
             .into(),
         input_schema: json!({
             "type": "object",

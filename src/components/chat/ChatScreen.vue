@@ -20,6 +20,7 @@ import AssistantMessageBubble from './messages/AssistantMessageBubble.vue';
 import AssistantTranscript from './messages/AssistantTranscript.vue';
 import ContextCompactNotice from './messages/ContextCompactNotice.vue';
 import MessageTimelineNavigator from './MessageTimelineNavigator.vue';
+import SubagentPanel from './SubagentPanel.vue';
 import UserMessageBubble from './messages/UserMessageBubble.vue';
 import { buildAssistantTranscriptSegments } from '../../features/chat/utils/assistant-transcript';
 import { estimateTextTokens } from '../../features/chat/services/chat-api';
@@ -776,6 +777,8 @@ defineExpose({
       :activeIndex="activeUserMessageIndex"
       @select="scrollToMessageIndex"
     />
+
+    <SubagentPanel :conversation-id="conversationId" />
 
     <button
       v-if="showScrollToBottom"

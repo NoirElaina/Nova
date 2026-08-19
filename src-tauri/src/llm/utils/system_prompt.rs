@@ -102,6 +102,21 @@ pub fn load_system_prompt(
     agent_mode: AgentMode,
     conversation_id: Option<&str>,
 ) -> Result<String, String> {
+    // 子代理会话：使用专属精简提示词，完全跳过主工程协议、
+    // bundle/skills/memory/plugin 段（对应工具对子代理不可见，写了就是误导）。
+    // 工作区按父会话解析（子 ID 不在会话表里）。
+    if crate::llm::services::subagent::is_subagent_conversation(conversation_id) {
+        let parent = conversation_id
+            .map(crate::llm::services::subagent::parent_conversation_id)
+            .unwrap_or_default();
+        let ws = crate::command::workspace::workspace_root_for_conversation(app, Some(parent))?;
+        let prompt = crate::llm::services::subagent::system_prompt().replace(
+            "Workspace root is provided in the first message.",
+            &format!("Workspace root: {}.", ws.display()),
+        );
+        return Ok(prompt);
+    }
+
     let bundle = agent_bundles::active_bundle(app, conversation_id);
 
     // 基础提示词：挂载了带提示词的智能体套件时**完整替换**默认系统提示词——

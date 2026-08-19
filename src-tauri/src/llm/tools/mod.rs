@@ -691,7 +691,19 @@ pub fn builtin_tool_names() -> Vec<String> {
 /// 按会话挂载的智能体套件过滤后的工具列表。
 /// 会话未挂载 bundle 或 bundle 工具清单为 null 时等价于全部工具；
 /// provider adapter 一律走这里。启用插件的工具在此合并进同一工具池。
+/// 子代理会话（`:sub:` 派生 ID）：只暴露只读白名单，不含插件/MCP/Task，
+/// 防止子代理获得任何修改能力或递归派生。
 pub fn get_available_tools_for_agent(app: &AppHandle, conversation_id: Option<&str>) -> Vec<Tool> {
+    if crate::llm::services::subagent::is_subagent_conversation(conversation_id) {
+        return get_available_tools()
+            .into_iter()
+            .filter(|tool| {
+                crate::llm::services::subagent::SUBAGENT_ALLOWED_TOOLS
+                    .contains(&tool.name.as_str())
+            })
+            .collect();
+    }
+
     let mut all = get_available_tools();
     all.extend(crate::llm::services::plugins::plugin_tools(app));
     match crate::llm::services::agent_bundles::active_bundle(app, conversation_id) {
@@ -742,6 +754,17 @@ pub(crate) async fn execute_tool_with_app(
     name: &str,
     input: Value,
 ) -> ToolExecResult {
+    // 子代理执行期白名单强制：即使模型尝试按名调用非白名单工具
+    //（含 MCP 动态分发、插件工具），也在此直接拒绝。与工具列表过滤互为双保险。
+    if crate::llm::services::subagent::is_subagent_conversation(conversation_id)
+        && !crate::llm::services::subagent::SUBAGENT_ALLOWED_TOOLS.contains(&name)
+    {
+        return Err(ToolFailure::permission_denied(format!(
+            "Tool '{}' is not available to subagents (read-only whitelist enforced)",
+            name
+        )));
+    }
+
     match crate::llm::utils::permissions::enforce_tool_permission(
         app,
         conversation_id,

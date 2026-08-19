@@ -19,6 +19,31 @@ use crate::llm::types::{ContentBlock, Message, Role};
 use crate::llm::utils::error_event::emit_backend_error;
 use crate::llm::utils::pricing::{self, TokenUsageBreakdown, TurnCostBreakdown};
 
+/// 统一的 chat-stream 发射口。
+/// 普通会话：原样发 `chat-stream`。
+/// 子代理会话（`:sub:` 派生 ID）：改发 `subagent-event`（带父/子 ID 包装），
+/// 避免前端把子代理流事件当成后台会话路由（子 ID 不在会话列表里），
+/// 同时作为子代理侧边栏的实时数据源。
+fn emit_stream_event(
+    app: &AppHandle,
+    conversation_id: Option<&str>,
+    event: ChatMessageEvent,
+) -> tauri::Result<()> {
+    if crate::llm::services::subagent::is_subagent_conversation(conversation_id) {
+        let id = conversation_id.unwrap_or("");
+        return app.emit(
+            "subagent-event",
+            serde_json::json!({
+                "kind": "stream",
+                "parentConversationId": crate::llm::services::subagent::parent_conversation_id(id),
+                "subId": id,
+                "event": event,
+            }),
+        );
+    }
+    app.emit("chat-stream", event)
+}
+
 // ─────────────────────────────────────────────
 // Delta — 协议无关的流语义事件
 // ─────────────────────────────────────────────
@@ -399,8 +424,9 @@ pub async fn run_streaming<P: StreamParser>(
 
     // 若流内未发 stop，这里补发一次。
     if !emitted_stop {
-        app.emit(
-            "chat-stream",
+        emit_stream_event(
+            app,
+            conversation_id,
             ChatMessageEvent {
                 r#type: "stop".into(),
                 text: None,
@@ -557,9 +583,12 @@ async fn process_delta(
     match delta {
         Delta::Text(text) => {
             assistant_output.append_text(&text);
-            crate::llm::services::live_turns::append_text(conversation_id, &text);
-            app.emit(
-                "chat-stream",
+            if !crate::llm::services::subagent::is_subagent_conversation(conversation_id) {
+                crate::llm::services::live_turns::append_text(conversation_id, &text);
+            }
+            emit_stream_event(
+                app,
+                conversation_id,
                 ChatMessageEvent {
                     r#type: "text".into(),
                     text: Some(text),
@@ -578,9 +607,12 @@ async fn process_delta(
         }
 
         Delta::Reasoning(text) => {
-            crate::llm::services::live_turns::append_reasoning(conversation_id, &text);
-            app.emit(
-                "chat-stream",
+            if !crate::llm::services::subagent::is_subagent_conversation(conversation_id) {
+                crate::llm::services::live_turns::append_reasoning(conversation_id, &text);
+            }
+            emit_stream_event(
+                app,
+                conversation_id,
                 ChatMessageEvent {
                     r#type: "reasoning".into(),
                     text: Some(text),
@@ -599,8 +631,9 @@ async fn process_delta(
         }
 
         Delta::ToolStart { id, name } => {
-            app.emit(
-                "chat-stream",
+            emit_stream_event(
+                app,
+                conversation_id,
                 ChatMessageEvent {
                     r#type: "tool-use-start".into(),
                     text: None,
@@ -619,8 +652,9 @@ async fn process_delta(
         }
 
         Delta::ToolArgsDelta { id, args } => {
-            app.emit(
-                "chat-stream",
+            emit_stream_event(
+                app,
+                conversation_id,
                 ChatMessageEvent {
                     r#type: "tool-json-delta".into(),
                     text: None,
@@ -647,8 +681,9 @@ async fn process_delta(
                     call.name.clone(),
                     call.input.clone(),
                 );
-                app.emit(
-                    "chat-stream",
+                emit_stream_event(
+                    app,
+                    conversation_id,
                     ChatMessageEvent {
                         r#type: "tool-executing".into(),
                         text: None,
@@ -678,8 +713,9 @@ async fn process_delta(
                 let serialized_input = serde_json::to_string_pretty(&executed.input)
                     .unwrap_or_else(|_| executed.input.to_string());
 
-                app.emit(
-                    "chat-stream",
+                emit_stream_event(
+                    app,
+                    conversation_id,
                     ChatMessageEvent {
                         r#type: "tool-result".into(),
                         text: None,
@@ -762,8 +798,9 @@ async fn process_delta(
                 *last_stop_reason = reason.clone();
             }
             *emitted_stop = true;
-            app.emit(
-                "chat-stream",
+            emit_stream_event(
+                app,
+                conversation_id,
                 ChatMessageEvent {
                     r#type: "stop".into(),
                     text: None,

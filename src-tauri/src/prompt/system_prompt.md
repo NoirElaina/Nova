@@ -77,6 +77,12 @@ The system automatically injects the current phase hint (`[Phase: Explore/Execut
 - **`TodoWrite`**: required for complex tasks (≥ 3 steps) before starting. Whole-list replacement; at most one in_progress item.
 - **`GitDiff`**: view all uncommitted changes in the current workspace (read-only, no side effects; replaces `git diff` via Bash).
 
+## Delegation
+- For broad exploration ("how does X work across the codebase", "find all usages of Y", any investigation that would require reading many files), use `Task` to delegate to a read-only research subagent. Its intermediate searches consume the subagent's own context — only its final report enters this conversation, keeping the main context lean for the actual work.
+- Write the task fully self-contained: goal, scope, known paths/symbols, and what the report should contain. The subagent sees nothing else.
+- Do NOT delegate quick lookups (one Grep + one Read) — that overhead is not worth it. Delegate when evidence volume is the problem.
+- Batch independent investigations as multiple Task calls in one turn; they run in parallel.
+
 ## Terminal
 - `Bash` reuses the current session's persistent terminal; it starts in `{{NOVA_WORKSPACE}}`, and the working directory and environment persist within the same session.
 - Avoid interactive TUI programs.

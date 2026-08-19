@@ -9,7 +9,6 @@
 // 用户可在设置里为任意模型覆盖上下文窗口（优先于两级 JSON / 默认值）。
 
 use std::collections::HashMap;
-use std::path::PathBuf;
 use std::sync::{Arc, OnceLock, RwLock};
 
 use serde::Deserialize;
@@ -59,8 +58,6 @@ struct ModelList {
     data: Vec<ModelEntry>,
 }
 
-/// 运行时缓存路径；init() 成功后可用。
-static CACHE_PATH: OnceLock<PathBuf> = OnceLock::new();
 /// 运行时模型表（下载/加载成功后存在）；查询优先于编译期嵌入表。
 static RUNTIME_MODELS: RwLock<Option<Arc<Vec<ModelEntry>>>> = RwLock::new(None);
 
@@ -154,7 +151,7 @@ pub fn supports_image_input(model: &str) -> bool {
     }
 }
 
-/// 启动时初始化：登记缓存路径、加载已有缓存、启动每 24h 的后台刷新任务。
+/// 启动时初始化：加载已有缓存，启动每 24h 的后台刷新任务。
 /// 在 app setup 阶段调用一次；失败不影响启动（回落编译期嵌入表）。
 pub fn init(app: &tauri::AppHandle) {
     let Ok(data_dir) = app.path().app_data_dir() else {
@@ -162,7 +159,6 @@ pub fn init(app: &tauri::AppHandle) {
         return;
     };
     let cache_path = data_dir.join(CACHE_FILE_NAME);
-    let _ = CACHE_PATH.set(cache_path.clone());
 
     // 同步加载已有缓存（无论新旧都先用着，总比编译期嵌入的新）。
     match std::fs::read_to_string(&cache_path) {

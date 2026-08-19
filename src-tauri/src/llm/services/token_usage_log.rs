@@ -478,3 +478,133 @@ async fn fetch_model_breakdown(pool: &SqlitePool) -> Result<Vec<ModelBreakdown>,
     }
     Ok(result)
 }
+
+// ---------------- 插件沙箱数据桥（只读聚合） ----------------
+
+/// 用量聚合 JSON 结构（插件沙箱 nova.usage.* 数据源）。
+/// 只做全局/今日聚合，不含 conversation_id 明细——插件不得跨会话嗅探。
+#[derive(Debug, Serialize, sqlx::FromRow)]
+#[serde(rename_all = "camelCase")]
+struct UsageTotalsRow {
+    turns: i64,
+    input_tokens: i64,
+    output_tokens: i64,
+    cache_read_tokens: i64,
+    cache_creation_tokens: i64,
+    total_tokens: i64,
+}
+
+async fn usage_totals(pool: &SqlitePool, where_clause: &str) -> Result<serde_json::Value, String> {
+    let sql = format!(
+        r#"
+        SELECT
+            COUNT(*) AS turns,
+            COALESCE(SUM(input_tokens), 0) AS input_tokens,
+            COALESCE(SUM(output_tokens), 0) AS output_tokens,
+            COALESCE(SUM(cache_read_tokens), 0) AS cache_read_tokens,
+            COALESCE(SUM(cache_creation_tokens), 0) AS cache_creation_tokens,
+            COALESCE(SUM(total_tokens), 0) AS total_tokens
+        FROM token_usage_log
+        {}
+        "#,
+        where_clause
+    );
+    let row: UsageTotalsRow = sqlx::query_as(&sql)
+        .fetch_one(pool)
+        .await
+        .map_err(|e| e.to_string())?;
+    Ok(serde_json::json!({
+        "turns": row.turns,
+        "inputTokens": row.input_tokens,
+        "outputTokens": row.output_tokens,
+        "cacheReadTokens": row.cache_read_tokens,
+        "cacheCreationTokens": row.cache_creation_tokens,
+        "totalTokens": row.total_tokens,
+    }))
+}
+
+/// 全局用量聚合（插件沙箱 nova.usage.getTotal 数据源）。
+pub async fn get_global_usage_totals(app: &AppHandle) -> Result<serde_json::Value, String> {
+    let pool = get_pool_with_schema(app).await?;
+    let mut result = usage_totals(&pool, "").await?;
+    if let Some(map) = result.as_object_mut() {
+        map.insert("costUsd".to_string(), serde_json::json!(sum_cost(&pool).await?));
+    }
+    Ok(result)
+}
+
+/// 今日用量聚合（本地时区，插件沙箱 nova.usage.getToday 数据源）。
+pub async fn get_today_usage_totals(app: &AppHandle) -> Result<serde_json::Value, String> {
+    let pool = get_pool_with_schema(app).await?;
+    let where_clause =
+        "WHERE date(created_at, 'unixepoch', 'localtime') = date('now', 'localtime')";
+    let mut result = usage_totals(&pool, where_clause).await?;
+    let cost = sum_cost_rows(
+        &pool,
+        "SELECT cost_usd FROM token_usage_log WHERE date(created_at, 'unixepoch', 'localtime') = date('now', 'localtime') AND cost_usd IS NOT NULL AND cost_usd != ''",
+        &[],
+    )
+    .await?;
+    if let Some(map) = result.as_object_mut() {
+        map.insert("costUsd".to_string(), serde_json::json!(cost));
+    }
+    Ok(result)
+}
+
+/// 最近 n 轮用量明细（不含会话信息，插件沙箱 nova.usage.getRecent 数据源）。
+pub async fn get_recent_usage_records(
+    app: &AppHandle,
+    limit: i64,
+) -> Result<serde_json::Value, String> {
+    let pool = get_pool_with_schema(app).await?;
+    let limit = limit.clamp(1, 100);
+    let rows = sqlx::query(
+        r#"
+        SELECT model, input_tokens, output_tokens, total_tokens, cost_usd, created_at
+        FROM token_usage_log
+        ORDER BY created_at DESC, id DESC
+        LIMIT ?
+        "#,
+    )
+    .bind(limit)
+    .fetch_all(&pool)
+    .await
+    .map_err(|e| e.to_string())?;
+
+    let records: Vec<serde_json::Value> = rows
+        .into_iter()
+        .map(|row| {
+            let model: String = row.get("model");
+            let cost: Option<String> = row.get("cost_usd");
+            serde_json::json!({
+                "model": model,
+                "inputTokens": row.get::<i64, _>("input_tokens"),
+                "outputTokens": row.get::<i64, _>("output_tokens"),
+                "totalTokens": row.get::<i64, _>("total_tokens"),
+                "costUsd": cost,
+                "createdAt": row.get::<i64, _>("created_at"),
+            })
+        })
+        .collect();
+    Ok(serde_json::Value::Array(records))
+}
+
+/// 会话元数据简报（插件沙箱 nova.session.getInfo 数据源）。
+pub async fn get_conversation_brief(
+    app: &AppHandle,
+    conversation_id: &str,
+) -> Result<serde_json::Value, String> {
+    let pool = get_pool_with_schema(app).await?;
+    let row = sqlx::query("SELECT title, created_at FROM conversations WHERE id = ?")
+        .bind(conversation_id)
+        .fetch_optional(&pool)
+        .await
+        .map_err(|e| e.to_string())?;
+    match row {
+        Some(row) => Ok(serde_json::json!({
+            "title": row.get::<String, _>("title"),
+            "startedAt": row.get::<i64, _>("created_at"),
+        })),
+        None => Ok(serde_json::Value::Null),
+    }
+}

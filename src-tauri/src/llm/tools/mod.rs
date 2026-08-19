@@ -778,8 +778,10 @@ pub(crate) async fn execute_tool_with_app(
     }
 
     // 插件工具（boa JS 沙箱）：按注册表分发，与内置/MCP 工具同一执行链。
+    // conversation_id 透传给沙箱（宿主数据桥 nova.session.* 上下文）。
     if let Some(output) =
-        crate::llm::services::plugins::execute_plugin_tool(app, name, input.clone()).await
+        crate::llm::services::plugins::execute_plugin_tool(app, conversation_id, name, input.clone())
+            .await
     {
         return output;
     }

@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { nextTick, onMounted, onUnmounted, ref, watch, computed } from 'vue';
 import { invoke } from '@tauri-apps/api/core';
+import { listen, type UnlistenFn } from '@tauri-apps/api/event';
 import type {
   AgentMode,
   PendingUploadFile,
@@ -21,7 +22,6 @@ import ContextUsageIndicator from './ContextUsageIndicator.vue';
 import ConversationUsageBar from './ConversationUsageBar.vue';
 import { getWorkspaceDiff } from '../../features/chat/services/chat-api';
 import {
-  SLASH_COMMANDS,
   MEMORY_OPTIONS,
   REVIEW_OPTIONS,
   INIT_OPTIONS,
@@ -29,10 +29,13 @@ import {
   buildInitPrompt,
   buildReviewPrompt,
   formatWorkspaceDiff,
+  allSlashCommands,
+  setPluginCommands,
 } from '../../lib/slash-commands';
 import type {
   SlashCommandEntry,
   SlashParamOption,
+  PluginSlashCommand,
 } from '../../lib/slash-commands';
 
 type SkillSummary = {
@@ -51,6 +54,8 @@ const props = defineProps<{
   compacting?: boolean;
   /** 当前对话挂载的智能体（会话级）。null = 默认 Nova（不展示）。 */
   activeAgent?: { id: string; name: string; description?: string } | null;
+  /** 当前会话 id（插件命令展开 {workspace} 占位符用）。 */
+  conversationId?: string | null;
 }>();
 
 const emit = defineEmits<{
@@ -230,11 +235,12 @@ const pickSkillFromPlusMenu = (skill: SkillSummary) => {
 
 // ── 斜杠命令逻辑 ──────────────────────────────────────────────────
 
-// 命令列表阶段的过滤结果
+// 命令列表阶段的过滤结果（内置 + 已启用插件命令）
 const filteredCommands = computed(() => {
   const q = slashQuery.value.trim().toLowerCase();
-  if (!q) return SLASH_COMMANDS;
-  return SLASH_COMMANDS.filter((cmd) => cmd.name.toLowerCase().includes(q));
+  const commands = allSlashCommands();
+  if (!q) return commands;
+  return commands.filter((cmd) => cmd.name.toLowerCase().includes(q));
 });
 
 // 获取指定命令的二级选项列表（含动态加载）
@@ -265,6 +271,19 @@ const currentParamOptions = computed<SlashParamOption[]>(() => {
   if (cmd === 'memory') return MEMORY_OPTIONS;
   if (cmd === 'review') return REVIEW_OPTIONS;
   if (cmd === 'init') return INIT_OPTIONS;
+  // 插件命令：展示执行选项（rest 作为附加自由文本附加到展开的模板后）
+  const pluginEntry = allSlashCommands().find(
+    (entry) => entry.name === cmd && entry.type === 'plugin',
+  );
+  if (pluginEntry) {
+    return [
+      {
+        label: pluginEntry.pluginTitle || pluginEntry.name,
+        value: '',
+        description: pluginEntry.description,
+      },
+    ];
+  }
   return [];
 });
 
@@ -320,9 +339,9 @@ const refreshSlashState = () => {
     return;
   }
 
-  // 已有空格：检查命令名是否匹配内置命令
+  // 已有空格：检查命令名是否匹配内置或插件命令
   const cmdName = text.slice(1, firstSpace).toLowerCase();
-  const matched = SLASH_COMMANDS.find((cmd) => cmd.name.toLowerCase() === cmdName);
+  const matched = allSlashCommands().find((cmd) => cmd.name.toLowerCase() === cmdName);
   if (!matched) {
     slashPhase.value = null;
     return;
@@ -375,7 +394,7 @@ const hideSlashMenu = () => {
 // 选择某个斜杠选项
 const selectSlashOption = (option: SlashParamOption) => {
   if (slashPhase.value === 'command') {
-    const entry = SLASH_COMMANDS.find((cmd) => cmd.name === option.value);
+    const entry = allSlashCommands().find((cmd) => cmd.name === option.value);
     if (!entry) return;
 
     // 进入参数阶段：命令名后强制加空格，光标定位到空格后
@@ -401,7 +420,7 @@ const selectSlashOption = (option: SlashParamOption) => {
 
   if (slashPhase.value === 'param') {
     // 参数阶段：选中二级选项后直接执行命令（参数为选项 value）
-    const entry = SLASH_COMMANDS.find((cmd) => cmd.name === slashActiveCommand.value);
+    const entry = allSlashCommands().find((cmd) => cmd.name === slashActiveCommand.value);
     if (!entry) return;
     hideSlashMenu();
     currentInput.value = '';
@@ -507,6 +526,23 @@ const executePromptCommand = async (entry: SlashCommandEntry, rest: string): Pro
   return false;
 };
 
+// 执行 Prompt 类型命令（构造模板消息发送给 AI）。rest 为二级选项 value
+const executePluginCommand = async (entry: SlashCommandEntry, rest: string): Promise<boolean> => {
+  if (!entry.pluginId) return false;
+  try {
+    const prompt = await invoke<string>('expand_plugin_command', {
+      pluginId: entry.pluginId,
+      name: entry.name,
+      conversationId: props.conversationId ?? null,
+    });
+    const extra = rest.trim();
+    emit('send', extra ? `${prompt}\n\n${extra}` : prompt);
+  } catch (error) {
+    emitErrorToast('执行插件命令', error);
+  }
+  return true;
+};
+
 // 执行已识别的斜杠命令。返回 true 表示已处理（应清空输入框）
 const executeSlashCommand = async (parsed: { entry: SlashCommandEntry; rest: string }): Promise<boolean> => {
   const { entry, rest } = parsed;
@@ -515,6 +551,9 @@ const executeSlashCommand = async (parsed: { entry: SlashCommandEntry; rest: str
   }
   if (entry.type === 'prompt') {
     return executePromptCommand(entry, rest);
+  }
+  if (entry.type === 'plugin') {
+    return executePluginCommand(entry, rest);
   }
   if (entry.type === 'skill') {
     // rest 为技能名
@@ -686,6 +725,21 @@ watch(
 
 const handleSettingsUpdate = () => loadSettings();
 
+// 拉取已启用插件的斜杠命令（列表合并 + 停用即时消失）
+const loadPluginCommands = async () => {
+  try {
+    const commands = await invoke<PluginSlashCommand[]>('list_plugin_commands');
+    setPluginCommands(commands || []);
+  } catch (error) {
+    console.error('Failed to load plugin commands:', error);
+  }
+};
+
+// 后端目录监听推送的插件变化（启停/安装/卸载/开发热改）→ 刷新命令缓存
+const handlePluginsChanged = () => {
+  void loadPluginCommands();
+};
+
 // 点击浮层外部时关闭 + 菜单和 memory 浮层
 const handleDocumentClick = (e: MouseEvent) => {
   const target = e.target as Node | null;
@@ -708,7 +762,12 @@ const handleDocumentClick = (e: MouseEvent) => {
 
 onMounted(() => {
   loadSettings();
+  void loadPluginCommands();
   window.addEventListener('settings-updated', handleSettingsUpdate);
+  // Tauri 事件：插件目录变化（启停/安装/卸载/开发热改）→ 刷新插件命令
+  void listen('plugins-changed', handlePluginsChanged).then((unlisten) => {
+    pluginCommandsUnlisten = unlisten;
+  });
   document.addEventListener('click', handleDocumentClick, true);
   nextTick(() => {
     autoResize();
@@ -716,9 +775,16 @@ onMounted(() => {
   });
 });
 
+// plugins-changed 事件注销句柄
+let pluginCommandsUnlisten: UnlistenFn | null = null;
+
 onUnmounted(() => {
   window.removeEventListener('settings-updated', handleSettingsUpdate);
   document.removeEventListener('click', handleDocumentClick, true);
+  if (pluginCommandsUnlisten) {
+    pluginCommandsUnlisten();
+    pluginCommandsUnlisten = null;
+  }
 });
 
 defineExpose({

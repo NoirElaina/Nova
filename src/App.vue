@@ -542,6 +542,7 @@ onBeforeUnmount(() => {
             :compacting="isCompacting"
             :chatError="chatError"
             :activeAgent="displayAgent"
+            :conversationId="activeConversationId"
             @remove-agent="removeConversationAgent"
             @send="handleSendMessage"
             @save-user-edit="handleEditMessage($event)"

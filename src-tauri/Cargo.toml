@@ -74,3 +74,6 @@ libc = "0.2"
 # 无 C 依赖（相比 QuickJS 绑定免去 Windows C 工具链问题），且 boa_gc 保证
 # 沙箱内对象无法逃逸到 Rust 侧。
 boa_engine = "0.21"
+# notify 用于监听插件目录变化：开发插件时改 main.js 即时生效、
+# 手动增删插件目录自动刷新注册表并推送前端事件。
+notify = "8"

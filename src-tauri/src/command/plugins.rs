@@ -9,12 +9,14 @@ use serde_json::Value as Json;
 use tauri::{AppHandle, UriSchemeContext, Wry};
 use tauri_plugin_opener::OpenerExt;
 
-use crate::llm::services::plugins::{self, list_plugins as scan_plugins, PluginInfo};
+use crate::llm::services::plugins::{
+    self, list_plugins as scan_plugins, PluginCommandInfo, PluginInfo,
+};
 
 #[tauri::command]
 pub async fn list_plugins(app: AppHandle) -> Result<Vec<PluginInfo>, String> {
-    // 首次使用时自动生成示例插件，让用户开箱即可看到完整链路效果。
-    ensure_sample_plugin(&app)?;
+    // 首次使用时自动生成内置示例插件，让用户开箱即可看到完整链路效果。
+    ensure_builtin_plugins(&app)?;
     Ok(scan_plugins(&app))
 }
 
@@ -25,6 +27,53 @@ pub async fn set_plugin_enabled(
     enabled: bool,
 ) -> Result<(), String> {
     plugins::set_plugin_enabled(&app, &plugin_id, enabled)
+}
+
+/// 从本地 zip 安装/覆盖更新插件（文件选择对话框选 zip 后调用）。
+#[tauri::command]
+pub async fn install_plugin_from_zip(
+    app: AppHandle,
+    zip_path: String,
+) -> Result<PluginInfo, String> {
+    plugins::install_plugin_from_zip(&app, &zip_path).await
+}
+
+/// 卸载插件（系统插件拒绝卸载）。
+#[tauri::command]
+pub async fn uninstall_plugin(app: AppHandle, plugin_id: String) -> Result<(), String> {
+    plugins::uninstall_plugin(&app, &plugin_id)
+}
+
+/// 检查插件更新：下载 updateUrl 的 zip 并比较版本号。
+#[tauri::command]
+pub async fn check_plugin_update(
+    app: AppHandle,
+    plugin_id: String,
+) -> Result<Json, String> {
+    plugins::check_plugin_update(&app, &plugin_id).await
+}
+
+/// 应用插件更新：下载 updateUrl 的 zip 走安装管线（覆盖，保留 .settings）。
+#[tauri::command]
+pub async fn update_plugin(app: AppHandle, plugin_id: String) -> Result<(), String> {
+    plugins::update_plugin(&app, &plugin_id).await
+}
+
+/// 当前启用插件的斜杠命令清单（前端命令列表合并用）。
+#[tauri::command]
+pub async fn list_plugin_commands(app: AppHandle) -> Result<Vec<PluginCommandInfo>, String> {
+    Ok(plugins::plugin_commands(&app))
+}
+
+/// 展开插件命令的 promptTemplate（{workspace}/{date} 占位符替换）。
+#[tauri::command]
+pub async fn expand_plugin_command(
+    app: AppHandle,
+    plugin_id: String,
+    name: String,
+    conversation_id: Option<String>,
+) -> Result<String, String> {
+    plugins::expand_plugin_command(&app, &plugin_id, &name, conversation_id.as_deref())
 }
 
 #[tauri::command]
@@ -168,21 +217,55 @@ pub fn handle_plugin_uri(
     }
 }
 
-/// 首次运行时落盘示例插件（插件根目录不存在才写入，幂等）。
-fn ensure_sample_plugin(app: &AppHandle) -> Result<(), String> {
+/// 首次运行时落盘内置示例插件（.builtin-generated 标记幂等：卸载后不复活，升级补齐新增示例）。
+fn ensure_builtin_plugins(app: &AppHandle) -> Result<(), String> {
     let root = plugins::plugins_root(app);
-    if root.exists() {
+    let marker = root.join(".builtin-generated");
+    if marker.exists() {
         return Ok(());
     }
-    let sample_dir = root.join("text-tools");
-    std::fs::create_dir_all(sample_dir.join("ui"))
-        .map_err(|e| format!("failed to create sample plugin dir: {}", e))?;
-    std::fs::write(sample_dir.join("plugin.json"), SAMPLE_PLUGIN_JSON)
-        .map_err(|e| format!("failed to write sample plugin.json: {}", e))?;
-    std::fs::write(sample_dir.join("main.js"), SAMPLE_MAIN_JS)
-        .map_err(|e| format!("failed to write sample main.js: {}", e))?;
-    std::fs::write(sample_dir.join("ui").join("settings.html"), SAMPLE_SETTINGS_HTML)
-        .map_err(|e| format!("failed to write sample settings.html: {}", e))?;
+    std::fs::create_dir_all(&root)
+        .map_err(|e| format!("failed to create plugins dir: {}", e))?;
+
+    // 示例一：text-tools（工具 + 设置页）
+    if !root.join("text-tools").exists() {
+        let dir = root.join("text-tools");
+        std::fs::create_dir_all(dir.join("ui"))
+            .map_err(|e| format!("failed to create text-tools dir: {}", e))?;
+        std::fs::write(dir.join("plugin.json"), SAMPLE_PLUGIN_JSON)
+            .map_err(|e| format!("failed to write text-tools plugin.json: {}", e))?;
+        std::fs::write(dir.join("main.js"), SAMPLE_MAIN_JS)
+            .map_err(|e| format!("failed to write text-tools main.js: {}", e))?;
+        std::fs::write(dir.join("ui").join("settings.html"), SAMPLE_SETTINGS_HTML)
+            .map_err(|e| format!("failed to write text-tools settings.html: {}", e))?;
+    }
+
+    // 示例二：token-report（宿主数据桥 + 斜杠命令）
+    if !root.join("token-report").exists() {
+        let dir = root.join("token-report");
+        std::fs::create_dir_all(&dir)
+            .map_err(|e| format!("failed to create token-report dir: {}", e))?;
+        std::fs::write(dir.join("plugin.json"), TOKEN_REPORT_PLUGIN_JSON)
+            .map_err(|e| format!("failed to write token-report plugin.json: {}", e))?;
+        std::fs::write(dir.join("main.js"), TOKEN_REPORT_MAIN_JS)
+            .map_err(|e| format!("failed to write token-report main.js: {}", e))?;
+    }
+
+    // 示例三：plugins-template（最小骨架，复制改造）
+    if !root.join("plugins-template").exists() {
+        let dir = root.join("plugins-template");
+        std::fs::create_dir_all(&dir)
+            .map_err(|e| format!("failed to create plugins-template dir: {}", e))?;
+        std::fs::write(dir.join("plugin.json"), TEMPLATE_PLUGIN_JSON)
+            .map_err(|e| format!("failed to write plugins-template plugin.json: {}", e))?;
+        std::fs::write(dir.join("main.js"), TEMPLATE_MAIN_JS)
+            .map_err(|e| format!("failed to write plugins-template main.js: {}", e))?;
+        std::fs::write(dir.join("README.md"), TEMPLATE_README_MD)
+            .map_err(|e| format!("failed to write plugins-template README.md: {}", e))?;
+    }
+
+    std::fs::write(&marker, b"")
+        .map_err(|e| format!("failed to write builtin marker: {}", e))?;
     Ok(())
 }
 
@@ -192,6 +275,7 @@ const SAMPLE_PLUGIN_JSON: &str = r#"{
   "version": "0.1.0",
   "description": "示例插件：为 AI 提供字数统计与文本转换两个工具，并附带一个设置页演示插件界面能力。停用后工具与设置页同步消失。",
   "author": "Nova",
+  "system": true,
   "permissions": [],
   "contributes": {
     "tools": [
@@ -256,6 +340,120 @@ nova.tool("text_case", function (args) {
 });
 
 nova.log("text-tools 插件已加载");
+"#;
+
+const TOKEN_REPORT_PLUGIN_JSON: &str = r#"{
+  "id": "token-report",
+  "name": "用量报告",
+  "version": "0.1.0",
+  "description": "示例插件：演示宿主数据桥 API——AI 可调用工具查询全局/今日 token 用量与当前会话信息；注册 /usage 斜杠命令一键生成用量报告。",
+  "author": "Nova",
+  "system": true,
+  "permissions": [],
+  "contributes": {
+    "tools": [
+      {
+        "name": "usage_report",
+        "description": "查询 Nova 用量统计：全局累计、今日用量、最近 5 轮明细。返回结构化 JSON。",
+        "parameters": { "type": "object", "properties": {} }
+      },
+      {
+        "name": "session_report",
+        "description": "查询当前会话信息：模型、provider、工作区路径、会话标题与开始时间，以及当前可用工具数量。",
+        "parameters": { "type": "object", "properties": {} }
+      }
+    ],
+    "commands": [
+      {
+        "name": "usage",
+        "title": "生成用量报告",
+        "description": "汇总全局与今日 token 用量，给出节省建议",
+        "promptTemplate": "请调用 usage_report 工具查询我的 token 用量统计，然后用简洁的中文报告：1) 全局累计用量与成本；2) 今日用量；3) 最近几轮的消耗分布；4) 如有明显偏高给出 1-2 条节省建议。"
+      }
+    ]
+  }
+}
+"#;
+
+const TOKEN_REPORT_MAIN_JS: &str = r#"// 用量报告示例插件：演示 nova.usage / nova.session 宿主数据桥 API。
+// 数据只读、按插件可见范围裁剪（用量只做全局/今日聚合，不含会话明细）。
+
+nova.tool("usage_report", function () {
+  const total = nova.usage.getTotal();
+  const today = nova.usage.getToday();
+  const recent = nova.usage.getRecent(5);
+  return {
+    total: total,
+    today: today,
+    recentTurns: recent,
+  };
+});
+
+nova.tool("session_report", function () {
+  const info = nova.session.getInfo();
+  const tools = nova.session.listTools();
+  return {
+    session: info,
+    availableToolCount: tools.length,
+  };
+});
+
+nova.log("token-report 插件已加载");
+"#;
+
+const TEMPLATE_PLUGIN_JSON: &str = r#"{
+  "id": "plugins-template",
+  "name": "插件模板",
+  "version": "0.1.0",
+  "description": "最小插件骨架：复制本目录改个 id 即可开始开发。当前提供 echo 演示工具。",
+  "author": "you",
+  "permissions": [],
+  "contributes": {
+    "tools": [
+      {
+        "name": "echo",
+        "description": "原样返回输入文本（演示工具）。",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "text": { "type": "string", "description": "要回显的文本" }
+          },
+          "required": ["text"]
+        }
+      }
+    ]
+  }
+}
+"#;
+
+const TEMPLATE_MAIN_JS: &str = r#"// 插件模板：复制本目录，改 plugin.json 的 id/name，改这里的工具实现。
+// 全部可用 API 见插件页「开发指南」或 docs/plugin-api.md。
+// 热开发：保存本文件后无需重启，下次工具调用自动执行新代码。
+
+nova.tool("echo", function (args) {
+  return { echo: String(args.text ?? "") };
+});
+
+nova.log("plugins-template 已加载");
+"#;
+
+const TEMPLATE_README_MD: &str = r#"# Nova 插件模板
+
+复制本目录到 plugins/ 下，重命名目录并同步修改 plugin.json 的 id。
+
+## 文件说明
+
+- `plugin.json`：清单（工具 schema、命令、提示词片段、权限、设置页声明）
+- `main.js`：沙箱入口（nova.tool 注册工具实现）
+- `ui/`：（可选）界面文件，经 nova-plugin:// 协议供给 iframe
+
+## 快速开始
+
+1. 复制目录 → 改 id/name → 改工具实现
+2. 插件页点「刷新」（或等目录监听自动刷新）
+3. 启用插件 → AI 即可调用你的工具
+
+完整 API 参考：docs/plugin-api.md
 "#;
 
 const SAMPLE_SETTINGS_HTML: &str = r#"<!DOCTYPE html>

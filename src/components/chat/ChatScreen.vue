@@ -47,8 +47,10 @@ const props = defineProps<{
   compacting?: boolean;
   /** AI 主流程错误原文：临时展示，不进入消息数组，下次发送时清空。 */
   chatError?: string | null;
-  /** 当前对话挂载的智能体（会话级）。null = 默认 Nova。 */
+  /** 当前对话挂载的智能体（会话级）。null = 默认 Nova（不展示）。 */
   activeAgent?: { id: string; name: string; description?: string } | null;
+  /** 当前会话 id（插件命令展开 {workspace} 占位符用）。 */
+  conversationId?: string | null;
 }>();
 
 const emit = defineEmits<{
@@ -840,6 +842,7 @@ defineExpose({
           :conversationUsage="conversationUsage"
           :compacting="compacting"
           :activeAgent="activeAgent"
+          :conversationId="conversationId"
           @send="handleSend"
           @cancel="emit('cancel')"
           @remove-agent="emit('remove-agent')"

@@ -62,6 +62,10 @@ pub fn run() {
             for info in broken {
                 warn!(plugin = %info.id, error = ?info.error, "plugin failed to load at startup");
             }
+
+            // 启动插件目录监听：开发插件改 main.js 免重启、手动增删目录自动刷新。
+            crate::llm::services::plugins::start_plugins_watcher(app.handle().clone());
+
             info!("application setup completed");
             Ok(())
         })
@@ -170,7 +174,13 @@ pub fn run() {
             command::plugins::get_plugin_settings,
             command::plugins::set_plugin_settings,
             command::plugins::call_plugin_tool,
-            command::plugins::open_plugins_dir
+            command::plugins::open_plugins_dir,
+            command::plugins::install_plugin_from_zip,
+            command::plugins::uninstall_plugin,
+            command::plugins::check_plugin_update,
+            command::plugins::update_plugin,
+            command::plugins::list_plugin_commands,
+            command::plugins::expand_plugin_command
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application");

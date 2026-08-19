@@ -72,6 +72,31 @@ fn main_prompt_path() -> PathBuf {
         .join(SYSTEM_PROMPT_FILE_NAME)
 }
 
+/// 拼接指定锚点的插件提示词片段（启用插件的 promptSection 贡献，只增不改）。
+/// 插件是宿主级安装的，与智能体套件无隶属关系——bundle 完整替换提示词时同样注入。
+fn append_plugin_prompt_sections(
+    prompt: String,
+    app: &AppHandle,
+    placement: &str,
+) -> String {
+    let sections = crate::llm::services::plugins::plugin_prompt_sections(app);
+    let matched: Vec<_> = sections
+        .into_iter()
+        .filter(|(_, _, anchor)| anchor == placement)
+        .collect();
+    if matched.is_empty() {
+        return prompt;
+    }
+    let mut result = prompt;
+    for (plugin_name, content, _) in matched {
+        result = format!(
+            "{}\n\n## Plugin: {}\n{}\n",
+            result, plugin_name, content
+        );
+    }
+    result
+}
+
 pub fn load_system_prompt(
     app: &AppHandle,
     agent_mode: AgentMode,
@@ -115,6 +140,9 @@ pub fn load_system_prompt(
     let rg_path = crate::llm::tools::grep_tool::find_rg_path(app);
     let prompt = prompt.replace("{{RG_PATH}}", &rg_path);
 
+    // 插件提示词片段（after-tools 锚点）：主提示词之后、Memory 段之前。
+    let prompt = append_plugin_prompt_sections(prompt, app, "after-tools");
+
     // Memory 使用说明只有 memory 工具对当前智能体可见时才注入
     //（bundle 自定义工具清单排除了 memory 时，写它就是误导）。
     let memory_tool_visible = match &bundle {
@@ -132,6 +160,10 @@ pub fn load_system_prompt(
         Some(snapshot_block) => format!("{}\n\n{}\n", prompt_with_memory, snapshot_block),
         None => prompt_with_memory,
     };
+
+    // 插件提示词片段（before-memory 锚点）：记忆快照之后、Skills 段之前。
+    let prompt_with_memory =
+        append_plugin_prompt_sections(prompt_with_memory, app, "before-memory");
 
     // 注入可用 skill 元数据，AI 无需先 list 即可直接 run。
     // 已停用（全局设置）、不在当前 bundle 白名单内、或 Skill 工具本身被 bundle
@@ -166,6 +198,9 @@ pub fn load_system_prompt(
     } else {
         prompt_with_memory
     };
+
+    // 插件提示词片段（end 锚点）：Skills 段之后、模式段之前。
+    let prompt_with_memory = append_plugin_prompt_sections(prompt_with_memory, app, "end");
 
     // 按执行模式拼接附加段。
     match agent_mode {

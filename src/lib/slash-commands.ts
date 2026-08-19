@@ -1,7 +1,8 @@
 import type { WorkspaceDiff } from '../features/chat/services/chat-api';
 
-// 命令类型：local=直接执行本地动作；prompt=构造模板消息发送给 AI；skill=触发 SkillTool
-export type SlashCommandType = 'local' | 'prompt' | 'skill';
+// 命令类型：local=直接执行本地动作；prompt=构造模板消息发送给 AI；skill=触发 SkillTool；
+// plugin=插件贡献的命令（promptTemplate 展开，由后端 expand_plugin_command 处理）
+export type SlashCommandType = 'local' | 'prompt' | 'skill' | 'plugin';
 
 // 参数模式：options=从二级选项列表选择；free=自由文本参数；none=无参（选中即执行）
 export type SlashCommandArgs = 'options' | 'free' | 'none';
@@ -11,6 +12,10 @@ export type SlashCommandEntry = {
   description: string;
   type: SlashCommandType;
   args: SlashCommandArgs;
+  /** type=plugin 时：贡献该命令的插件 id（展开时传给后端）。 */
+  pluginId?: string;
+  /** type=plugin 时：命令显示标题（二级选项展示用）。 */
+  pluginTitle?: string;
 };
 
 // 二级选项：每个命令在 param 阶段展示的候选项
@@ -27,6 +32,44 @@ export const SLASH_COMMANDS: SlashCommandEntry[] = [
   { name: 'memory', description: '查看全局记忆', type: 'local', args: 'options' },
   { name: 'review', description: '审查工作区改动', type: 'prompt', args: 'options' },
   { name: 'init', description: '生成 AGENTS.md 项目说明', type: 'prompt', args: 'options' },
+];
+
+// ---------------- 插件命令注册表（运行时合并） ----------------
+
+// 后端 list_plugin_commands 返回的插件命令条目
+export type PluginSlashCommand = {
+  pluginId: string;
+  pluginName: string;
+  name: string;
+  title: string;
+  description: string;
+};
+
+// 已启用插件的命令缓存（list_plugin_commands 拉取后写入）
+let pluginCommands: PluginSlashCommand[] = [];
+
+// 更新插件命令缓存（后端数据变化时调用）
+export const setPluginCommands = (commands: PluginSlashCommand[]) => {
+  pluginCommands = commands;
+};
+
+// 当前插件命令缓存
+export const getPluginCommands = (): PluginSlashCommand[] => pluginCommands;
+
+// 插件命令转统一的命令条目
+const pluginCommandToEntry = (command: PluginSlashCommand): SlashCommandEntry => ({
+  name: command.name,
+  description: command.description || `插件「${command.pluginName}」贡献的命令`,
+  type: 'plugin',
+  args: 'options',
+  pluginId: command.pluginId,
+  pluginTitle: command.title || command.name,
+});
+
+// 全量命令列表：内置 + 插件（命令列表阶段渲染与匹配的唯一来源）
+export const allSlashCommands = (): SlashCommandEntry[] => [
+  ...SLASH_COMMANDS,
+  ...pluginCommands.map(pluginCommandToEntry),
 ];
 
 // 静态二级选项
@@ -46,12 +89,13 @@ export const INIT_OPTIONS: SlashParamOption[] = [
 ];
 
 // 解析输入中的斜杠命令。返回命令条目和参数尾部（rest）。
+// 匹配范围：内置命令 + 已启用插件命令。
 export const parseSlashCommand = (text: string): { entry: SlashCommandEntry; rest: string } | null => {
   const trimmed = text.trim();
   if (!trimmed.startsWith('/')) return null;
   const firstSpace = trimmed.indexOf(' ');
   const cmdName = (firstSpace === -1 ? trimmed.slice(1) : trimmed.slice(1, firstSpace)).toLowerCase();
-  const entry = SLASH_COMMANDS.find((cmd) => cmd.name.toLowerCase() === cmdName);
+  const entry = allSlashCommands().find((cmd) => cmd.name.toLowerCase() === cmdName);
   if (!entry) return null;
   const rest = firstSpace === -1 ? '' : trimmed.slice(firstSpace + 1).trim();
   return { entry, rest };

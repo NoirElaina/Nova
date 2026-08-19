@@ -2,7 +2,7 @@
 // 生命周期事件（kind=status）建立/更新条目；流式事件（kind=stream）把包装的
 // ChatMessageEvent 增量转成侧边栏日志行。状态为模块级单例，多组件共享。
 
-import { reactive } from 'vue';
+import { reactive, ref } from 'vue';
 import { listen } from '@tauri-apps/api/event';
 
 export type SubagentLine = {
@@ -45,6 +45,14 @@ interface SubagentEventPayload {
 }
 
 const entries = reactive(new Map<string, SubagentEntry>());
+
+/** 抽屉开关（行内按钮与 Teleport 抽屉跨组件共享）。 */
+export const panelOpen = ref(false);
+
+/** 切换抽屉。 */
+export function togglePanel() {
+  panelOpen.value = !panelOpen.value;
+}
 
 let listenerReady = false;
 let initPromise: Promise<void> | null = null;
@@ -161,4 +169,9 @@ export function clearSubagents(parentConversationId: string | null | undefined) 
       entries.delete(subId);
     }
   }
+}
+
+/** 清空全部子代理记录（清空历史时调用，entries 为模块级单例，不清理会跨会话泄漏）。 */
+export function clearAllSubagents() {
+  entries.clear();
 }

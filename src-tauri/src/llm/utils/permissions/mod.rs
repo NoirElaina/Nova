@@ -158,6 +158,10 @@ fn conversation_scope_key(conversation_id: Option<&str>) -> String {
         .map(str::trim)
         // 空字符串视为未提供会话 id。
         .filter(|id| !id.is_empty())
+        // 子代理会话（`{parent}:sub:{uuid}`）归一化到父会话：
+        // auto bypass、会话级 allow 等决策随父会话生效，
+        // 避免子代理在 Auto 模式下因 scope 不一致仍走审批。
+        .map(crate::llm::services::subagent::parent_conversation_id)
         // 缺省落到全局 scope。
         .unwrap_or(DEFAULT_PERMISSION_SCOPE)
         .to_string()
@@ -902,6 +906,18 @@ pub fn enforce_tool_permission(
     }
 
     if operation.needs_approval {
+        // 子代理没有审批通道：审批请求会以 `:sub:` 派生会话 ID 发到前端，
+        // 但该 ID 不是可切换的真实会话，用户永远无法处理，
+        // 子代理会一直挂到审批超时（默认 15 分钟）才失败。
+        // 这里直接拒绝并把原因告诉模型，让它换路径或把该操作交回主代理。
+        // Auto 模式不受影响：bypass 已随父会话 scope 继承，在上面提前 Allow。
+        if crate::llm::services::subagent::is_subagent_conversation(conversation_id) {
+            return PermissionEnforcement::Deny(format!(
+                "Permission required for tool '{}' in subagent context, but subagents cannot ask the user for approval. Use a different, non-sensitive path or report back so the parent agent can perform this operation.",
+                tool_name
+            ));
+        }
+
         let request_id = upsert_pending_request_id(state, &operation);
         // request_id: 生成或复用的待审批请求 id。
         return PermissionEnforcement::AskUser {

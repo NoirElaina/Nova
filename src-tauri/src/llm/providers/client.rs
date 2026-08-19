@@ -53,7 +53,12 @@ impl LlmClient {
         };
 
         let http_client = Client::builder()
-            .timeout(Duration::from_secs(300))
+            // read_timeout：连续 120s 收不到任何字节才超时。
+            // 不能用 timeout()——那是"连接开始到 body 流完"的总超时，
+            // 长轮次（长思考+长输出）超 5 分钟会被从中间掐断，
+            // 表现为 stream chunk error: error decoding response body。
+            // 健康的 SSE 流有 ping/增量 token，永远不会触发 read_timeout。
+            .read_timeout(Duration::from_secs(120))
             .connect_timeout(Duration::from_secs(10))
             .pool_max_idle_per_host(4)
             .pool_idle_timeout(Duration::from_secs(90))

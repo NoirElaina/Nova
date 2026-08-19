@@ -51,7 +51,10 @@ const aggregatedToolEntries = computed<ToolExecutionEntry[]>(() => {
 
 function segmentKey(segment: AssistantTranscriptSegment, index: number): string {
   if (segment.type === "tools") {
-    return `${index}-tools-${segment.toolIds[0] ?? "x"}-${segment.toolIds.length}`;
+    // 锚定该组第一个工具 ID（追加新工具时不变）。
+    // 不能混入 index/length：流式执行中组内追加工具会让 key 变化，
+    // 卡片被销毁重建，<details> 的展开状态随之丢失（面板莫名折叠）。
+    return `tools-${segment.toolIds[0] ?? index}`;
   }
   return `${index}-${segment.type}`;
 }

@@ -40,6 +40,7 @@ import {
   stashRuntimeState,
 } from "./chat-runtime-state";
 import { buildAssistantTranscriptSegments } from "../utils/assistant-transcript";
+import { clearAllSubagents, clearSubagents } from "../services/subagents";
 
 type ConversationOpsDeps = {
   activeConversationId: Ref<string>;
@@ -447,6 +448,8 @@ export function createConversationOperations(deps: ConversationOpsDeps) {
 
     try {
       await deleteConversation(id);
+      // 子代理记录是模块级单例 Map，随会话删除同步清理，避免跨会话累积泄漏。
+      clearSubagents(id);
       await refreshConversations();
 
       if (isCurrentActive) {
@@ -489,6 +492,8 @@ export function createConversationOperations(deps: ConversationOpsDeps) {
 
     runtimeStateByConversation.clear();
     clearAllSessionState();
+    // 历史全部清空，子代理单例记录一并清掉。
+    clearAllSubagents();
 
     await refreshConversations();
     if (conversations.value.length === 0) {

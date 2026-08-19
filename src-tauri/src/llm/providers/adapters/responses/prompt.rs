@@ -250,7 +250,13 @@ pub(crate) fn build_request(
     let profile = settings.active_provider_profile();
     let builtin_tools = tools::get_available_tools_for_agent(app, conversation_id);
     let tool_count = builtin_tools.len();
-    let max_output_tokens = model_context::get_max_output_tokens(&profile.model);
+    // 子代理会话钳制输出上限（理由同 anthropic 适配器）。
+    let max_output_tokens =
+        if crate::llm::services::subagent::is_subagent_conversation(conversation_id) {
+            model_context::get_max_output_tokens(&profile.model).min(16_384)
+        } else {
+            model_context::get_max_output_tokens(&profile.model)
+        };
 
     let tools = if builtin_tools.is_empty() {
         None

@@ -77,6 +77,7 @@ fn subagent_system_prompt() -> String {
 
 ## Rules
 - Workspace root is provided in the first message. Search broadly first, then read the files that matter. Never guess content — verify with tools.
+- Read can only read individual files — to see what a directory contains, use Glob patterns (e.g. `**/*.rs`, `src/*`), never Read on a directory path.
 - You cannot write, edit, create files, run shell commands, or ask the user questions. Do not attempt to; if information is missing, state exactly what is missing and proceed with what you have.
 - Each task is independent: do not rely on any context outside this conversation.
 
@@ -226,6 +227,105 @@ pub async fn run(
     result
 }
 
+/// 单个 ToolResult 文本超过此字符数时截断（子代理瘦身第二级）。
+const TOOL_RESULT_TRUNCATE_CHARS: usize = 8_000;
+
+/// 每轮请求前的上下文瘦身：子代理版的工具结果清理。
+/// 与主对话的 apply_tool_result_context_editing 不同——那边保护 Read/Grep/Glob
+/// 结果（agent 后续还要引用文件内容），子代理的报告靠模型当场总结，
+/// 旧的搜索结果可以放心清掉，只保留最近几组。
+///
+/// 两级策略：
+/// 1. 估算 token 超窗口 50%：把较早的 ToolResult（保留最近 4 组）替换为占位符；
+/// 2. 仍超 80%：对保留的 ToolResult 长文本做字符截断。
+fn trim_subagent_context(messages: &mut Vec<Message>, window_tokens: i64) {
+    let estimate = crate::llm::utils::token_counter::count_messages(messages);
+    let half = window_tokens / 2;
+    if estimate < half {
+        return;
+    }
+
+    // 收集全部 ToolResult id（按消息顺序 = 时间顺序），保留最近 4 组。
+    let mut result_ids: Vec<String> = Vec::new();
+    for message in messages.iter() {
+        if let Content::Blocks(blocks) = &message.content {
+            for block in blocks {
+                if let ContentBlock::ToolResult { tool_use_id, .. } = block {
+                    result_ids.push(tool_use_id.clone());
+                }
+            }
+        }
+    }
+    let keep = 4;
+    if result_ids.len() > keep {
+        let clear: std::collections::HashSet<String> =
+            result_ids[..result_ids.len() - keep].iter().cloned().collect();
+
+        for message in messages.iter_mut() {
+            if let Content::Blocks(blocks) = &mut message.content {
+                for block in blocks.iter_mut() {
+                    if let ContentBlock::ToolResult {
+                        tool_use_id,
+                        is_error,
+                        content,
+                    } = block
+                    {
+                        if clear.contains(tool_use_id) {
+                            *content = vec![ContentBlock::Text {
+                                text: "[cleared: old tool result omitted to save context]".into(),
+                            }];
+                            *is_error = false;
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // 第二级：仍超 80% 窗口则截断剩余长文本。
+    let estimate2 = crate::llm::utils::token_counter::count_messages(messages);
+    if estimate2 >= window_tokens * 80 / 100 {
+        for message in messages.iter_mut() {
+            if let Content::Blocks(blocks) = &mut message.content {
+                for block in blocks.iter_mut() {
+                    if let ContentBlock::ToolResult { content, .. } = block {
+                        for inner in content.iter_mut() {
+                            if let ContentBlock::Text { text } = inner {
+                                if text.chars().count() > TOOL_RESULT_TRUNCATE_CHARS {
+                                    let head: String =
+                                        text.chars().take(TOOL_RESULT_TRUNCATE_CHARS).collect();
+                                    *text = format!("{}…[truncated]", head);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// prompt_too_long / 上下文超限的兜底：截掉最老的消息（保留任务首条 + 最近 8 条），
+/// 重建合法的 tool_use/tool_result 配对后返回新列表。
+/// tool_result 消息被截掉而对应 tool_use 留存（或反之）会被 API 拒绝，
+/// 因此清理后要删除孤儿块。
+fn truncate_subagent_messages(messages: &[Message]) -> Vec<Message> {
+    let keep_recent = 8;
+    if messages.len() <= keep_recent + 1 {
+        return messages.to_vec();
+    }
+
+    let first = messages[0].clone(); // 任务描述，永远保留
+    let tail = &messages[messages.len() - keep_recent..];
+
+    let mut trimmed = vec![first];
+    trimmed.extend(tail.iter().cloned());
+    // 孤儿 tool_use/tool_result 块清理与主对话兜底截断共用同一实现
+    //（compact::drop_orphan_tool_blocks）。
+    crate::llm::services::compact::drop_orphan_tool_blocks(&mut trimmed);
+    trimmed
+}
+
 /// 内层循环：调用 provider（含工具执行）直到无工具调用或达到轮次上限。
 async fn run_loop(
     app: &AppHandle,
@@ -253,12 +353,50 @@ async fn run_loop(
         let mut provider = LlmClient::new(app)?;
         let settings = crate::command::settings::load_settings(app)?;
         let model = settings.active_provider_profile().model;
+        let window_tokens = settings.context_window_for_model(&model) as i64;
 
-        let (provider_result, _estimate) = tokio::select! {
-            result = provider.send_request(app, messages, crate::llm::types::AgentMode::Agent, Some(sub_id)) => result.map_err(|e| e.message)?,
+        // 上下文瘦身：超窗口 50% 清旧工具结果，防止多轮搜索结果无限累积
+        //（曾导致 25 轮滚到 2.4M token 被 API 400 拒绝）。
+        trim_subagent_context(messages, window_tokens);
+
+        let send_result = tokio::select! {
+            result = provider.send_request(app, messages, crate::llm::types::AgentMode::Agent, Some(sub_id)) => result,
             _ = parent_cancel.cancelled() => {
                 let partial = extract_report_text(messages);
                 return Ok(format!("[cancelled by user]\n{}", if partial.is_empty() { "(no partial findings)".to_string() } else { partial }));
+            }
+        };
+
+        let (provider_result, _estimate) = match send_result {
+            Ok(v) => v,
+            Err(provider_err) => {
+                // prompt_too_long 兜底：截断最老消息重试一次。
+                // 瘦身是预防，这里是保险——估算偏差或突发大结果仍可能超。
+                let e = provider_err.message.clone();
+                if crate::llm::services::compact::is_prompt_too_long_error(&e) {
+                    let trimmed = truncate_subagent_messages(messages);
+                    if trimmed.len() < messages.len() {
+                        *messages = trimmed;
+                        // 重试本 turn（不消耗轮数计数）。
+                        let retry_outcome: Result<
+                            (crate::llm::providers::ProviderTurnResult, crate::llm::providers::ProviderPromptEstimate),
+                            String,
+                        > = tokio::select! {
+                            result = provider.send_request(app, messages, crate::llm::types::AgentMode::Agent, Some(sub_id)) => result.map_err(|err| err.message),
+                            _ = parent_cancel.cancelled() => {
+                                Err("cancelled by user".to_string())
+                            }
+                        };
+                        match retry_outcome {
+                            Ok((result, estimate)) => (result, estimate),
+                            Err(retry_err) => return Err(retry_err),
+                        }
+                    } else {
+                        return Err(e);
+                    }
+                } else {
+                    return Err(e);
+                }
             }
         };
 

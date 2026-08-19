@@ -22,6 +22,12 @@ import ContextUsageIndicator from './ContextUsageIndicator.vue';
 import ConversationUsageBar from './ConversationUsageBar.vue';
 import { getWorkspaceDiff } from '../../features/chat/services/chat-api';
 import {
+  initSubagentEvents,
+  panelOpen as subagentPanelOpen,
+  subagentsFor,
+  togglePanel as toggleSubagentPanel,
+} from '../../features/chat/services/subagents';
+import {
   MEMORY_OPTIONS,
   REVIEW_OPTIONS,
   INIT_OPTIONS,
@@ -760,7 +766,16 @@ const handleDocumentClick = (e: MouseEvent) => {
   }
 };
 
+// 子代理状态（行内按钮）：当前会话的子代理计数 + 抽屉开关。
+const subagentEntries = computed(() => subagentsFor(props.conversationId));
+const subagentCount = computed(() => subagentEntries.value.length);
+const subagentRunning = computed(
+  () => subagentEntries.value.filter((entry) => entry.phase === 'running').length,
+);
+const panelOpen = subagentPanelOpen;
+
 onMounted(() => {
+  void initSubagentEvents();
   loadSettings();
   void loadPluginCommands();
   window.addEventListener('settings-updated', handleSettingsUpdate);
@@ -1109,7 +1124,27 @@ defineExpose({
           <span class="font-medium">Nova（默认）</span>
         </span>
       </div>
-      <div class="ml-auto min-w-0 shrink-0">
+      <div class="ml-auto min-w-0 shrink-0 flex items-center gap-2">
+        <!-- 子代理按钮：当前会话有记录时显示 -->
+        <button
+          v-if="subagentCount > 0"
+          type="button"
+          class="inline-flex shrink-0 cursor-pointer items-center gap-1.5 rounded-md px-1.5 py-0.5 text-[12px] leading-tight transition-colors hover:bg-[#f1f5f9] dark:hover:bg-[#2a2a2a]"
+          :class="panelOpen ? 'text-[#1a7f37] dark:text-[#4ade80]' : 'text-[#4f5f73] dark:text-[#d5dbe3]'"
+          :title="panelOpen ? '收起子代理面板' : '查看子代理运行详情'"
+          @click="toggleSubagentPanel"
+        >
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <circle cx="11" cy="11" r="7" />
+            <path d="m21 21-4.3-4.3" />
+          </svg>
+          <span class="font-medium">子代理</span>
+          <span v-if="subagentRunning > 0" class="inline-flex items-center gap-1">
+            <span class="inline-block h-1.5 w-1.5 rounded-full bg-[#22c55e] animate-pulse" />
+            <span class="tabular-nums">{{ subagentRunning }}</span>
+          </span>
+          <span v-else class="tabular-nums opacity-70">{{ subagentCount }}</span>
+        </button>
         <ConversationUsageBar :usage="conversationUsage" />
       </div>
     </div>

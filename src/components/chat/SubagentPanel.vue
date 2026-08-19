@@ -2,6 +2,7 @@
 import { computed, nextTick, onMounted, ref, watch } from 'vue';
 import {
   initSubagentEvents,
+  panelOpen,
   subagentsFor,
   type SubagentEntry,
 } from '../../features/chat/services/subagents';
@@ -14,30 +15,36 @@ onMounted(() => {
   void initSubagentEvents();
 });
 
-const panelOpen = ref(false);
-const expandedCards = ref(new Set<string>());
+// 两级视图：null = 卡片列表；非 null = 该子代理的详情页。
+const selectedSubId = ref<string | null>(null);
 
 const entries = computed<SubagentEntry[]>(() => subagentsFor(props.conversationId));
 const runningCount = computed(() => entries.value.filter((e) => e.phase === 'running').length);
 const doneCount = computed(() => entries.value.filter((e) => e.phase !== 'running').length);
 
-// 会话切换或全部结束时自动收起按钮上下文，但保留已完成的记录供查看。
+const selectedEntry = computed(
+  () => entries.value.find((e) => e.subId === selectedSubId.value) ?? null,
+);
+
+// 会话切换时回列表视图；条目被清理（如删除会话）时同样回退。
 watch(
   () => props.conversationId,
   () => {
-    expandedCards.value.clear();
+    selectedSubId.value = null;
   },
 );
 
-const toggleCard = (subId: string) => {
-  const next = new Set(expandedCards.value);
-  if (next.has(subId)) {
-    next.delete(subId);
-  } else {
-    next.add(subId);
-  }
-  expandedCards.value = next;
+watch(selectedEntry, (entry) => {
+  if (!entry) selectedSubId.value = null;
+});
+
+const openDetail = (subId: string) => {
+  selectedSubId.value = subId;
   void nextTick(scrollLogToBottom);
+};
+
+const backToList = () => {
+  selectedSubId.value = null;
 };
 
 const formatElapsed = (ms?: number) => {
@@ -51,23 +58,16 @@ const formatElapsed = (ms?: number) => {
 const phaseLabel = (entry: SubagentEntry) =>
   entry.phase === 'running' ? '运行中' : entry.phase === 'error' ? '出错' : '完成';
 
-const logContainerRefs = ref(new Map<string, HTMLElement>());
-const setLogRef = (subId: string, el: unknown) => {
-  if (el instanceof HTMLElement) {
-    logContainerRefs.value.set(subId, el);
-  } else {
-    logContainerRefs.value.delete(subId);
-  }
-};
+// 详情页日志容器：流式输出时自动滚到底部（仅详情页存在，单 ref 即可）。
+const logEl = ref<HTMLElement | null>(null);
 
 const scrollLogToBottom = () => {
-  for (const el of logContainerRefs.value.values()) {
-    el.scrollTop = el.scrollHeight;
-  }
+  const el = logEl.value;
+  if (el) el.scrollTop = el.scrollHeight;
 };
 
 watch(
-  () => entries.value.map((e) => e.lines.length).join(','),
+  () => selectedEntry.value?.lines.length,
   () => void nextTick(scrollLogToBottom),
 );
 
@@ -77,86 +77,74 @@ const drawerTop = '56px';
 
 <template>
   <Teleport to="body">
-    <!-- 浮动按钮：当前会话存在子代理记录时显示 -->
-    <button
-      v-if="entries.length > 0"
-      type="button"
-      class="subagent-fab"
-      :class="{ 'subagent-fab--active': panelOpen }"
-      :title="panelOpen ? '收起子代理面板' : '查看子代理'"
-      @click="panelOpen = !panelOpen"
-    >
-      <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-        <circle cx="11" cy="11" r="7" />
-        <path d="m21 21-4.3-4.3" />
-      </svg>
-      <span>子代理</span>
-      <span v-if="runningCount > 0" class="subagent-fab__badge subagent-fab__badge--running">
-        {{ runningCount }} 运行
-      </span>
-      <span v-else class="subagent-fab__badge">{{ doneCount }} 完成</span>
-    </button>
-
-    <!-- 右侧抽屉 -->
+    <!-- 右侧抽屉（按钮在 InputArea 状态行内，通过共享 panelOpen 控制） -->
     <Transition name="subagent-drawer">
       <div v-if="panelOpen && entries.length > 0" class="subagent-drawer" :style="{ top: drawerTop }">
-        <div class="subagent-drawer__header">
-          <div class="subagent-drawer__title">子代理</div>
-          <div class="subagent-drawer__meta">
-            {{ runningCount }} 运行 · {{ doneCount }} 完成
+        <!-- 详情页 -->
+        <template v-if="selectedEntry">
+          <div class="subagent-drawer__header">
+            <button
+              type="button"
+              class="subagent-drawer__back"
+              aria-label="返回子代理列表"
+              @click="backToList"
+            >
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <path d="m15 18-6-6 6-6" />
+              </svg>
+            </button>
+            <div class="subagent-drawer__title">子代理详情</div>
+            <div class="subagent-drawer__meta">{{ formatElapsed(selectedEntry.elapsedMs) }}</div>
+            <button
+              type="button"
+              class="subagent-drawer__close"
+              aria-label="关闭子代理面板"
+              @click="panelOpen = false"
+            >
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" aria-hidden="true">
+                <line x1="18" y1="6" x2="6" y2="18" />
+                <line x1="6" y1="6" x2="18" y2="18" />
+              </svg>
+            </button>
           </div>
-          <button
-            type="button"
-            class="subagent-drawer__close"
-            aria-label="关闭子代理面板"
-            @click="panelOpen = false"
-          >
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" aria-hidden="true">
-              <line x1="18" y1="6" x2="6" y2="18" />
-              <line x1="6" y1="6" x2="18" y2="18" />
-            </svg>
-          </button>
-        </div>
 
-        <div class="subagent-drawer__body">
-          <div v-if="entries.length === 0" class="subagent-empty">当前会话暂无子代理记录</div>
-
-          <div v-for="entry in entries" :key="entry.subId" class="subagent-card">
-            <button type="button" class="subagent-card__head" @click="toggleCard(entry.subId)">
+          <div class="subagent-detail">
+            <div class="subagent-detail__status-row">
               <span
                 class="subagent-card__dot"
                 :class="{
-                  'subagent-card__dot--running': entry.phase === 'running',
-                  'subagent-card__dot--error': entry.phase === 'error',
+                  'subagent-card__dot--running': selectedEntry.phase === 'running',
+                  'subagent-card__dot--error': selectedEntry.phase === 'error',
                 }"
               />
-              <span class="subagent-card__status">{{ phaseLabel(entry) }}</span>
-              <span class="subagent-card__elapsed">{{ formatElapsed(entry.elapsedMs) }}</span>
-              <svg
-                class="subagent-card__chevron"
-                :class="{ 'subagent-card__chevron--open': expandedCards.has(entry.subId) }"
-                width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor"
-                stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"
-              >
-                <path d="m9 18 6-6-6-6" />
-              </svg>
-            </button>
-
-            <div class="subagent-card__task" :title="entry.task">{{ entry.task }}</div>
-
-            <div v-if="entry.detail" class="subagent-card__detail">{{ entry.detail }}</div>
-
-            <div v-if="entry.reportPreview && entry.phase !== 'running'" class="subagent-card__report">
-              <div class="subagent-card__report-label">报告预览</div>
-              <div class="subagent-card__report-text">{{ entry.reportPreview }}</div>
+              <span class="subagent-detail__phase">{{ phaseLabel(selectedEntry) }}</span>
+              <span class="subagent-detail__started">
+                {{ new Date(selectedEntry.startedAt).toLocaleTimeString() }} 开始
+              </span>
             </div>
 
-            <div v-show="expandedCards.has(entry.subId)" class="subagent-card__log-wrap">
-              <div :ref="(el) => setLogRef(entry.subId, el)" class="subagent-card__log">
-                <div v-if="entry.lines.length === 0" class="subagent-card__log-empty">
+            <div class="subagent-detail__section">
+              <div class="subagent-detail__label">任务</div>
+              <div class="subagent-detail__task">{{ selectedEntry.task }}</div>
+            </div>
+
+            <div v-if="selectedEntry.detail" class="subagent-detail__section">
+              <div class="subagent-detail__label">状态信息</div>
+              <div class="subagent-detail__error-text">{{ selectedEntry.detail }}</div>
+            </div>
+
+            <div v-if="selectedEntry.reportPreview" class="subagent-detail__section">
+              <div class="subagent-detail__label">报告</div>
+              <div class="subagent-detail__report">{{ selectedEntry.reportPreview }}</div>
+            </div>
+
+            <div class="subagent-detail__section subagent-detail__section--log">
+              <div class="subagent-detail__label">运行日志</div>
+              <div ref="logEl" class="subagent-detail__log">
+                <div v-if="selectedEntry.lines.length === 0" class="subagent-card__log-empty">
                   等待子代理输出…
                 </div>
-                <template v-for="(line, index) in entry.lines" :key="index">
+                <template v-for="(line, index) in selectedEntry.lines" :key="index">
                   <div v-if="line.kind === 'tool'" class="subagent-log-line subagent-log-line--tool">
                     ⚙ {{ line.toolName }}
                   </div>
@@ -176,76 +164,72 @@ const drawerTop = '56px';
               </div>
             </div>
           </div>
-        </div>
+        </template>
+
+        <!-- 列表页 -->
+        <template v-else>
+          <div class="subagent-drawer__header">
+            <div class="subagent-drawer__title">子代理</div>
+            <div class="subagent-drawer__meta">
+              {{ runningCount }} 运行 · {{ doneCount }} 完成
+            </div>
+            <button
+              type="button"
+              class="subagent-drawer__close"
+              aria-label="关闭子代理面板"
+              @click="panelOpen = false"
+            >
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" aria-hidden="true">
+                <line x1="18" y1="6" x2="6" y2="18" />
+                <line x1="6" y1="6" x2="18" y2="18" />
+              </svg>
+            </button>
+          </div>
+
+          <div class="subagent-drawer__body">
+            <div v-if="entries.length === 0" class="subagent-empty">当前会话暂无子代理记录</div>
+
+            <button
+              v-for="entry in entries"
+              :key="entry.subId"
+              type="button"
+              class="subagent-card"
+              @click="openDetail(entry.subId)"
+            >
+              <span class="subagent-card__head">
+                <span
+                  class="subagent-card__dot"
+                  :class="{
+                    'subagent-card__dot--running': entry.phase === 'running',
+                    'subagent-card__dot--error': entry.phase === 'error',
+                  }"
+                />
+                <span class="subagent-card__status">{{ phaseLabel(entry) }}</span>
+                <span class="subagent-card__elapsed">{{ formatElapsed(entry.elapsedMs) }}</span>
+                <svg
+                  class="subagent-card__chevron"
+                  width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                  stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"
+                >
+                  <path d="m9 18 6-6-6-6" />
+                </svg>
+              </span>
+
+              <span class="subagent-card__task" :title="entry.task">{{ entry.task }}</span>
+
+              <span v-if="entry.reportPreview && entry.phase !== 'running'" class="subagent-card__report">
+                <span class="subagent-card__report-label">报告预览</span>
+                <span class="subagent-card__report-text">{{ entry.reportPreview }}</span>
+              </span>
+            </button>
+          </div>
+        </template>
       </div>
     </Transition>
   </Teleport>
 </template>
 
 <style scoped>
-.subagent-fab {
-  position: fixed;
-  right: 20px;
-  bottom: 150px;
-  z-index: 40;
-  display: inline-flex;
-  align-items: center;
-  gap: 7px;
-  border: 1px solid rgba(226, 216, 201, 0.9);
-  border-radius: 999px;
-  background: rgba(255, 255, 255, 0.92);
-  backdrop-filter: blur(6px);
-  color: #4f473c;
-  cursor: pointer;
-  font-size: 13px;
-  padding: 8px 12px;
-  box-shadow: 0 6px 18px rgba(55, 45, 31, 0.12);
-  transition: background 160ms ease, box-shadow 160ms ease, color 160ms ease;
-}
-
-.subagent-fab:hover {
-  background: #fff;
-  box-shadow: 0 8px 22px rgba(55, 45, 31, 0.18);
-}
-
-.subagent-fab--active {
-  background: #1f1f1d;
-  color: #fffaf0;
-}
-
-.subagent-fab__badge {
-  border-radius: 999px;
-  background: rgba(31, 31, 29, 0.08);
-  color: inherit;
-  font-size: 11px;
-  padding: 2px 8px;
-}
-
-.subagent-fab__badge--running {
-  background: rgba(34, 197, 94, 0.16);
-  color: #15803d;
-}
-
-.dark .subagent-fab {
-  border-color: #46413a;
-  background: rgba(37, 37, 37, 0.92);
-  color: #d6cec2;
-}
-
-.dark .subagent-fab--active {
-  background: #eee4d6;
-  color: #1f1f1d;
-}
-
-.dark .subagent-fab__badge {
-  background: rgba(255, 255, 255, 0.08);
-}
-
-.dark .subagent-fab__badge--running {
-  background: rgba(34, 197, 94, 0.2);
-  color: #4ade80;
-}
-
 .subagent-drawer {
   position: fixed;
   right: 16px;
@@ -297,6 +281,7 @@ const drawerTop = '56px';
   color: #8b816f;
 }
 
+.subagent-drawer__back,
 .subagent-drawer__close {
   display: inline-flex;
   align-items: center;
@@ -309,11 +294,13 @@ const drawerTop = '56px';
   padding: 6px;
 }
 
+.subagent-drawer__back:hover,
 .subagent-drawer__close:hover {
   background: rgba(0, 0, 0, 0.05);
   color: #1a1a1a;
 }
 
+.dark .subagent-drawer__back:hover,
 .dark .subagent-drawer__close:hover {
   background: rgba(255, 255, 255, 0.07);
   color: #ececec;
@@ -336,10 +323,20 @@ const drawerTop = '56px';
 }
 
 .subagent-card {
+  display: block;
   border: 1px solid rgba(226, 216, 201, 0.8);
   border-radius: 12px;
   background: rgba(249, 248, 245, 0.8);
   padding: 10px 12px;
+  cursor: pointer;
+  text-align: left;
+  width: 100%;
+  transition: border-color 140ms ease, background 140ms ease;
+}
+
+.subagent-card:hover {
+  border-color: rgba(196, 178, 148, 0.9);
+  background: rgba(245, 243, 238, 0.95);
 }
 
 .dark .subagent-card {
@@ -347,16 +344,16 @@ const drawerTop = '56px';
   background: rgba(255, 255, 255, 0.03);
 }
 
+.dark .subagent-card:hover {
+  border-color: #55503f;
+  background: rgba(255, 255, 255, 0.06);
+}
+
 .subagent-card__head {
   display: flex;
   align-items: center;
   gap: 8px;
-  border: 0;
-  background: transparent;
-  cursor: pointer;
-  padding: 0;
   width: 100%;
-  text-align: left;
 }
 
 .subagent-card__dot {
@@ -400,19 +397,15 @@ const drawerTop = '56px';
 
 .subagent-card__chevron {
   color: #8b816f;
-  transition: transform 160ms ease;
-}
-
-.subagent-card__chevron--open {
-  transform: rotate(90deg);
+  flex-shrink: 0;
 }
 
 .subagent-card__task {
+  display: -webkit-box;
   margin-top: 6px;
   font-size: 12.5px;
   line-height: 1.5;
   color: #1a1a1a;
-  display: -webkit-box;
   -webkit-line-clamp: 2;
   -webkit-box-orient: vertical;
   overflow: hidden;
@@ -422,20 +415,15 @@ const drawerTop = '56px';
   color: #d6cec2;
 }
 
-.subagent-card__detail {
-  margin-top: 6px;
-  font-size: 12px;
-  color: #be123c;
-  word-break: break-all;
-}
-
 .subagent-card__report {
+  display: block;
   margin-top: 8px;
   border-left: 3px solid rgba(34, 197, 94, 0.5);
   padding-left: 8px;
 }
 
 .subagent-card__report-label {
+  display: block;
   font-size: 10px;
   letter-spacing: 0.04em;
   text-transform: uppercase;
@@ -444,13 +432,13 @@ const drawerTop = '56px';
 }
 
 .subagent-card__report-text {
+  display: -webkit-box;
   font-size: 12px;
   line-height: 1.55;
   color: #1a1a1a;
   white-space: pre-wrap;
   word-break: break-word;
-  display: -webkit-box;
-  -webkit-line-clamp: 6;
+  -webkit-line-clamp: 3;
   -webkit-box-orient: vertical;
   overflow: hidden;
 }
@@ -459,12 +447,88 @@ const drawerTop = '56px';
   color: #d6cec2;
 }
 
-.subagent-card__log-wrap {
-  margin-top: 8px;
+/* ── 详情页 ── */
+
+.subagent-detail {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 14px 16px 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
 }
 
-.subagent-card__log {
-  max-height: 260px;
+.subagent-detail__status-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.subagent-detail__phase {
+  font-size: 13px;
+  font-weight: 600;
+  color: #4f473c;
+}
+
+.dark .subagent-detail__phase {
+  color: #d6cec2;
+}
+
+.subagent-detail__started {
+  font-size: 11px;
+  color: #8b816f;
+  font-variant-numeric: tabular-nums;
+}
+
+.subagent-detail__section {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+/* 日志区占满剩余高度并在内部滚动 */
+.subagent-detail__section--log {
+  flex: 1;
+  min-height: 160px;
+}
+
+.subagent-detail__label {
+  font-size: 10px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: #8b816f;
+}
+
+.subagent-detail__task,
+.subagent-detail__report {
+  font-size: 13px;
+  line-height: 1.6;
+  color: #1a1a1a;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.dark .subagent-detail__task,
+.dark .subagent-detail__report {
+  color: #d6cec2;
+}
+
+.subagent-detail__error-text {
+  font-size: 12.5px;
+  line-height: 1.55;
+  color: #be123c;
+  word-break: break-all;
+}
+
+.subagent-detail__report {
+  border-left: 3px solid rgba(34, 197, 94, 0.5);
+  padding-left: 8px;
+}
+
+.subagent-detail__log {
+  flex: 1;
+  min-height: 0;
   overflow-y: auto;
   border-radius: 8px;
   background: rgba(31, 29, 26, 0.05);
@@ -474,8 +538,21 @@ const drawerTop = '56px';
   gap: 4px;
 }
 
-.dark .subagent-card__log {
+.dark .subagent-detail__log {
   background: rgba(0, 0, 0, 0.28);
+}
+
+.subagent-detail__log::-webkit-scrollbar {
+  width: 5px;
+}
+
+.subagent-detail__log::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.subagent-detail__log::-webkit-scrollbar-thumb {
+  background: rgba(139, 129, 111, 0.35);
+  border-radius: 999px;
 }
 
 .subagent-card__log-empty {

@@ -224,7 +224,14 @@ pub(crate) fn build_request(
     let profile = settings.active_provider_profile();
     let nova_tools = tools::get_available_tools_for_agent(app, conversation_id);
     let tool_count = nova_tools.len();
-    let max_tokens = model_context::get_max_output_tokens(&profile.model);
+    // 子代理会话钳制输出上限：报告撑死几千 token，模型库的大值
+    //（如 DeepSeek 384K）会白白预占窗口，消息稍大就 400。
+    let max_tokens = if crate::llm::services::subagent::is_subagent_conversation(conversation_id)
+    {
+        model_context::get_max_output_tokens(&profile.model).min(16_384)
+    } else {
+        model_context::get_max_output_tokens(&profile.model)
+    };
 
     let mut messages = nova_messages_to_anthropic_messages(messages)?;
     mark_last_message_cacheable(&mut messages);

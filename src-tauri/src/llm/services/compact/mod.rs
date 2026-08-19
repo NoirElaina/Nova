@@ -661,7 +661,50 @@ fn truncate_oldest_messages_for_retry(messages: &[Message], keep_recent: usize) 
         prepared.push(restore);
     }
     prepared.extend(messages_without_restore[start..].iter().cloned());
+
+    // 截断边界可能切在 ToolUse 与其 ToolResult 之间，保留区会残留
+    // 失去配对的块——Anthropic/OpenAI 都强制配对完整，会直接 400。
+    // 统一走孤儿块清理（与子代理截断共用同一份实现）。
+    drop_orphan_tool_blocks(&mut prepared);
     prepared
+}
+
+/// 删除失去配对的 tool_use / tool_result 块（配对完整性由 API 强制）。
+/// 主对话 reactive-compact 兜底截断与子代理 truncate_subagent_messages 共用。
+pub fn drop_orphan_tool_blocks(messages: &mut Vec<Message>) {
+    let mut use_ids: HashSet<String> = HashSet::new();
+    let mut result_ids: HashSet<String> = HashSet::new();
+    for message in messages.iter() {
+        if let Content::Blocks(blocks) = &message.content {
+            for block in blocks {
+                match block {
+                    ContentBlock::ToolUse { id, .. } => {
+                        use_ids.insert(id.clone());
+                    }
+                    ContentBlock::ToolResult { tool_use_id, .. } => {
+                        result_ids.insert(tool_use_id.clone());
+                    }
+                    _ => {}
+                }
+            }
+        }
+    }
+
+    for message in messages.iter_mut() {
+        if let Content::Blocks(blocks) = &mut message.content {
+            blocks.retain(|block| match block {
+                ContentBlock::ToolUse { id, .. } => result_ids.contains(id),
+                ContentBlock::ToolResult { tool_use_id, .. } => use_ids.contains(tool_use_id),
+                _ => true,
+            });
+        }
+    }
+
+    // 清空后的空块消息整个移除（空 content 也可能被拒）。
+    messages.retain(|m| match &m.content {
+        Content::Blocks(blocks) => !blocks.is_empty(),
+        Content::Text(text) => !text.trim().is_empty(),
+    });
 }
 
 pub fn is_prompt_too_long_error(error: &str) -> bool {

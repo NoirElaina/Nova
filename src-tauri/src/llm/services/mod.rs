@@ -10,6 +10,7 @@ pub mod mcp_tools;
 pub mod memory_dir;
 pub mod model_fetch;
 pub mod plan_files;
+pub mod plugins;
 pub mod rag;
 pub mod search;
 pub mod session_files;

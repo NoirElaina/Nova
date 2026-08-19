@@ -680,11 +680,20 @@ pub fn get_available_tools() -> Vec<Tool> {
         .collect()
 }
 
+/// 内置工具名清单（插件工具名冲突校验用）。
+pub fn builtin_tool_names() -> Vec<String> {
+    registered_tools()
+        .iter()
+        .map(|entry| (entry.tool)().name)
+        .collect()
+}
+
 /// 按会话挂载的智能体套件过滤后的工具列表。
-/// 会话未挂载 bundle 或 bundle 工具清单为 null 时等价于 get_available_tools()；
-/// provider adapter 一律走这里。
+/// 会话未挂载 bundle 或 bundle 工具清单为 null 时等价于全部工具；
+/// provider adapter 一律走这里。启用插件的工具在此合并进同一工具池。
 pub fn get_available_tools_for_agent(app: &AppHandle, conversation_id: Option<&str>) -> Vec<Tool> {
-    let all = get_available_tools();
+    let mut all = get_available_tools();
+    all.extend(crate::llm::services::plugins::plugin_tools(app));
     match crate::llm::services::agent_bundles::active_bundle(app, conversation_id) {
         None => all,
         Some(bundle) => all
@@ -695,12 +704,13 @@ pub fn get_available_tools_for_agent(app: &AppHandle, conversation_id: Option<&s
 }
 
 /// 前端智能体配置页展示的工具目录（含 always_on 标记）。
+/// 启用插件的工具一并纳入，智能体套件可像内置工具一样勾选。
 pub fn configurable_tool_catalog(
     app: &AppHandle,
 ) -> Result<Vec<crate::command::agent_config::ConfigurableTool>, String> {
     // 目录与当前激活 bundle 无关：配置的是任意 bundle 的勾选清单。
     let _ = app;
-    let catalog = registered_tools()
+    let mut catalog: Vec<crate::command::agent_config::ConfigurableTool> = registered_tools()
         .iter()
         .map(|entry| {
             let tool = (entry.tool)();
@@ -713,6 +723,15 @@ pub fn configurable_tool_catalog(
             }
         })
         .collect();
+
+    for plugin_tool in crate::llm::services::plugins::plugin_tools(app) {
+        catalog.push(crate::command::agent_config::ConfigurableTool {
+            description: plugin_tool.description.clone(),
+            name: plugin_tool.name.clone(),
+            read_only: false,
+            always_on: false,
+        });
+    }
     Ok(catalog)
 }
 
@@ -754,6 +773,13 @@ pub(crate) async fn execute_tool_with_app(
 
     if let Some(output) =
         crate::llm::services::mcp_tools::execute_dynamic_with_app(app, name, input.clone()).await
+    {
+        return output;
+    }
+
+    // 插件工具（boa JS 沙箱）：按注册表分发，与内置/MCP 工具同一执行链。
+    if let Some(output) =
+        crate::llm::services::plugins::execute_plugin_tool(app, name, input.clone()).await
     {
         return output;
     }

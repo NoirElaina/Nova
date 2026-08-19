@@ -11,7 +11,7 @@ import TodoProgressPopover from "./components/chat/files/TodoProgressPopover.vue
 import WorkspaceDrawer from "./components/chat/WorkspaceDrawer.vue";
 import HooksConfigScreen from "./components/hooks/HooksConfigScreen.vue";
 import AgentConfigScreen from "./components/agent/AgentConfigScreen.vue";
-import AgentMarketScreen from "./components/agent/AgentMarketScreen.vue";
+import PluginMarketScreen from "./components/plugins/PluginMarketScreen.vue";
 import ScheduleTaskScreen from "./components/schedule/ScheduleTaskScreen.vue";
 import SettingsScreen from "./components/layout/settings/SettingsScreen.vue";
 import GlobalToastHost from "./components/layout/GlobalToastHost.vue";
@@ -487,8 +487,9 @@ onBeforeUnmount(() => {
           @launch-agent="handleLaunchAgent"
         />
 
-        <AgentMarketScreen
-          v-else-if="mainView === 'agentMarket'"
+        <PluginMarketScreen
+          v-else-if="mainView === 'plugins'"
+          @change-main-view="handleChangeMainView"
         />
 
         <ScheduleTaskScreen

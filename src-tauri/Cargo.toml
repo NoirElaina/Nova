@@ -70,3 +70,7 @@ tree-sitter-bash = "0.23"
 # libc 用于 Unix 上的 setsid（创建新进程组）和 killpg（杀整个进程组）系统调用。
 # 避免通过 fork+exec 调用 kill 命令，直接系统调用更可靠且无额外进程开销。
 libc = "0.2"
+# boa_engine 是纯 Rust 实现的 JS 引擎，用于插件沙箱：执行用户插件的 main.js，
+# 无 C 依赖（相比 QuickJS 绑定免去 Windows C 工具链问题），且 boa_gc 保证
+# 沙箱内对象无法逃逸到 Rust 侧。
+boa_engine = "0.21"

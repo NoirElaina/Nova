@@ -9,7 +9,7 @@ interface ConversationItem {
   pinnedAt?: number | null;
 }
 
-type MainView = "chat" | "hooks" | "agent" | "agentMarket" | "schedule" | "settings";
+type MainView = "chat" | "hooks" | "agent" | "plugins" | "schedule" | "settings";
 type ConversationExportFormat = "json" | "pdf";
 
 const props = defineProps<{
@@ -322,15 +322,14 @@ onBeforeUnmount(() => {
       </Button>
       <Button
         variant="ghost"
-        :class="[sidebarItemClass, props.activeMainView === 'agentMarket' ? sidebarItemActiveClass : sidebarItemIdleClass]"
-        @click="emit('change-main-view', 'agentMarket')"
+        :class="[sidebarItemClass, props.activeMainView === 'plugins' ? sidebarItemActiveClass : sidebarItemIdleClass]"
+        @click="emit('change-main-view', 'plugins')"
       >
         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" class="text-[#64748b]">
-          <path d="M4 7h16l-1 13H5L4 7Z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/>
-          <path d="M8 7a4 4 0 0 1 8 0" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/>
-          <path d="M9 12h6" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/>
+          <path d="M12 3l2.4 4.9 5.4.8-3.9 3.8.9 5.4L12 15.4l-4.8 2.5.9-5.4L4.2 8.7l5.4-.8L12 3Z" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/>
+          <path d="M19.5 14.5l.9 1.9 2 .3-1.5 1.4.4 2-1.8-1-1.8 1 .4-2-1.5-1.4 2-.3.9-1.9Z" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round"/>
         </svg>
-        <span>Agent 市场</span>
+        <span>插件</span>
       </Button>
 
       <div v-if="isSearchOpen" class="px-0.5 pb-1 pt-1">

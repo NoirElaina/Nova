@@ -15,11 +15,27 @@ pub(super) fn registration() -> ToolRegistration {
 pub fn tool() -> Tool {
     Tool {
         name: "Write".into(),
-        description: r#"Write a file to the local filesystem. Creates the file if it does not exist, overwrites it if it does. Creates parent directories as needed.
+        description: r#"Writes a file to the local filesystem, creating it (with parent directories) if needed, or overwriting it entirely if it exists.
 
+## When to use this tool
+- Creating a new file (source code, config, data, scripts).
+- Rewriting an existing file whose changes are so extensive that Edit patches would be error-prone — e.g. restructuring most of the file, or after repeated Edit failures.
+- NOT for small modifications of existing files — prefer Edit/MultiEdit (minimal diff, reviewable, cheaper). Overwriting throws away the original content.
+
+## Before overwriting an existing file
+- Read it first and understand what you are replacing — Write replaces the ENTIRE file; anything not in `content` is lost.
+- Preserve the parts that should stay. Reconstruct the full file in `content`, not just the changed region.
+
+## How to use it
 - `file_path` must be an absolute path.
-- `content` is the text content to write. The model sent explicit line endings in `content` and meant them — they are written as-is, not rewritten to match the old file's line endings.
-- This tool will overwrite the existing file if there is one."#
+- `content` is the complete file text. Line endings are written exactly as sent — they are not rewritten to match the old file's line endings. Use `\n` unless you have a reason otherwise.
+- The file's original encoding (UTF-8 / UTF-8 BOM / UTF-16) is preserved on overwrite.
+
+## Common mistakes
+- Using Write for a small edit when Edit would do — destroys history clarity and risks losing unrelated content.
+- Overwriting a file without reading it first, silently dropping content you did not know about.
+- Sending only the changed fragment instead of the complete file content.
+- Creating files nobody asked for (docs, backups, scratch copies)."#
             .into(),
         input_schema: json!({
             "type": "object",

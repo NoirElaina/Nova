@@ -50,6 +50,9 @@ pub fn run() {
             // 后台预热 BPE 词表（约几百毫秒），避免首次 token 计算时同步加载。
             tauri::async_runtime::spawn_blocking(crate::llm::utils::token_counter::warmup);
 
+            // 模型库初始化：加载运行时缓存 + 每 24h 从 OpenRouter 自动拉新。
+            crate::llm::utils::model_context::init(app.handle());
+
             let scheduler_handle = app.handle().clone();
             tauri::async_runtime::spawn(async move {
                 info!("scheduler loop starting");

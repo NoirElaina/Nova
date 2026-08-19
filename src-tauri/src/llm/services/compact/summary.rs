@@ -252,7 +252,7 @@ async fn summarize_with_anthropic(app: &AppHandle, user_prompt: &str) -> Result<
         .content
         .iter()
         .filter_map(|block| match block {
-            AnthropicContentBlock::Text { text } => Some(text.trim()),
+            AnthropicContentBlock::Text { text, .. } => Some(text.trim()),
             _ => None,
         })
         .filter(|text: &&str| !text.is_empty())

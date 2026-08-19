@@ -25,7 +25,7 @@ const logoText = computed(() => {
 <template>
   <div
     :class="[
-      'group relative flex items-center gap-4 rounded-xl border bg-card p-4 transition-all hover:shadow-md',
+      'group relative flex min-w-0 items-center gap-4 rounded-xl border bg-card p-4 transition-all hover:shadow-md',
       isCurrent ? 'border-primary ring-1 ring-primary/20' : 'border-border'
     ]"
   >
@@ -42,7 +42,7 @@ const logoText = computed(() => {
       </div>
       <div class="flex items-center gap-2 text-xs text-muted-foreground">
         <Cpu class="h-3 w-3" />
-        <span class="truncate">{{ model || '未配置模型' }}</span>
+        <span class="truncate" :title="model || '未配置模型'">{{ model || '未配置模型' }}</span>
         <span>•</span>
         <span class="uppercase">{{ apiFormat.replace('_', ' ') }}</span>
       </div>

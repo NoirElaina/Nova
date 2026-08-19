@@ -423,9 +423,54 @@ pub fn init_conversation_repo(
     Ok((!already, path_str))
 }
 
-/// 生成会话工作区的 git 状态摘要文本（用于注入模型上下文）。
-/// 轻量级：只读取分支名、dirty 文件路径+变更类型、最近 5 条 commit oneline，
-/// 不收集完整 diff（避免与大 diff 收集重复成本）。
+/// 紧凑版 git 环境摘要：分支 + dirty 文件名（截断），每轮注入用。
+/// 目标是让模型开局即有场景感知（哪些文件已被改动），
+/// 控制在一行左右，细节让模型按需用 GitDiff 查。
+/// 仓库未初始化时返回 None。
+pub fn compact_git_summary(root: &Path) -> Option<String> {
+    if !is_repo_initialized(root) {
+        return None;
+    }
+
+    let branch = current_branch(root).unwrap_or_else(|| "HEAD".to_string());
+    let dirty = run_git(root, &["status", "--porcelain"]).ok();
+    let dirty_lines: Vec<&str> = dirty
+        .as_ref()
+        .map(|s| s.lines().filter(|l| !l.trim().is_empty()).collect())
+        .unwrap_or_default();
+
+    if dirty_lines.is_empty() {
+        return Some(format!("branch {}, working tree clean", branch));
+    }
+
+    // 最多列 10 个文件名，超出折叠为计数，防止超大工作区爆上下文。
+    let max_show = 10usize;
+    let names: Vec<String> = dirty_lines
+        .iter()
+        .take(max_show)
+        .map(|line| {
+            // porcelain 行格式 "XY path"，取路径部分。
+            line.split_once(' ')
+                .map(|(_, path)| path.trim().to_string())
+                .unwrap_or_else(|| line.trim().to_string())
+        })
+        .collect();
+    let more = dirty_lines.len().saturating_sub(max_show);
+
+    Some(format!(
+        "branch {}, {} changed: {}{}",
+        branch,
+        dirty_lines.len(),
+        names.join(", "),
+        if more > 0 {
+            format!(" (+{} more)", more)
+        } else {
+            String::new()
+        }
+    ))
+}
+
+/// 生成会话工作区的完整 git 状态摘要（分支 + dirty 列表 + 最近 5 条 commit）。
 /// 仓库未初始化时返回 None。
 pub fn workspace_git_status_summary(root: &Path) -> Option<String> {
     if !is_repo_initialized(root) {

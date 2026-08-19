@@ -135,8 +135,9 @@ fn build_phase_message(conversation_id: Option<&str>) -> Option<Message> {
     })
 }
 
-// 构建项目上下文消息：仅注入工作区路径。
-// 不注入目录列表和 git 状态——让 agent 自己用 Glob/Read/GitDiff 按需查看，避免杂乱信息干扰。
+// 构建项目上下文消息：工作区路径 + 紧凑 git 摘要（分支 + dirty 文件名）。
+// git 信息只给一行概览，让 agent 开局即有场景感知；
+// 完整 diff / 目录结构仍由 agent 按需用 GitDiff / Glob 查看。
 async fn build_project_context_message(
     app: &AppHandle,
     conversation_id: Option<&str>,
@@ -144,12 +145,14 @@ async fn build_project_context_message(
     let root = crate::command::workspace::workspace_root_for_conversation(app, conversation_id).ok()?;
     let root_display = crate::command::workspace::display_path_string(&root);
 
+    let mut text = format!("{}\nWorkspace: {}", PROJECT_CONTEXT_MARKER, root_display);
+    if let Some(git_summary) = crate::llm::services::git_ops::compact_git_summary(&root) {
+        text.push_str(&format!("\nGit: {}", git_summary));
+    }
+
     Some(Message {
         role: Role::User,
-        content: Content::Text(format!(
-            "{}\nWorkspace: {}",
-            PROJECT_CONTEXT_MARKER, root_display
-        )),
+        content: Content::Text(text),
     })
 }
 

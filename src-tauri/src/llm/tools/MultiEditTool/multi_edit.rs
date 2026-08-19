@@ -15,21 +15,33 @@ pub(super) fn registration() -> ToolRegistration {
 pub fn tool() -> Tool {
     Tool {
         name: "MultiEdit".into(),
-        description: r#"Performs multiple exact string replacements on the same file in a single call.
+        description: r#"Performs multiple exact string replacements on the same file in a single atomic call. The default choice whenever a change touches 2+ places in one file — one round trip instead of several Edit calls, and the file is read and written once.
 
-Use this tool when you need to make 2+ distinct edits to the same file. It is more efficient than calling Edit multiple times because:
-- Only one tool call round-trip (lower latency, fewer tokens)
-- The file is read once and written once (atomic batch)
+## When to choose which editing tool
+- One change in one file → Edit.
+- Multiple changes in one file → MultiEdit (this tool).
+- New file, or rewriting most of an existing file → Write.
 
-Constraints:
-- IMPORTANT: When editing text from Read tool output, ensure you preserve the exact indentation (tabs/spaces) as it appears AFTER the line number prefix. The line number prefix format is: spaces + line number + tab (e.g., `     1\t`). Everything after that is the actual file content to match. NEVER include any part of the line number prefix in the `old_string` or `new_string`.
-- Each edit's `old_string` must be unique in the file (or use `replace_all: true` for that edit).
-- Edits are applied sequentially in array order. Each subsequent edit sees the result of the previous one, so if edit #1 changes a line, edit #2's `old_string` should match the NEW content (not the original).
-- Same fuzzy matching as Edit: line-trimmed, block-anchor, whitespace-normalized, indentation-flexible, escape-normalized are tried in order when exact match fails.
-- `file_path` must be an absolute path.
-- If any edit fails, the entire batch is aborted and NO changes are written (atomic).
+## How to use it
+- Pass an ordered list of edits; each edit is `{ old_string, new_string, replace_all? }`.
+- Edits apply sequentially in array order — each edit sees the result of the previous one. If edit #1 changes a line, edit #2's `old_string` must match the NEW content, not the original.
+- Each `old_string` must be unique in the current file state (or set `replace_all: true` for that edit). When ambiguous, include surrounding context lines to disambiguate.
+- Base `old_string` values on the file's actual current content, ideally from a recent Read.
+- The matcher is fault-tolerant (line-trimmed, block-anchor, whitespace-normalized, indentation-flexible, escape-normalized, in that order), but prefer exact matches — fuzzy matching is a safety net, not a shortcut.
+- `file_path` must be an absolute path to an existing file.
 
-Each edit object: { old_string: string, new_string: string, replace_all?: boolean }
+## Line-number prefix (critical)
+Read tool output prefixes each line with: spaces + line number + tab (e.g. `     1\t`). Everything AFTER the tab is the real file content. NEVER include any part of the line number prefix in `old_string` or `new_string`.
+
+## Atomicity and failure recovery
+- If any edit fails, the entire batch is aborted and NO changes are written — a failed MultiEdit leaves the file untouched.
+- On failure, re-Read the file, find which `old_string` went stale, fix the whole batch, and resubmit it. Do not blindly resubmit the identical failed batch.
+- After three consecutive failures on the same file, stop patching: rewrite the whole file with Write instead.
+
+## Common mistakes
+- Writing edit #2's `old_string` against the ORIGINAL file content when edit #1 already changed that region.
+- Including the Read output's line-number prefix in `old_string`.
+- Choosing `old_string` values that overlap each other or occur multiple times.
 "#
             .into(),
         input_schema: json!({

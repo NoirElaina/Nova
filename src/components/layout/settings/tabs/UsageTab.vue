@@ -95,7 +95,9 @@ const loadAll = async () => {
       invoke<TokenUsageRecord[]>('list_token_usage', { limit: RECORD_LIMIT }),
     ]);
     stats.value = s;
-    records.value = r;
+    // 后端按 created_at DESC 返回（最新在前）；图表 x 轴需要时间正序（旧→新），
+    // 累计成本、"最新"指标也都依赖正序，这里统一翻转为升序。
+    records.value = [...r].sort((a, b) => a.createdAt - b.createdAt);
   } catch (error) {
     loadError.value = error instanceof Error ? error.message : String(error);
   } finally {

@@ -1,15 +1,15 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub(crate) struct CacheControl {
     #[serde(rename = "type")]
-    pub(crate) cache_type: &'static str,
+    pub(crate) cache_type: String,
 }
 impl CacheControl {
     pub(crate) fn ephemeral() -> Self {
         Self {
-            cache_type: "ephemeral",
+            cache_type: "ephemeral".to_string(),
         }
     }
 }
@@ -73,7 +73,11 @@ fn is_false(value: &bool) -> bool {
 #[serde(tag = "type")]
 pub(crate) enum AnthropicContentBlock {
     #[serde(rename = "text")]
-    Text { text: String },
+    Text {
+        text: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        cache_control: Option<CacheControl>,
+    },
 
     #[serde(rename = "thinking")]
     Thinking { thinking: String, signature: String },
@@ -94,6 +98,8 @@ pub(crate) enum AnthropicContentBlock {
         #[serde(default, skip_serializing_if = "is_false")]
         is_error: bool,
         content: Vec<AnthropicContentBlock>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        cache_control: Option<CacheControl>,
     },
 }
 

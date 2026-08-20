@@ -14,7 +14,6 @@ import type {
   ChatMessage,
   ChatMessageEvent,
   ContextCompactSummary,
-  ConversationMemory,
   ConversationMeta,
   ConversationUsageSummary,
   NeedsUserInputPayload,
@@ -55,7 +54,6 @@ export function useChatController() {
   const pendingUploads = ref<PendingUploadFile[]>([]);
   const pendingQuestion = ref<NeedsUserInputPayload | null>(null);
   const pendingPermissionRequestId = ref<string | null>(null);
-  const conversationMemory = ref<ConversationMemory | null>(null);
   const conversationUsage = ref<ConversationUsageSummary | null>(null);
   const mainView = ref<MainView>("chat");
   const currentToolStartedAt = ref<number | null>(null);
@@ -213,7 +211,6 @@ export function useChatController() {
     toolExecutionLogs,
     conversationFiles,
     pendingUploads,
-    conversationMemory,
     conversationUsage,
     assistantResponse,
     assistantReasoning,
@@ -234,7 +231,6 @@ export function useChatController() {
     messages,
     runtimeStateByConversation,
     persistMessage: conversationOps.persistMessage,
-    persistConversationMemory: conversationOps.persistConversationMemory,
     persistToolExecutionLog,
     cancelActiveConversation: () => cancelChatMessage(activeConversationId.value || null),
     submitPermissionDecision,

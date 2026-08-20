@@ -39,13 +39,18 @@ const GLOBAL_MEMORY_SECTION: &str = r#"
   1. The user expresses a preference or correction (e.g. "太长了"、"不要兜底"、"用中文"、"我说的是...")
   2. The user reveals durable facts about themselves or their project
   3. The user establishes a workflow rule or convention
-- Priority: user preferences and corrections > project facts > procedural details
+  4. You NOTICE implicit signals worth remembering — not only explicit statements:
+     the language/style the user consistently writes in, their tech stack and tooling
+     (visible from the code and workflows they discuss), recurring habits, skill level,
+     or anything they would not want to re-explain in a future session
+- Priority: user preferences and corrections > user profile traits > project facts > procedural details
 - Write DECLARATIVE facts, not imperatives:
   ✓ "User prefers concise responses"
   ✗ "Always respond concisely"
 - Do NOT store: secrets, credentials, private tokens, one-off tasks, environment errors, transient failures
 - Keep entries concise, specific, and reusable
-- Use `action="replace"` or `action="remove"` to consolidate or prune stale entries
+- Use `action="replace"` or `action="remove"` to consolidate or prune stale entries;
+  when the user corrects an existing preference, REPLACE the old entry instead of adding a conflicting one
 "#;
 
 fn read_non_empty_file(path: &PathBuf) -> Option<String> {

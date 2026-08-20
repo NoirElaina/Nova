@@ -202,7 +202,6 @@ type StreamOpsDeps = {
   messages: Ref<ChatMessage[]>;
   runtimeStateByConversation: Map<string, ConversationTurnRuntimeState>;
   persistMessage: (message: ChatMessage, conversationId?: string) => Promise<void>;
-  persistConversationMemory: (conversationId: string) => Promise<void>;
   persistToolExecutionLog: PersistToolExecutionLog;
   cancelActiveConversation: () => Promise<unknown>;
   submitPermissionDecision: (
@@ -222,7 +221,6 @@ export function createChatStreamOperations(deps: StreamOpsDeps) {
     messages,
     runtimeStateByConversation,
     persistMessage,
-    persistConversationMemory,
     persistToolExecutionLog,
     cancelActiveConversation,
     submitPermissionDecision,
@@ -388,9 +386,6 @@ export function createChatStreamOperations(deps: StreamOpsDeps) {
     // 先 ack 再异步持久化：避免崩溃后 live_turn 永久卡住无法发新消息
     void ackChatTurnStatus(conversationId);
     void persistMessage(assistantMessage, conversationId ?? undefined);
-    if (conversationId) {
-      void persistConversationMemory(conversationId);
-    }
     activeRuntimeRefs.assistantResponse.value = "";
     activeRuntimeRefs.assistantReasoning.value = "";
     activeRuntimeRefs.assistantSegments.value = [];

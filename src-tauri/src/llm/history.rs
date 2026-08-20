@@ -935,9 +935,6 @@ pub async fn append_history(
         .await
         .map_err(|e| e.to_string())?;
 
-    // Keep summary memory in sync after each append.
-    memory::refresh_conversation_memory(&pool, normalized_conversation_id, now_secs).await?;
-
     Ok(inserted_id)
 }
 
@@ -1084,9 +1081,6 @@ pub async fn replace_history(
 
     tx.commit().await.map_err(|e| e.to_string())?;
 
-    if !messages.is_empty() {
-        memory::refresh_conversation_memory(&pool, normalized_conversation_id, now_secs).await?;
-    }
     if let Some(snapshot) = replacement_snapshot {
         save_turn_snapshot(app, normalized_conversation_id, &snapshot).await?;
     }

@@ -4,7 +4,6 @@ import type {
   AgentMode,
   AssistantTranscriptSegment,
   ChatMessage,
-  ConversationMemory,
   ConversationMeta,
   ConversationUsageSummary,
   PendingUploadFile,
@@ -17,7 +16,6 @@ import {
   createConversation,
   deleteConversation,
   getChatTurnStatus,
-  getConversationMemory,
   getConversationUsage,
   listSessionFiles,
   listConversations,
@@ -25,9 +23,7 @@ import {
   loadConversationToolLogs,
   setConversationPinned,
   type SessionFileMeta,
-  upsertConversationMemory,
 } from "../services/chat-api";
-import { extractSessionMemory } from "../utils/session-memory";
 import { clearBrowserTabState } from "../../browser/browser-tab-state";
 import type { ConversationTurnRuntimeState } from "./chat-controller-types";
 import type { ActiveRuntimeRefs } from "./chat-runtime-state";
@@ -55,7 +51,6 @@ type ConversationOpsDeps = {
   toolExecutionLogs: Ref<ToolExecutionEntry[]>;
   conversationFiles: Ref<SessionFileMeta[]>;
   pendingUploads: Ref<PendingUploadFile[]>;
-  conversationMemory: Ref<ConversationMemory | null>;
   conversationUsage: Ref<ConversationUsageSummary | null>;
   assistantResponse: Ref<string>;
   assistantReasoning: Ref<string>;
@@ -80,7 +75,6 @@ export function createConversationOperations(deps: ConversationOpsDeps) {
     toolExecutionLogs,
     conversationFiles,
     pendingUploads,
-    conversationMemory,
     conversationUsage,
     assistantResponse,
     assistantReasoning,
@@ -108,16 +102,6 @@ export function createConversationOperations(deps: ConversationOpsDeps) {
 
   async function refreshActiveConversationFiles() {
     await refreshConversationFiles(activeConversationId.value);
-  }
-
-  async function loadConversationMemory(conversationId: string) {
-    try {
-      const mem = await getConversationMemory(conversationId);
-      conversationMemory.value = mem;
-    } catch (err) {
-      console.error("Failed to load conversation memory:", err);
-      conversationMemory.value = null;
-    }
   }
 
   function clearLiveTurnRuntime() {
@@ -223,21 +207,6 @@ export function createConversationOperations(deps: ConversationOpsDeps) {
     await restoreLiveTurnStatus(conversationId);
   }
 
-  async function persistConversationMemory(conversationId: string) {
-    const { summary, keyFacts } = extractSessionMemory(messages.value);
-    if (!summary.trim()) return;
-    try {
-      await upsertConversationMemory(conversationId, summary, keyFacts);
-      conversationMemory.value = {
-        summary,
-        keyFacts,
-        updatedAt: Date.now(),
-      };
-    } catch (err) {
-      console.error("Failed to persist conversation memory:", err);
-    }
-  }
-
   async function refreshConversations() {
     try {
       const items = await listConversations();
@@ -329,8 +298,6 @@ export function createConversationOperations(deps: ConversationOpsDeps) {
       await restoreLiveTurnStatus(targetConversationId);
       if (isStaleLoad()) return;
 
-      await loadConversationMemory(targetConversationId);
-      if (isStaleLoad()) return;
       await refreshConversationFiles(targetConversationId);
       // 用量统计独立加载失败时保留旧值，不阻断会话恢复。
       try {
@@ -378,7 +345,6 @@ export function createConversationOperations(deps: ConversationOpsDeps) {
     messages.value = [];
     pendingUploads.value = [];
     conversationFiles.value = [];
-    conversationMemory.value = null;
     conversationUsage.value = null;
     toolExecutionLogs.value = [];
     planMode.value = agentMode.value === "plan";
@@ -507,8 +473,6 @@ export function createConversationOperations(deps: ConversationOpsDeps) {
   return {
     refreshConversationFiles,
     refreshActiveConversationFiles,
-    loadConversationMemory,
-    persistConversationMemory,
     refreshConversations,
     createNewConversation,
     loadConversation,

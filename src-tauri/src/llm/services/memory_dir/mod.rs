@@ -51,6 +51,15 @@ impl MemoryStore {
             return Err("content is empty".to_string());
         }
 
+        // § 是条目分隔符：写入含 § 的内容会破坏 round-trip（触发永久 drift 拒写）
+        // 或把一条记忆静默拆成两条。直接拒绝，让模型改写。
+        if content.contains('§') {
+            return Err(
+                "content contains '§' which is the internal entry delimiter; rewrite the entry without '§'"
+                    .to_string(),
+            );
+        }
+
         if let Some(err) = threat_patterns::first_threat_message(content, "strict") {
             return Err(err);
         }
@@ -83,6 +92,14 @@ impl MemoryStore {
         }
         if new_content.is_empty() {
             return Err("new_content is empty".to_string());
+        }
+
+        // 同 add：§ 是内部条目分隔符，禁止写入（防 drift 自锁）。
+        if new_content.contains('§') {
+            return Err(
+                "new_content contains '§' which is the internal entry delimiter; rewrite without '§'"
+                    .to_string(),
+            );
         }
 
         if let Some(err) = threat_patterns::first_threat_message(new_content, "strict") {
@@ -285,9 +302,22 @@ fn ensure_loaded(app: &AppHandle) -> Result<(), String> {
 }
 
 /// 获取当前 snapshot 字符串（用于 system prompt 注入）。
-/// 随增删改实时重建；删除记忆后立即生效，无需重启应用。空 snapshot 返回 None。
+/// 每次注入前从磁盘 reload（格式合法时），用户手动编辑 MEMORY.md 即时生效；
+/// 检测到 drift 时保留内存态，等文件被修复。空 snapshot 返回 None。
 pub fn snapshot(app: &AppHandle) -> Option<String> {
     ensure_loaded(app).ok()?;
+    {
+        let mut guard = STORE.lock().unwrap();
+        if let (Some(store), Ok(path)) = (guard.as_mut(), memory_file_path(app)) {
+            if detect_drift(&path).is_none() {
+                let mut entries = read_entries_from_file(&path);
+                let mut seen = HashSet::new();
+                entries.retain(|e| seen.insert(e.clone()));
+                store.entries = entries;
+                store.snapshot = rebuild_snapshot(&store.entries);
+            }
+        }
+    }
     let guard = STORE.lock().unwrap();
     guard.as_ref().and_then(|s| {
         if s.snapshot.is_empty() {

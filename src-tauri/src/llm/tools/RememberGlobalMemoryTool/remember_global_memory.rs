@@ -25,7 +25,7 @@ pub(super) fn registration() -> ToolRegistration {
 pub fn tool() -> Tool {
     Tool {
         name: "memory".into(),
-        description: "Save durable facts to persistent memory that survive across sessions. Memory is injected into every future turn, so keep entries compact and high-signal.\n\nWHEN: save proactively when the user states a preference, correction, or personal detail, or you learn a stable fact about their environment, conventions, or workflow. Priority: user preferences & corrections > environment facts > procedures. The best memory stops the user repeating themselves.\n\nSKIP: trivial/obvious info, easily re-discovered facts, raw data dumps, task progress, completed-work logs, temporary TODO state.".into(),
+        description: "Save durable facts to persistent memory that survive across sessions. Memory is injected into every future turn, so keep entries compact and high-signal.\n\nWHEN: save proactively when the user states a preference, correction, or personal detail, or you learn a stable fact about their environment, conventions, or workflow — including implicit signals (consistent language, tech stack, recurring habits). Priority: user preferences & corrections > user profile traits > environment facts > procedures. The best memory stops the user repeating themselves.\n\nSKIP: trivial/obvious info, easily re-discovered facts, raw data dumps, task progress, completed-work logs, temporary TODO state.".into(),
         input_schema: json!({
             "type": "object",
             "properties": {

@@ -2,7 +2,6 @@ import { invoke } from "@tauri-apps/api/core";
 import type {
   AgentMode,
   ChatMessage,
-  ConversationMemory,
   ConversationMeta,
   ConversationUsageSummary,
   PersistedMessage,
@@ -11,7 +10,6 @@ import type {
 } from "../../../lib/chat-types";
 import type { PermissionActionName } from "../../../lib/chat-payloads";
 import { buildConversationTitle } from "../utils/session-memory";
-
 type ChatRequestContent = string | Array<Record<string, unknown>>;
 
 type ChatRequestMessage = Pick<ChatMessage, "role"> & {
@@ -276,24 +274,6 @@ export async function upsertConversationToolLog(
   await invoke("upsert_conversation_tool_log", {
     conversationId,
     log,
-  });
-}
-
-export async function getConversationMemory(
-  conversationId: string,
-): Promise<ConversationMemory | null> {
-  return invoke<ConversationMemory | null>("get_conversation_memory", { conversationId });
-}
-
-export async function upsertConversationMemory(
-  conversationId: string,
-  summary: string,
-  keyFacts: string[],
-): Promise<void> {
-  await invoke("upsert_conversation_memory", {
-    conversationId,
-    summary,
-    keyFacts,
   });
 }
 

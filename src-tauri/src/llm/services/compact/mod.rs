@@ -308,16 +308,10 @@ fn build_auto_compact_summary_message(summary: &str) -> Message {
 }
 
 // 根据消息数量、估算 token 数和是否存在超大工具结果文本来决定压缩策略。
-// overhead_tokens：system prompt / 工具定义 / 注入上下文等请求固定开销
-//（C3 校准，按真实 usage 记录），计入估算避免"估算 85% 实际 100%"。
-fn decide_compact_strategy(
-    messages: &[Message],
-    window_tokens: i64,
-    overhead_tokens: i64,
-) -> CompactDecision {
+fn decide_compact_strategy(messages: &[Message], window_tokens: i64) -> CompactDecision {
     // 估算消息总体 token，纯粹基于 token 用量决定压缩等级。
     // 不使用消息条数或工具结果字符数等辅助条件。
-    let estimated_tokens = token_counter::count_messages(messages) + overhead_tokens.max(0);
+    let estimated_tokens = token_counter::count_messages(messages);
 
     // Micro: 80% 窗口触发本地工具结果截断（不调用模型）
     // Full: 90% 窗口触发模型摘要压缩
@@ -765,16 +759,6 @@ pub fn is_prompt_too_long_error(error: &str) -> bool {
     .any(|needle| normalized.contains(needle))
 }
 
-/// 记录一次真实请求的 input 开销（actual_total_input - messages 估算），
-/// 供后续压缩决策校准（C3）。由主循环在拿到 provider 真实 usage 后调用。
-pub fn record_observed_input_overhead(
-    conversation_id: Option<&str>,
-    actual_total_input: i64,
-    messages_estimate: i64,
-) {
-    state::record_observed_input_overhead(conversation_id, actual_total_input, messages_estimate);
-}
-
 pub async fn reactive_compact_messages_for_retry(
     app: &AppHandle,
     conversation_id: Option<&str>,
@@ -831,8 +815,7 @@ pub async fn compact_messages_mid_turn(
     messages: &mut Vec<Message>,
     window_tokens: i64,
 ) -> MidTurnCompactOutcome {
-    let overhead = state::observed_input_overhead(conversation_id);
-    let decision = decide_compact_strategy(messages, window_tokens, overhead);
+    let decision = decide_compact_strategy(messages, window_tokens);
     let tokens_before = decision.estimated_tokens;
 
     let level = match decision.level {
@@ -868,7 +851,7 @@ pub async fn compact_messages_mid_turn(
     let tokens_after = if level == "none" {
         tokens_before
     } else {
-        token_counter::count_messages(messages) + overhead
+        token_counter::count_messages(messages)
     };
 
     MidTurnCompactOutcome {
@@ -893,9 +876,8 @@ pub async fn compact_messages_for_turn_with_report(
     let model = settings.active_provider_profile().model;
     let window_tokens = settings.context_window_for_model(&model) as i64;
 
-    // 决策并记录调试信息（C3：请求固定开销按真实 usage 校准后计入估算）
-    let overhead = state::observed_input_overhead(conversation_id);
-    let decision = decide_compact_strategy(messages, window_tokens, overhead);
+    // 决策并记录调试信息
+    let decision = decide_compact_strategy(messages, window_tokens);
     // 根据决策执行对应的压缩流程
     let level = match decision.level {
         CompactLevel::None => "none",

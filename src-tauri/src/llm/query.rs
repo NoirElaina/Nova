@@ -883,15 +883,6 @@ pub async fn send_chat_message(
                 window_tokens as u32,
                 "actual",
             );
-
-            // C3 校准：真实 input（含 system prompt / 工具定义 / 注入上下文，
-            // 且天然包含分词器漂移）与 messages-only 估算的差值记为请求固定开销，
-            // 后续压缩决策据此提前触发，避免"估算 85% 实际 100%"。
-            compact::record_observed_input_overhead(
-                conversation_id.as_deref(),
-                total_input as i64,
-                token_counter::count_messages(&messages_for_provider),
-            );
         }
 
         // 本轮 provider 输出合并到 current_messages 以支持工具环回。

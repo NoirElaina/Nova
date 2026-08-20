@@ -314,6 +314,14 @@ async function handleDeleteTask() {
   }
 }
 
+/** 卡片上的删除：设置目标任务后复用 handleDeleteTask（与详情页删除同路径）。 */
+async function deleteTaskFromCard(task: ScheduledTask) {
+  if (deleting.value) return;
+  if (!confirm(`确定删除任务 ${task.id}？`)) return;
+  selectedTaskId.value = task.id;
+  await handleDeleteTask();
+}
+
 function handleOpenTaskConversation(task: ScheduledTask) {
   const conversationId = (task.conversationId ?? "").trim();
   if (!conversationId) {
@@ -365,15 +373,17 @@ onMounted(() => {
       <CardContent class="px-3 text-sm text-[#64748b] dark:text-[#a3a3a3]">正在读取任务...</CardContent>
     </Card>
 
-    <!-- 卡片网格视图：每个任务一张卡，点击进入详情页 -->
+    <!-- 卡片网格视图：每个任务一张卡，点击进入详情页；底部行右侧快捷操作 -->
     <div v-else-if="view === 'grid'" class="grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-3">
-      <button
+      <div
         v-for="task in sortedTasks"
         :key="task.id"
-        type="button"
+        role="button"
+        tabindex="0"
         class="flex min-h-[120px] cursor-pointer flex-col rounded-xl border border-[#e5e7eb] bg-white p-4 text-left transition-all hover:border-[#2563eb]/60 hover:shadow-[0_6px_20px_rgba(37,99,235,0.10)] dark:border-[#333] dark:bg-[#242424] dark:hover:border-[#60a5fa]/50 dark:hover:shadow-none"
         :title="`查看任务 ${task.id}`"
         @click="openTaskDetail(task)"
+        @keydown.enter.prevent="openTaskDetail(task)"
       >
         <div class="flex items-center justify-between gap-2">
           <span class="truncate text-[13.5px] font-semibold text-[#111827] dark:text-[#f3f4f6]">{{ describeCron(task.cron, task.recurring) }}</span>
@@ -384,12 +394,30 @@ onMounted(() => {
         <p class="mt-1.5 line-clamp-2 flex-1 break-words text-[12.5px] leading-5 text-[#64748b] dark:text-[#a3a3a3]">
           {{ task.prompt }}
         </p>
-        <div class="mt-2 flex items-center gap-2 text-[11px] text-[#98a2b3] dark:text-[#9d9589]">
-          <span class="truncate font-mono">{{ task.cron }}</span>
-          <span>·</span>
-          <span class="shrink-0">{{ formatDateTime(task.createdAt) }}</span>
+        <div class="mt-2 flex items-center justify-between gap-2">
+          <span class="flex min-w-0 items-center gap-2 truncate text-[11px] text-[#98a2b3] dark:text-[#9d9589]">
+            <span class="truncate font-mono">{{ task.cron }}</span>
+            <span>·</span>
+            <span class="shrink-0">{{ formatDateTime(task.createdAt) }}</span>
+          </span>
+          <span class="flex shrink-0 items-center gap-1.5">
+            <button
+              type="button"
+              class="rounded-md border border-[#d8dee8] bg-white px-2 py-0.5 text-[11.5px] text-[#2563eb] transition-colors hover:bg-[#eff6ff] disabled:cursor-not-allowed disabled:opacity-40 dark:border-[#3a3a3a] dark:bg-[#242424] dark:text-[#93c5fd] dark:hover:bg-[#2d2d2d]"
+              :disabled="!(task.conversationId && task.conversationId.trim())"
+              title="打开任务绑定的会话"
+              @click.stop="handleOpenTaskConversation(task)"
+            >会话</button>
+            <button
+              type="button"
+              class="rounded-md border border-[#fecaca] bg-white px-2 py-0.5 text-[11.5px] text-[#dc2626] transition-colors hover:bg-[#fef2f2] disabled:cursor-not-allowed disabled:opacity-40 dark:border-[#513030] dark:bg-[#242424] dark:text-[#fca5a5] dark:hover:bg-[#3a1f1f]"
+              :disabled="deleting"
+              title="删除该任务"
+              @click.stop="deleteTaskFromCard(task)"
+            >删除</button>
+          </span>
         </div>
-      </button>
+      </div>
 
       <!-- 新建卡片 -->
       <button

@@ -25,14 +25,25 @@ pub fn delete_skill(app: AppHandle, path: String) -> Result<(), String> {
             .ok_or_else(|| "无法解析技能目录".to_string())?
             .to_path_buf();
 
-        // 安全校验：确保目录在 app_data_dir/skills 下，防止路径穿越。
-        let skills_root = app
+        // 安全校验：目录必须位于全局 skills 根目录或某个智能体的私有技能目录下，
+        // 防止路径穿越。
+        let app_data = app
             .path()
             .app_data_dir()
-            .map(|d| d.join("skills"))
-            .map_err(|e| format!("无法解析 skills 根目录: {}", e))?;
+            .map_err(|e| format!("无法解析应用数据目录: {}", e))?;
+        let skills_root = app_data.join("skills");
 
-        if !skill_dir.starts_with(&skills_root) {
+        let allowed = skill_dir.starts_with(&skills_root)
+            || crate::llm::services::agent_bundles::list_bundles(&app)
+                .map(|bundles| {
+                    bundles.iter().any(|b| {
+                        agent_bundle_skills_dir(&app, &b.id)
+                            .map(|dir| skill_dir.starts_with(&dir))
+                            .unwrap_or(false)
+                    })
+                })
+                .unwrap_or(false);
+        if !allowed {
             return Err("拒绝删除 skills 目录之外的路径".to_string());
         }
 
@@ -43,4 +54,11 @@ pub fn delete_skill(app: AppHandle, path: String) -> Result<(), String> {
         std::fs::remove_dir_all(&skill_dir).map_err(|e| format!("删除技能目录失败: {}", e))
     })();
     report_backend_result(&app, "command.skill.delete_skill", result, None)
+}
+
+fn agent_bundle_skills_dir(
+    app: &AppHandle,
+    bundle_id: &str,
+) -> Result<PathBuf, String> {
+    crate::llm::services::agent_bundles::agent_skills_dir(app, bundle_id)
 }

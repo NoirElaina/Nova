@@ -1,6 +1,7 @@
 // 智能体套件（Agent Bundle）：一个 bundle = 附加提示词 + 工具/技能/MCP 装备清单。
 // 清单语义：null = 全部（跟随全局，含后续新增）；Some(清单) = 自定义勾选（勾=添加，不勾=移除）。
-// 存储为 app_data/agents/<id>.json；会话挂载的 bundle 记录在 conversations.active_agent_id。
+// 存储为目录 app_data/agents/<id>/（agent.json 定义 + skills/ 私有技能 +
+// files/ 资料文件 + mcp.json 私有 MCP 配置）；会话挂载的 bundle 记录在 conversations.active_agent_id。
 // 智能体是会话级的：智能体页点「启用」只对当前对话生效，其他对话/新对话均为默认 Nova。
 //
 // 会话 -> bundle 的读取链路：DB 读取是异步的，而 provider adapter 的 build_request 是同步热路径，
@@ -144,7 +145,65 @@ fn validate_bundle_id(id: &str) -> Result<(), String> {
 fn bundle_path(app: &AppHandle, id: &str) -> Result<PathBuf, String> {
     validate_bundle_id(id)?;
     let root = ensure_bundles_root_dir(app)?;
-    Ok(root.join(format!("{}.json", id.trim())))
+    Ok(root.join(id.trim()).join("agent.json"))
+}
+
+/// 智能体根目录：agents/<id>/。
+pub fn agent_dir(app: &AppHandle, id: &str) -> Result<PathBuf, String> {
+    validate_bundle_id(id)?;
+    let root = ensure_bundles_root_dir(app)?;
+    Ok(root.join(id.trim()))
+}
+
+/// 私有技能目录：agents/<id>/skills/。
+pub fn agent_skills_dir(app: &AppHandle, id: &str) -> Result<PathBuf, String> {
+    Ok(agent_dir(app, id)?.join("skills"))
+}
+
+/// 资料文件目录：agents/<id>/files/。
+pub fn agent_files_dir(app: &AppHandle, id: &str) -> Result<PathBuf, String> {
+    Ok(agent_dir(app, id)?.join("files"))
+}
+
+/// 私有 MCP 配置文件：agents/<id>/mcp.json。
+pub fn agent_mcp_config_path(app: &AppHandle, id: &str) -> Result<PathBuf, String> {
+    Ok(agent_dir(app, id)?.join("mcp.json"))
+}
+
+/// 旧格式迁移：agents/<id>.json → agents/<id>/agent.json。
+/// 读取/列表前调用；文件已迁移或不存在时静默跳过。
+fn migrate_legacy_bundle_file(app: &AppHandle, root: &std::path::Path) {
+    let entries = match std::fs::read_dir(root) {
+        Ok(v) => v,
+        Err(_) => return,
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if !path.is_file() || path.extension().and_then(|v| v.to_str()) != Some("json") {
+            continue;
+        }
+        let Some(stem) = path.file_stem().and_then(|v| v.to_str()) else {
+            continue;
+        };
+        if validate_bundle_id(stem).is_err() {
+            continue;
+        }
+        let new_path = root.join(stem).join("agent.json");
+        if new_path.exists() {
+            // 目录里已有定义：旧文件视为废弃残留，直接删除防止反复回读。
+            let _ = std::fs::remove_file(&path);
+            continue;
+        }
+        if std::fs::create_dir_all(root.join(stem)).is_ok() {
+            if std::fs::rename(&path, &new_path).is_err() {
+                // rename 失败（跨设备等）退回复制+删除。
+                if std::fs::copy(&path, &new_path).is_ok() {
+                    let _ = std::fs::remove_file(&path);
+                }
+            }
+        }
+    }
+    let _ = app; // 预留：迁移结果上报
 }
 
 /// 生成短 uuid（时间戳 + 随机后缀），无需额外依赖。
@@ -197,17 +256,22 @@ impl AgentBundle {
 /// 列出全部 bundle（按更新时间倒序）。
 pub fn list_bundles(app: &AppHandle) -> Result<Vec<AgentBundle>, String> {
     let root = ensure_bundles_root_dir(app)?;
+    // 旧单文件格式先迁移到目录格式。
+    migrate_legacy_bundle_file(app, &root);
+
     let mut items = Vec::new();
     for entry in std::fs::read_dir(&root).map_err(|e| e.to_string())? {
         let entry = entry.map_err(|e| e.to_string())?;
         let path = entry.path();
-        if !path.is_file() {
+        // 目录制：agents/<id>/agent.json。
+        if !path.is_dir() {
             continue;
         }
-        if path.extension().and_then(|v| v.to_str()) != Some("json") {
+        let definition = path.join("agent.json");
+        if !definition.is_file() {
             continue;
         }
-        if let Ok(content) = std::fs::read_to_string(&path) {
+        if let Ok(content) = std::fs::read_to_string(&definition) {
             if let Ok(bundle) = serde_json::from_str::<AgentBundle>(&content) {
                 items.push(bundle);
             }
@@ -221,13 +285,19 @@ pub fn list_bundles(app: &AppHandle) -> Result<Vec<AgentBundle>, String> {
 pub fn load_bundle(app: &AppHandle, id: &str) -> Result<AgentBundle, String> {
     let path = bundle_path(app, id)?;
     if !path.exists() {
-        return Err(format!("Agent bundle not found: {}", id));
+        // 可能是旧格式还没迁移（load 未经过 list_bundles），先迁移再读一次。
+        if let Ok(root) = bundles_root_dir(app) {
+            migrate_legacy_bundle_file(app, &root);
+        }
+        if !path.exists() {
+            return Err(format!("Agent bundle not found: {}", id));
+        }
     }
     let content = std::fs::read_to_string(&path).map_err(|e| e.to_string())?;
     serde_json::from_str(&content).map_err(|e| format!("Invalid agent bundle {}: {}", id, e))
 }
 
-/// 保存 bundle（整体写入）。
+/// 保存 bundle（整体写入），并确保目录骨架（skills/、files/）存在。
 pub fn save_bundle(app: &AppHandle, bundle: AgentBundle) -> Result<AgentBundle, String> {
     if bundle.name.trim().is_empty() {
         return Err("bundle name is required".to_string());
@@ -240,6 +310,13 @@ pub fn save_bundle(app: &AppHandle, bundle: AgentBundle) -> Result<AgentBundle, 
     // 新建时补 createdAt；已存在的保留原值。
     if !path.exists() && bundle.created_at <= 0 {
         bundle.created_at = bundle.updated_at;
+    }
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+        // 目录骨架：私有技能与资料目录随保存一并确保。
+        for sub in ["skills", "files"] {
+            std::fs::create_dir_all(parent.join(sub)).map_err(|e| e.to_string())?;
+        }
     }
     let content = serde_json::to_string_pretty(&bundle).map_err(|e| e.to_string())?;
     std::fs::write(path, content).map_err(|e| e.to_string())?;
@@ -267,12 +344,13 @@ pub fn create_bundle(app: &AppHandle, name: &str) -> Result<AgentBundle, String>
     save_bundle(app, bundle)
 }
 
-/// 删除 bundle 文件。会话引用清理由异步命令层负责
+/// 删除 bundle（整个目录：定义 + 私有技能 + 资料 + 私有 MCP 配置）。
+/// 会话引用清理由异步命令层负责
 /// （UPDATE conversations + 刷新缓存），见 command::agent_config::delete_agent_bundle。
 pub fn delete_bundle(app: &AppHandle, id: &str) -> Result<(), String> {
-    let path = bundle_path(app, id)?;
-    if !path.exists() {
+    let dir = agent_dir(app, id)?;
+    if !dir.exists() {
         return Err(format!("Agent bundle not found: {}", id));
     }
-    std::fs::remove_file(path).map_err(|e| e.to_string())
+    std::fs::remove_dir_all(dir).map_err(|e| e.to_string())
 }

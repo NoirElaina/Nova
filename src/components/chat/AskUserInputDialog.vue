@@ -108,10 +108,27 @@ function buildSubmission(): AskUserAnswerSubmission {
     const stateKey = questionStateKey(question, index);
     const values = selectedAnswers[stateKey] ?? [];
     const qFreeform = (freeformAnswers[stateKey] ?? '').trim();
-    const answer =
-      question.multi_select
-        ? values.length > 0 ? values : (qFreeform ? [qFreeform] : [])
-        : values[0] ?? qFreeform ?? '';
+    // 选项与自由输入并存时合并发送：选项值保留原样（权限审批按值精确匹配），
+    // 补充文字作为附加说明一并回传，不能因为选了选项就丢弃。
+    const supplement = qFreeform ? `补充说明：${qFreeform}` : '';
+    let answer: string | string[];
+    if (question.multi_select) {
+      answer =
+        values.length > 0
+          ? supplement
+            ? [...values, supplement]
+            : values
+          : qFreeform
+            ? [qFreeform]
+            : [];
+    } else {
+      const single = values[0];
+      answer = single
+        ? supplement
+          ? `${single}（${supplement}）`
+          : single
+        : qFreeform;
+    }
     const baseLabel = questionAnswerLabel(question, index);
     const count = (answerLabelCounts.get(baseLabel) ?? 0) + 1;
     answerLabelCounts.set(baseLabel, count);

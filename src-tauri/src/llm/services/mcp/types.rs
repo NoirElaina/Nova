@@ -70,6 +70,9 @@ pub struct McpServerStatus {
     pub r#type: String,
     pub tool_count: usize,
     pub error: Option<String>,
+    /// 智能体私有 server 的归属 agent id；全局 server 为 None。
+    #[serde(default)]
+    pub owner_agent: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]

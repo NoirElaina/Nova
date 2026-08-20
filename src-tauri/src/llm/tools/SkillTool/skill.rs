@@ -142,17 +142,18 @@ async fn execute_with_app(
         .trim()
         .to_ascii_lowercase();
 
-    let skills = match load_enabled_skills_with_app(app) {
-        Ok(skills) => {
-            match crate::llm::services::agent_bundles::active_bundle(app, conversation_id) {
-                Some(bundle) => skills
-                    .into_iter()
-                    .filter(|s| bundle.is_skill_enabled(&s.name))
-                    .collect(),
-                None => skills,
+    // 全局已启用技能（按 bundle 白名单过滤）+ bundle 私有技能一并可见。
+    let skills = match crate::llm::services::agent_bundles::active_bundle(app, conversation_id) {
+        Some(bundle) => {
+            match crate::llm::services::skills::load_skills_for_conversation(app, Some(&bundle)) {
+                Ok(skills) => skills,
+                Err(e) => return Err(ToolFailure::new(e)),
             }
         }
-        Err(e) => return Err(ToolFailure::new(e)),
+        None => match load_enabled_skills_with_app(app) {
+            Ok(skills) => skills,
+            Err(e) => return Err(ToolFailure::new(e)),
+        },
     };
 
     if action == "list" {

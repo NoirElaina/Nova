@@ -36,3 +36,15 @@ pub mod usage;
 pub mod todo;
 // 会话 plan 查询命令入口。
 pub mod plan;
+
+use tauri::{AppHandle, Manager};
+
+/// 返回应用数据目录绝对路径（斜杠命令创建插件/智能体/技能时注入 prompt，
+/// 让 AI 知道往哪里写文件）。
+#[tauri::command]
+pub fn get_app_data_dir(app: AppHandle) -> Result<String, String> {
+    app.path()
+        .app_data_dir()
+        .map(|p| p.display().to_string())
+        .map_err(|e| format!("failed to resolve app data dir: {}", e))
+}

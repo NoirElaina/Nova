@@ -31,9 +31,15 @@ import {
   MEMORY_OPTIONS,
   REVIEW_OPTIONS,
   INIT_OPTIONS,
+  PLUGIN_OPTIONS,
+  AGENT_OPTIONS,
+  SKILL_CREATE_VALUE,
   parseSlashCommand,
   buildInitPrompt,
   buildReviewPrompt,
+  buildCreatePluginPrompt,
+  buildCreateAgentPrompt,
+  buildCreateSkillPrompt,
   formatWorkspaceDiff,
   allSlashCommands,
   setPluginCommands,
@@ -253,12 +259,19 @@ const filteredCommands = computed(() => {
 const currentParamOptions = computed<SlashParamOption[]>(() => {
   const cmd = slashActiveCommand.value;
   if (cmd === 'skill') {
-    // skill 二级选项为技能列表
-    return slashSkills.value.map((s) => ({
-      label: s.name,
-      description: s.description,
-      value: s.name,
-    }));
+    // skill 二级选项为技能列表 + 末尾"创建新技能"入口
+    return [
+      ...slashSkills.value.map((s) => ({
+        label: s.name,
+        description: s.description,
+        value: s.name,
+      })),
+      {
+        label: '＋ 创建新技能',
+        value: SKILL_CREATE_VALUE,
+        description: '让 AI 采访需求并编写新的 SKILL.md',
+      },
+    ];
   }
   if (cmd === 'compact') {
     // compact 二级选项：展示用量统计后压缩
@@ -277,6 +290,8 @@ const currentParamOptions = computed<SlashParamOption[]>(() => {
   if (cmd === 'memory') return MEMORY_OPTIONS;
   if (cmd === 'review') return REVIEW_OPTIONS;
   if (cmd === 'init') return INIT_OPTIONS;
+  if (cmd === 'plugin') return PLUGIN_OPTIONS;
+  if (cmd === 'agent') return AGENT_OPTIONS;
   // 插件命令：展示执行选项（rest 作为附加自由文本附加到展开的模板后）
   const pluginEntry = allSlashCommands().find(
     (entry) => entry.name === cmd && entry.type === 'plugin',
@@ -507,10 +522,32 @@ const executeLocalCommand = async (entry: SlashCommandEntry, rest: string): Prom
   return false;
 };
 
+// 获取应用数据目录（创建类命令的 prompt 需要注入绝对路径）
+const fetchAppDataDir = async (): Promise<string | null> => {
+  try {
+    return await invoke<string>('get_app_data_dir');
+  } catch (error) {
+    emitErrorToast('获取应用数据目录', error);
+    return null;
+  }
+};
+
 // 执行 Prompt 类型命令（构造模板消息发送给 AI）。rest 为二级选项 value
 const executePromptCommand = async (entry: SlashCommandEntry, rest: string): Promise<boolean> => {
   if (entry.name === 'init') {
     emit('send', buildInitPrompt(rest));
+    return true;
+  }
+  if (entry.name === 'plugin') {
+    const appDataDir = await fetchAppDataDir();
+    if (!appDataDir) return true;
+    emit('send', buildCreatePluginPrompt(appDataDir, rest));
+    return true;
+  }
+  if (entry.name === 'agent') {
+    const appDataDir = await fetchAppDataDir();
+    if (!appDataDir) return true;
+    emit('send', buildCreateAgentPrompt(appDataDir, rest));
     return true;
   }
   if (entry.name === 'review') {
@@ -562,8 +599,14 @@ const executeSlashCommand = async (parsed: { entry: SlashCommandEntry; rest: str
     return executePluginCommand(entry, rest);
   }
   if (entry.type === 'skill') {
-    // rest 为技能名
+    // rest 为技能名；"创建新技能"标记走创建模板
     if (!rest) return false;
+    if (rest === SKILL_CREATE_VALUE) {
+      const appDataDir = await fetchAppDataDir();
+      if (!appDataDir) return true;
+      emit('send', buildCreateSkillPrompt(appDataDir));
+      return true;
+    }
     emit('send', `请使用 Skill 工具加载并执行技能：${rest}`);
     return true;
   }

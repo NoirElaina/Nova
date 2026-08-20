@@ -195,9 +195,65 @@ pub(crate) fn load_enabled_skills_with_app(app: &AppHandle) -> Result<Vec<SkillE
         .collect())
 }
 
+// 智能体私有技能：扫描 agents/<bundle_id>/skills/ 下的 SKILL.md。
+// 私有技能不进全局列表、不受全局停用名单和 bundle 白名单约束——
+// 它们由该智能体目录持有，挂载该智能体的会话始终可见。
+pub(crate) fn load_agent_private_skills(
+    app: &AppHandle,
+    bundle_id: &str,
+) -> Result<Vec<SkillEntry>, String> {
+    let skills_dir =
+        crate::llm::services::agent_bundles::agent_skills_dir(app, bundle_id)?;
+    if !skills_dir.exists() {
+        return Ok(Vec::new());
+    }
+
+    let mut skill_files = Vec::new();
+    collect_skill_files(&skills_dir, &mut skill_files);
+
+    let mut out = Vec::new();
+    for path in skill_files {
+        let Ok(raw) = fs::read_to_string(&path) else {
+            continue;
+        };
+        out.push(SkillEntry {
+            name: pick_skill_name(&path, &raw),
+            description: pick_skill_description(&raw),
+            path,
+            content: strip_frontmatter(&raw),
+        });
+    }
+    Ok(out)
+}
+
+/// 合并某会话可见的技能：全局已启用技能（按 bundle 白名单过滤）+ bundle 私有技能。
+/// bundle 为 None 时即全局已启用技能。同名时私有技能排在后面（全局优先）。
+pub(crate) fn load_skills_for_conversation(
+    app: &AppHandle,
+    bundle: Option<&crate::llm::services::agent_bundles::AgentBundle>,
+) -> Result<Vec<SkillEntry>, String> {
+    let mut skills: Vec<SkillEntry> = load_enabled_skills_with_app(app)?
+        .into_iter()
+        .filter(|s| bundle.map(|b| b.is_skill_enabled(&s.name)).unwrap_or(true))
+        .collect();
+
+    if let Some(bundle) = bundle {
+        skills.extend(load_agent_private_skills(app, &bundle.id)?);
+    }
+    Ok(skills)
+}
+
 // 返回给前端、系统提示词等模块使用的轻量 skill 摘要。
 pub fn list_skill_summaries_with_app(app: &AppHandle) -> Result<Vec<SkillSummary>, String> {
     Ok(to_summaries(load_skills_with_app(app)?))
+}
+
+/// 某智能体的私有技能摘要（前端智能体配置页用）。
+pub fn list_agent_private_skill_summaries(
+    app: &AppHandle,
+    bundle_id: &str,
+) -> Result<Vec<SkillSummary>, String> {
+    Ok(to_summaries(load_agent_private_skills(app, bundle_id)?))
 }
 
 // 仅返回已启用技能的摘要：系统提示词注入用。

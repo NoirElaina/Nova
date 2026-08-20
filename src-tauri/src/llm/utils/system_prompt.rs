@@ -188,35 +188,59 @@ pub fn load_system_prompt(
     // 注入可用 skill 元数据，AI 无需先 list 即可直接 run。
     // 已停用（全局设置）、不在当前 bundle 白名单内、或 Skill 工具本身被 bundle
     // 排除时（列出来模型也调不了），一律不注入。
+    // bundle 私有技能（agents/<id>/skills/）始终附加：它们不受白名单约束。
     let skill_tool_visible = match &bundle {
         Some(b) => b.is_tool_enabled("Skill"),
         None => true,
     };
     let prompt_with_memory = if skill_tool_visible {
-        match list_enabled_skill_summaries_with_app(app) {
+        let skills_result = match &bundle {
+            Some(bundle) => crate::llm::services::skills::load_skills_for_conversation(app, Some(bundle))
+                .map(|entries| entries
+                    .into_iter()
+                    .map(|s| crate::llm::services::skills::SkillSummary {
+                        name: s.name,
+                        description: s.description,
+                        path: s.path.display().to_string(),
+                    })
+                    .collect::<Vec<_>>()),
+            None => list_enabled_skill_summaries_with_app(app),
+        };
+        match skills_result {
             Ok(skills) if !skills.is_empty() => {
-                let visible: Vec<_> = match &bundle {
-                    Some(bundle) => skills
-                        .into_iter()
-                        .filter(|s| bundle.is_skill_enabled(&s.name))
-                        .collect(),
-                    None => skills,
-                };
-                if visible.is_empty() {
-                    prompt_with_memory
-                } else {
-                    let lines: String = visible
-                        .iter()
-                        .map(|s| format!("- **{}**: {}", s.name, s.description))
-                        .collect::<Vec<String>>()
-                        .join("\n");
-                    format!("{}\n\n## Available Skills\n{}\n", prompt_with_memory, lines)
-                }
+                let lines: String = skills
+                    .iter()
+                    .map(|s| format!("- **{}**: {}", s.name, s.description))
+                    .collect::<Vec<String>>()
+                    .join("\n");
+                format!("{}\n\n## Available Skills\n{}\n", prompt_with_memory, lines)
             }
             _ => prompt_with_memory,
         }
     } else {
         prompt_with_memory
+    };
+
+    // 智能体资料目录：bundle 挂载且 files/ 非空时注入绝对路径，
+    // AI 用 Read/Glob/Grep 按需访问（与 [Session Files] 注入同一模式）。
+    let prompt_with_memory = match &bundle {
+        Some(bundle) => match crate::llm::services::agent_bundles::agent_files_dir(app, &bundle.id)
+        {
+            Ok(files_dir)
+                if files_dir.is_dir()
+                    && std::fs::read_dir(&files_dir)
+                        .map(|mut it| it.next().is_some())
+                        .unwrap_or(false) =>
+            {
+                format!(
+                    "{}\n\n## Agent Resources\nThis agent has a resource directory with reference files. Files are stored at: {}; use the Read, Glob, and Grep tools to access them via absolute path.\n",
+                    prompt_with_memory,
+                    files_dir.display()
+                )
+            }
+            _ => prompt_with_memory,
+        },
+        None => prompt_with_memory,
     };
 
     // 插件提示词片段（end 锚点）：Skills 段之后、模式段之前。

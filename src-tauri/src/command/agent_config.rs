@@ -135,3 +135,169 @@ pub fn list_configurable_tools(app: AppHandle) -> Result<Vec<ConfigurableTool>, 
         None,
     )
 }
+
+// ---------------- 智能体目录资源：私有技能 / 资料文件 / 私有 MCP ----------------
+
+/// 某智能体的私有技能列表（agents/<id>/skills/）。
+#[tauri::command]
+pub fn list_agent_private_skills(
+    app: AppHandle,
+    bundle_id: String,
+) -> Result<Vec<crate::llm::services::skills::SkillSummary>, String> {
+    report_backend_result(
+        &app,
+        "command.agent_config.list_agent_private_skills",
+        crate::llm::services::skills::list_agent_private_skill_summaries(&app, &bundle_id),
+        None,
+    )
+}
+
+/// 智能体资料文件条目（agents/<id>/files/ 顶层）。
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentFileEntry {
+    pub name: String,
+    pub size_bytes: u64,
+    pub is_dir: bool,
+}
+
+#[tauri::command]
+pub fn list_agent_files(app: AppHandle, bundle_id: String) -> Result<Vec<AgentFileEntry>, String> {
+    let result = (|| {
+        let dir = agent_bundles::agent_files_dir(&app, &bundle_id)?;
+        let mut out = Vec::new();
+        if dir.exists() {
+            for entry in std::fs::read_dir(&dir).map_err(|e| e.to_string())? {
+                let entry = entry.map_err(|e| e.to_string())?;
+                let meta = entry.metadata().map_err(|e| e.to_string())?;
+                let Some(name) = entry.file_name().to_str().map(str::to_string) else {
+                    continue;
+                };
+                out.push(AgentFileEntry {
+                    name,
+                    size_bytes: meta.len(),
+                    is_dir: meta.is_dir(),
+                });
+            }
+        }
+        out.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+        Ok(out)
+    })();
+    report_backend_result(&app, "command.agent_config.list_agent_files", result, None)
+}
+
+/// 导入资料文件到智能体目录（复制进 agents/<id>/files/，同名覆盖）。
+#[tauri::command]
+pub fn import_agent_file(
+    app: AppHandle,
+    bundle_id: String,
+    src_path: String,
+) -> Result<AgentFileEntry, String> {
+    let result = (|| {
+        let src = std::path::Path::new(&src_path);
+        if !src.is_file() {
+            return Err("源路径必须是文件".to_string());
+        }
+        let name = src
+            .file_name()
+            .and_then(|n| n.to_str())
+            .ok_or("无法解析文件名")?
+            .to_string();
+        // 文件名安全：不允许路径分隔符（防穿越）。
+        if name.contains('/') || name.contains('\\') || name.contains("..") {
+            return Err("文件名包含非法字符".to_string());
+        }
+        let dir = agent_bundles::agent_files_dir(&app, &bundle_id)?;
+        std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+        let dest = dir.join(&name);
+        std::fs::copy(src, &dest).map_err(|e| format!("复制文件失败: {}", e))?;
+        Ok(AgentFileEntry {
+            name,
+            size_bytes: std::fs::metadata(&dest).map(|m| m.len()).unwrap_or(0),
+            is_dir: false,
+        })
+    })();
+    report_backend_result(&app, "command.agent_config.import_agent_file", result, None)
+}
+
+/// 删除智能体资料文件/子目录（仅限 files/ 顶层）。
+#[tauri::command]
+pub fn delete_agent_file(app: AppHandle, bundle_id: String, name: String) -> Result<(), String> {
+    let result = (|| {
+        if name.contains('/') || name.contains('\\') || name.contains("..") {
+            return Err("文件名包含非法字符".to_string());
+        }
+        let dir = agent_bundles::agent_files_dir(&app, &bundle_id)?;
+        let target = dir.join(&name);
+        if !target.exists() {
+            return Err(format!("文件不存在: {}", name));
+        }
+        if target.is_dir() {
+            std::fs::remove_dir_all(&target).map_err(|e| e.to_string())
+        } else {
+            std::fs::remove_file(&target).map_err(|e| e.to_string())
+        }
+    })();
+    report_backend_result(&app, "command.agent_config.delete_agent_file", result, None)
+}
+
+/// 在系统资源管理器中打开智能体目录（用户可直接放入 SKILL.md / 资料文件）。
+#[tauri::command]
+pub fn reveal_agent_dir(app: AppHandle, bundle_id: String) -> Result<(), String> {
+    use tauri_plugin_opener::OpenerExt;
+    let result = (|| {
+        let dir = agent_bundles::agent_dir(&app, &bundle_id)?;
+        std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+        let path = dir.to_string_lossy().to_string();
+        app.opener()
+            .open_path(&path, None::<&str>)
+            .map_err(|e| format!("打开目录失败: {}", e))
+    })();
+    report_backend_result(&app, "command.agent_config.reveal_agent_dir", result, None)
+}
+
+/// 某智能体的私有 MCP server 列表（读 agents/<id>/mcp.json）。
+#[tauri::command]
+pub async fn list_agent_mcp_servers(
+    app: AppHandle,
+    bundle_id: String,
+) -> Result<Vec<crate::llm::services::mcp::McpServerEntry>, String> {
+    let result = async {
+        crate::llm::services::mcp::agent_mcp_server_entries(&app, &bundle_id).await
+    }
+    .await;
+    report_backend_result(
+        &app,
+        "command.agent_config.list_agent_mcp_servers",
+        result,
+        None,
+    )
+}
+
+/// 智能体私有 MCP 增/改/删。
+/// old_name = None 新增；new_name = None 删除；两者都有 = 修改/重命名。
+#[tauri::command]
+pub async fn upsert_agent_mcp_server(
+    app: AppHandle,
+    bundle_id: String,
+    old_name: Option<String>,
+    new_name: Option<String>,
+    config: Option<crate::llm::services::mcp::McpServerConfig>,
+    enabled: Option<bool>,
+) -> Result<(), String> {
+    let result = crate::llm::services::mcp::upsert_agent_mcp_server(
+        &app,
+        &bundle_id,
+        old_name,
+        new_name,
+        config,
+        enabled.unwrap_or(true),
+    )
+    .await;
+    report_backend_result(
+        &app,
+        "command.agent_config.upsert_agent_mcp_server",
+        result,
+        None,
+    )
+}

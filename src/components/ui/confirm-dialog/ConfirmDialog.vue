@@ -10,12 +10,15 @@ const props = withDefaults(defineProps<{
   cancelText?: string
   busy?: boolean
   destructive?: boolean
+  /** 卡片宽度 class（默认 460px；内容较多的弹窗可传更宽的值，如 max-w-[720px]）。 */
+  widthClass?: string
 }>(), {
   description: '',
   confirmText: 'Confirm',
   cancelText: 'Cancel',
   busy: false,
   destructive: false,
+  widthClass: 'max-w-[460px]',
 })
 
 const emit = defineEmits<{
@@ -63,7 +66,8 @@ onUnmounted(() => {
         <Transition name="confirm-card">
           <div
             v-if="modelValue"
-            class="w-full max-w-[460px] rounded-[20px] border border-[#e5e7eb] bg-white p-6 shadow-[0_24px_70px_rgba(15,23,42,0.16)] dark:border-[#3a3a3a] dark:bg-[#242424]"
+            class="w-full rounded-[20px] border border-[#e5e7eb] bg-white p-6 shadow-[0_24px_70px_rgba(15,23,42,0.16)] dark:border-[#3a3a3a] dark:bg-[#242424]"
+            :class="widthClass"
           >
             <div class="flex items-start justify-between gap-4">
               <div>

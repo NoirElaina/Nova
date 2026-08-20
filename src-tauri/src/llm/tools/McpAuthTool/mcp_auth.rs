@@ -41,6 +41,61 @@ pub fn tool() -> Tool {
     }
 }
 
+// 校验 server 对当前会话可见：全局按 bundle 白名单过滤；
+// 智能体私有 server（agents/<id>/mcp.json）仅归属智能体的会话可见。
+async fn ensure_server_visible(
+    app: &AppHandle,
+    conversation_id: Option<&str>,
+    server_name: &str,
+) -> Result<(), ToolFailure> {
+    let statuses = crate::command::mcp::get_mcp_server_statuses(app.clone())
+        .await
+        .map_err(ToolFailure::mcp)?;
+    let bundle = crate::llm::services::agent_bundles::active_bundle(app, conversation_id);
+    let visible = statuses
+        .into_iter()
+        .find(|s| s.name == server_name)
+        .map(|s| match (&s.owner_agent, &bundle) {
+            (Some(owner), Some(b)) => owner == &b.id,
+            (Some(_), None) => false,
+            (None, Some(b)) => b.is_mcp_server_enabled(&s.name),
+            (None, None) => true,
+        })
+        .unwrap_or(false);
+    if visible {
+        Ok(())
+    } else {
+        Err(ToolFailure::mcp(format!(
+            "MCP server '{}' is not available in this conversation",
+            server_name
+        )))
+    }
+}
+
+// 按 bundle 可见性过滤 server 状态列表（status/reload_all 输出用）。
+async fn filter_statuses_visible(
+    app: &AppHandle,
+    conversation_id: Option<&str>,
+    mut statuses: serde_json::Value,
+) -> serde_json::Value {
+    let bundle = crate::llm::services::agent_bundles::active_bundle(app, conversation_id);
+    if let Some(list) = statuses.as_array_mut() {
+        list.retain(|s| {
+            let Some(name) = s.get("name").and_then(|v| v.as_str()) else {
+                return false;
+            };
+            let owner = s.get("ownerAgent").and_then(|v| v.as_str());
+            match (owner, &bundle) {
+                (Some(owner), Some(b)) => owner == b.id,
+                (Some(_), None) => false,
+                (None, Some(b)) => b.is_mcp_server_enabled(name),
+                (None, None) => true,
+            }
+        });
+    }
+    statuses
+}
+
 // 执行 MCP 管理动作。
 // `action` 决定分支；`server_name`、`tool_name`、`arguments` 只在对应分支中生效。
 async fn execute_with_app(
@@ -58,11 +113,19 @@ async fn execute_with_app(
 
     match action.as_str() {
         "status" => match crate::command::mcp::get_mcp_server_statuses(app.clone()).await {
-            Ok(statuses) => Ok(ToolOutcome::json(json!({
-                "ok": true,
-                "action": "status",
-                "servers": statuses
-            }))),
+            Ok(statuses) => {
+                let statuses = filter_statuses_visible(
+                    app,
+                    conversation_id,
+                    serde_json::to_value(&statuses).unwrap_or_else(|_| json!([])),
+                )
+                .await;
+                Ok(ToolOutcome::json(json!({
+                    "ok": true,
+                    "action": "status",
+                    "servers": statuses
+                })))
+            }
             Err(e) => Err(ToolFailure::mcp(e)),
         },
         "reload_all" => {
@@ -70,11 +133,19 @@ async fn execute_with_app(
                 return Err(ToolFailure::mcp(e));
             }
             match crate::command::mcp::get_mcp_server_statuses(app.clone()).await {
-                Ok(statuses) => Ok(ToolOutcome::json(json!({
-                    "ok": true,
-                    "action": "reload_all",
-                    "servers": statuses
-                }))),
+                Ok(statuses) => {
+                    let statuses = filter_statuses_visible(
+                        app,
+                        conversation_id,
+                        serde_json::to_value(&statuses).unwrap_or_else(|_| json!([])),
+                    )
+                    .await;
+                    Ok(ToolOutcome::json(json!({
+                        "ok": true,
+                        "action": "reload_all",
+                        "servers": statuses
+                    })))
+                }
                 Err(e) => Err(ToolFailure::mcp(e)),
             }
         }
@@ -92,6 +163,7 @@ async fn execute_with_app(
 
             // enabled: true 表示启用 server，false 表示禁用 server。
             let enabled = action == "enable";
+            ensure_server_visible(app, conversation_id, server_name).await?;
             match crate::command::mcp::set_mcp_server_enabled(
                 app.clone(),
                 server_name.to_string(),
@@ -120,6 +192,7 @@ async fn execute_with_app(
                 ));
             };
 
+            ensure_server_visible(app, conversation_id, server_name).await?;
             match crate::command::mcp::list_mcp_tools(app.clone(), server_name.to_string()).await {
                 Ok(tools) => Ok(ToolOutcome::json(json!({
                     "ok": true,
@@ -154,6 +227,7 @@ async fn execute_with_app(
                     "mcp_auth probe_tool requires non-empty 'server' and 'tool'",
                 ));
             }
+            ensure_server_visible(app, conversation_id, &server_name).await?;
 
             crate::llm::tools::shared::permission_runtime::call_mcp_tool_with_nested_permission(
                 app,

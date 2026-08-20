@@ -308,10 +308,16 @@ fn build_auto_compact_summary_message(summary: &str) -> Message {
 }
 
 // 根据消息数量、估算 token 数和是否存在超大工具结果文本来决定压缩策略。
-fn decide_compact_strategy(messages: &[Message], window_tokens: i64) -> CompactDecision {
+// overhead_tokens：system prompt / 工具定义 / 注入上下文等请求固定开销
+//（C3 校准，按真实 usage 记录），计入估算避免"估算 85% 实际 100%"。
+fn decide_compact_strategy(
+    messages: &[Message],
+    window_tokens: i64,
+    overhead_tokens: i64,
+) -> CompactDecision {
     // 估算消息总体 token，纯粹基于 token 用量决定压缩等级。
     // 不使用消息条数或工具结果字符数等辅助条件。
-    let estimated_tokens = token_counter::count_messages(messages);
+    let estimated_tokens = token_counter::count_messages(messages) + overhead_tokens.max(0);
 
     // Micro: 80% 窗口触发本地工具结果截断（不调用模型）
     // Full: 90% 窗口触发模型摘要压缩
@@ -452,7 +458,39 @@ fn compact_tool_result_text(text: &str) -> String {
     truncate_text_by_chars(text, TOOL_RESULT_TEXT_TRUNCATE_LIMIT)
 }
 
+/// 最近一轮工具调用（最后一条含 ToolUse 的消息）的 tool_use id 集合。
+/// 会话途中压缩时，这组结果即将在下一次请求被模型首次消费，
+/// 截断它们会迫使模型重新 Read 同一文件，因此保留原文。
+fn latest_tool_round_use_ids(messages: &[Message]) -> HashSet<String> {
+    let mut ids = HashSet::new();
+    for message in messages.iter().rev() {
+        let Content::Blocks(blocks) = &message.content else {
+            continue;
+        };
+        let mut found = false;
+        for block in blocks {
+            if let ContentBlock::ToolUse { id, .. } = block {
+                ids.insert(id.clone());
+                found = true;
+            }
+        }
+        if found {
+            break;
+        }
+    }
+    ids
+}
+
 fn apply_micro_compact(messages: &[Message]) -> Vec<Message> {
+    apply_micro_compact_protected(messages, &HashSet::new())
+}
+
+// 对每条消息进行微压缩：仅压缩 ToolResult 内的长文本/JSON。
+// protected_use_ids 对应的工具结果保留原文（会话途中 = 最近一轮未消费的结果）。
+fn apply_micro_compact_protected(
+    messages: &[Message],
+    protected_use_ids: &HashSet<String>,
+) -> Vec<Message> {
     // 对每条消息进行微压缩：仅压缩 ToolResult 内的长文本/JSON
     messages
         .iter()
@@ -471,6 +509,10 @@ fn apply_micro_compact(messages: &[Message]) -> Vec<Message> {
                                 is_error,
                                 content,
                             } => {
+                                // 最近一轮未消费的工具结果保留原文
+                                if protected_use_ids.contains(tool_use_id) {
+                                    return block.clone();
+                                }
                                 // compacted_content: 对 ToolResult 的内部块进行逐个压缩
                                 let compacted_content = content
                                     .iter()
@@ -723,28 +765,118 @@ pub fn is_prompt_too_long_error(error: &str) -> bool {
     .any(|needle| normalized.contains(needle))
 }
 
+/// 记录一次真实请求的 input 开销（actual_total_input - messages 估算），
+/// 供后续压缩决策校准（C3）。由主循环在拿到 provider 真实 usage 后调用。
+pub fn record_observed_input_overhead(
+    conversation_id: Option<&str>,
+    actual_total_input: i64,
+    messages_estimate: i64,
+) {
+    state::record_observed_input_overhead(conversation_id, actual_total_input, messages_estimate);
+}
+
 pub async fn reactive_compact_messages_for_retry(
     app: &AppHandle,
     conversation_id: Option<&str>,
     messages: &[Message],
 ) -> Option<Vec<Message>> {
+    // C1：先做 Micro 预处理再走 Full/兜底。否则摘要请求携带全量
+    // tool_result 文本，自己就可能超限；摘要重试只按条数丢最老消息，
+    // 大结果在近期时重试无效，连败 3 次熔断后该会话永久降级为兜底截断。
+    let micro_compacted = apply_micro_compact(messages);
+
     let force_full = apply_full_compact_with_limits(
         app,
         conversation_id,
-        messages,
+        &micro_compacted,
         REACTIVE_FULL_COMPACT_RECENT_LIMIT,
     )
     .await;
-    if !same_messages(&force_full, messages) {
+    if !same_messages(&force_full, &micro_compacted) {
         return Some(force_full);
     }
 
-    let truncated = truncate_oldest_messages_for_retry(messages, REACTIVE_FALLBACK_KEEP_MESSAGES);
-    if !same_messages(&truncated, messages) {
+    let truncated =
+        truncate_oldest_messages_for_retry(&micro_compacted, REACTIVE_FALLBACK_KEEP_MESSAGES);
+    if !same_messages(&truncated, &micro_compacted) {
         return Some(truncated);
     }
 
+    // 消息太少无法截断、Full 又被熔断/跳过时，Micro 结果也是净收益：
+    // 截断后的大工具结果可能恰好腾出足够空间让重试通过。
+    if !same_messages(&micro_compacted, messages) {
+        return Some(micro_compacted);
+    }
+
     None
+}
+
+#[derive(Debug)]
+pub struct MidTurnCompactOutcome {
+    pub level: &'static str,
+    pub applied: bool,
+    pub tokens_before: i64,
+    pub tokens_after: i64,
+}
+
+/// 会话途中（主循环每次请求前）压缩：与轮开始同一强度（C2）。
+/// - ≥90% 窗口：Full（Micro + 模型摘要，带熔断；熔断/失败时退回 Micro 结果）
+/// - ≥80% 窗口：Micro（本地截断 tool_result 长文本/JSON）
+///
+/// 直接修改传入的 messages（与轮开始压缩一致，结果进入 turn snapshot）。
+/// 最近一轮尚未被模型消费的工具结果保留原文，避免迫使模型重新 Read。
+pub async fn compact_messages_mid_turn(
+    app: &AppHandle,
+    conversation_id: Option<&str>,
+    messages: &mut Vec<Message>,
+    window_tokens: i64,
+) -> MidTurnCompactOutcome {
+    let overhead = state::observed_input_overhead(conversation_id);
+    let decision = decide_compact_strategy(messages, window_tokens, overhead);
+    let tokens_before = decision.estimated_tokens;
+
+    let level = match decision.level {
+        CompactLevel::None => "none",
+        CompactLevel::Micro => {
+            let protected = latest_tool_round_use_ids(messages);
+            let compacted = apply_micro_compact_protected(messages, &protected);
+            if same_messages(&compacted, messages) {
+                "none"
+            } else {
+                *messages = compacted;
+                "micro"
+            }
+        }
+        CompactLevel::Full => {
+            // 与轮开始 Full 相同：先 Micro 再模型摘要；
+            // 熔断打开或摘要失败时 apply_full_compact 原样返回，退回 Micro 结果。
+            let protected = latest_tool_round_use_ids(messages);
+            let micro = apply_micro_compact_protected(messages, &protected);
+            let full = apply_full_compact(app, conversation_id, &micro).await;
+            if !same_messages(&full, &micro) {
+                *messages = full;
+                "full"
+            } else if !same_messages(&micro, messages) {
+                *messages = micro;
+                "micro"
+            } else {
+                "none"
+            }
+        }
+    };
+
+    let tokens_after = if level == "none" {
+        tokens_before
+    } else {
+        token_counter::count_messages(messages) + overhead
+    };
+
+    MidTurnCompactOutcome {
+        level,
+        applied: level != "none",
+        tokens_before,
+        tokens_after,
+    }
 }
 
 // 入口：按层级执行 compact（纯压缩，不负责组装额外上下文）。
@@ -761,8 +893,9 @@ pub async fn compact_messages_for_turn_with_report(
     let model = settings.active_provider_profile().model;
     let window_tokens = settings.context_window_for_model(&model) as i64;
 
-    // 决策并记录调试信息
-    let decision = decide_compact_strategy(messages, window_tokens);
+    // 决策并记录调试信息（C3：请求固定开销按真实 usage 校准后计入估算）
+    let overhead = state::observed_input_overhead(conversation_id);
+    let decision = decide_compact_strategy(messages, window_tokens, overhead);
     // 根据决策执行对应的压缩流程
     let level = match decision.level {
         CompactLevel::None => "none",

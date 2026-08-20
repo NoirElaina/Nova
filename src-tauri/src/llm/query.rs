@@ -621,6 +621,29 @@ pub async fn send_chat_message(
         let model = settings.active_provider_profile().model;
         let window_tokens = settings.context_window_for_model(&model) as i64;
 
+        // 会话途中压缩：与轮开始同一强度（≥80% Micro / ≥90% Full）。
+        // 单轮内多轮工具调用的结果增长只有轮开始压缩覆盖不到，这里每次请求前兜住。
+        // 持久化修改 current_messages（与轮开始压缩一致，会进入 turn snapshot）；
+        // 最近一轮尚未消费的工具结果保留原文。
+        let mid_compact = compact::compact_messages_mid_turn(
+            &app,
+            conversation_id.as_deref(),
+            &mut current_messages,
+            window_tokens,
+        )
+        .await;
+        if mid_compact.applied {
+            apply_post_compact_hook(&app, conversation_id.as_deref(), &mut current_messages)?;
+            emit_context_compact_event(
+                &app,
+                conversation_id.as_deref(),
+                mid_compact.level,
+                "会话途中自动压缩上下文，避免工具结果累积占满窗口。",
+                clamp_i64_to_u32(mid_compact.tokens_before),
+                clamp_i64_to_u32(mid_compact.tokens_after),
+            );
+        }
+
         // 不支持图片输入的模型：剥离图片为占位文本，但只在临时变量上操作，
         // 不覆盖 current_messages。否则回合结束后保存的 turn_snapshot 会丢失
         // 原始图片数据，即使用户切回支持图片的模型也无法恢复。
@@ -859,6 +882,15 @@ pub async fn send_chat_message(
                 total_input,
                 window_tokens as u32,
                 "actual",
+            );
+
+            // C3 校准：真实 input（含 system prompt / 工具定义 / 注入上下文，
+            // 且天然包含分词器漂移）与 messages-only 估算的差值记为请求固定开销，
+            // 后续压缩决策据此提前触发，避免"估算 85% 实际 100%"。
+            compact::record_observed_input_overhead(
+                conversation_id.as_deref(),
+                total_input as i64,
+                token_counter::count_messages(&messages_for_provider),
             );
         }
 

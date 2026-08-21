@@ -41,8 +41,8 @@ pub fn tool() -> Tool {
     }
 }
 
-// 校验 server 对当前会话可见：全局按 bundle 白名单过滤；
-// 智能体私有 server（agents/<id>/mcp.json）仅归属智能体的会话可见。
+// 校验 server 对当前会话可见：挂载智能体时按其 enabled_mcp_servers 引用清单过滤，
+// 默认 Nova 可见全部。
 async fn ensure_server_visible(
     app: &AppHandle,
     conversation_id: Option<&str>,
@@ -55,11 +55,9 @@ async fn ensure_server_visible(
     let visible = statuses
         .into_iter()
         .find(|s| s.name == server_name)
-        .map(|s| match (&s.owner_agent, &bundle) {
-            (Some(owner), Some(b)) => owner == &b.id,
-            (Some(_), None) => false,
-            (None, Some(b)) => b.is_mcp_server_enabled(&s.name),
-            (None, None) => true,
+        .map(|s| match &bundle {
+            Some(b) => b.is_mcp_server_enabled(&s.name),
+            None => true,
         })
         .unwrap_or(false);
     if visible {
@@ -84,12 +82,9 @@ async fn filter_statuses_visible(
             let Some(name) = s.get("name").and_then(|v| v.as_str()) else {
                 return false;
             };
-            let owner = s.get("ownerAgent").and_then(|v| v.as_str());
-            match (owner, &bundle) {
-                (Some(owner), Some(b)) => owner == b.id,
-                (Some(_), None) => false,
-                (None, Some(b)) => b.is_mcp_server_enabled(name),
-                (None, None) => true,
+            match &bundle {
+                Some(b) => b.is_mcp_server_enabled(name),
+                None => true,
             }
         });
     }

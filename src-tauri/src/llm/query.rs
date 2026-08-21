@@ -319,25 +319,17 @@ async fn build_mcp_server_context_message(
     conversation_id: Option<&str>,
 ) -> Option<Message> {
     let statuses = crate::llm::services::mcp_tools::connected_server_catalog(app).await;
-    // 会话挂载的智能体套件决定可见范围：
-    // - 全局 server 按 enabled_mcp_servers 白名单过滤；
-    // - 智能体私有 server（agents/<id>/mcp.json）仅归属智能体可见；
-    // - 默认 Nova（未挂载）看不到任何私有 server。
+    // 会话挂载的智能体套件决定可见范围：按 enabled_mcp_servers 引用清单过滤；
+    // 默认 Nova（未挂载）可见全部已连接 server。
     let statuses: Vec<_> = match crate::llm::services::agent_bundles::active_bundle(
         app,
         conversation_id,
     ) {
         Some(bundle) => statuses
             .into_iter()
-            .filter(|s| match &s.owner_agent {
-                Some(owner) => owner == &bundle.id,
-                None => bundle.is_mcp_server_enabled(&s.name),
-            })
+            .filter(|s| bundle.is_mcp_server_enabled(&s.name))
             .collect(),
-        None => statuses
-            .into_iter()
-            .filter(|s| s.owner_agent.is_none())
-            .collect(),
+        None => statuses,
     };
     if statuses.is_empty() {
         return None;

@@ -57,15 +57,10 @@ pub fn save_agent_bundle(app: AppHandle, bundle: AgentBundle) -> Result<AgentBun
     )
 }
 
-/// 删除 bundle 文件，并清空所有挂载它的会话引用（回到默认 Nova）+ 刷新缓存。
+/// 删除 bundle（目录 + 会话引用清理由 service 层一并完成）。
 #[tauri::command]
 pub async fn delete_agent_bundle(app: AppHandle, bundle_id: String) -> Result<(), String> {
-    let result = async {
-        agent_bundles::delete_bundle(&app, &bundle_id)?;
-        crate::llm::history::clear_conversation_agent_references(&app, &bundle_id).await?;
-        Ok(())
-    }
-    .await;
+    let result = agent_bundles::delete_bundle(&app, &bundle_id).await;
     report_backend_result(
         &app,
         "command.agent_config.delete_agent_bundle",
@@ -104,9 +99,12 @@ pub async fn set_conversation_agent(
     bundle_id: Option<String>,
 ) -> Result<Option<AgentBundle>, String> {
     let result = async {
-        // 挂载前确认 bundle 存在，避免会话指向已删除的文件。
+        // 挂载前确认 bundle 存在且已启用，避免会话指向已删除/禁用的智能体。
         if let Some(id) = bundle_id.as_deref() {
-            agent_bundles::load_bundle(&app, id)?;
+            let bundle = agent_bundles::load_bundle(&app, id)?;
+            if !bundle.enabled {
+                return Err(format!("智能体「{}」已禁用，无法挂载", bundle.name));
+            }
         }
         crate::llm::history::set_conversation_agent(&app, &conversation_id, bundle_id.as_deref())
             .await?;
@@ -136,7 +134,7 @@ pub fn list_configurable_tools(app: AppHandle) -> Result<Vec<ConfigurableTool>, 
     )
 }
 
-// ---------------- 智能体目录资源：私有技能 / 资料文件 / 私有 MCP ----------------
+// ---------------- 智能体目录资源：私有技能 / 资料文件 ----------------
 
 /// 某智能体的私有技能列表（agents/<id>/skills/）。
 #[tauri::command]
@@ -254,50 +252,4 @@ pub fn reveal_agent_dir(app: AppHandle, bundle_id: String) -> Result<(), String>
             .map_err(|e| format!("打开目录失败: {}", e))
     })();
     report_backend_result(&app, "command.agent_config.reveal_agent_dir", result, None)
-}
-
-/// 某智能体的私有 MCP server 列表（读 agents/<id>/mcp.json）。
-#[tauri::command]
-pub async fn list_agent_mcp_servers(
-    app: AppHandle,
-    bundle_id: String,
-) -> Result<Vec<crate::llm::services::mcp::McpServerEntry>, String> {
-    let result = async {
-        crate::llm::services::mcp::agent_mcp_server_entries(&app, &bundle_id).await
-    }
-    .await;
-    report_backend_result(
-        &app,
-        "command.agent_config.list_agent_mcp_servers",
-        result,
-        None,
-    )
-}
-
-/// 智能体私有 MCP 增/改/删。
-/// old_name = None 新增；new_name = None 删除；两者都有 = 修改/重命名。
-#[tauri::command]
-pub async fn upsert_agent_mcp_server(
-    app: AppHandle,
-    bundle_id: String,
-    old_name: Option<String>,
-    new_name: Option<String>,
-    config: Option<crate::llm::services::mcp::McpServerConfig>,
-    enabled: Option<bool>,
-) -> Result<(), String> {
-    let result = crate::llm::services::mcp::upsert_agent_mcp_server(
-        &app,
-        &bundle_id,
-        old_name,
-        new_name,
-        config,
-        enabled.unwrap_or(true),
-    )
-    .await;
-    report_backend_result(
-        &app,
-        "command.agent_config.upsert_agent_mcp_server",
-        result,
-        None,
-    )
 }

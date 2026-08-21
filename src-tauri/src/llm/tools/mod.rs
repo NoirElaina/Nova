@@ -723,6 +723,7 @@ pub fn get_available_tools_for_agent(app: &AppHandle, conversation_id: Option<&s
 
 /// 前端智能体配置页展示的工具目录（含 always_on 标记）。
 /// 启用插件的工具一并纳入，智能体套件可像内置工具一样勾选。
+/// 默认专属工具（memory）不进目录：专用智能体不允许写全局记忆。
 pub fn configurable_tool_catalog(
     app: &AppHandle,
 ) -> Result<Vec<crate::command::agent_config::ConfigurableTool>, String> {
@@ -730,6 +731,10 @@ pub fn configurable_tool_catalog(
     let _ = app;
     let mut catalog: Vec<crate::command::agent_config::ConfigurableTool> = registered_tools()
         .iter()
+        .filter(|entry| {
+            let name = (entry.tool)().name;
+            !crate::llm::services::agent_bundles::DEFAULT_ONLY_TOOLS.contains(&name.as_str())
+        })
         .map(|entry| {
             let tool = (entry.tool)();
             crate::command::agent_config::ConfigurableTool {

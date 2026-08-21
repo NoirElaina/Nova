@@ -99,8 +99,6 @@ pub fn run() {
             command::agent_config::import_agent_file,
             command::agent_config::delete_agent_file,
             command::agent_config::reveal_agent_dir,
-            command::agent_config::list_agent_mcp_servers,
-            command::agent_config::upsert_agent_mcp_server,
             command::get_app_data_dir,
             command::history::create_conversation,
             command::history::list_conversations,

@@ -70,9 +70,9 @@ pub struct McpServerStatus {
     pub r#type: String,
     pub tool_count: usize,
     pub error: Option<String>,
-    /// 智能体私有 server 的归属 agent id；全局 server 为 None。
-    #[serde(default)]
-    pub owner_agent: Option<String>,
+    /// 来源智能体名（由智能体配置页创建/迁入）；普通全局条目为 None。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_agent: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]

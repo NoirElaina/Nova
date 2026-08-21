@@ -71,9 +71,8 @@ struct RegisteredServer {
     tool_count: usize,
     error: Option<String>,
     connection: Option<ServerConnection>,
-    /// 私有 MCP 归属：None = 全局（mcp_servers.json）；
-    /// Some(agent_id) = 智能体私有（agents/<id>/mcp.json），仅挂载该智能体的会话可见。
-    owner_agent: Option<String>,
+    /// 来源标注：由智能体配置页迁入/创建的 server 记录其智能体名，仅展示用。
+    source_agent: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -82,6 +81,9 @@ struct PersistedServer {
     name: String,
     enabled: bool,
     config: McpServerConfig,
+    /// 来源智能体名（设置页展示用）；普通全局条目为 None。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    source_agent: Option<String>,
 }
 
 static MCP_RUNTIME: OnceLock<Mutex<HashMap<String, RegisteredServer>>> = OnceLock::new();
@@ -154,6 +156,7 @@ fn load_persisted_servers(app: &AppHandle) -> Vec<PersistedServer> {
             name: name.clone(),
             enabled,
             config,
+            source_agent: None,
         });
     }
 
@@ -220,21 +223,8 @@ fn decrypt_persisted_server_headers(servers: &mut [PersistedServer]) {
     }
 }
 
-/// 查询某个 server 名的归属智能体（None = 全局/不存在）。
-async fn server_owner(name: &str) -> Option<String> {
-    let map = runtime().lock().await;
-    map.get(name).and_then(|s| s.owner_agent.clone())
-}
-
-fn agent_owned_error(name: &str, owner: &str) -> String {
-    format!(
-        "MCP server '{}' belongs to agent '{}' (agents/{}/mcp.json); manage it in that agent's config",
-        name, owner, owner
-    )
-}
-
-/// 某智能体可见的 server 名单：全局 server（enabled_mcp_servers 过滤）+
-/// 该智能体私有 server。供 MCP catalog 注入和工具可见性判断使用。
+/// 某智能体可见的 server 名单：全局 server 按 enabled_mcp_servers 引用清单过滤。
+/// 供 MCP catalog 注入和工具可见性判断使用。
 pub async fn servers_visible_to_agent(
     app: &AppHandle,
     bundle: Option<&crate::llm::services::agent_bundles::AgentBundle>,
@@ -243,13 +233,9 @@ pub async fn servers_visible_to_agent(
     let map = runtime().lock().await;
     let mut out = Vec::new();
     for (name, item) in map.iter() {
-        let visible = match (&item.owner_agent, bundle) {
-            // 私有：仅归属智能体可见。
-            (Some(owner), Some(bundle)) => owner == &bundle.id,
-            (Some(_), None) => false,
-            // 全局：按白名单过滤。
-            (None, Some(bundle)) => bundle.is_mcp_server_enabled(name),
-            (None, None) => true,
+        let visible = match bundle {
+            Some(bundle) => bundle.is_mcp_server_enabled(name),
+            None => true,
         };
         if visible {
             out.push((
@@ -260,7 +246,7 @@ pub async fn servers_visible_to_agent(
                     tool_count: item.tool_count,
                     r#type: server_type(&item.config),
                     error: item.error.clone(),
-                    owner_agent: item.owner_agent.clone(),
+                    source_agent: item.source_agent.clone(),
                 },
             ));
         }
@@ -275,189 +261,90 @@ pub struct RegisteredServerSnapshot {
     pub tool_count: usize,
     pub r#type: String,
     pub error: Option<String>,
-    pub owner_agent: Option<String>,
-}
-
-/// 重载某智能体的私有 MCP：按 agents/<id>/mcp.json 重建 runtime 中
-/// 属于该智能体的条目并连接 enabled 项。保存配置后调用。
-pub async fn reload_agent_mcp_servers(app: &AppHandle, agent_id: &str) -> Result<(), String> {
-    ensure_runtime_loaded(app).await;
-
-    // 先摘除该智能体现存的私有条目（断开连接）。
-    let mut to_remove = Vec::new();
-    {
-        let map = runtime().lock().await;
-        for (name, item) in map.iter() {
-            if item.owner_agent.as_deref() == Some(agent_id) {
-                to_remove.push(name.clone());
-            }
-        }
-    }
-    for name in &to_remove {
-        let mut map = runtime().lock().await;
-        if let Some(mut item) = map.remove(name) {
-            if let Some(conn) = item.connection.as_mut() {
-                conn.shutdown().await;
-            }
-        }
-    }
-
-    // 重新载入并连接。
-    for item in load_agent_persisted_servers(app, agent_id) {
-        let conflict = {
-            let map = runtime().lock().await;
-            map.contains_key(&item.name)
-        };
-        if conflict {
-            tracing::warn!(
-                server = %item.name,
-                agent = %agent_id,
-                "agent-private MCP server skipped: name conflicts with an existing server"
-            );
-            continue;
-        }
-        let (status, tool_count, error, connection) = if item.enabled {
-            connect_server(&item.config).await
-        } else {
-            (McpRuntimeStatus::Disconnected, 0, None, None)
-        };
-        let mut map = runtime().lock().await;
-        map.insert(
-            item.name,
-            RegisteredServer {
-                config: item.config,
-                enabled: item.enabled,
-                status,
-                tool_count,
-                error,
-                connection,
-                owner_agent: Some(agent_id.to_string()),
-            },
-        );
-    }
-    Ok(())
-}
-
-/// 某智能体的私有 MCP server 条目（读 agents/<id>/mcp.json，前端配置页用）。
-pub async fn agent_mcp_server_entries(
-    app: &AppHandle,
-    agent_id: &str,
-) -> Result<Vec<McpServerEntry>, String> {
-    let _ = ensure_runtime_loaded(app).await;
-    Ok(load_agent_persisted_servers(app, agent_id)
-        .into_iter()
-        .map(|item| McpServerEntry {
-            name: item.name,
-            enabled: item.enabled,
-            config: item.config,
-        })
-        .collect())
-}
-
-/// 智能体私有 server 增改删（写 agents/<id>/mcp.json 并重载运行时）。
-/// old_name = None 时新增；name = None 时删除。
-pub async fn upsert_agent_mcp_server(
-    app: &AppHandle,
-    agent_id: &str,
-    old_name: Option<String>,
-    new_name: Option<String>,
-    config: Option<McpServerConfig>,
-    enabled: bool,
-) -> Result<(), String> {
-    ensure_runtime_loaded(app).await;
-
-    let mut servers = load_agent_persisted_servers(app, agent_id);
-    if let Some(old) = old_name.as_deref() {
-        servers.retain(|s| s.name != old);
-    }
-
-    if let Some(name) = new_name.as_deref() {
-        let name = name.trim();
-        if name.is_empty() {
-            return Err("Server name cannot be empty".into());
-        }
-        // 名字不能与其他 server（全局或其他智能体）冲突。
-        {
-            let map = runtime().lock().await;
-            if let Some(existing) = map.get(name) {
-                let is_self = old_name.as_deref() == Some(name);
-                if !is_self
-                    && (existing.owner_agent.as_deref() != Some(agent_id)
-                        || servers.iter().any(|s| s.name == name))
-                {
-                    return Err(format!("MCP server '{}' already exists", name));
-                }
-                if !is_self && existing.owner_agent.as_deref() == Some(agent_id) {
-                    // 同智能体内重命名到已有名字：拒绝。
-                    if servers.iter().any(|s| s.name == name) {
-                        return Err(format!("MCP server '{}' already exists", name));
-                    }
-                }
-            } else if servers.iter().any(|s| s.name == name) {
-                return Err(format!("MCP server '{}' already exists", name));
-            }
-        }
-        let config = config.ok_or_else(|| "config is required".to_string())?;
-        servers.push(PersistedServer {
-            name: name.to_string(),
-            enabled,
-            config,
-        });
-    }
-
-    save_agent_persisted_servers(app, agent_id, &servers)?;
-    reload_agent_mcp_servers(app, agent_id).await
+    pub source_agent: Option<String>,
 }
 
 async fn persist_runtime(app: &AppHandle) -> Result<(), String> {
     let map = runtime().lock().await;
     let mut servers = Vec::with_capacity(map.len());
     for (name, item) in map.iter() {
-        // 智能体私有 server 不写入全局 mcp_servers.json——
-        // 它们的持久化文件是各自的 agents/<id>/mcp.json。
-        if item.owner_agent.is_some() {
-            continue;
-        }
         servers.push(PersistedServer {
             name: name.clone(),
             enabled: item.enabled,
             config: item.config.clone(),
+            source_agent: item.source_agent.clone(),
         });
     }
     drop(map);
     save_persisted_servers(app, &servers)
 }
 
-/// 读取某智能体的私有 MCP 配置（agents/<id>/mcp.json，格式同全局数组）。
-fn load_agent_persisted_servers(app: &AppHandle, agent_id: &str) -> Vec<PersistedServer> {
-    let Ok(path) = crate::llm::services::agent_bundles::agent_mcp_config_path(app, agent_id)
-    else {
-        return Vec::new();
-    };
-    let Ok(content) = std::fs::read_to_string(path) else {
-        return Vec::new();
-    };
-    let Ok(mut list) = serde_json::from_str::<Vec<PersistedServer>>(&content) else {
-        return Vec::new();
-    };
-    decrypt_persisted_server_headers(&mut list);
-    list
-}
-
-/// 把某智能体的私有 server 列表写回 agents/<id>/mcp.json。
-fn save_agent_persisted_servers(
+/// 一次性迁移：把各智能体的私有 MCP 配置（agents/<id>/mcp.json）并入全局注册表，
+/// 写入 source_agent 来源标注；成功后将 mcp.json 改名为 mcp.json.migrated 备份。
+/// 返回是否发生了迁移（用于触发落盘）。
+fn migrate_agent_mcp_configs(
     app: &AppHandle,
-    agent_id: &str,
-    servers: &[PersistedServer],
-) -> Result<(), String> {
-    let path = crate::llm::services::agent_bundles::agent_mcp_config_path(app, agent_id)?;
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+    map: &mut HashMap<String, RegisteredServer>,
+) -> bool {
+    let Ok(bundles) = crate::llm::services::agent_bundles::list_bundles(app) else {
+        return false;
+    };
+    let mut migrated_any = false;
+    for bundle in bundles {
+        let Ok(path) =
+            crate::llm::services::agent_bundles::agent_mcp_config_path(app, &bundle.id)
+        else {
+            continue;
+        };
+        if !path.exists() {
+            continue;
+        }
+        let Ok(content) = std::fs::read_to_string(&path) else {
+            continue;
+        };
+        let Ok(mut list) = serde_json::from_str::<Vec<PersistedServer>>(&content) else {
+            // 格式无法解析：改名备份避免反复尝试，并告警。
+            tracing::warn!(agent = %bundle.id, "agent mcp.json unparsable; archived as .migrated");
+            let _ = std::fs::rename(&path, path.with_extension("json.migrated"));
+            continue;
+        };
+        decrypt_persisted_server_headers(&mut list);
+
+        for item in list {
+            // 与已有条目同名时自动改名（私有条目让步）：<name>-2、<name>-3…
+            let mut unique = item.name.clone();
+            let mut suffix = 2;
+            while map.contains_key(&unique) {
+                unique = format!("{}-{}", item.name, suffix);
+                suffix += 1;
+            }
+            if unique != item.name {
+                tracing::warn!(
+                    server = %item.name,
+                    renamed = %unique,
+                    agent = %bundle.id,
+                    "agent-private MCP server renamed during migration due to name conflict"
+                );
+            }
+            map.insert(
+                unique,
+                RegisteredServer {
+                    config: item.config,
+                    enabled: item.enabled,
+                    status: McpRuntimeStatus::Disconnected,
+                    tool_count: 0,
+                    error: None,
+                    connection: None,
+                    source_agent: Some(bundle.name.clone()),
+                },
+            );
+            migrated_any = true;
+        }
+
+        // 迁移成功：改名备份，不直接删。
+        let _ = std::fs::rename(&path, path.with_extension("json.migrated"));
     }
-    let mut encrypted = servers.to_vec();
-    encrypt_persisted_server_headers(&mut encrypted)?;
-    let content = serde_json::to_string_pretty(&encrypted).map_err(|e| e.to_string())?;
-    std::fs::write(path, content).map_err(|e| e.to_string())
+    migrated_any
 }
 
 async fn connect_server(
@@ -601,7 +488,7 @@ async fn ensure_runtime_loaded(app: &AppHandle) {
     }
 
     let persisted = load_persisted_servers(app);
-    {
+    let migrated = {
         let mut map = runtime().lock().await;
         for item in persisted {
             map.insert(
@@ -613,39 +500,18 @@ async fn ensure_runtime_loaded(app: &AppHandle) {
                     tool_count: 0,
                     error: None,
                     connection: None,
-                    owner_agent: None,
+                    source_agent: item.source_agent,
                 },
             );
         }
 
-        // 智能体私有 server：从各 agents/<id>/mcp.json 载入。
-        // 名字与全局冲突时全局优先（跳过私有），避免运行时键互相覆盖。
-        if let Ok(bundles) = crate::llm::services::agent_bundles::list_bundles(app) {
-            for bundle in bundles {
-                for item in load_agent_persisted_servers(app, &bundle.id) {
-                    if map.contains_key(&item.name) {
-                        tracing::warn!(
-                            server = %item.name,
-                            agent = %bundle.id,
-                            "agent-private MCP server skipped: name conflicts with an existing server"
-                        );
-                        continue;
-                    }
-                    map.insert(
-                        item.name,
-                        RegisteredServer {
-                            config: item.config,
-                            enabled: item.enabled,
-                            status: McpRuntimeStatus::Disconnected,
-                            tool_count: 0,
-                            error: None,
-                            connection: None,
-                            owner_agent: Some(bundle.id.clone()),
-                        },
-                    );
-                }
-            }
-        }
+        // 存量迁移：各 agents/<id>/mcp.json 并入全局注册表（带来源标注）。
+        migrate_agent_mcp_configs(app, &mut map)
+    };
+
+    // 迁移结果落盘：下次启动直接从 mcp_servers.json 读取，不会重复迁移。
+    if migrated {
+        persist_runtime(app).await.ok();
     }
 
     let names: Vec<String> = {
@@ -680,15 +546,12 @@ pub async fn add_mcp_server(
     app: AppHandle,
     name: String,
     config: McpServerConfig,
+    source_agent: Option<String>,
 ) -> Result<(), String> {
     ensure_runtime_loaded(&app).await;
 
     if name.trim().is_empty() {
         return Err("Server name cannot be empty".into());
-    }
-    // 智能体私有的 server 不走全局管理命令（改配置请在对应智能体里操作）。
-    if let Some(owner) = server_owner(&name).await {
-        return Err(agent_owned_error(&name, &owner));
     }
 
     let (status, connected_tools, error, connection) = connect_server(&config).await;
@@ -709,7 +572,7 @@ pub async fn add_mcp_server(
             tool_count: connected_tools,
             error,
             connection,
-            owner_agent: None,
+            source_agent,
         },
     );
     drop(map);
@@ -747,12 +610,8 @@ pub async fn update_mcp_server(
     if old_name.is_empty() || new_name.is_empty() {
         return Err("Server name cannot be empty".into());
     }
-    // 智能体私有的 server 不走全局管理命令。
-    if let Some(owner) = server_owner(&old_name).await {
-        return Err(agent_owned_error(&old_name, &owner));
-    }
 
-    let enabled = {
+    let (enabled, source_agent) = {
         let map = runtime().lock().await;
         let current = map
             .get(&old_name)
@@ -762,7 +621,7 @@ pub async fn update_mcp_server(
             return Err(format!("MCP server '{}' already exists", new_name));
         }
 
-        current.enabled
+        (current.enabled, current.source_agent.clone())
     };
 
     let (status, connected_tools, error, connection) = if enabled {
@@ -789,7 +648,7 @@ pub async fn update_mcp_server(
             tool_count: connected_tools,
             error,
             connection,
-            owner_agent: None,
+            source_agent,
         },
     );
     drop(map);
@@ -800,10 +659,6 @@ pub async fn update_mcp_server(
 
 pub async fn remove_mcp_server(app: AppHandle, name: String) -> Result<(), String> {
     ensure_runtime_loaded(&app).await;
-    // 智能体私有的 server 不走全局管理命令。
-    if let Some(owner) = server_owner(&name).await {
-        return Err(agent_owned_error(&name, &owner));
-    }
 
     let mut map = runtime().lock().await;
     if let Some(mut item) = map.remove(&name) {
@@ -831,7 +686,7 @@ pub async fn get_mcp_server_statuses(app: AppHandle) -> Result<Vec<McpServerStat
             r#type: server_type(&item.config),
             tool_count: item.tool_count,
             error: item.error.clone(),
-            owner_agent: item.owner_agent.clone(),
+            source_agent: item.source_agent.clone(),
         });
     }
     Ok(result)
@@ -887,12 +742,12 @@ pub async fn set_mcp_server_enabled(
 ) -> Result<(), String> {
     ensure_runtime_loaded(&app).await;
 
-    let (cfg, owner_agent) = {
+    let cfg = {
         let map = runtime().lock().await;
         let server = map
             .get(&name)
             .ok_or_else(|| format!("MCP server '{}' not found", name))?;
-        (server.config.clone(), server.owner_agent.clone())
+        server.config.clone()
     };
 
     if enabled {
@@ -922,24 +777,7 @@ pub async fn set_mcp_server_enabled(
         }
     }
 
-    // 私有 server 的 enabled 状态回写所属智能体的 mcp.json；
-    // 全局 server 走 persist_runtime。
-    match owner_agent {
-        Some(agent_id) => {
-            let mut servers = load_agent_persisted_servers(&app, &agent_id);
-            let mut updated = false;
-            for server in servers.iter_mut() {
-                if server.name == name {
-                    server.enabled = enabled;
-                    updated = true;
-                }
-            }
-            if updated {
-                save_agent_persisted_servers(&app, &agent_id, &servers)?;
-            }
-        }
-        None => persist_runtime(&app).await?,
-    }
+    persist_runtime(&app).await?;
     Ok(())
 }
 

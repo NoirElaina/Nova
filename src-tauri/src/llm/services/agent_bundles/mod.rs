@@ -1,7 +1,8 @@
 // 智能体套件（Agent Bundle）：一个 bundle = 附加提示词 + 工具/技能/MCP 装备清单。
 // 清单语义：null = 全部（跟随全局，含后续新增）；Some(清单) = 自定义勾选（勾=添加，不勾=移除）。
-// 存储为目录 app_data/agents/<id>/（agent.json 定义 + skills/ 私有技能 +
-// files/ 资料文件 + mcp.json 私有 MCP 配置）；会话挂载的 bundle 记录在 conversations.active_agent_id。
+// 存储为目录 app_data/agents/<id>/（agent.json 定义 + skills/ 私有技能 + files/ 资料文件）；
+// MCP 定义全局唯一（mcp_servers.json），智能体仅通过 enabled_mcp_servers 引用。
+// 会话挂载的 bundle 记录在 conversations.active_agent_id。
 // 智能体是会话级的：智能体页点「启用」只对当前对话生效，其他对话/新对话均为默认 Nova。
 //
 // 会话 -> bundle 的读取链路：DB 读取是异步的，而 provider adapter 的 build_request 是同步热路径，
@@ -21,6 +22,30 @@ use tauri::{AppHandle, Manager};
 /// 不参与勾选清单——bundle 排除它们会破坏 agent 循环。
 pub const ALWAYS_ON_TOOLS: &[&str] = &["EnterPlanMode", "ExitPlanMode", "ask_user_question"];
 
+/// 仅默认 Nova 可用的工具：专用智能体不允许写全局记忆，防止领域会话污染跨会话记忆。
+pub const DEFAULT_ONLY_TOOLS: &[&str] = &["memory"];
+
+/// 智能体来源：手动创建 / 市场安装 / 导入。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum AgentSourceKind {
+    #[default]
+    Manual,
+    Market,
+    Import,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentSource {
+    #[serde(default)]
+    pub kind: AgentSourceKind,
+    #[serde(default)]
+    pub name: Option<String>,
+    #[serde(default)]
+    pub version: Option<String>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AgentBundle {
@@ -37,13 +62,35 @@ pub struct AgentBundle {
     /// 技能清单。None = 全部已启用技能；Some = 仅勾选的。
     #[serde(default)]
     pub enabled_skills: Option<Vec<String>>,
-    /// MCP server 清单。None = 全部已连接服务器；Some = 仅勾选的。
+    /// MCP server 引用清单（全局定义，仅引用不存储）。None = 全部；Some = 仅勾选的。
     #[serde(default)]
     pub enabled_mcp_servers: Option<Vec<String>>,
+    /// 全局启用开关：禁用后不可被新会话挂载。
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+    /// 来源标注（手动 / 市场 / 导入）。
+    #[serde(default)]
+    pub source: AgentSource,
     #[serde(default)]
     pub created_at: i64,
     #[serde(default)]
     pub updated_at: i64,
+}
+
+fn default_true() -> bool {
+    true
+}
+
+/// 存量兼容：剔除 DEFAULT_ONLY_TOOLS（旧 bundle 可能勾选了 memory）。
+fn sanitize_bundle(mut bundle: AgentBundle) -> AgentBundle {
+    if let Some(tools) = bundle.enabled_tools.as_mut() {
+        tools.retain(|name| {
+            !DEFAULT_ONLY_TOOLS
+                .iter()
+                .any(|t| t.eq_ignore_ascii_case(name.trim()))
+        });
+    }
+    bundle
 }
 
 // ---------------- 会话 -> bundle 进程内缓存（写穿透） ----------------
@@ -165,7 +212,8 @@ pub fn agent_files_dir(app: &AppHandle, id: &str) -> Result<PathBuf, String> {
     Ok(agent_dir(app, id)?.join("files"))
 }
 
-/// 私有 MCP 配置文件：agents/<id>/mcp.json。
+/// 旧版私有 MCP 配置文件：agents/<id>/mcp.json。
+/// MCP 定义已全局唯一，此路径仅供启动时的存量迁移读取（迁入全局后改名 .migrated 备份）。
 pub fn agent_mcp_config_path(app: &AppHandle, id: &str) -> Result<PathBuf, String> {
     Ok(agent_dir(app, id)?.join("mcp.json"))
 }
@@ -219,8 +267,11 @@ fn normalize_name(name: &str) -> String {
 }
 
 impl AgentBundle {
-    /// 内置工具是否对该 bundle 可见（流程控制工具恒可见）。
+    /// 内置工具是否对该 bundle 可见（流程控制工具恒可见；默认专属工具恒不可见）。
     pub fn is_tool_enabled(&self, tool_name: &str) -> bool {
+        if DEFAULT_ONLY_TOOLS.iter().any(|t| *t == tool_name) {
+            return false;
+        }
         if ALWAYS_ON_TOOLS.iter().any(|t| *t == tool_name) {
             return true;
         }
@@ -273,7 +324,7 @@ pub fn list_bundles(app: &AppHandle) -> Result<Vec<AgentBundle>, String> {
         }
         if let Ok(content) = std::fs::read_to_string(&definition) {
             if let Ok(bundle) = serde_json::from_str::<AgentBundle>(&content) {
-                items.push(bundle);
+                items.push(sanitize_bundle(bundle));
             }
         }
     }
@@ -294,7 +345,9 @@ pub fn load_bundle(app: &AppHandle, id: &str) -> Result<AgentBundle, String> {
         }
     }
     let content = std::fs::read_to_string(&path).map_err(|e| e.to_string())?;
-    serde_json::from_str(&content).map_err(|e| format!("Invalid agent bundle {}: {}", id, e))
+    let bundle: AgentBundle =
+        serde_json::from_str(&content).map_err(|e| format!("Invalid agent bundle {}: {}", id, e))?;
+    Ok(sanitize_bundle(bundle))
 }
 
 /// 保存 bundle（整体写入），并确保目录骨架（skills/、files/）存在。
@@ -338,19 +391,22 @@ pub fn create_bundle(app: &AppHandle, name: &str) -> Result<AgentBundle, String>
         enabled_tools: None,
         enabled_skills: None,
         enabled_mcp_servers: None,
+        enabled: true,
+        source: AgentSource::default(),
         created_at: now,
         updated_at: now,
     };
     save_bundle(app, bundle)
 }
 
-/// 删除 bundle（整个目录：定义 + 私有技能 + 资料 + 私有 MCP 配置）。
-/// 会话引用清理由异步命令层负责
-/// （UPDATE conversations + 刷新缓存），见 command::agent_config::delete_agent_bundle。
-pub fn delete_bundle(app: &AppHandle, id: &str) -> Result<(), String> {
+/// 删除 bundle（整个目录：定义 + 私有技能 + 资料），
+/// 并同步清空所有挂载它的会话引用（回到默认 Nova）+ 刷新缓存。
+pub async fn delete_bundle(app: &AppHandle, id: &str) -> Result<(), String> {
     let dir = agent_dir(app, id)?;
     if !dir.exists() {
         return Err(format!("Agent bundle not found: {}", id));
     }
-    std::fs::remove_dir_all(dir).map_err(|e| e.to_string())
+    std::fs::remove_dir_all(dir).map_err(|e| e.to_string())?;
+    crate::llm::history::clear_conversation_agent_references(app, id).await?;
+    Ok(())
 }

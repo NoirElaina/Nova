@@ -7,12 +7,12 @@ import { Textarea } from '@/components/ui/textarea'
 
 type MCPServerConfig = { type: 'stdio'; command: string; args: string[]; env?: Record<string, string> } | { type: 'sse'; url: string; headers?: Record<string, string> } | { type: 'streamable_http'; url: string; headers?: Record<string, string> }
 type MCPServerEntry = { name: string; enabled: boolean; config: MCPServerConfig }
-type ServerStatus = { name: string; status: 'connected' | 'error' | 'connecting' | 'disconnected'; type: 'stdio' | 'sse' | 'streamable_http'; enabled: boolean; toolCount?: number; error?: string }
+type ServerStatus = { name: string; status: 'connected' | 'error' | 'connecting' | 'disconnected'; type: 'stdio' | 'sse' | 'streamable_http'; enabled: boolean; toolCount?: number; error?: string; sourceAgent?: string | null }
 type MCPForm = { name: string; type: 'stdio' | 'sse' | 'streamable_http'; command: string; args: string; env: string; url: string; headers: string }
 type ToastItem = { id: number; message: string; variant: 'error' | 'success' }
 
 const addServer = async (name: string, config: MCPServerConfig) => {
-  await invoke('add_mcp_server', { name, config })
+  await invoke('add_mcp_server', { name, config, sourceAgent: null })
 }
 const getServer = async (name: string): Promise<MCPServerEntry> => {
   return await invoke('get_mcp_server', { name })
@@ -336,6 +336,7 @@ refresh()
             <div class="text-[13.5px] font-semibold text-[#111827] dark:text-[#f3f4f6] truncate">{{ s.name }}</div>
             <div class="flex items-center gap-2 mt-0.5">
               <span class="text-[11px] px-1.5 py-[1px] rounded bg-[#f3f4f6] dark:bg-[#2a2a2a] text-[#6b7280] dark:text-[#a3a3a3] font-mono shrink-0">{{ s.type }}</span>
+              <span v-if="s.sourceAgent" class="text-[11px] px-1.5 py-[1px] rounded bg-[#eff6ff] dark:bg-[#1e293b] text-[#3b82f6] dark:text-[#93c5fd] shrink-0" :title="`由智能体「${s.sourceAgent}」添加`">来自智能体 · {{ s.sourceAgent }}</span>
               <span v-if="s.enabled" class="text-[11px] px-1.5 py-[1px] rounded bg-green-50 dark:bg-green-950/30 text-green-700 dark:text-green-400 shrink-0">已启用</span>
               <span v-else class="text-[11px] px-1.5 py-[1px] rounded bg-[#f3f4f6] dark:bg-[#2a2a2a] text-[#6b7280] dark:text-[#9f9f9f] shrink-0">已停用</span>
               <span v-if="s.status === 'connected'" class="text-[12px] text-[#6b7280] dark:text-[#a3a3a3] whitespace-nowrap shrink-0">{{ s.toolCount }} 个工具</span>

@@ -11,6 +11,8 @@ import { emitToast } from "@/lib/toast";
 
 type MainView = "chat" | "hooks" | "agent";
 
+type AgentSource = { kind: "manual" | "market" | "import"; name?: string | null; version?: string | null };
+
 type AgentBundle = {
   id: string;
   name: string;
@@ -19,6 +21,8 @@ type AgentBundle = {
   enabledTools: string[] | null;
   enabledSkills: string[] | null;
   enabledMcpServers: string[] | null;
+  enabled: boolean;
+  source?: AgentSource | null;
   createdAt: number;
   updatedAt: number;
 };
@@ -31,14 +35,11 @@ type ConfigurableTool = {
 };
 
 type SkillItem = { name: string; description: string; path: string };
-type McpServerStatus = { name: string; status: string; type: string; enabled: boolean };
+type McpServerStatus = { name: string; status: string; type: string; enabled: boolean; sourceAgent?: string | null };
 
 /** 智能体资料文件条目（agents/<id>/files/ 顶层）。 */
 type AgentFileEntry = { name: string; sizeBytes: number; isDir: boolean };
-
-/** 私有 MCP server 条目（agents/<id>/mcp.json）。 */
 type McpServerConfigJson = Record<string, unknown>;
-type AgentMcpEntry = { name: string; enabled: boolean; config: McpServerConfigJson };
 
 const props = defineProps<{
   /** 当前对话 id：用于标记哪个对话挂载了哪个智能体。 */
@@ -70,8 +71,7 @@ type EditorModal =
   | "skills"
   | "mcp"
   | "privateSkills"
-  | "files"
-  | "privateMcp";
+  | "files";
 const activeModal = ref<EditorModal>("");
 
 const bundles = ref<AgentBundle[]>([]);
@@ -81,6 +81,8 @@ const selectedId = ref("");
 const configurableTools = ref<ConfigurableTool[]>([]);
 const skills = ref<SkillItem[]>([]);
 const mcpServers = ref<McpServerStatus[]>([]);
+/** 全局 MCP 目录是否成功加载（区分「加载失败」与「确实为空」，避免误清引用清单）。 */
+const mcpCatalogOk = ref(false);
 
 // 编辑态（选中 bundle 的可变副本）
 const draft = ref<AgentBundle | null>(null);
@@ -151,11 +153,12 @@ async function loadCatalog() {
   const [tools, skillList, servers] = await Promise.all([
     invoke<ConfigurableTool[]>("list_configurable_tools").catch(() => []),
     invoke<SkillItem[]>("list_skills").catch(() => []),
-    invoke<McpServerStatus[]>("get_mcp_server_statuses").catch(() => []),
+    invoke<McpServerStatus[]>("get_mcp_server_statuses").catch(() => null),
   ]);
   configurableTools.value = tools ?? [];
   skills.value = skillList ?? [];
   mcpServers.value = servers ?? [];
+  mcpCatalogOk.value = servers !== null;
 }
 
 async function loadConversationAgent() {
@@ -199,40 +202,47 @@ function openBundleEditor(id: string) {
   if (!bundle) return;
   selectedId.value = id;
   applyBundleToEditor(bundle);
+  pruneMcpSelection();
   view.value = "editor";
   void loadAgentResources(id);
 }
 
-// ---------------- 智能体目录资源：私有技能 / 资料文件 / 私有 MCP ----------------
+/** 失效引用清理：引用清单里指向已不存在 server（被删除/迁移遗留）的条目自动剔除。 */
+function pruneMcpSelection() {
+  if (!mcpCatalogOk.value || !useCustomMcp.value) return;
+  const known = new Set(mcpServers.value.map((s) => s.name));
+  const pruned = new Set([...mcpSelection.value].filter((n) => known.has(n)));
+  if (pruned.size !== mcpSelection.value.size) {
+    mcpSelection.value = pruned;
+  }
+}
+
+// ---------------- 智能体目录资源：私有技能 / 资料文件 ----------------
 
 const privateSkills = ref<SkillItem[]>([]);
 const agentFiles = ref<AgentFileEntry[]>([]);
-const agentMcp = ref<AgentMcpEntry[]>([]);
 const resourcesLoading = ref(false);
 
-/** 私有 MCP 表单（stdio / streamable_http 两种常用类型）。 */
+/** 添加全局 MCP 表单（从智能体页直接写入全局注册表，stdio / streamable_http 两种常用类型）。 */
 const showMcpForm = ref(false);
+const addingGlobalMcp = ref(false);
 const mcpForm = ref<{
-  oldName: string | null;
   name: string;
   kind: "stdio" | "streamable_http";
   command: string;
   args: string;
   url: string;
-  enabled: boolean;
-}>({ oldName: null, name: "", kind: "stdio", command: "", args: "", url: "", enabled: true });
+}>({ name: "", kind: "stdio", command: "", args: "", url: "" });
 
 async function loadAgentResources(bundleId: string) {
   resourcesLoading.value = true;
   try {
-    const [skillsRes, filesRes, mcpRes] = await Promise.all([
+    const [skillsRes, filesRes] = await Promise.all([
       invoke<SkillItem[]>("list_agent_private_skills", { bundleId }).catch(() => []),
       invoke<AgentFileEntry[]>("list_agent_files", { bundleId }).catch(() => []),
-      invoke<AgentMcpEntry[]>("list_agent_mcp_servers", { bundleId }).catch(() => []),
     ]);
     privateSkills.value = skillsRes ?? [];
     agentFiles.value = filesRes ?? [];
-    agentMcp.value = mcpRes ?? [];
   } finally {
     resourcesLoading.value = false;
   }
@@ -281,38 +291,14 @@ async function revealAgentDir() {
   }
 }
 
-function openMcpForm(entry: AgentMcpEntry | null) {
-  if (entry) {
-    const cfg = entry.config ?? {};
-    const isStdio = cfg.type === "stdio";
-    const args = Array.isArray(cfg.args) ? (cfg.args as string[]).join(" ") : "";
-    const command = typeof cfg.command === "string" ? cfg.command : "";
-    const url = typeof cfg.url === "string" ? cfg.url : "";
-    mcpForm.value = {
-      oldName: entry.name,
-      name: entry.name,
-      kind: isStdio ? "stdio" : "streamable_http",
-      command,
-      args,
-      url,
-      enabled: entry.enabled,
-    };
-  } else {
-    mcpForm.value = {
-      oldName: null,
-      name: "",
-      kind: "stdio",
-      command: "",
-      args: "",
-      url: "",
-      enabled: true,
-    };
-  }
+/** 打开「添加全局 MCP」表单：写入全局注册表 + 标注来源 + 自动引用给当前智能体。 */
+function openAddGlobalMcpForm() {
+  mcpForm.value = { name: "", kind: "stdio", command: "", args: "", url: "" };
   showMcpForm.value = true;
 }
 
-async function saveAgentMcp() {
-  if (!selectedId.value) return;
+async function addGlobalMcp() {
+  if (addingGlobalMcp.value) return;
   const form = mcpForm.value;
   const name = form.name.trim();
   if (!name) {
@@ -338,37 +324,66 @@ async function saveAgentMcp() {
     }
     config = { type: "streamable_http", url: form.url.trim() };
   }
+  addingGlobalMcp.value = true;
   try {
-    await invoke("upsert_agent_mcp_server", {
-      bundleId: selectedId.value,
-      oldName: form.oldName,
-      newName: name,
+    await invoke("add_mcp_server", {
+      name,
       config,
-      enabled: form.enabled,
+      sourceAgent: draft.value?.name?.trim() || null,
     });
     showMcpForm.value = false;
-    await loadAgentResources(selectedId.value);
-    emitToast({ variant: "success", source: "agent-config", message: "私有 MCP 已保存并连接。" });
+    // 刷新全局 server 列表，并在自定义模式下自动勾选（引用给当前智能体）。
+    mcpServers.value = await invoke<McpServerStatus[]>("get_mcp_server_statuses").catch(() => []);
+    if (useCustomMcp.value) {
+      const next = new Set(mcpSelection.value);
+      next.add(name);
+      mcpSelection.value = next;
+    }
+    emitToast({ variant: "success", source: "agent-config", message: `已添加全局 MCP「${name}」。` });
   } catch (err) {
-    console.error("Failed to save agent mcp server:", err);
+    console.error("Failed to add global mcp server:", err);
+    emitToast({ variant: "error", source: "agent-config", message: `添加 MCP 失败：${err}` });
+  } finally {
+    addingGlobalMcp.value = false;
   }
 }
 
-async function deleteAgentMcp(entry: AgentMcpEntry) {
-  if (!selectedId.value || !confirm(`确定删除私有 MCP「${entry.name}」？`)) return;
-  try {
-    await invoke("upsert_agent_mcp_server", {
-      bundleId: selectedId.value,
-      oldName: entry.name,
-      newName: null,
-      config: null,
-      enabled: false,
-    });
-    await loadAgentResources(selectedId.value);
-  } catch (err) {
-    console.error("Failed to delete agent mcp server:", err);
+/** MCP 勾选：勾选全局未启用的 server 时自动一步启用，无需去设置页。 */
+async function toggleMcpSelection(server: McpServerStatus) {
+  const checking = !mcpSelection.value.has(server.name);
+  toggleSelection("mcp", server.name);
+  if (checking && !server.enabled) {
+    try {
+      await invoke("set_mcp_server_enabled", { name: server.name, enabled: true });
+      mcpServers.value = await invoke<McpServerStatus[]>("get_mcp_server_statuses").catch(
+        () => mcpServers.value,
+      );
+    } catch (err) {
+      console.error("Failed to auto-enable mcp server:", err);
+    }
   }
 }
+
+/** 卡片上的全局启用开关：直接写回 bundle.enabled。 */
+async function toggleBundleEnabled(bundle: AgentBundle) {
+  try {
+    await invoke("save_agent_bundle", { bundle: { ...bundle, enabled: !bundle.enabled } });
+    await loadBundles();
+    if (draft.value?.id === bundle.id) {
+      draft.value = { ...draft.value, enabled: !bundle.enabled };
+      original.value = serializeDraft();
+    }
+  } catch (err) {
+    console.error("Failed to toggle bundle enabled:", err);
+  }
+}
+
+const sourceLabel = (bundle: AgentBundle) => {
+  const kind = bundle.source?.kind ?? "manual";
+  if (kind === "market") return "市场";
+  if (kind === "import") return "导入";
+  return "手动";
+};
 
 const formatFileSize = (bytes: number) => {
   if (!Number.isFinite(bytes) || bytes <= 0) return "0 B";
@@ -396,13 +411,22 @@ const mcpSummary = computed(() =>
 );
 const privateSkillsSummary = computed(() => `${privateSkills.value.length} 个`);
 const filesSummary = computed(() => `${agentFiles.value.length} 个文件`);
-const privateMcpSummary = computed(() => `${agentMcp.value.length} 个 server`);
 
 /** 打开配置弹窗；专属内容类同时刷新对应资源列表。 */
 function openModal(modal: EditorModal) {
   activeModal.value = modal;
-  if ((modal === "privateSkills" || modal === "files" || modal === "privateMcp") && selectedId.value) {
+  if ((modal === "privateSkills" || modal === "files") && selectedId.value) {
     void loadAgentResources(selectedId.value);
+  }
+  if (modal === "mcp") {
+    // 每次打开刷新全局 server 列表，保证启用状态/新增项实时；同时清理指向已删除 server 的失效引用。
+    void invoke<McpServerStatus[]>("get_mcp_server_statuses")
+      .then((servers) => {
+        mcpServers.value = servers ?? [];
+        mcpCatalogOk.value = true;
+        pruneMcpSelection();
+      })
+      .catch(() => {});
   }
 }
 
@@ -628,15 +652,16 @@ onMounted(async () => {
       @confirm="deleteBundle"
     />
 
-    <!-- 私有 MCP 编辑弹窗 -->
+    <!-- 添加全局 MCP 弹窗：写入全局注册表 + 标注来源 + 自动引用给当前智能体 -->
     <ConfirmDialog
       v-model="showMcpForm"
       width-class="max-w-[560px]"
-      :title="mcpForm.oldName ? `编辑私有 MCP「${mcpForm.oldName}」` : '添加私有 MCP'"
-      :description="mcpForm.oldName ? '修改配置后保存会重连该 server。' : '保存后会立即连接该 server（stdio 启动可能需要数十秒）。'"
-      confirm-text="保存"
+      title="添加 MCP 服务"
+      description="保存后写入全局 MCP 注册表（标注来自本智能体），自动引用给当前智能体并立即连接。"
+      :confirm-text="addingGlobalMcp ? '连接中...' : '保存'"
       cancel-text="取消"
-      @confirm="saveAgentMcp"
+      :busy="addingGlobalMcp"
+      @confirm="addGlobalMcp"
     >
       <div class="space-y-2.5">
         <div class="grid grid-cols-[110px_minmax(0,1fr)] items-center gap-2">
@@ -674,12 +699,8 @@ onMounted(async () => {
           <span class="text-right text-[12.5px] text-[#475569] dark:text-[#a3a3a3]">URL</span>
           <Input v-model="mcpForm.url" :class="fieldClass" placeholder="https://example.com/mcp" />
         </div>
-        <label class="flex cursor-pointer items-center gap-2 pl-[122px] text-[12.5px] text-[#475569] dark:text-[#a3a3a3]">
-          <input type="checkbox" class="accent-[#2563eb]" v-model="mcpForm.enabled" />
-          保存后立即启用
-        </label>
-        <div class="text-[11px] text-[#98a2b3] dark:text-[#9d9589]">
-          需要高级字段（env/headers）时可直接编辑 agents/&lt;id&gt;/mcp.json 文件。
+        <div class="text-[11px] text-[#98a2b3] dark:text-[#a3a3a3]">
+          需要高级字段（env/headers）时可在「设置 → MCP」页编辑。
         </div>
       </div>
     </ConfirmDialog>
@@ -803,13 +824,13 @@ onMounted(async () => {
       </div>
     </ConfirmDialog>
 
-    <!-- 全局 MCP -->
+    <!-- 全局 MCP 引用清单 -->
     <ConfirmDialog
       :model-value="activeModal === 'mcp'"
       width-class="max-w-[720px]"
       @update:model-value="(v) => { if (!v) activeModal = '' }"
-      title="全局 MCP 服务器"
-      description="从全局已配置的 MCP server 中勾选接入。"
+      title="MCP 服务器"
+      description="MCP 全局唯一注册；勾选 = 引用给该智能体。勾选未启用的 server 会自动启用。"
       confirm-text="完成"
       cancel-text="关闭"
       @confirm="activeModal = ''"
@@ -847,18 +868,21 @@ onMounted(async () => {
                 type="checkbox"
                 class="mt-0.5 accent-[#2563eb]"
                 :checked="mcpSelection.has(server.name)"
-                @change="toggleSelection('mcp', server.name)"
+                @change="toggleMcpSelection(server)"
               />
               <span class="min-w-0">
                 <span class="font-medium">{{ server.name }}</span>
                 <span class="ml-1 text-[#64748b] dark:text-[#a3a3a3]">{{ server.status }}</span>
+                <span v-if="!server.enabled" class="ml-1 text-[#d97706] dark:text-[#fbbf24]">（全局未启用，勾选将自动启用）</span>
+                <span v-if="server.sourceAgent" class="ml-1 text-[#3b82f6] dark:text-[#93c5fd]">来自智能体 · {{ server.sourceAgent }}</span>
               </span>
             </label>
             <div v-if="mcpServers.length === 0" class="px-1 text-[11px] text-[#64748b] dark:text-[#a3a3a3]">
-              暂无已配置的 MCP 服务器。
+              暂无已配置的 MCP 服务器，可用下方按钮直接添加。
             </div>
           </div>
         </template>
+        <Button variant="outline" size="sm" :class="headerButtonClass" @click="openAddGlobalMcpForm">+ 添加新 MCP</Button>
       </div>
     </ConfirmDialog>
 
@@ -937,49 +961,6 @@ onMounted(async () => {
       </div>
     </ConfirmDialog>
 
-    <!-- 私有 MCP -->
-    <ConfirmDialog
-      :model-value="activeModal === 'privateMcp'"
-      width-class="max-w-[720px]"
-      @update:model-value="(v) => { if (!v) activeModal = '' }"
-      title="私有 MCP 服务器"
-      description="该智能体专属的 MCP server（agents/<id>/mcp.json），仅挂载它的会话可见。"
-      confirm-text="完成"
-      cancel-text="关闭"
-      @confirm="activeModal = ''"
-    >
-      <div class="max-h-[52vh] space-y-2 overflow-y-auto pr-1 custom-scrollbar">
-        <div class="space-y-1 rounded-lg border border-[#e5e7eb] p-2 dark:border-[#333]">
-          <div
-            v-for="entry in agentMcp"
-            :key="entry.name"
-            class="flex items-center justify-between gap-2 rounded px-1 py-0.5 text-[12px] hover:bg-[#f8fafc] dark:hover:bg-[#2a2a2a]"
-          >
-            <span class="min-w-0 truncate">
-              <span class="font-medium">{{ entry.name }}</span>
-              <span class="ml-1 text-[#64748b] dark:text-[#a3a3a3]">{{ entry.config?.type ?? "stdio" }}{{ entry.enabled ? "" : "（已停用）" }}</span>
-            </span>
-            <span class="flex shrink-0 items-center gap-2">
-              <button
-                type="button"
-                class="text-[11px] text-[#2563eb] hover:underline dark:text-[#93c5fd]"
-                @click="openMcpForm(entry)"
-              >编辑</button>
-              <button
-                type="button"
-                class="text-[11px] text-[#dc2626] hover:underline dark:text-[#fca5a5]"
-                @click="deleteAgentMcp(entry)"
-              >删除</button>
-            </span>
-          </div>
-          <div v-if="agentMcp.length === 0" class="px-1 text-[11px] text-[#64748b] dark:text-[#a3a3a3]">
-            暂无私有 MCP server。
-          </div>
-        </div>
-        <Button variant="outline" size="sm" :class="headerButtonClass" @click="openMcpForm(null)">添加</Button>
-      </div>
-    </ConfirmDialog>
-
     <Card v-if="loading" :class="panelClass">
       <CardContent class="px-3 text-sm text-[#64748b] dark:text-[#a3a3a3]">正在读取智能体套件...</CardContent>
     </Card>
@@ -992,30 +973,47 @@ onMounted(async () => {
         role="button"
         tabindex="0"
         class="flex min-h-[120px] cursor-pointer flex-col rounded-xl border border-[#e5e7eb] bg-white p-4 text-left transition-all hover:border-[#2563eb]/60 hover:shadow-[0_6px_20px_rgba(37,99,235,0.10)] dark:border-[#333] dark:bg-[#242424] dark:hover:border-[#60a5fa]/50 dark:hover:shadow-none"
+        :class="item.enabled ? '' : 'opacity-60'"
         :title="`配置「${item.name}」`"
         @click="openBundleEditor(item.id)"
         @keydown.enter.prevent="openBundleEditor(item.id)"
       >
         <div class="flex items-center justify-between gap-2">
           <span class="truncate text-[14px] font-semibold text-[#111827] dark:text-[#f3f4f6]">{{ item.name }}</span>
-          <span
-            v-if="item.id === conversationAgentId"
-            class="inline-flex shrink-0 items-center gap-1 rounded-full bg-[#f0fdf4] px-2 py-0.5 text-[10.5px] font-medium text-[#15803d] dark:bg-[#052e16]/60 dark:text-[#86efac]"
-          >
-            <span class="h-1.5 w-1.5 rounded-full bg-[#22c55e]"></span>
-            当前对话
+          <span class="flex shrink-0 items-center gap-1.5">
+            <span class="inline-flex items-center rounded-full bg-[#f3f4f6] px-2 py-0.5 text-[10.5px] font-medium text-[#6b7280] dark:bg-[#2e2e2e] dark:text-[#a3a3a3]">
+              {{ sourceLabel(item) }}
+            </span>
+            <span
+              v-if="item.id === conversationAgentId"
+              class="inline-flex items-center gap-1 rounded-full bg-[#f0fdf4] px-2 py-0.5 text-[10.5px] font-medium text-[#15803d] dark:bg-[#052e16]/60 dark:text-[#86efac]"
+            >
+              <span class="h-1.5 w-1.5 rounded-full bg-[#22c55e]"></span>
+              当前对话
+            </span>
           </span>
         </div>
         <p class="mt-1.5 line-clamp-2 flex-1 text-[12.5px] leading-5 text-[#64748b] dark:text-[#a3a3a3]">
           {{ item.description?.trim() || "暂无描述" }}
         </p>
         <div class="mt-2 flex items-center justify-between gap-2">
-          <span class="truncate text-[11px] text-[#98a2b3] dark:text-[#9d9589]">更新于 {{ formatUpdatedAt(item.updatedAt) }}</span>
+          <span class="truncate text-[11px] text-[#98a2b3] dark:text-[#a3a3a3]">更新于 {{ formatUpdatedAt(item.updatedAt) }}</span>
           <span class="flex shrink-0 items-center gap-1.5">
+            <!-- 全局启用开关：禁用后不可被新会话挂载 -->
             <button
               type="button"
-              class="rounded-md border border-[#d8dee8] bg-white px-2 py-0.5 text-[11.5px] text-[#2563eb] transition-colors hover:bg-[#eff6ff] dark:border-[#3a3a3a] dark:bg-[#242424] dark:text-[#93c5fd] dark:hover:bg-[#2d2d2d]"
-              :title="`新开一个对话并启用「${item.name}」`"
+              class="rounded-md border px-2 py-0.5 text-[11.5px] transition-colors"
+              :class="item.enabled
+                ? 'border-[#bbf7d0] bg-[#f0fdf4] text-[#15803d] hover:bg-[#dcfce7] dark:border-[#14532d] dark:bg-[#052e16]/60 dark:text-[#86efac] dark:hover:bg-[#052e16]' 
+                : 'border-[#d8dee8] bg-white text-[#64748b] hover:bg-[#f4f7fb] dark:border-[#3a3a3a] dark:bg-[#242424] dark:text-[#a3a3a3] dark:hover:bg-[#2d2d2d]'"
+              :title="item.enabled ? '点击禁用：禁用后不可被新会话挂载' : '点击启用'"
+              @click.stop="toggleBundleEnabled(item)"
+            >{{ item.enabled ? '已启用' : '已禁用' }}</button>
+            <button
+              type="button"
+              class="rounded-md border border-[#d8dee8] bg-white px-2 py-0.5 text-[11.5px] text-[#2563eb] transition-colors hover:bg-[#eff6ff] disabled:cursor-not-allowed disabled:opacity-50 dark:border-[#3a3a3a] dark:bg-[#242424] dark:text-[#93c5fd] dark:hover:bg-[#2d2d2d]"
+              :title="item.enabled ? `新开一个对话并启用「${item.name}」` : '智能体已禁用，无法挂载'"
+              :disabled="!item.enabled"
               @click.stop="emit('launch-agent', item.id)"
             >启用</button>
             <button
@@ -1075,8 +1073,8 @@ onMounted(async () => {
               v-else
               size="sm"
               :class="primaryButtonClass"
-              :disabled="hasChanges || activating"
-              :title="hasChanges ? '请先保存改动' : '新开一个对话并启用该智能体'"
+              :disabled="hasChanges || activating || !draft.enabled"
+              :title="!draft.enabled ? '智能体已禁用，请先在卡片列表启用' : hasChanges ? '请先保存改动' : '新开一个对话并启用该智能体'"
               @click="launchAgent"
             >
               {{ activating ? "处理中..." : "启用" }}
@@ -1167,20 +1165,9 @@ onMounted(async () => {
                   <span class="config-tile__summary">{{ filesSummary }}</span>
                 </span>
               </button>
-              <button
-                type="button"
-                class="config-tile"
-                @click="openModal('privateMcp')"
-              >
-                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="2" y="2" width="20" height="8" rx="2"/><rect x="2" y="14" width="20" height="8" rx="2"/><line x1="6" y1="6" x2="6.01" y2="6"/><line x1="6" y1="18" x2="6.01" y2="18"/></svg>
-                <span class="min-w-0">
-                  <span class="config-tile__title">私有 MCP</span>
-                  <span class="config-tile__summary">{{ privateMcpSummary }}</span>
-                </span>
-              </button>
             </div>
-            <div class="text-[11px] text-[#98a2b3] dark:text-[#9d9589]">
-              专属内容（私有技能 / 资料文件 / 私有 MCP）只属于该智能体，其他智能体与默认 Nova 不可见。
+            <div class="text-[11px] text-[#98a2b3] dark:text-[#a3a3a3]">
+              专属内容（私有技能 / 资料文件）只属于该智能体；MCP 全局注册，上方仅维护引用清单。
               <button type="button" class="ml-1 text-[#2563eb] hover:underline dark:text-[#93c5fd]" @click="revealAgentDir">打开目录</button>
             </div>
           </div>

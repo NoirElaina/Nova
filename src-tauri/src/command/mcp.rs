@@ -12,10 +12,12 @@ pub async fn add_mcp_server(
     app: AppHandle,
     name: String,
     config: McpServerConfig,
+    source_agent: Option<String>,
 ) -> Result<(), String> {
-    // 将 tauri 命令直接转发到 MCP service。
+    // 将 tauri 命令直接转发到 MCP service；source_agent 用于标注来源智能体。
     let app_handle = app.clone();
-    let result = crate::llm::services::mcp::add_mcp_server(app, name, config).await;
+    let result =
+        crate::llm::services::mcp::add_mcp_server(app, name, config, source_agent).await;
     report_backend_result(&app_handle, "command.mcp.add_mcp_server", result, None)
 }
 

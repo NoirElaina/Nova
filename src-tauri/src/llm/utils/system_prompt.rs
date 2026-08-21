@@ -107,6 +107,12 @@ pub fn load_system_prompt(
     agent_mode: AgentMode,
     conversation_id: Option<&str>,
 ) -> Result<String, String> {
+    // 分支问答会话：纯问答精简提示词，完全跳过主工程协议、
+    // bundle/skills/memory/plugin 段（分支无任何工具，写了就是误导）。
+    if crate::llm::services::branch::is_branch_conversation(conversation_id) {
+        return Ok(crate::llm::services::branch::system_prompt());
+    }
+
     // 子代理会话：使用专属精简提示词，完全跳过主工程协议、
     // bundle/skills/memory/plugin 段（对应工具对子代理不可见，写了就是误导）。
     // 工作区按父会话解析（子 ID 不在会话表里）。

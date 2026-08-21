@@ -79,6 +79,8 @@ pub fn run() {
             greet,
             llm::client::send_chat_message,
             llm::client::cancel_chat_message,
+            llm::services::branch::send_branch_message,
+            llm::services::branch::cancel_branch_message,
             llm::client::get_chat_turn_status,
             llm::client::ack_chat_turn_status,
             llm::client::submit_permission_decision,

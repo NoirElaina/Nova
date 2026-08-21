@@ -29,6 +29,21 @@ fn emit_stream_event(
     conversation_id: Option<&str>,
     event: ChatMessageEvent,
 ) -> tauri::Result<()> {
+    // 分支问答会话（`:branch:` 派生 ID）：改发 `branch-event`（带父会话/分支 ID 包装），
+    // 避免前端把分支流事件路由进主会话（分支 ID 不在会话列表里），
+    // 同时作为分支侧边栏的实时数据源。
+    if crate::llm::services::branch::is_branch_conversation(conversation_id) {
+        let id = conversation_id.unwrap_or("");
+        return app.emit(
+            "branch-event",
+            serde_json::json!({
+                "kind": "stream",
+                "parentConversationId": crate::llm::services::branch::parent_conversation_id(id),
+                "branchId": crate::llm::services::branch::branch_id_from_scope(id),
+                "event": event,
+            }),
+        );
+    }
     if crate::llm::services::subagent::is_subagent_conversation(conversation_id) {
         let id = conversation_id.unwrap_or("");
         return app.emit(

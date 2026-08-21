@@ -682,6 +682,27 @@ const focusTextarea = () => {
   textareaRef.value?.focus();
 };
 
+/** 把选中文本以 markdown 引用块形式插入输入框末尾（「引用到对话」入口）。 */
+const insertQuotedText = (text: string) => {
+  const quote = text
+    .trim()
+    .split('\n')
+    .map((line) => `> ${line}`)
+    .join('\n');
+  if (!quote) return;
+  const existing = currentInput.value.trimEnd();
+  currentInput.value = existing ? `${existing}\n\n${quote}\n\n` : `${quote}\n\n`;
+  void nextTick(() => {
+    autoResize();
+    const el = textareaRef.value;
+    if (el) {
+      el.focus();
+      el.selectionStart = el.value.length;
+      el.selectionEnd = el.value.length;
+    }
+  });
+};
+
 const autoResize = () => {
   const el = textareaRef.value;
   if (!el) return;
@@ -847,6 +868,7 @@ onUnmounted(() => {
 
 defineExpose({
   focusTextarea,
+  insertQuotedText,
 });
 </script>
 

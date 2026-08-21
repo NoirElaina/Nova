@@ -694,6 +694,12 @@ pub fn builtin_tool_names() -> Vec<String> {
 /// 子代理会话（`:sub:` 派生 ID）：只暴露只读白名单，不含插件/MCP/Task，
 /// 防止子代理获得任何修改能力或递归派生。
 pub fn get_available_tools_for_agent(app: &AppHandle, conversation_id: Option<&str>) -> Vec<Tool> {
+    // 分支问答会话（`:branch:` 派生 ID）：不暴露任何工具，纯文本问答，
+    // 防止分支获得工作区修改能力。
+    if crate::llm::services::branch::is_branch_conversation(conversation_id) {
+        return Vec::new();
+    }
+
     if crate::llm::services::subagent::is_subagent_conversation(conversation_id) {
         return get_available_tools()
             .into_iter()

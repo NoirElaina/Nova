@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch, shallowRef } from 'vue';
+import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch, shallowRef } from 'vue';
 import { useVirtualizer } from '@tanstack/vue-virtual';
 import type {
   AgentMode,
@@ -18,12 +18,16 @@ import InputArea from '../layout/InputArea.vue';
 import AskUserInputDialog from './AskUserInputDialog.vue';
 import AssistantMessageBubble from './messages/AssistantMessageBubble.vue';
 import AssistantTranscript from './messages/AssistantTranscript.vue';
+import BranchSidebar from './branch/BranchSidebar.vue';
 import ContextCompactNotice from './messages/ContextCompactNotice.vue';
 import MessageTimelineNavigator from './MessageTimelineNavigator.vue';
+import SelectionActionPopover from './SelectionActionPopover.vue';
 import SubagentPanel from './SubagentPanel.vue';
 import UserMessageBubble from './messages/UserMessageBubble.vue';
 import { buildAssistantTranscriptSegments } from '../../features/chat/utils/assistant-transcript';
 import { estimateTextTokens } from '../../features/chat/services/chat-api';
+import { initBranchEvents, openBranch } from '../../features/branch/branch-chat';
+import { emitToast } from '../../lib/toast';
 
 const props = defineProps<{
   messages: ChatMessage[];
@@ -70,6 +74,93 @@ const emit = defineEmits<{
 
 const chatAreaRef = ref<HTMLElement | null>(null);
 const liveAssistantRef = ref<HTMLElement | null>(null);
+const inputAreaRef = ref<InstanceType<typeof InputArea> | null>(null);
+
+/** 选中文本浮动操作条状态（引用到对话 / 开分支提问）。 */
+const selectionPopover = reactive({
+  visible: false,
+  x: 0,
+  y: 0,
+  text: '',
+});
+
+const hideSelectionPopover = () => {
+  selectionPopover.visible = false;
+};
+
+/** mouseup 后读取选区：仅当选区落在助手消息气泡内时弹出操作条。 */
+const captureTextSelection = () => {
+  const container = chatAreaRef.value;
+  const selection = window.getSelection();
+  if (!container || !selection || selection.isCollapsed) {
+    hideSelectionPopover();
+    return;
+  }
+  const text = selection.toString().trim();
+  if (!text) {
+    hideSelectionPopover();
+    return;
+  }
+  const anchorEl =
+    selection.anchorNode instanceof Element
+      ? selection.anchorNode
+      : selection.anchorNode?.parentElement;
+  const row = anchorEl?.closest?.('[data-role="assistant"][data-message-index]');
+  if (!row || !container.contains(row)) {
+    hideSelectionPopover();
+    return;
+  }
+  if (selection.rangeCount === 0) {
+    hideSelectionPopover();
+    return;
+  }
+  const rect = selection.getRangeAt(0).getBoundingClientRect();
+  if (rect.width === 0 && rect.height === 0) {
+    hideSelectionPopover();
+    return;
+  }
+  selectionPopover.x = Math.min(Math.max(rect.left + rect.width / 2, 90), window.innerWidth - 90);
+  selectionPopover.y = Math.max(rect.top, 64);
+  selectionPopover.text = text.length > 2000 ? text.slice(0, 2000) : text;
+  selectionPopover.visible = true;
+};
+
+const handleChatMouseUp = () => {
+  // 等浏览器完成选区最终化（双击选词、拖动选择都在 mouseup 后才稳定）
+  window.setTimeout(captureTextSelection, 0);
+};
+
+/** 点击操作条以外区域时收起；若形成新选区，mouseup 会重新弹出。 */
+const handleDocumentMouseDown = (event: MouseEvent) => {
+  if (!selectionPopover.visible) return;
+  const target = event.target;
+  if (target instanceof Element && target.closest('[data-selection-popover]')) {
+    return;
+  }
+  hideSelectionPopover();
+};
+
+const handleSelectionEscape = (event: KeyboardEvent) => {
+  if (event.key === 'Escape') {
+    hideSelectionPopover();
+  }
+};
+
+const handleQuoteToInput = () => {
+  inputAreaRef.value?.insertQuotedText(selectionPopover.text);
+  hideSelectionPopover();
+  window.getSelection()?.removeAllRanges();
+};
+
+const handleOpenBranch = () => {
+  if (!props.conversationId) {
+    emitToast({ message: '请先开始当前对话，再使用分支提问', variant: 'warning' });
+    return;
+  }
+  openBranch(props.conversationId, selectionPopover.text);
+  hideSelectionPopover();
+  window.getSelection()?.removeAllRanges();
+};
 const reactionMap = ref<Record<number, 'up' | 'down' | undefined>>({});
 const copiedMap = ref<Record<string, boolean>>({});
 const showScrollToBottom = ref(false);
@@ -382,6 +473,7 @@ const updateActiveUserMessage = () => {
 const handleChatScroll = () => {
   updateScrollToBottomVisibility();
   updateActiveUserMessage();
+  hideSelectionPopover();
 };
 
 const scrollToBottomSmooth = async () => {
@@ -406,9 +498,14 @@ onMounted(() => {
   stickToBottom.value = true;
   void scrollToBottom();
   void nextTick(updateActiveUserMessage);
+  void initBranchEvents();
+  document.addEventListener('mousedown', handleDocumentMouseDown, true);
+  document.addEventListener('keydown', handleSelectionEscape);
 });
 
 onBeforeUnmount(() => {
+  document.removeEventListener('mousedown', handleDocumentMouseDown, true);
+  document.removeEventListener('keydown', handleSelectionEscape);
   if (stickToBottomRaf) {
     cancelAnimationFrame(stickToBottomRaf);
     stickToBottomRaf = 0;
@@ -662,6 +759,7 @@ defineExpose({
       ref="chatAreaRef"
       @scroll.passive="handleChatScroll"
       @wheel.passive="handleChatWheel"
+      @mouseup="handleChatMouseUp"
     >
       <div
         class="w-full relative"
@@ -837,6 +935,7 @@ defineExpose({
         />
         <InputArea
           v-else
+          ref="inputAreaRef"
           :isGenerating="isGenerating"
           :agentMode="agentMode"
           :pendingUploads="pendingUploads"
@@ -856,6 +955,16 @@ defineExpose({
         />
       </div>
     </div>
+
+    <SelectionActionPopover
+      :visible="selectionPopover.visible"
+      :x="selectionPopover.x"
+      :y="selectionPopover.y"
+      @quote="handleQuoteToInput"
+      @branch="handleOpenBranch"
+    />
+
+    <BranchSidebar :conversation-id="conversationId" />
   </div>
 </template>
 

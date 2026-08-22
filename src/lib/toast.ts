@@ -88,6 +88,11 @@ export async function installBackendErrorToastListener(): Promise<void> {
       return;
     }
 
+    // 获取模型失败：配置弹窗内已内联展示错误原文，再弹 toast 是重复提示。
+    if (source === 'command.model_fetch.fetch_available_models') {
+      return;
+    }
+
     // AI 主流程错误（模型请求、轮次执行等）：在对话框内以红色块展示错误原文，
     // 方便用户看到真实报错内容去排查；其余本地小操作错误仍走右上角 toast。
     if (source.startsWith('llm.')) {

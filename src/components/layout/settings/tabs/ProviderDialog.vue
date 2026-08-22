@@ -1,8 +1,9 @@
 <script setup lang="ts">
 import { ref, watch } from 'vue'
 import { invoke } from '@tauri-apps/api/core'
-import { X } from 'lucide-vue-next'
+import { Eye, EyeOff, Loader2, Plus, RefreshCw, Trash2 } from 'lucide-vue-next'
 import { Button } from '@/components/ui/button'
+import { getRawErrorText } from '@/lib/error-display'
 import { Checkbox } from '@/components/ui/checkbox'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
@@ -34,8 +35,13 @@ const emit = defineEmits<{
   (e: 'save', draft: ProviderDraft, originalId: string | null): void
 }>()
 
-const newModelInput = ref('')
 const saveError = ref('')
+/** 在线获取的模型列表（类似 CCSwitch）：作为“模型”列下拉候选项。 */
+const fetchedModels = ref<{ id: string; ownedBy?: string | null }[]>([])
+const fetching = ref(false)
+const fetchError = ref('')
+/** API Key 明文展示开关 */
+const showApiKey = ref(false)
 /** 完整填写模式：Base URL 由用户手动填完整地址；
  * 关闭时切换协议会自动补充该协议的官方默认 Base URL。 */
 const fullEntry = ref(false)
@@ -120,7 +126,9 @@ watch(() => props.open, async (newVal) => {
       models: [],
     }
   }
-  newModelInput.value = ''
+  fetchedModels.value = []
+  fetchError.value = ''
+  showApiKey.value = false
   // 编辑既有配置：已填自定义 Base URL 时视为完整填写模式，避免切换协议覆盖它。
   fullEntry.value = !!(newVal && props.draft && props.draft.baseUrl.trim())
   if (newVal) {
@@ -128,28 +136,102 @@ watch(() => props.open, async (newVal) => {
   }
 })
 
-const addModel = async () => {
-  const value = newModelInput.value.trim()
-  if (!value) return
-  if (!localDraft.value.models.some((item) => item.name === value)) {
-    let hint = 200000
-    try {
-      hint = await invoke<number>('get_model_window_tokens', { model: value })
-    } catch {
-      // keep default
-    }
-    resolvedHints.value = { ...resolvedHints.value, [value]: hint }
-    localDraft.value.models = [
-      ...localDraft.value.models,
-      { name: value, contextWindow: hint },
-    ]
-  }
-  newModelInput.value = ''
+/** 表格末尾添加一行空模型（模型通过下拉选择）。 */
+const addEmptyModelRow = () => {
+  localDraft.value.models = [
+    ...localDraft.value.models,
+    { name: '', contextWindow: null },
+  ]
   saveError.value = ''
 }
 
 const removeModel = (index: number) => {
   localDraft.value.models = localDraft.value.models.filter((_, itemIndex) => itemIndex !== index)
+}
+
+/** 行下拉候选：获取到的模型列表，排除其它行已占用的模型；
+ * 当前行的值若不在列表里（未获取/手输）也补进去，保证能显示与选中。 */
+const selectOptionsFor = (index: number) => {
+  const current = localDraft.value.models[index]?.name.trim() ?? ''
+  const exclude = new Set(
+    localDraft.value.models.filter((_, i) => i !== index).map((m) => m.name.trim()),
+  )
+  const options = fetchedModels.value.filter((m) => !exclude.has(m.id))
+  if (current && !options.some((m) => m.id === current)) {
+    options.unshift({ id: current })
+  }
+  return options
+}
+
+/** 下拉点选：直接替换当前行的模型名。 */
+const pickModelOption = async (index: number, raw: unknown) => {
+  const item = localDraft.value.models[index]
+  const id = String(raw ?? '').trim()
+  if (!item || !id) return
+  item.name = id
+  saveError.value = ''
+  if (resolvedHints.value[id] == null) {
+    let hint = 200000
+    try {
+      hint = await invoke<number>('get_model_window_tokens', { model: id })
+    } catch {
+      // keep default
+    }
+    resolvedHints.value = { ...resolvedHints.value, [id]: hint }
+  }
+}
+
+/** 用当前表单里的 API Key / Base URL 直接拉取供应商模型列表。 */
+const fetchModels = async () => {
+  fetchError.value = ''
+  const apiKey = localDraft.value.apiKey.trim()
+  const baseUrl = localDraft.value.baseUrl.trim()
+  if (!apiKey || !baseUrl) {
+    fetchError.value = '请先填写 API Key 和 Base URL'
+    return
+  }
+  fetching.value = true
+  try {
+    const models = await invoke<{ id: string; ownedBy?: string | null }[]>('fetch_available_models', {
+      baseUrl,
+      apiKey,
+      isFullUrl: fullEntry.value,
+      apiFormat: localDraft.value.apiFormat,
+    })
+    fetchedModels.value = models
+    if (models.length === 0) {
+      fetchError.value = '接口返回成功，但未包含任何模型'
+    }
+  } catch (err) {
+    fetchedModels.value = []
+    fetchError.value = getRawErrorText(err) || '获取模型失败'
+  } finally {
+    fetching.value = false
+  }
+}
+
+/** 把获取到的模型一键全部填入表格（上下文窗口走内置库解析）。 */
+const addAllFetchedModels = async () => {
+  const existing = new Set(localDraft.value.models.map((m) => m.name.trim()))
+  const additions: ModelDraftItem[] = []
+  for (const item of fetchedModels.value) {
+    if (!item.id || existing.has(item.id)) continue
+    let hint = 200000
+    try {
+      hint = await invoke<number>('get_model_window_tokens', { model: item.id })
+    } catch {
+      // keep default
+    }
+    resolvedHints.value = { ...resolvedHints.value, [item.id]: hint }
+    additions.push({ name: item.id, contextWindow: hint })
+  }
+  if (additions.length === 0) {
+    fetchError.value = '获取到的模型均已在列表中'
+    return
+  }
+  localDraft.value.models = [...localDraft.value.models, ...additions]
+  fetchError.value = ''
+  saveError.value = ''
 }
 
 const setContextWindow = (index: number, raw: string) => {
@@ -221,7 +303,25 @@ const handleSave = () => {
 
           <div class="grid gap-2">
             <Label for="apiKey">API Key</Label>
-            <Input id="apiKey" v-model="localDraft.apiKey" type="password" placeholder="sk-..." />
+            <div class="relative">
+              <Input
+                id="apiKey"
+                v-model="localDraft.apiKey"
+                :type="showApiKey ? 'text' : 'password'"
+                placeholder="sk-..."
+                class="pr-9"
+              />
+              <button
+                type="button"
+                class="absolute right-2 top-1/2 -translate-y-1/2 inline-flex h-6 w-6 items-center justify-center rounded text-muted-foreground hover:text-foreground"
+                :aria-label="showApiKey ? '隐藏 API Key' : '显示 API Key'"
+                :title="showApiKey ? '隐藏 API Key' : '显示 API Key'"
+                @click="showApiKey = !showApiKey"
+              >
+                <EyeOff v-if="showApiKey" class="h-4 w-4" />
+                <Eye v-else class="h-4 w-4" />
+              </button>
+            </div>
           </div>
 
           <div class="grid gap-2">
@@ -244,65 +344,85 @@ const handleSave = () => {
 
           <div class="grid gap-2">
             <div class="flex items-center justify-between gap-2">
-              <Label>模型列表</Label>
-              <span class="text-xs text-muted-foreground">{{ localDraft.models.length }} 个</span>
+              <div class="flex items-center gap-2">
+                <Label>模型列表</Label>
+                <span class="text-xs text-muted-foreground">{{ localDraft.models.length }} 个</span>
+              </div>
+              <div class="flex items-center gap-2">
+                <Button variant="outline" size="sm" class="gap-1.5" :disabled="fetching" @click="fetchModels">
+                  <Loader2 v-if="fetching" class="h-3.5 w-3.5 animate-spin" />
+                  <RefreshCw v-else class="h-3.5 w-3.5" />
+                  {{ fetching ? '获取中…' : '获取模型列表' }}
+                </Button>
+                <Button variant="outline" size="sm" class="gap-1.5" @click="addEmptyModelRow">
+                  <Plus class="h-3.5 w-3.5" /> 添加模型
+                </Button>
+              </div>
             </div>
 
-            <div
-              v-if="localDraft.models.length > 0"
-              class="max-h-56 overflow-y-auto rounded-lg border border-border bg-muted/30 p-2"
-            >
+            <div v-if="localDraft.models.length > 0" class="grid grid-cols-[minmax(0,1.6fr)_minmax(0,1fr)_2rem] gap-x-2">
+              <span class="px-1 pb-1 text-[11px] font-medium text-muted-foreground">模型</span>
+              <span class="px-1 pb-1 text-[11px] font-medium text-muted-foreground">上下文窗口</span>
+              <span></span>
+            </div>
+
+            <div class="max-h-64 overflow-y-auto pr-0.5">
               <div class="flex flex-col gap-2">
                 <div
                   v-for="(model, index) in localDraft.models"
-                  :key="`${model.name}-${index}`"
-                  class="flex flex-wrap items-center gap-2 rounded-md border border-border bg-background px-2.5 py-2"
+                  :key="index"
+                  class="grid grid-cols-[minmax(0,1.6fr)_minmax(0,1fr)_2rem] items-center gap-x-2"
                 >
-                  <div class="min-w-0 flex-1">
-                    <div class="flex items-center gap-1.5">
-                      <span class="truncate text-sm font-medium" :title="model.name">{{ model.name }}</span>
-                      <span v-if="index === 0" class="shrink-0 text-[10px] text-muted-foreground">默认</span>
-                    </div>
-                  </div>
-                  <div class="flex items-center gap-1.5">
-                    <Label :for="`ctx-${index}`" class="shrink-0 text-[11px] text-muted-foreground whitespace-nowrap">
-                      上下文
-                    </Label>
-                    <Input
-                      :id="`ctx-${index}`"
-                      class="h-8 w-[7.5rem] text-xs tabular-nums"
-                      type="number"
-                      min="1024"
-                      step="1024"
-                      :placeholder="contextPlaceholder(model)"
-                      :model-value="model.contextWindow ?? ''"
-                      @update:model-value="setContextWindow(index, String($event ?? ''))"
-                    />
-                    <span class="text-[10px] text-muted-foreground">tokens</span>
-                  </div>
+                  <Select
+                    :model-value="model.name || undefined"
+                    @update:model-value="pickModelOption(index, $event)"
+                  >
+                    <SelectTrigger class="h-9 w-full text-sm">
+                      <SelectValue :placeholder="fetchedModels.length > 0 ? '选择模型' : '请先获取模型列表'" />
+                    </SelectTrigger>
+                    <SelectContent class="max-h-64">
+                      <SelectItem
+                        v-for="option in selectOptionsFor(index)"
+                        :key="option.id"
+                        :value="option.id"
+                      >
+                        {{ option.id }}
+                      </SelectItem>
+                    </SelectContent>
+                  </Select>
+                  <Input
+                    class="h-9 text-sm tabular-nums"
+                    type="number"
+                    min="1024"
+                    step="1024"
+                    :placeholder="contextPlaceholder(model)"
+                    :model-value="model.contextWindow ?? ''"
+                    @update:model-value="setContextWindow(index, String($event ?? ''))"
+                  />
                   <button
                     type="button"
-                    class="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-muted-foreground hover:bg-muted hover:text-foreground"
+                    class="inline-flex h-8 w-8 items-center justify-center rounded-md text-muted-foreground hover:bg-destructive/10 hover:text-destructive"
                     aria-label="删除模型"
                     @click="removeModel(index)"
                   >
-                    <X class="h-3.5 w-3.5" />
+                    <Trash2 class="h-4 w-4" />
                   </button>
                 </div>
               </div>
             </div>
-            <p v-else class="rounded-lg border border-dashed border-border px-3 py-4 text-center text-xs text-muted-foreground">
-              尚未添加模型，请在下方输入后点击添加
+            <p
+              v-if="localDraft.models.length === 0"
+              class="rounded-lg border border-dashed border-border px-3 py-4 text-center text-xs text-muted-foreground"
+            >
+              尚未添加模型，点右上“获取模型列表”拉取后在下拉里选择，或点“添加模型”新增一行。
             </p>
 
-            <div class="flex items-center gap-2">
-              <Input
-                v-model="newModelInput"
-                placeholder="输入模型名，Enter 添加"
-                @keydown.enter.prevent="addModel"
-              />
-              <Button variant="outline" class="shrink-0" @click="addModel">添加</Button>
+            <div v-if="fetchedModels.length > 0" class="flex items-center justify-between gap-2 text-xs text-muted-foreground">
+              <span>已获取 {{ fetchedModels.length }} 个可选模型</span>
+              <Button variant="ghost" size="sm" class="h-6 px-2 text-xs" @click="addAllFetchedModels">全部添加</Button>
             </div>
+            <p v-if="fetchError" class="text-xs text-destructive">{{ fetchError }}</p>
+
             <p class="text-xs text-muted-foreground">
               列表第一项为聊天区默认模型。上下文窗口优先用此处配置；留空则查内置库，仍无则 200K。
             </p>

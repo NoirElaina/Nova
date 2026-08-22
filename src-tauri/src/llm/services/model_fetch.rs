@@ -3,6 +3,7 @@
 //! 通过 OpenAI 兼容的 GET /v1/models 端点获取供应商可用模型列表。
 //! 主要面向第三方聚合站（硅基流动、OpenRouter 等），以及把 Anthropic
 //! 协议挂在兼容子路径上的官方供应商（DeepSeek、Kimi、智谱 GLM 等）。
+//! Anthropic 格式时使用 x-api-key 认证（官方 /v1/models 不认 Bearer）。
 
 use reqwest::StatusCode;
 use serde::{Deserialize, Serialize};
@@ -22,7 +23,10 @@ struct ModelsResponse {
 
 #[derive(Debug, Deserialize)]
 struct ModelEntry {
+    #[serde(default)]
     id: String,
+    /// Anthropic 官方列表返回 display_name 而非标准 id，作兜底。
+    display_name: Option<String>,
     owned_by: Option<String>,
 }
 
@@ -46,10 +50,15 @@ pub async fn fetch_models(
     api_key: &str,
     is_full_url: bool,
     models_url_override: Option<&str>,
+    api_format: Option<&str>,
 ) -> Result<Vec<FetchedModel>, String> {
     if api_key.is_empty() {
         return Err("API Key is required to fetch models".to_string());
     }
+
+    let anthropic_style = api_format
+        .map(|f| f.eq_ignore_ascii_case("anthropic"))
+        .unwrap_or(false);
 
     let candidates = build_models_url_candidates(base_url, is_full_url, models_url_override)?;
     let client = reqwest::Client::new();
@@ -57,13 +66,17 @@ pub async fn fetch_models(
 
     for url in &candidates {
         tracing::debug!("[ModelFetch] Trying endpoint: {url}");
-        let response = match client
+        let mut request = client
             .get(url)
-            .header("Authorization", format!("Bearer {api_key}"))
-            .timeout(Duration::from_secs(FETCH_TIMEOUT_SECS))
-            .send()
-            .await
-        {
+            .timeout(Duration::from_secs(FETCH_TIMEOUT_SECS));
+        request = if anthropic_style {
+            request
+                .header("x-api-key", api_key)
+                .header("anthropic-version", "2023-06-01")
+        } else {
+            request.header("Authorization", format!("Bearer {api_key}"))
+        };
+        let response = match request.send().await {
             Ok(r) => r,
             Err(e) => {
                 return Err(format!("Request failed: {e}"));
@@ -73,6 +86,22 @@ pub async fn fetch_models(
         let status = response.status();
 
         if status.is_success() {
+            // 反爬拦截兜底：部分站点（如 OpenRouter 根路径 /v1/models）会返回
+            // 200 + HTML 页面，直接解析会得到误导性错误；跳过当前候选继续尝试。
+            let content_type = response
+                .headers()
+                .get(reqwest::header::CONTENT_TYPE)
+                .and_then(|v| v.to_str().ok())
+                .unwrap_or("")
+                .to_ascii_lowercase();
+            if !content_type.is_empty() && !content_type.contains("json") {
+                tracing::debug!("[ModelFetch] Non-JSON response ({content_type}) from {url}, trying next candidate");
+                last_err = Some(format!(
+                    "endpoint {url} returned non-JSON response ({content_type}), likely an anti-bot page"
+                ));
+                continue;
+            }
+
             let resp: ModelsResponse = response
                 .json()
                 .await
@@ -82,9 +111,19 @@ pub async fn fetch_models(
                 .data
                 .unwrap_or_default()
                 .into_iter()
-                .map(|m| FetchedModel {
-                    id: m.id,
-                    owned_by: m.owned_by,
+                .filter_map(|m| {
+                    let id = if m.id.is_empty() {
+                        m.display_name.unwrap_or_default()
+                    } else {
+                        m.id
+                    };
+                    if id.is_empty() {
+                        return None;
+                    }
+                    Some(FetchedModel {
+                        id,
+                        owned_by: m.owned_by,
+                    })
                 })
                 .collect();
 
@@ -126,6 +165,12 @@ pub fn build_models_url_candidates(
     }
 
     let mut candidates: Vec<String> = Vec::new();
+
+    // OpenRouter 特例：聊天地址是 /api/v1/chat/completions，但 /v1/models 根路径
+    // 会被反爬拦截返回 HTML，真实模型列表在 /api/v1/models，优先尝试。
+    if host_matches(trimmed, "openrouter.ai") {
+        candidates.push("https://openrouter.ai/api/v1/models".to_string());
+    }
 
     if is_full_url {
         if let Some(idx) = trimmed.find("/v1/") {
@@ -192,4 +237,13 @@ fn ends_with_version_segment(url: &str) -> bool {
     let last = url.rsplit('/').next().unwrap_or("");
     last.strip_prefix('v')
         .is_some_and(|digits| !digits.is_empty() && digits.bytes().all(|b| b.is_ascii_digit()))
+}
+
+/// 判断 URL 的 host 是否为指定域名（含子域名）。
+fn host_matches(url: &str, domain: &str) -> bool {
+    let after_scheme = url.split("://").nth(1).unwrap_or(url);
+    let host = after_scheme.split('/').next().unwrap_or("").to_ascii_lowercase();
+    let bare = host.rsplit('@').next().unwrap_or(&host);
+    let host_only = bare.split(':').next().unwrap_or(bare);
+    host_only == domain || host_only.ends_with(&format!(".{domain}"))
 }

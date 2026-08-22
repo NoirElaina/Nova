@@ -17,12 +17,14 @@ pub async fn fetch_available_models(
     api_key: String,
     is_full_url: Option<bool>,
     models_url_override: Option<String>,
+    api_format: Option<String>,
 ) -> Result<Vec<FetchedModel>, String> {
     let result = crate::llm::services::model_fetch::fetch_models(
         &base_url,
         &api_key,
         is_full_url.unwrap_or(false),
         models_url_override.as_deref(),
+        api_format.as_deref(),
     )
     .await
     .map(|models| {

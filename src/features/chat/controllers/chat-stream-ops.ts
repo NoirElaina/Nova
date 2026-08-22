@@ -207,7 +207,7 @@ type StreamOpsDeps = {
   submitPermissionDecision: (
     conversationId: string | null,
     requestId: string,
-    action: "deny_once" | "allow_once" | "allow_session",
+    action: "deny_once" | "allow_once" | "allow_session" | "allow_always",
   ) => Promise<boolean>;
 };
 
@@ -567,7 +567,6 @@ export function createChatStreamOperations(deps: StreamOpsDeps) {
       const requestId = (payload.tool_use_id ?? "").trim();
       const promptPayload = (payload.text ?? "").trim();
       const parsed = parseNeedsUserInput(promptPayload);
-      const turnAgentMode = isActive ? agentMode.value : state.agentMode || "agent";
 
       if (!requestId) {
         emitToast({
@@ -608,18 +607,7 @@ export function createChatStreamOperations(deps: StreamOpsDeps) {
         return;
       }
 
-      // Auto 模式：前端双保险，直接 allow_session，不弹审批框。
-      if (turnAgentMode === "auto") {
-        void submitPermissionDecision(
-          isActive ? activeConversationId.value || null : conversationId,
-          requestId,
-          "allow_session",
-        ).catch((err) => {
-          console.error("Failed to auto-allow permission in auto mode:", err);
-        });
-        return;
-      }
-
+      // Auto 模式的全放行已由后端 Never 审批策略处理，前端不再重复提交决策。
       state.pendingPermissionRequestId = requestId;
       state.pendingQuestion = parsed;
       if (!isActive) {

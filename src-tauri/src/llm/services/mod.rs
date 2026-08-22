@@ -20,5 +20,6 @@ pub mod skills;
 pub mod subagent;
 pub mod threat_patterns;
 pub mod token_usage_log;
+pub mod tool_disclosure;
 pub mod tools;
 pub mod user_terminal;

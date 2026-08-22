@@ -16,11 +16,6 @@ fn default_provider_profiles() -> HashMap<String, ProviderProfile> {
     HashMap::new()
 }
 
-fn default_hook_env() -> HashMap<String, String> {
-    // hook_env 默认空映射。
-    HashMap::new()
-}
-
 fn default_rag_settings() -> RagSettings {
     RagSettings::default()
 }
@@ -41,8 +36,15 @@ fn default_stop_sequences() -> Vec<String> {
     Vec::new()
 }
 
-const STOP_HOOK_MAX_ASSISTANT_MESSAGES_KEY: &str = "NOVA_STOP_HOOK_MAX_ASSISTANT_MESSAGES";
-const POST_COMPACT_HOOK_CONTEXT_KEY: &str = "NOVA_POST_COMPACT_HOOK_CONTEXT";
+fn default_approval_policy() -> String {
+    // 默认策略：仅风险操作（Risky）才弹审批。
+    "on_request".to_string()
+}
+
+fn default_progressive_tool_disclosure() -> bool {
+    // 默认开启渐进式工具披露：低频工具按需加载，减少提示词体积。
+    true
+}
 
 fn normalize_provider_key(provider: &str) -> String {
     // provider 名去空白并转小写。
@@ -152,9 +154,6 @@ pub struct AppSettings {
     #[serde(default)]
     // 被禁用的技能列表。
     pub disabled_skills: Vec<String>,
-    #[serde(default = "default_hook_env")]
-    // 钩子环境变量配置。
-    pub hook_env: HashMap<String, String>,
     #[serde(default = "default_rag_settings")]
     // RAG 相关配置。
     pub rag: RagSettings,
@@ -170,6 +169,12 @@ pub struct AppSettings {
     #[serde(default)]
     // 被停用的插件 id 列表。
     pub disabled_plugins: Vec<String>,
+    #[serde(default = "default_approval_policy")]
+    // 审批策略：always_ask / on_request / never。
+    pub approval_policy: String,
+    #[serde(default = "default_progressive_tool_disclosure")]
+    // 渐进式工具披露：低频工具不进提示词，由模型通过 LoadTool 按需加载。
+    pub progressive_tool_disclosure: bool,
 }
 
 impl Default for AppSettings {
@@ -182,12 +187,13 @@ impl Default for AppSettings {
             provider_order: Vec::new(),
             model_context_windows: HashMap::new(),
             disabled_skills: Vec::new(),
-            hook_env: HashMap::new(),
             rag: RagSettings::default(),
             ui_language: default_ui_language(),
             ui_theme: default_ui_theme(),
             enable_app_log: default_enable_app_log(),
             disabled_plugins: Vec::new(),
+            approval_policy: default_approval_policy(),
+            progressive_tool_disclosure: default_progressive_tool_disclosure(),
         }
     }
 }
@@ -269,6 +275,11 @@ impl AppSettings {
         // 规范化 UI 偏好配置。
         self.ui_language = normalize_ui_language(&self.ui_language);
         self.ui_theme = normalize_ui_theme(&self.ui_theme);
+
+        // 规范化审批策略：非法值回落默认。
+        if crate::llm::utils::permissions::ApprovalPolicy::parse(&self.approval_policy).is_none() {
+            self.approval_policy = default_approval_policy();
+        }
     }
 
     fn sync_provider_order(&mut self) {
@@ -292,31 +303,6 @@ pub fn get_settings_path(app: &AppHandle) -> Result<PathBuf, String> {
         .app_data_dir()
         .map(|dir| dir.join("settings.json"))
         .map_err(|e| format!("Failed to resolve app_data_dir for settings: {}", e))
-}
-
-fn validate_hook_env(settings: &AppSettings) -> Result<(), String> {
-    if let Some(raw_value) = settings.hook_env.get(POST_COMPACT_HOOK_CONTEXT_KEY) {
-        if raw_value.contains('\u{0000}') {
-            return Err(format!(
-                "Invalid hook_env[{}]: contains NUL character",
-                POST_COMPACT_HOOK_CONTEXT_KEY
-            ));
-        }
-    }
-
-    if let Some(raw_value) = settings.hook_env.get(STOP_HOOK_MAX_ASSISTANT_MESSAGES_KEY) {
-        let trimmed = raw_value.trim();
-        if !trimmed.is_empty() {
-            trimmed.parse::<usize>().map_err(|_| {
-                format!(
-                    "Invalid hook_env[{}]: '{}' (must be a non-negative integer)",
-                    STOP_HOOK_MAX_ASSISTANT_MESSAGES_KEY, raw_value
-                )
-            })?;
-        }
-    }
-
-    Ok(())
 }
 
 fn validate_rag_settings(settings: &AppSettings) -> Result<(), String> {
@@ -416,7 +402,6 @@ pub fn save_settings_inner(app: &AppHandle, settings: AppSettings) -> Result<(),
     // 对传入设置做运行时规范化。
     let mut normalized = settings;
     normalized.normalize_for_runtime();
-    validate_hook_env(&normalized)?;
     validate_rag_settings(&normalized)?;
     validate_provider_profiles(&normalized)?;
     crate::command::settings_secrets::encrypt_provider_api_keys(&mut normalized)?;

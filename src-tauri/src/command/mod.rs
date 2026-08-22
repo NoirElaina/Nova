@@ -36,6 +36,10 @@ pub mod usage;
 pub mod todo;
 // 会话 plan 查询命令入口。
 pub mod plan;
+// 声明式挂钩配置（hooks.toml）读写命令入口。
+pub mod hooks;
+// 持久化权限规则管理命令入口。
+pub mod permission_rules;
 
 use tauri::{AppHandle, Manager};
 

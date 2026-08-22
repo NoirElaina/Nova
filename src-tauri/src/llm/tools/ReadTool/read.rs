@@ -1,6 +1,6 @@
 use crate::llm::tools::shared::read_state;
 use crate::llm::tools::{
-    app_tool, AppExecuteFuture, ToolFailure, ToolOutcome, ToolPermissionDescriptor,
+    app_tool, AppExecuteFuture, ToolDisclosure, ToolFailure, ToolOutcome, ToolPermissionDescriptor,
     ToolRegistration,
 };
 use crate::llm::types::{Content, ContentBlock, ImageSource, Message, Role, Tool};
@@ -13,7 +13,7 @@ use tauri::AppHandle;
 pub(super) fn registration() -> ToolRegistration {
     // read_only=true（可批量并发），permission=Some(read_permission)（敏感路径需审批）。
     // 此前 permission=None 导致 ReadTool 可无审批读取 ~/.ssh/id_rsa 等任意文件。
-    app_tool(tool, execute_with_app_boxed, true, Some(read_permission))
+    app_tool(tool, execute_with_app_boxed, true, Some(read_permission), ToolDisclosure::Core)
 }
 
 /// ReadTool 权限检查：
@@ -35,7 +35,7 @@ fn read_permission(input: &Value) -> Option<ToolPermissionDescriptor> {
             warning: Some(
                 "该路径可能包含凭据或密钥，读取需要确认".to_string(),
             ),
-            needs_approval: true,
+            risk: crate::llm::utils::permissions::RiskLevel::Risky,
         });
     }
 
@@ -48,7 +48,7 @@ fn read_permission(input: &Value) -> Option<ToolPermissionDescriptor> {
             warning: Some(
                 "设备文件可能导致进程挂起或产生无限输出".to_string(),
             ),
-            needs_approval: true,
+            risk: crate::llm::utils::permissions::RiskLevel::Risky,
         });
     }
 

@@ -1,4 +1,4 @@
-use crate::llm::tools::{app_tool, AppExecuteFuture, ToolFailure, ToolOutcome, ToolRegistration};
+use crate::llm::tools::{app_tool, AppExecuteFuture, ToolDisclosure, ToolFailure, ToolOutcome, ToolRegistration};
 use crate::llm::types::Tool;
 use serde_json::{json, Value};
 use tauri::AppHandle;
@@ -6,7 +6,7 @@ use tauri::AppHandle;
 // 返回 ask_user_question 的注册信息。
 // 这个工具会中断当前执行流并等待用户回答，所以不是只读工具。
 pub(super) fn registration() -> ToolRegistration {
-    app_tool(tool, execute_with_app_boxed, false, None)
+    app_tool(tool, execute_with_app_boxed, false, None, ToolDisclosure::Core)
 }
 
 // 返回 ask_user_question 暴露给模型的元数据。

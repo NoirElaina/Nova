@@ -1,5 +1,5 @@
 use crate::llm::tools::{
-    app_tool, AppExecuteFuture, ToolFailure, ToolOutcome, ToolRegistration,
+    app_tool, AppExecuteFuture, ToolDisclosure, ToolFailure, ToolOutcome, ToolRegistration,
 };
 use crate::llm::types::Tool;
 use serde_json::{json, Value};
@@ -8,7 +8,7 @@ use tauri::AppHandle;
 pub(super) fn registration() -> ToolRegistration {
     // read_only=true：子代理本身只做只读探索，进入批量并发执行器后
     // 同一轮的多个 Task 可并行运行（内部信号量再限同时 3 个）。
-    app_tool(tool, execute_with_app_boxed, true, None)
+    app_tool(tool, execute_with_app_boxed, true, None, ToolDisclosure::Core)
 }
 
 pub fn tool() -> Tool {
@@ -78,9 +78,55 @@ async fn execute_async(
             ToolFailure::invalid_input("Task tool requires an active conversation")
         })?;
 
+    // 子智能体名称：优先用用户给的 description，缺省回落工具名。
+    let subagent_name = input
+        .get("description")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .unwrap_or("Task")
+        .to_string();
+
+    // SubagentStart 挂钩：子代理启动前触发；拦截则不启动子代理。
+    let start_hook = crate::llm::services::hooks::run_subagent_start_hooks(
+        app,
+        &subagent_name,
+        conversation_id,
+    )
+    .await;
+    if let Some(err) = start_hook.override_error {
+        return Err(ToolFailure::hook(err));
+    }
+
     let report = crate::llm::services::subagent::run(app, parent, task_text)
         .await
         .map_err(ToolFailure::new)?;
 
-    Ok(ToolOutcome::text(report))
+    // SubagentStop 挂钩：报告返回主循环前触发，可注入上下文或终止续跑。
+    let stop_hook = crate::llm::services::hooks::run_subagent_stop_hooks(
+        app,
+        &subagent_name,
+        conversation_id,
+    )
+    .await;
+
+    let mut outcome = ToolOutcome::text(report);
+    // 合并两个挂钩的附加上下文（启动前注入 + 返回前注入）。
+    let mut merged_messages = start_hook.additional_messages;
+    merged_messages.extend(stop_hook.additional_messages);
+    if stop_hook.prevent_continuation {
+        outcome.prevent_continuation = true;
+        outcome.stop_reason = stop_hook.stop_reason.clone();
+    }
+    if let Some(err) = stop_hook.override_error {
+        // 拦截时把已收集的附加上下文随失败一并带回，避免丢失挂钩注入。
+        let mut failure = ToolFailure::hook(err);
+        failure.additional_messages = merged_messages;
+        failure.prevent_continuation = outcome.prevent_continuation;
+        failure.stop_reason = outcome.stop_reason;
+        return Err(failure);
+    }
+    outcome.additional_messages = merged_messages;
+
+    Ok(outcome)
 }

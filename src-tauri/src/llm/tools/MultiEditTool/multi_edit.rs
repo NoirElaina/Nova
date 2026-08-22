@@ -1,7 +1,7 @@
 use crate::llm::tools::shared::edit_replacers::apply_replace;
 use crate::llm::tools::shared::read_state;
 use crate::llm::tools::{
-    app_tool, AppExecuteFuture, ToolFailure, ToolOutcome, ToolPermissionDescriptor, ToolRegistration,
+    app_tool, AppExecuteFuture, ToolDisclosure, ToolFailure, ToolOutcome, ToolPermissionDescriptor, ToolRegistration,
 };
 use crate::llm::types::Tool;
 use crate::llm::utils::file_io::{read_file_meta, resolve_tool_path, write_file_with_meta};
@@ -9,7 +9,7 @@ use serde_json::{json, Value};
 use tauri::AppHandle;
 
 pub(super) fn registration() -> ToolRegistration {
-    app_tool(tool, execute_with_app_boxed, false, Some(permission))
+    app_tool(tool, execute_with_app_boxed, false, Some(permission), ToolDisclosure::Core)
 }
 
 pub fn tool() -> Tool {

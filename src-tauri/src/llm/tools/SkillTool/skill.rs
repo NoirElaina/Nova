@@ -2,7 +2,7 @@ use crate::llm::services::skills::{
     collect_skill_sibling_files, load_enabled_skills_with_app, normalize_skill_name,
     truncate_chars, SkillEntry,
 };
-use crate::llm::tools::{app_tool, AppExecuteFuture, ToolFailure, ToolOutcome, ToolRegistration};
+use crate::llm::tools::{app_tool, AppExecuteFuture, ToolDisclosure, ToolFailure, ToolOutcome, ToolRegistration};
 use crate::llm::types::Tool;
 use serde_json::{json, Value};
 use tauri::AppHandle;
@@ -20,7 +20,7 @@ fn execute_with_app_boxed(
 // 返回 Skill 工具的注册信息。
 // 它只读本地 skill 文件，不直接改写状态，所以标成只读工具。
 pub(super) fn registration() -> ToolRegistration {
-    app_tool(tool, execute_with_app_boxed, true, None)
+    app_tool(tool, execute_with_app_boxed, true, None, ToolDisclosure::Core)
 }
 
 // 返回模型可见的 Skill 工具元数据。

@@ -1,65 +1,77 @@
+//! 工具权限裁决：正交化的审批策略模型。
+//!
+//! 三层结构：
+//! 1. 描述符（descriptors/checks）：操作是什么、风险多高（Safe/Risky/Forbidden）；
+//! 2. 持久化规则（rules）：用户"始终允许/拒绝"的跨会话决定，命令类支持前缀匹配；
+//! 3. 审批策略（ApprovalPolicy）：AlwaysAsk / OnRequest / Never，Auto 模式当轮覆盖为 Never。
+//!
+//! 裁决顺序：硬拒绝（Forbidden）→ 持久规则 → 会话允许集 → 策略裁决 → AskUser。
+
+pub mod checks;
+pub mod descriptors;
+pub mod rules;
+
 use std::collections::{HashMap, HashSet};
 use std::sync::{Mutex, OnceLock};
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use tauri::AppHandle;
 use tokio::sync::oneshot;
 
-use crate::llm::tools::ToolPermissionDescriptor;
-use crate::llm::utils::bash_ast::wrappers::{is_read_only_command, strip_wrappers_from_argv};
+use checks::{assess_mcp_operation, truncate_chars};
 
-// Path prefixes that should never be written without explicit override.
-// 统一用正斜杠书写：normalize_path_for_match 会把待检查路径的 `\` 归一成 `/`，
-// 两侧必须采用同一种分隔符，否则跨平台前缀匹配会静默失效。
-const PROTECTED_PATH_PREFIXES: &[&str] = &[
-    "c:/windows",
-    "c:/program files",
-    "c:/program files (x86)",
-    "c:/programdata",
-    "c:/users/public",
-    "/etc",
-    "/bin",
-    "/sbin",
-    "/usr",
-    "/var",
-    "/boot",
-    "/system",
-];
-
-// Sensitive path markers that should be blocked even outside protected roots.
-// 同样统一正斜杠形式，与 normalize_path_for_match 的归一化结果保持一致。
-const PROTECTED_PATH_CONTAINS: &[&str] = &[
-    "/.ssh/",
-    "/.aws/",
-    "/.gnupg/",
-    "/.config/git",
-    "/.git/config",
-    // 整个 .git 目录都受保护，任何写入删除都拦截。
-    "/.git/",
-];
+pub use checks::protected_path_violation;
+pub(crate) use descriptors::{describe_file_write_permission, describe_shell_command_permission};
 
 const DEFAULT_PERMISSION_SCOPE: &str = "__global__";
 const PENDING_APPROVAL_TTL_MS: u64 = 15 * 60 * 1000;
 const ACTION_TOKEN_TTL_MS: u64 = 60 * 60 * 1000;
 
-#[derive(Debug, Clone, Copy)]
-struct RecordedDecision {
-    action: PermissionAction,
-    decided_at_ms: u64,
+/// 操作风险级别：由描述符声明，描述事实而非裁决。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RiskLevel {
+    /// 低风险（只读命令、普通路径写入）：OnRequest 策略下直接放行。
+    Safe,
+    /// 需要关注（非白名单命令、敏感路径读取、无法静态分析）：交由策略裁决。
+    Risky,
+    /// 硬性禁止（受保护路径、空命令）：任何策略下都拒绝。
+    Forbidden,
 }
 
-fn unsafe_override_enabled() -> bool {
-    std::env::var("NOVA_ALLOW_UNSAFE_TOOLS")
-        .map(|v| {
-            // 统一做 trim + 小写，避免环境变量大小写或空格导致误判。
-            let normalized = v.trim().to_ascii_lowercase();
-            // normalized: 规范化后的环境变量值。
-            // 兼容常见的布尔开关写法。
-            normalized == "1" || normalized == "true" || normalized == "yes" || normalized == "on"
-        })
-        // 变量缺失时默认关闭不安全放行。
-        .unwrap_or(false)
+/// 审批策略：与操作风险正交的全局开关。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ApprovalPolicy {
+    /// 凡产生权限描述符的操作一律审批（Forbidden 仍直接拒绝）。
+    AlwaysAsk,
+    /// 仅 Risky 操作审批，Safe 直接放行。
+    #[default]
+    OnRequest,
+    /// 从不审批：Risky 也放行（Forbidden 仍直接拒绝）。
+    /// Auto 迭代模式当轮等效于此策略。
+    Never,
+}
+
+impl ApprovalPolicy {
+    pub fn parse(raw: &str) -> Option<Self> {
+        match raw.trim().to_ascii_lowercase().as_str() {
+            "always_ask" | "alwaysask" => Some(Self::AlwaysAsk),
+            "on_request" | "onrequest" => Some(Self::OnRequest),
+            "never" => Some(Self::Never),
+            _ => None,
+        }
+    }
+
+    pub fn as_setting_str(&self) -> &'static str {
+        match self {
+            Self::AlwaysAsk => "always_ask",
+            Self::OnRequest => "on_request",
+            Self::Never => "never",
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -67,13 +79,19 @@ struct ProtectedOperation {
     signature: String,
     preview: String,
     warning: Option<String>,
-    needs_approval: bool,
+    risk: RiskLevel,
 }
 
 #[derive(Debug, Clone)]
 struct PendingApproval {
     operation: ProtectedOperation,
     created_at_ms: u64,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct RecordedDecision {
+    action: PermissionAction,
+    decided_at_ms: u64,
 }
 
 #[derive(Debug, Default)]
@@ -83,8 +101,6 @@ struct ConversationPermissionState {
     allow_once: HashSet<String>,
     allow_session: HashSet<String>,
     resolved_by_request: HashMap<String, RecordedDecision>,
-    /// Auto 模式下本轮工具权限全放行（会话级，随 turn 启停更新）。
-    auto_bypass: bool,
 }
 
 #[derive(Debug, Default)]
@@ -92,10 +108,12 @@ struct PermissionState {
     conversations: HashMap<String, ConversationPermissionState>,
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PermissionAction {
     AllowOnce,
     AllowSession,
+    /// 始终允许：写入持久化规则，跨会话生效。
+    AllowAlways,
     DenyOnce,
 }
 
@@ -159,8 +177,8 @@ fn conversation_scope_key(conversation_id: Option<&str>) -> String {
         // 空字符串视为未提供会话 id。
         .filter(|id| !id.is_empty())
         // 子代理会话（`{parent}:sub:{uuid}`）归一化到父会话：
-        // auto bypass、会话级 allow 等决策随父会话生效，
-        // 避免子代理在 Auto 模式下因 scope 不一致仍走审批。
+        // 会话级 allow 等决策随父会话生效，
+        // 避免子代理因 scope 不一致而行为分裂。
         .map(crate::llm::services::subagent::parent_conversation_id)
         // 缺省落到全局 scope。
         .unwrap_or(DEFAULT_PERMISSION_SCOPE)
@@ -245,221 +263,48 @@ fn upsert_pending_request_id(
     request_id
 }
 
-fn normalize_path_for_match(path: &str) -> String {
-    // 用统一分隔符（正斜杠）与小写比较，减少跨平台路径写法差异。
-    // 必须与 PROTECTED_PATH_PREFIXES / PROTECTED_PATH_CONTAINS 的书写形式一致，
-    // 否则前缀/包含匹配会在某一平台静默失效。
-    path.trim().replace('\\', "/").to_ascii_lowercase()
-}
-
-fn normalize_command_for_match(command: &str) -> String {
-    command
-        // 压缩空白，避免同义命令因空格差异得到不同签名。
-        .split_whitespace()
-        .collect::<Vec<_>>()
-        .join(" ")
-        // 统一小写，减少大小写差异干扰。
-        .to_ascii_lowercase()
-}
-
-fn truncate_chars(input: &str, max_chars: usize) -> String {
-    input.chars().take(max_chars).collect::<String>()
-}
-
-fn looks_like_shell_mcp(server: &str, tool: &str) -> bool {
-    let s = format!(
-        "{} {}",
-        server.to_ascii_lowercase(),
-        tool.to_ascii_lowercase()
-    );
-    // s: server+tool 的小写拼接字符串。
-    ["bash", "shell", "powershell", "pwsh", "terminal"]
-        .iter()
-        // 关键字模糊匹配：适配不同 MCP server/tool 命名习惯。
-        .any(|k| s.contains(k))
-}
-
-fn looks_like_file_mcp(server: &str, tool: &str) -> bool {
-    let s = format!(
-        "{} {}",
-        server.to_ascii_lowercase(),
-        tool.to_ascii_lowercase()
-    );
-    // s: server+tool 的小写拼接字符串。
-    ["file", "filesystem", "fs", "write", "edit", "replace"]
-        .iter()
-        // 关键字命中即按文件写操作风控处理。
-        .any(|k| s.contains(k))
-}
-
-fn pick_string_field<'a>(value: &'a Value, keys: &[&str]) -> Option<&'a str> {
-    for key in keys {
-        // key: 当前尝试提取的字段名。
-        if let Some(v) = value.get(*key).and_then(|v| v.as_str()) {
-            // v: JSON 字段值。
-            let trimmed = v.trim();
-            // trimmed: 去掉前后空白后的字符串。
-            if !trimmed.is_empty() {
-                // 返回原始 JSON 字符串切片，零拷贝。
-                return Some(trimmed);
-            }
-        }
-    }
-    None
-}
-
-fn check_mcp_operation(server: &str, tool: &str, arguments: &Value) -> McpCheckResult {
-    if looks_like_shell_mcp(server, tool) {
-        // 兼容不同 server 的参数命名。
-        let command =
-            pick_string_field(arguments, &["command", "cmd", "script"]).unwrap_or_default();
-        // command: shell 操作中提取到的命令字符串。
-        return match check_command(command) {
-            CommandCheckResult::Allow => McpCheckResult::Allow,
-            CommandCheckResult::NeedApproval(reason) => McpCheckResult::NeedApproval(reason),
-            CommandCheckResult::Deny(reason) => McpCheckResult::Deny(reason),
-        };
-    }
-
-    if looks_like_file_mcp(server, tool) {
-        // 常见路径参数别名统一提取。
-        let path = pick_string_field(
-            arguments,
-            &["path", "file", "file_path", "target", "target_path"],
-        )
-        .unwrap_or_default();
-        // path: 文件操作中提取到的目标路径。
-        return match check_file_path(path) {
-            Ok(()) => McpCheckResult::Allow,
-            Err(reason) => McpCheckResult::Deny(reason),
-        };
-    }
-
-    McpCheckResult::Allow
-}
-
-/// MCP 操作检查结果
-enum McpCheckResult {
-    Allow,
-    NeedApproval(String),
-    Deny(String),
-}
-
-pub(crate) fn describe_shell_command_permission(
-    tool_name: &str,
-    preview_label: &str,
-    input: &Value,
-) -> Option<ToolPermissionDescriptor> {
-    // command: 当前工具请求执行的终端命令文本。
-    let command = input
-        .get("command")
-        .and_then(|v| v.as_str())
-        .unwrap_or_default()
-        .trim();
-
-    if command.is_empty() {
-        return Some(ToolPermissionDescriptor {
-            signature: format!("{}:<empty>", tool_name),
-            preview: "命令为空".to_string(),
-            warning: Some("命令为空，无法执行。".to_string()),
-            needs_approval: false,
-        });
-    }
-
-    let normalized = normalize_command_for_match(command);
-    // 用 AST 引擎判定命令风险：Allow 放行，NeedApproval 需审批，Deny 拒绝。
-    let (warning, needs_approval): (Option<String>, bool) = match check_command(command) {
-        CommandCheckResult::Allow => (None, false),
-        CommandCheckResult::NeedApproval(reason) => (Some(reason), true),
-        CommandCheckResult::Deny(reason) => (Some(reason), false),
-    };
-
-    Some(ToolPermissionDescriptor {
-        signature: format!("{}:{}", tool_name, normalized),
-        preview: format!(
-            "{}（{}）：{}",
-            preview_label,
-            tool_name,
-            truncate_chars(command, 180)
-        ),
-        warning: warning.clone(),
-        needs_approval,
-    })
-}
-
-pub(crate) fn describe_file_write_permission(
-    tool_name: &str,
-    preview_label: &str,
-    path_key: &str,
-    input: &Value,
-) -> Option<ToolPermissionDescriptor> {
-    // path: 当前写操作的目标路径；不同工具可通过 path_key 复用这个 helper。
-    let path = input
-        .get(path_key)
-        .and_then(|v| v.as_str())
-        .unwrap_or_default()
-        .trim();
-
-    if path.is_empty() {
-        return Some(ToolPermissionDescriptor {
-            signature: format!("{}:<empty>", tool_name),
-            preview: "路径为空".to_string(),
-            warning: Some("目标路径为空，无法执行。".to_string()),
-            needs_approval: false,
-        });
-    }
-
-    let normalized = normalize_path_for_match(path);
-    // warning: 路径命中受保护目录或敏感标记时生成风险提示。
-    let warning = check_file_path(path).err();
-
-    Some(ToolPermissionDescriptor {
-        signature: format!("{}:{}", tool_name, normalized),
-        preview: format!(
-            "{}（{}）：{}",
-            preview_label,
-            tool_name,
-            truncate_chars(path, 200)
-        ),
-        warning: warning.clone(),
-        needs_approval: warning.is_some(),
-    })
-}
-
-fn operation_from_input(tool_name: &str, input: &Value) -> Option<ProtectedOperation> {
-    // 内置工具先读取自己显式声明的权限描述；
-    // 这里不再按 tool_name 做隐式兜底，避免策略散落在权限模块里。
-    if let Some(operation) = crate::llm::tools::permission_descriptor_for_tool(tool_name, input) {
+fn operation_from_input(app: &AppHandle, tool_name: &str, input: &Value) -> Option<ProtectedOperation> {
+    // 内置工具读取自己显式声明的权限描述；
+    // 不做按 tool_name 的隐式兜底，避免策略散落在权限模块里。
+    if let Some(descriptor) =
+        crate::llm::tools::permission_descriptor_for_tool(tool_name, input)
+    {
         return Some(ProtectedOperation {
-            signature: operation.signature,
-            preview: operation.preview,
-            warning: operation.warning,
-            needs_approval: operation.needs_approval,
+            signature: descriptor.signature,
+            preview: descriptor.preview,
+            warning: descriptor.warning,
+            risk: descriptor.risk,
         });
     }
 
     if let Some((server, tool)) = crate::llm::services::mcp_tools::parse_mcp_tool_name(tool_name) {
         // 对 MCP 动态工具做基于 server/tool 名和参数的统一风险推断。
-        let (warning, needs_approval) = match check_mcp_operation(&server, &tool, input) {
-            McpCheckResult::Allow => (None, false),
-            McpCheckResult::NeedApproval(reason) => (Some(reason), true),
-            McpCheckResult::Deny(reason) => (Some(reason), false),
-        };
-
+        let (risk, warning, signature) = assess_mcp_operation(tool_name, &server, &tool, input);
         return Some(ProtectedOperation {
-            signature: format!(
-                "{}:{}:{}",
-                tool_name,
-                server.to_ascii_lowercase(),
-                normalize_command_for_match(&input.to_string())
-            ),
+            signature,
             preview: format!("{} {}", tool_name, truncate_chars(&input.to_string(), 160)),
             warning,
-            needs_approval,
+            risk,
         });
     }
 
+    // 未声明权限描述的工具：确认设置可读后即视为不受控（与描述符缺失语义一致）。
+    let _ = app;
     None
+}
+
+/// 有效审批策略：当轮覆盖（Auto 模式 → Never）优先于全局设置。
+pub fn effective_approval_policy(
+    app: &AppHandle,
+    policy_override: Option<ApprovalPolicy>,
+) -> ApprovalPolicy {
+    if let Some(policy) = policy_override {
+        return policy;
+    }
+    match crate::command::settings::load_settings(app) {
+        Ok(settings) => ApprovalPolicy::parse(&settings.approval_policy).unwrap_or_default(),
+        Err(_) => ApprovalPolicy::default(),
+    }
 }
 
 fn build_permission_prompt_payload(operation: &ProtectedOperation) -> String {
@@ -493,6 +338,11 @@ fn build_permission_prompt_payload(operation: &ProtectedOperation) -> String {
                         "description": "本次应用运行期间对同一操作持续放行"
                     },
                     {
+                        "label": "始终允许",
+                        "value": "allow_always",
+                        "description": "记住该操作（命令类含同前缀命令），以后不再询问"
+                    },
+                    {
                         "label": "拒绝",
                         "value": "deny_once",
                         "description": "只拒绝这一次"
@@ -515,10 +365,7 @@ fn humanize_permission_warning(raw: &str) -> String {
     let stripped = raw
         .trim()
         .trim_start_matches("Blocked by permission gate: ")
-        .replace(
-            " Set NOVA_ALLOW_UNSAFE_TOOLS=1 only for trusted debugging.",
-            "",
-        );
+        .to_string();
 
     if stripped.contains("命令为空") || stripped.contains("command is empty") {
         return "命令为空，已被安全策略拦截。".to_string();
@@ -560,12 +407,14 @@ pub fn parse_permission_action_name(action: &str) -> Option<PermissionAction> {
     match action.trim().to_ascii_lowercase().as_str() {
         "allow_once" => Some(PermissionAction::AllowOnce),
         "allow_session" => Some(PermissionAction::AllowSession),
+        "allow_always" => Some(PermissionAction::AllowAlways),
         "deny_once" => Some(PermissionAction::DenyOnce),
         _ => None,
     }
 }
 
 fn apply_decision(
+    app: &AppHandle,
     state: &mut ConversationPermissionState,
     action: PermissionAction,
     request_id: &str,
@@ -584,10 +433,17 @@ fn apply_decision(
 
     match action {
         PermissionAction::AllowOnce => {
-            state.allow_once.insert(signature);
+            state.allow_once.insert(signature.clone());
         }
         PermissionAction::AllowSession => {
-            state.allow_session.insert(signature);
+            state.allow_session.insert(signature.clone());
+        }
+        PermissionAction::AllowAlways => {
+            // 会话内立即生效 + 持久化规则跨会话生效。
+            state.allow_session.insert(signature.clone());
+            if let Err(error) = rules::add_rule(app, rules::RuleKind::Allow, &signature) {
+                tracing::warn!(error = %error, signature = %signature, "failed to persist allow rule");
+            }
         }
         PermissionAction::DenyOnce => {
             // 一次性拒绝：不记忆，仅通知等待方本次拒绝。
@@ -607,6 +463,7 @@ fn apply_decision(
 }
 
 pub fn submit_permission_decision(
+    app: &AppHandle,
     conversation_id: Option<&str>,
     request_id: &str,
     action: PermissionAction,
@@ -618,7 +475,7 @@ pub fn submit_permission_decision(
     prune_expired_pending(state);
     prune_resolved_decisions(state);
 
-    if apply_decision(state, action, request_id) {
+    if apply_decision(app, state, action, request_id) {
         return Ok(true);
     }
 
@@ -697,188 +554,90 @@ pub async fn await_permission_decision(
     }
 }
 
-/// 对 bash 命令做 AST 级权限判定。
-///
-/// 返回值：
-/// - Ok(None)：命令通过所有检查，无需审批即可放行（read-only allowlist 命中）
-/// - Ok(Some(warning))：命令需要审批，warning 是给用户的风险提示
-/// - Err(reason)：命令被拒绝，reason 是拒绝原因
-fn check_command(command: &str) -> CommandCheckResult {
-    use crate::llm::utils::bash_ast::parser::parse_for_security;
-    use crate::llm::utils::bash_ast::semantics::check_semantics;
-
-    let trimmed = command.trim();
-    if trimmed.is_empty() {
-        return CommandCheckResult::Deny("命令为空".to_string());
-    }
-
-    // 1. AST 解析 + fail-closed allowlist
-    let parsed = match parse_for_security(command) {
-        crate::llm::utils::bash_ast::types::ParseForSecurityResult::Simple { commands } => commands,
-        crate::llm::utils::bash_ast::types::ParseForSecurityResult::TooComplex { reason } => {
-            return CommandCheckResult::NeedApproval(format!(
-                "命令无法静态分析（{}），需要确认",
-                reason
-            ));
-        }
-        crate::llm::utils::bash_ast::types::ParseForSecurityResult::ParseUnavailable => {
-            return CommandCheckResult::NeedApproval(
-                "bash 解析器不可用，无法静态分析命令安全性".to_string(),
-            );
-        }
-    };
-
-    if parsed.is_empty() {
-        return CommandCheckResult::Allow;
-    }
-
-    // 2. 语义检查（wrapper 剥离 + eval-like builtin 拦截）
-    for cmd in &parsed {
-        if let Err(reason) = check_semantics(cmd) {
-            return CommandCheckResult::NeedApproval(format!(
-                "命令含潜在风险（{}），需要确认",
-                reason
-            ));
-        }
-    }
-
-    // 3. 路径约束检查（重定向目标 + 路径参数）
-    for cmd in &parsed {
-        for redirect in &cmd.redirects {
-            // 重定向目标含 shell 变量展开（$VAR 等）时，parser.rs 会把 target 标记为
-            // __DYNAMIC__ 前缀。无法静态确定写入路径，必须 fail-closed 要求审批。
-            // 攻击场景：echo x > $HOME/.ssh/authorized_keys
-            //   bash 实际展开 $HOME 写入 ~/.ssh/authorized_keys，实现 SSH 后门。
-            if redirect.target.starts_with("__DYNAMIC__") {
-                return CommandCheckResult::NeedApproval(format!(
-                    "重定向目标含 shell 变量展开（{}），无法静态确定写入路径，需要确认",
-                    &redirect.target["__DYNAMIC__".len()..]
-                ));
-            }
-            if let Err(reason) = protected_path_violation(&redirect.target) {
-                return CommandCheckResult::Deny(format!(
-                    "重定向目标命中受保护路径：{}",
-                    reason
-                ));
-            }
-        }
-        for arg in &cmd.argv {
-            if arg.starts_with('-') {
-                continue;
-            }
-            if let Err(reason) = protected_path_violation(arg) {
-                return CommandCheckResult::Deny(format!(
-                    "参数命中受保护路径：{}",
-                    reason
-                ));
-            }
-        }
-    }
-
-    // 4. read-only allowlist 检查
-    // 对每个简单命令，剥 wrapper 后检查 argv[0] 是否在 allowlist 中。
-    // 所有命令都必须是 read-only 才放行；任一不是就需要审批。
-    for cmd in &parsed {
-        if cmd.argv.is_empty() {
-            continue;
-        }
-        let stripped = strip_wrappers_from_argv(&cmd.argv);
-        if !is_read_only_command(&stripped) {
-            return CommandCheckResult::NeedApproval(format!(
-                "命令 '{}' 不在只读 allowlist 中，需要确认",
-                cmd.argv.first().map(|s| s.as_str()).unwrap_or("?")
-            ));
-        }
-    }
-
-    CommandCheckResult::Allow
-}
-
-/// 命令检查结果
-enum CommandCheckResult {
-    /// 放行
-    Allow,
-    /// 需要审批，附带原因
-    NeedApproval(String),
-    /// 拒绝，附带原因
-    Deny(String),
-}
-
-/// 检查路径是否触碰受保护路径。公开供 bash_ast 模块调用。
-pub fn protected_path_violation(path: &str) -> Result<(), String> {
-    check_file_path(path)
-}
-
-fn check_file_path(path: &str) -> Result<(), String> {
-    let normalized = normalize_path_for_match(path);
-    // normalized: 规范化后用于路径风险匹配的路径字符串。
-    if normalized.is_empty() {
-        return Err("Blocked by permission gate: target path is empty".to_string());
-    }
-
-    for prefix in PROTECTED_PATH_PREFIXES {
-        // prefix: 当前检查的受保护路径前缀。
-        // 前缀命中用于阻止系统目录写入。
-        if normalized.starts_with(prefix) {
-            return Err(format!(
-                "Blocked by permission gate: writing protected path '{}'. Set NOVA_ALLOW_UNSAFE_TOOLS=1 only for trusted debugging.",
-                path
-            ));
-        }
-    }
-
-    for marker in PROTECTED_PATH_CONTAINS {
-        // marker: 当前检查的敏感路径标记。
-        // contains 命中用于阻止凭据/密钥等敏感目录。
-        if normalized.contains(marker) {
-            return Err(format!(
-                "Blocked by permission gate: writing sensitive path '{}'. Set NOVA_ALLOW_UNSAFE_TOOLS=1 only for trusted debugging.",
-                path
-            ));
-        }
-    }
-
-    Ok(())
-}
-
-/// 设置/清除当前会话是否处于 Auto 全放行（由 send_chat_message 在 turn 边界调用）。
-pub fn set_conversation_auto_bypass(conversation_id: Option<&str>, enabled: bool) {
-    let Ok(mut guard) = permission_state().lock() else {
-        return;
-    };
-    let state = conversation_state_mut(&mut guard, conversation_id);
-    state.auto_bypass = enabled;
-}
-
-fn conversation_auto_bypass_enabled(conversation_id: Option<&str>) -> bool {
-    let Ok(mut guard) = permission_state().lock() else {
-        return false;
-    };
-    conversation_state_mut(&mut guard, conversation_id).auto_bypass
-}
-
 pub fn enforce_tool_permission(
-    _app: &AppHandle,
+    app: &AppHandle,
     conversation_id: Option<&str>,
+    policy_override: Option<ApprovalPolicy>,
     tool_name: &str,
     input: &Value,
 ) -> PermissionEnforcement {
-    // Decision order: unsafe override > auto bypass > session allow > one-time allow > ask user.
-    if unsafe_override_enabled() {
-        // 显式调试开关打开时直接放行，不进入任何审批状态机。
-        return PermissionEnforcement::Allow;
-    }
-
-    // Auto 模式：本轮全部工具直接放行，不弹审批、不写 allow 缓存。
-    if conversation_auto_bypass_enabled(conversation_id) {
-        return PermissionEnforcement::Allow;
-    }
-
-    let Some(operation) = operation_from_input(tool_name, input) else {
-        // operation: None 表示该工具没有声明受控操作，当前权限层不参与拦截。
+    let Some(operation) = operation_from_input(app, tool_name, input) else {
+        // operation: None 表示该工具没有声明受控操作，权限层不参与拦截。
         return PermissionEnforcement::Allow;
     };
     // operation: 当前待评估的受控操作。
+
+    // 1. 硬拒绝：Forbidden 操作在任何策略下都不放行。
+    if operation.risk == RiskLevel::Forbidden {
+        let reason = operation
+            .warning
+            .clone()
+            .unwrap_or_else(|| format!("Operation '{}' is forbidden by security policy", tool_name));
+        return PermissionEnforcement::Deny(humanize_permission_warning(&reason));
+    }
+
+    // 2. 持久化规则：跨会话记住的允许/拒绝决定（命令类含前缀匹配）。
+    let persisted = rules::load_rules(app);
+    if let Some(rule) = rules::find_matching_rule(&persisted, &operation.signature) {
+        return match rule.kind {
+            rules::RuleKind::Allow => PermissionEnforcement::Allow,
+            rules::RuleKind::Deny => PermissionEnforcement::Deny(format!(
+                "Operation '{}' is blocked by a persisted deny rule",
+                tool_name
+            )),
+        };
+    }
+
+    // 3. 会话内决策：本会话允许 / 仅本次允许。
+    {
+        let mut guard = match permission_state().lock() {
+            Ok(g) => g,
+            Err(_) => {
+                return PermissionEnforcement::Deny(
+                    "Permission state unavailable due to lock poisoning".to_string(),
+                )
+            }
+        };
+        // guard: 全局 permission state 的锁引用。
+
+        let state = conversation_state_mut(&mut guard, conversation_id);
+        // state: 当前 conversation 的权限状态。
+        prune_expired_pending(state);
+        prune_resolved_decisions(state);
+
+        if state.allow_session.contains(&operation.signature) {
+            // 会话级允许可重复使用。
+            return PermissionEnforcement::Allow;
+        }
+
+        if state.allow_once.remove(&operation.signature) {
+            // 一次性允许命中后立即消费，确保只生效一次。
+            return PermissionEnforcement::Allow;
+        }
+    }
+
+    // 4. 策略裁决：Auto 模式当轮覆盖为 Never。
+    let policy = effective_approval_policy(app, policy_override);
+    let needs_ask = match policy {
+        ApprovalPolicy::Never => false,
+        ApprovalPolicy::OnRequest => operation.risk == RiskLevel::Risky,
+        ApprovalPolicy::AlwaysAsk => true,
+    };
+
+    if !needs_ask {
+        return PermissionEnforcement::Allow;
+    }
+
+    // 5. 子代理没有审批通道：审批请求会以 `:sub:` 派生会话 ID 发到前端，
+    // 但该 ID 不是可切换的真实会话，用户永远无法处理，
+    // 子代理会一直挂到审批超时（默认 15 分钟）才失败。
+    // 这里直接拒绝并把原因告诉模型，让它换路径或把该操作交回主代理。
+    if crate::llm::services::subagent::is_subagent_conversation(conversation_id) {
+        return PermissionEnforcement::Deny(format!(
+            "Permission required for tool '{}' in subagent context, but subagents cannot ask the user for approval. Use a different, non-sensitive path or report back so the parent agent can perform this operation.",
+            tool_name
+        ));
+    }
 
     let mut guard = match permission_state().lock() {
         Ok(g) => g,
@@ -888,43 +647,52 @@ pub fn enforce_tool_permission(
             )
         }
     };
-    // guard: 全局 permission state 的锁引用。
-
     let state = conversation_state_mut(&mut guard, conversation_id);
-    // state: 当前 conversation 的权限状态。
-    prune_expired_pending(state);
-    prune_resolved_decisions(state);
+    let request_id = upsert_pending_request_id(state, &operation);
+    // request_id: 生成或复用的待审批请求 id。
+    PermissionEnforcement::AskUser {
+        request_id,
+        payload: build_permission_prompt_payload(&operation),
+    }
+}
 
-    if state.allow_session.contains(&operation.signature) {
-        // 会话级允许可重复使用。
-        return PermissionEnforcement::Allow;
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn policy_parse_roundtrip() {
+        assert_eq!(
+            ApprovalPolicy::parse("always_ask"),
+            Some(ApprovalPolicy::AlwaysAsk)
+        );
+        assert_eq!(
+            ApprovalPolicy::parse("ON_REQUEST"),
+            Some(ApprovalPolicy::OnRequest)
+        );
+        assert_eq!(ApprovalPolicy::parse("never"), Some(ApprovalPolicy::Never));
+        assert_eq!(ApprovalPolicy::parse("bogus"), None);
+        assert_eq!(ApprovalPolicy::default(), ApprovalPolicy::OnRequest);
     }
 
-    if state.allow_once.remove(&operation.signature) {
-        // 一次性允许命中后立即消费，确保只生效一次。
-        return PermissionEnforcement::Allow;
+    #[test]
+    fn action_name_parsing() {
+        assert!(matches!(
+            parse_permission_action_name("allow_always"),
+            Some(PermissionAction::AllowAlways)
+        ));
+        assert!(matches!(
+            parse_permission_action_name("Allow_Session"),
+            Some(PermissionAction::AllowSession)
+        ));
+        assert!(parse_permission_action_name("nope").is_none());
     }
 
-    if operation.needs_approval {
-        // 子代理没有审批通道：审批请求会以 `:sub:` 派生会话 ID 发到前端，
-        // 但该 ID 不是可切换的真实会话，用户永远无法处理，
-        // 子代理会一直挂到审批超时（默认 15 分钟）才失败。
-        // 这里直接拒绝并把原因告诉模型，让它换路径或把该操作交回主代理。
-        // Auto 模式不受影响：bypass 已随父会话 scope 继承，在上面提前 Allow。
-        if crate::llm::services::subagent::is_subagent_conversation(conversation_id) {
-            return PermissionEnforcement::Deny(format!(
-                "Permission required for tool '{}' in subagent context, but subagents cannot ask the user for approval. Use a different, non-sensitive path or report back so the parent agent can perform this operation.",
-                tool_name
-            ));
-        }
-
-        let request_id = upsert_pending_request_id(state, &operation);
-        // request_id: 生成或复用的待审批请求 id。
-        return PermissionEnforcement::AskUser {
-            request_id: request_id.clone(),
-            payload: build_permission_prompt_payload(&operation),
-        };
+    #[test]
+    fn warning_humanized() {
+        let out = humanize_permission_warning(
+            "Blocked by permission gate: writing protected path 'c:/windows/x'.",
+        );
+        assert!(out.contains("受保护目录"));
     }
-
-    PermissionEnforcement::Allow
 }

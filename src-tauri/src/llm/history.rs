@@ -242,7 +242,7 @@ fn is_conversation_user_turn(message: &Message) -> bool {
         "[PreToolUse]",
         "[PostToolUse]",
         "[PostToolUseFailure]",
-        "[StopHookContext]",
+        "[Stop]",
         "[MCP",
     ];
 

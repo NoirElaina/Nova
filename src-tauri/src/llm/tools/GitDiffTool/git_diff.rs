@@ -1,11 +1,11 @@
-use crate::llm::tools::{app_tool, AppExecuteFuture, ToolFailure, ToolOutcome, ToolRegistration};
+use crate::llm::tools::{app_tool, AppExecuteFuture, ToolDisclosure, ToolFailure, ToolOutcome, ToolRegistration};
 use crate::llm::types::Tool;
 use serde_json::{json, Value};
 use tauri::AppHandle;
 
 pub(super) fn registration() -> ToolRegistration {
     // 只读工具，无副作用，可批量并发执行，不需要权限审批。
-    app_tool(tool, execute_with_app_boxed, true, None)
+    app_tool(tool, execute_with_app_boxed, true, None, ToolDisclosure::Core)
 }
 
 pub fn tool() -> Tool {

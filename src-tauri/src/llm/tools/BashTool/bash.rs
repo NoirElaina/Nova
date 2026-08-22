@@ -1,6 +1,6 @@
 use crate::llm::services::shell_sessions::ShellExecutionResult;
 use crate::llm::tools::{
-    app_tool, AppExecuteFuture, ToolFailure, ToolOutcome, ToolPermissionDescriptor,
+    app_tool, AppExecuteFuture, ToolDisclosure, ToolFailure, ToolOutcome, ToolPermissionDescriptor,
     ToolRegistration,
 };
 use crate::llm::types::Tool;
@@ -8,7 +8,7 @@ use serde_json::{json, Value};
 use tauri::AppHandle;
 
 pub(super) fn registration() -> ToolRegistration {
-    app_tool(tool, execute_with_app_boxed, false, Some(permission))
+    app_tool(tool, execute_with_app_boxed, false, Some(permission), ToolDisclosure::Core)
 }
 
 fn permission(input: &Value) -> Option<ToolPermissionDescriptor> {

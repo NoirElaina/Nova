@@ -1,4 +1,4 @@
-use crate::llm::tools::{app_tool, AppExecuteFuture, ToolFailure, ToolOutcome, ToolRegistration};
+use crate::llm::tools::{app_tool, AppExecuteFuture, ToolDisclosure, ToolFailure, ToolOutcome, ToolRegistration};
 use crate::llm::types::Tool;
 use serde_json::{json, Value};
 use tauri::AppHandle;
@@ -12,7 +12,7 @@ fn execute_with_app_boxed(
 }
 
 pub(super) fn registration() -> ToolRegistration {
-    app_tool(tool, execute_with_app_boxed, true, None)
+    app_tool(tool, execute_with_app_boxed, true, None, ToolDisclosure::Deferred)
 }
 
 pub fn tool() -> Tool {
@@ -95,7 +95,8 @@ async fn execute_with_app(app: &AppHandle, input: Value) -> Result<ToolOutcome, 
             "disabledCount": settings.disabled_skills.len()
         },
         "hooks": {
-            "envKeyCount": settings.hook_env.len()
+            // 声明式挂钩（hooks.toml）当前配置的处理器总数。
+            "handlerCount": crate::llm::services::hooks::config_handler_count(app)
         },
         "rag": {
             "embeddingModelConfigured": !settings.rag.embedding_model.trim().is_empty(),

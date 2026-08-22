@@ -102,6 +102,57 @@ fn append_plugin_prompt_sections(
     result
 }
 
+/// 渐进式披露：把 Deferred 工具目录（名字 + 一行描述）注入提示词，
+/// 告诉模型这些工具需先通过 LoadTool 加载，同时列出本会话已加载的名字。
+fn append_on_demand_tools_section(
+    prompt: String,
+    app: &AppHandle,
+    conversation_id: Option<&str>,
+) -> String {
+    let disclosure_enabled = crate::command::settings::load_settings(app)
+        .map(|settings| settings.progressive_tool_disclosure)
+        .unwrap_or(true);
+    if !disclosure_enabled {
+        return prompt;
+    }
+
+    let deferred = crate::llm::tools::deferred_tool_definitions();
+    if deferred.is_empty() {
+        return prompt;
+    }
+
+    let mut lines: Vec<String> = deferred
+        .iter()
+        .map(|tool| {
+            let summary: String = tool.description.chars().take(120).collect();
+            format!("- **{}**: {}", tool.name, summary.trim())
+        })
+        .collect();
+    lines.sort();
+
+    let mut section = format!(
+        "\n\n## On-Demand Tools\nThe following tools are available but NOT loaded by default. \
+Before using one, call `LoadTool` with its name (it becomes callable from the next step):\n{}\n",
+        lines.join("\n")
+    );
+
+    let disclosed = crate::llm::services::tool_disclosure::disclosed_tools(app, conversation_id);
+    if !disclosed.is_empty() {
+        let mut loaded: Vec<&String> = disclosed.iter().collect();
+        loaded.sort();
+        section.push_str(&format!(
+            "Already loaded in this conversation (call directly): {}\n",
+            loaded
+                .iter()
+                .map(|name| name.as_str())
+                .collect::<Vec<_>>()
+                .join(", ")
+        ));
+    }
+
+    format!("{}{}", prompt, section)
+}
+
 pub fn load_system_prompt(
     app: &AppHandle,
     agent_mode: AgentMode,
@@ -168,6 +219,9 @@ pub fn load_system_prompt(
 
     // 插件提示词片段（after-tools 锚点）：主提示词之后、Memory 段之前。
     let prompt = append_plugin_prompt_sections(prompt, app, "after-tools");
+
+    // 渐进式披露目录：告知模型哪些工具需先通过 LoadTool 加载。
+    let prompt = append_on_demand_tools_section(prompt, app, conversation_id);
 
     // Memory 使用说明只有 memory 工具对当前智能体可见时才注入
     //（bundle 自定义工具清单排除了 memory 时，写它就是误导）。

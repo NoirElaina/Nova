@@ -365,13 +365,13 @@ fn is_session_start_turn(messages: &[Message]) -> bool {
     messages.iter().all(|m| m.role != Role::Assistant)
 }
 
-fn apply_post_compact_hook(
+async fn apply_post_compact_hook(
     app: &AppHandle,
     conversation_id: Option<&str>,
     messages: &mut Vec<Message>,
 ) -> Result<(), String> {
     let post_compact_hook =
-        crate::llm::services::hooks::run_post_compact_hooks(app, conversation_id);
+        crate::llm::services::hooks::run_post_compact_hooks(app, conversation_id).await;
     if let Some(error) = post_compact_hook.override_error {
         return Err(error);
     }
@@ -403,7 +403,7 @@ fn strip_injected_context(messages: &mut Vec<Message>) {
         "[PostToolUse]",
         "[PostToolUseFailure]",
         // stop hooks
-        "[StopHookContext]",
+        "[Stop]",
     ];
     messages.retain(|m| {
         let text = text_from_content(&m.content);
@@ -486,7 +486,7 @@ pub async fn send_chat_message(
 
     // 执行用户提交钩子，可能追加额外上下文（如用户配置的提示前缀）
     let prompt_submit_hook =
-        crate::llm::services::hooks::run_user_prompt_submit_hooks(&app, conversation_id.as_deref());
+        crate::llm::services::hooks::run_user_prompt_submit_hooks(&app, conversation_id.as_deref()).await;
     // 钩子返回错误时直接中断，不继续执行
     if let Some(error) = prompt_submit_hook.override_error {
         return Err(error);
@@ -499,7 +499,7 @@ pub async fn send_chat_message(
     // 如果是会话第一轮，执行会话开始钩子，注入初始化上下文（如用户偏好、项目规则等）
     if session_start_turn {
         let session_start_hook =
-            crate::llm::services::hooks::run_session_start_hooks(&app, conversation_id.as_deref());
+            crate::llm::services::hooks::run_session_start_hooks(&app, conversation_id.as_deref()).await;
         if let Some(error) = session_start_hook.override_error {
             return Err(error);
         }
@@ -553,11 +553,10 @@ pub async fn send_chat_message(
     )
     .await;
 
-    // 压缩前 hook：当前实现只读取 settings.hook_env["NOVA_PRE_COMPACT_HOOK_CONTEXT"]。
-    // 如果配置存在，会追加一条 "[PreCompact] ..." 用户消息。
-    // 放在 compact 前，是为了让这条临时上下文也参与 token 估算和压缩决策。
+    // 压缩前挂钩：由 hooks.toml 声明（上下文注入/命令挂钩），
+    // 注入的消息放在 compact 前，让它也参与 token 估算和压缩决策。
     let pre_compact_hook =
-        crate::llm::services::hooks::run_pre_compact_hooks(&app, conversation_id.as_deref());
+        crate::llm::services::hooks::run_pre_compact_hooks(&app, conversation_id.as_deref()).await;
     if let Some(error) = pre_compact_hook.override_error {
         return Err(error);
     }
@@ -577,13 +576,12 @@ pub async fn send_chat_message(
     )
     .await?;
 
-    // 只有真的发生 compact 时才跑 post compact hook。
-    // 当前 post hook 同样是配置文本注入：settings.hook_env["NOVA_POST_COMPACT_HOOK_CONTEXT"]。
+    // 只有真的发生 compact 时才跑 post compact 挂钩（hooks.toml 声明）。
     // compact 通知只用于前端展示本轮节省了多少上下文，不改变历史来源。
     let did_compact = compact_outcome.did_compact();
     let mut current_messages = compact_outcome.messages;
     if did_compact {
-        apply_post_compact_hook(&app, conversation_id.as_deref(), &mut current_messages)?;
+        apply_post_compact_hook(&app, conversation_id.as_deref(), &mut current_messages).await?;
         let after_tokens = clamp_i64_to_u32(token_counter::count_messages(&current_messages));
         emit_context_compact_event(
             &app,
@@ -634,7 +632,7 @@ pub async fn send_chat_message(
         )
         .await;
         if mid_compact.applied {
-            apply_post_compact_hook(&app, conversation_id.as_deref(), &mut current_messages)?;
+            apply_post_compact_hook(&app, conversation_id.as_deref(), &mut current_messages).await?;
             emit_context_compact_event(
                 &app,
                 conversation_id.as_deref(),
@@ -713,7 +711,8 @@ pub async fn send_chat_message(
                             &app,
                             conversation_id.as_deref(),
                             &mut current_messages,
-                        )?;
+                        )
+                        .await?;
                         emit_context_compact_event(
                             &app,
                             conversation_id.as_deref(),
@@ -743,7 +742,8 @@ pub async fn send_chat_message(
                     &app,
                     &e,
                     conversation_id.as_deref(),
-                );
+                )
+                .await;
                 let error_text = error_hook.override_error.unwrap_or_else(|| e.clone());
                 // 出错直接通知前端并终止回合，走统一的 TurnOutcome::error 路径。
                 // 错误详情通过 emit_backend_error 上报，stop 事件不再重复透传原始文本。
@@ -954,7 +954,8 @@ pub async fn send_chat_message(
                 &app,
                 &current_messages,
                 conversation_id.as_deref(),
-            );
+            )
+            .await;
             if let Some(error) = stop_hook_result.override_error {
                 finalize_turn_on_error(&app, conversation_id.as_deref(), &error);
                 return Err(error);
@@ -1022,7 +1023,8 @@ pub async fn send_chat_message(
         &app,
         &final_outcome.stop_reason,
         conversation_id.as_deref(),
-    );
+    )
+    .await;
     if let Some(error) = session_end_hook.override_error {
         finalize_turn_on_error(&app, conversation_id.as_deref(), &error);
         return Err(error);

@@ -131,6 +131,14 @@ impl LlmClient {
 
         let cancel_token = cancellation::get_token(conversation_id);
 
+        // Auto 迭代模式当轮工具权限全放行：映射为 Never 审批策略，
+        // 作为参数随执行链下传，不写任何全局状态。
+        let policy_override = if matches!(agent_mode, AgentMode::Auto) {
+            Some(crate::llm::utils::permissions::ApprovalPolicy::Never)
+        } else {
+            None
+        };
+
         let resp = tokio::select! {
             res = self.http_client.execute(request) => res,
             _ = cancel_token.cancelled() => {
@@ -171,6 +179,7 @@ impl LlmClient {
                     res,
                     conversation_id,
                     &self.model,
+                    policy_override,
                     cancel_token,
                 )
                 .await

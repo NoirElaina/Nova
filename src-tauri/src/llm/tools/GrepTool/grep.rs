@@ -1,5 +1,5 @@
 use crate::llm::tools::{
-    app_tool, AppExecuteFuture, ToolFailure, ToolOutcome, ToolPermissionDescriptor,
+    app_tool, AppExecuteFuture, ToolDisclosure, ToolFailure, ToolOutcome, ToolPermissionDescriptor,
     ToolRegistration,
 };
 use crate::llm::types::Tool;
@@ -15,7 +15,7 @@ const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 
 pub(super) fn registration() -> ToolRegistration {
     // read_only=true，permission=Some（搜索敏感目录需审批，与 ReadTool 保持一致）
-    app_tool(tool, execute_with_app_boxed, true, Some(grep_permission))
+    app_tool(tool, execute_with_app_boxed, true, Some(grep_permission), ToolDisclosure::Core)
 }
 
 /// GrepTool 权限检查：搜索路径命中受保护路径时需审批。
@@ -30,7 +30,7 @@ fn grep_permission(input: &Value) -> Option<ToolPermissionDescriptor> {
             signature: format!("grep:sensitive:{}", path),
             preview: format!("搜索敏感路径 {}", path),
             warning: Some("该路径可能包含凭据或密钥".to_string()),
-            needs_approval: true,
+            risk: crate::llm::utils::permissions::RiskLevel::Risky,
         });
     }
     None

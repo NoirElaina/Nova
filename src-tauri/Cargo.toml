@@ -24,6 +24,8 @@ tauri-plugin-opener = "2"
 webview2-com = "0.38.2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+# toml 用于解析声明式挂钩配置 hooks.toml。
+toml = "0.8"
 jsonschema = { version = "0.46.5", default-features = false }
 ignore = "0.4"
 glob = "0.3"

@@ -1,5 +1,5 @@
 use crate::llm::tools::shared::cron_store::list_jobs;
-use crate::llm::tools::{app_tool, AppExecuteFuture, ToolFailure, ToolOutcome, ToolRegistration};
+use crate::llm::tools::{app_tool, AppExecuteFuture, ToolDisclosure, ToolFailure, ToolOutcome, ToolRegistration};
 use crate::llm::types::Tool;
 use serde_json::{json, Value};
 use tauri::AppHandle;
@@ -16,7 +16,7 @@ fn execute_with_app_boxed(
 // 返回 CronList 的注册信息。
 // `read_only=true`，因为它只读取任务列表，不改动任何状态。
 pub(super) fn registration() -> ToolRegistration {
-    app_tool(tool, execute_with_app_boxed, true, None)
+    app_tool(tool, execute_with_app_boxed, true, None, ToolDisclosure::Deferred)
 }
 
 // 返回 CronList 暴露给模型的元数据。

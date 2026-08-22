@@ -162,12 +162,17 @@ pub async fn clear_history(app: AppHandle, conversation_id: Option<String>) -> R
 #[tauri::command]
 pub async fn delete_conversation(app: AppHandle, conversation_id: String) -> Result<(), String> {
     // 删除指定会话及其附属数据。
-    report_backend_result(
+    let result = report_backend_result(
         &app,
         "command.history.delete_conversation",
         history::delete_conversation(&app, &conversation_id).await,
         None,
-    )
+    );
+    if result.is_ok() {
+        // 联动清理该会话的渐进式工具披露状态（内存缓存 + 磁盘记录）。
+        crate::llm::services::tool_disclosure::forget_conversation(&app, Some(&conversation_id));
+    }
+    result
 }
 
 #[tauri::command]

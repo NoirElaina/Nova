@@ -1,4 +1,4 @@
-use crate::llm::tools::{app_tool, AppExecuteFuture, ToolOutcome, ToolRegistration};
+use crate::llm::tools::{app_tool, AppExecuteFuture, ToolDisclosure, ToolOutcome, ToolRegistration};
 use crate::llm::services::plan_files;
 use crate::llm::types::Tool;
 use serde_json::{json, Value};
@@ -6,7 +6,7 @@ use tauri::{AppHandle, Emitter, Manager};
 
 // 注册 exit_plan_mode，声明它是无权限要求的同步状态切换工具。
 pub(super) fn registration() -> ToolRegistration {
-    app_tool(tool, execute_with_app_boxed, false, None)
+    app_tool(tool, execute_with_app_boxed, false, None, ToolDisclosure::Core)
 }
 
 // 返回暴露给模型的工具元数据，告诉模型这个工具用于退出 plan 模式。

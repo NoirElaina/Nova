@@ -1,4 +1,4 @@
-use crate::llm::tools::{app_tool, AppExecuteFuture, ToolFailure, ToolOutcome, ToolRegistration};
+use crate::llm::tools::{app_tool, AppExecuteFuture, ToolDisclosure, ToolFailure, ToolOutcome, ToolRegistration};
 use crate::llm::types::Tool;
 use serde_json::{json, Value};
 use tauri::AppHandle;
@@ -14,7 +14,7 @@ fn execute_with_app_boxed(
 
 // 返回 remember_global_memory 工具注册信息（写类工具）。
 pub(super) fn registration() -> ToolRegistration {
-    app_tool(tool, execute_with_app_boxed, false, None)
+    app_tool(tool, execute_with_app_boxed, false, None, ToolDisclosure::Core)
 }
 
 // 模型可见的 memory 工具元数据。

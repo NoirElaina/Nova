@@ -1,4 +1,4 @@
-use crate::llm::tools::{app_tool, AppExecuteFuture, ToolFailure, ToolOutcome, ToolRegistration};
+use crate::llm::tools::{app_tool, AppExecuteFuture, ToolDisclosure, ToolFailure, ToolOutcome, ToolRegistration};
 use crate::llm::types::Tool;
 use serde_json::{json, Value};
 use tauri::AppHandle;
@@ -16,7 +16,7 @@ fn execute_with_app_boxed(
 // 返回 mcp_auth 的注册信息。
 // 这是写类工具，因为 enable/disable/reload/probe 都可能改变运行状态或触发远端调用。
 pub(super) fn registration() -> ToolRegistration {
-    app_tool(tool, execute_with_app_boxed, false, None)
+    app_tool(tool, execute_with_app_boxed, false, None, ToolDisclosure::Deferred)
 }
 
 // 返回模型可见的 mcp_auth 元数据。

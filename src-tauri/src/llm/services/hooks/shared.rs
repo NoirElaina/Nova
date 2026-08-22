@@ -1,12 +1,6 @@
 use crate::llm::types::{Content, ContentBlock, Message, Role};
 
-pub(crate) fn context_message(prefix: &str, text: &str) -> Message {
-    Message {
-        role: Role::User,
-        content: Content::Text(format!("{} {}", prefix, text.trim())),
-    }
-}
-
+// 取最近一条 assistant 消息的纯文本（Stop 事件的 stopWhen 匹配与 payload 用）。
 pub(crate) fn latest_assistant_text(messages: &[Message]) -> String {
     messages
         .iter()
@@ -35,6 +29,7 @@ pub(crate) fn latest_assistant_text(messages: &[Message]) -> String {
         .unwrap_or_default()
 }
 
+// 历史中是否已存在完全相同的 user 文本消息（Stop 上下文注入去重用）。
 pub(crate) fn has_exact_user_message(messages: &[Message], expected: &str) -> bool {
     messages.iter().any(|m| {
         if m.role != Role::User {

@@ -46,23 +46,13 @@ pub async fn send_chat_message(
         "chat turn started"
     );
 
-    // Auto 模式本轮工具权限全放行；turn 结束务必清掉，避免残留影响后续 agent/plan。
-    let auto_bypass = matches!(resolved_mode, AgentMode::Auto);
-    crate::llm::utils::permissions::set_conversation_auto_bypass(
-        conversation_scope.as_deref(),
-        auto_bypass,
-    );
-
-    // 通过兼容层入口发送请求。
+    // Auto 模式的工具全放行不再在此写全局状态：由 providers 层映射为
+    // Never 审批策略随当轮执行链下传，轮次结束自动失效。
     let result =
         crate::llm::query_engine::send_chat_message(app, conversation_id, messages, resolved_mode)
             .await;
 
-    // 无论请求成功失败都结束本轮，清理取消状态与 auto 放行标记。
-    crate::llm::utils::permissions::set_conversation_auto_bypass(
-        conversation_scope.as_deref(),
-        false,
-    );
+    // 无论请求成功失败都结束本轮，清理取消状态。
     crate::llm::cancellation::finish_turn(conversation_scope.as_deref());
     if result.is_err() {
         crate::llm::services::live_turns::mark_terminal(conversation_scope.as_deref(), "error");
@@ -128,6 +118,7 @@ pub async fn submit_permission_decision(
             .ok_or_else(|| format!("Unknown permission action '{}'", action))?;
 
         crate::llm::utils::permissions::submit_permission_decision(
+            &app,
             conversation_id.as_deref(),
             &request_id,
             parsed_action,

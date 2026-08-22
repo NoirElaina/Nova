@@ -26,6 +26,7 @@ fn permission_wait_timeout_ms() -> u64 {
 pub async fn await_permission_and_recheck(
     app: &AppHandle,
     conversation_id: Option<&str>,
+    policy_override: Option<crate::llm::utils::permissions::ApprovalPolicy>,
     tool_name: &str,
     permission_input: &Value,
     request_id: String,
@@ -72,6 +73,7 @@ pub async fn await_permission_and_recheck(
     match crate::llm::utils::permissions::enforce_tool_permission(
         app,
         conversation_id,
+        policy_override,
         tool_name,
         permission_input,
     ) {
@@ -93,9 +95,11 @@ pub(crate) async fn call_mcp_tool_with_nested_permission(
 ) -> ToolExecResult {
     let resolved_tool_name = build_mcp_tool_name(&server_name, &tool_name);
 
+    // 嵌套调用无当轮策略上下文（工具内部发起），回落全局设置。
     match crate::llm::utils::permissions::enforce_tool_permission(
         app,
         conversation_id,
+        None,
         &resolved_tool_name,
         &arguments,
     ) {
@@ -110,6 +114,7 @@ pub(crate) async fn call_mcp_tool_with_nested_permission(
             if let Err(e) = await_permission_and_recheck(
                 app,
                 conversation_id,
+                None,
                 &resolved_tool_name,
                 &arguments,
                 request_id,

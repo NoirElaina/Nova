@@ -1,10 +1,10 @@
-use crate::llm::tools::{app_tool, AppExecuteFuture, ToolRegistration};
+use crate::llm::tools::{app_tool, AppExecuteFuture, ToolDisclosure, ToolRegistration};
 use crate::llm::types::Tool;
 use serde_json::{json, Value};
 use tauri::AppHandle;
 
 pub(super) fn registration() -> ToolRegistration {
-    app_tool(tool, execute_with_app_boxed, true, None)
+    app_tool(tool, execute_with_app_boxed, true, None, ToolDisclosure::Deferred)
 }
 
 pub fn tool() -> Tool {

@@ -191,7 +191,11 @@ pub fn run() {
             command::plugins::check_plugin_update,
             command::plugins::update_plugin,
             command::plugins::list_plugin_commands,
-            command::plugins::expand_plugin_command
+            command::plugins::expand_plugin_command,
+            command::hooks::get_hooks_toml,
+            command::hooks::save_hooks_toml,
+            command::permission_rules::list_permission_rules,
+            command::permission_rules::delete_permission_rule
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application");

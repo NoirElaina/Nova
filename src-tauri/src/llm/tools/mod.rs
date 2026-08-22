@@ -131,21 +131,22 @@ impl From<&str> for ToolFailure {
 
 #[derive(Debug, Clone)]
 pub(crate) struct ToolPermissionDescriptor {
-    // signature: 当前敏感操作的稳定签名，用于会话内权限复用与去重。
+    // signature: 当前敏感操作的稳定签名，用于会话内权限复用、去重与持久化规则匹配。
     pub signature: String,
     // preview: 展示给用户看的简短操作摘要。
     pub preview: String,
     // warning: 风险提示文案；为空表示仅记录该操作，不额外提示风险。
     pub warning: Option<String>,
-    // needs_approval: 是否必须先经过用户审批。
-    pub needs_approval: bool,
+    // risk: 操作风险级别（事实描述），是否审批由审批策略裁决。
+    pub risk: crate::llm::utils::permissions::RiskLevel,
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
-pub(crate) enum ToolRegistrationRole {
-    General,
-    SubagentStart,
-    SubagentStop,
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ToolDisclosure {
+    /// 高频核心工具：始终在工具清单里。
+    Core,
+    /// 低频工具：不进默认清单，由模型通过 LoadTool 按需加载。
+    Deferred,
 }
 
 #[derive(Clone, Copy)]
@@ -158,8 +159,8 @@ pub(crate) struct ToolRegistration {
     permission: Option<PermissionFn>,
     // read_only: 只读工具可进入批量并发执行队列。
     read_only: bool,
-    // role: 工具在执行循环里的特殊语义；中心层只读注册元数据，不点名具体工具模块。
-    role: ToolRegistrationRole,
+    // disclosure: 渐进式披露分级（Core 始终可见 / Deferred 按需加载）。
+    disclosure: ToolDisclosure,
 }
 
 pub(crate) const fn app_tool(
@@ -167,29 +168,14 @@ pub(crate) const fn app_tool(
     execute_with_app: AppExecuteFn,
     read_only: bool,
     permission: Option<PermissionFn>,
-) -> ToolRegistration {
-    app_tool_with_role(
-        tool,
-        execute_with_app,
-        read_only,
-        permission,
-        ToolRegistrationRole::General,
-    )
-}
-
-pub(crate) const fn app_tool_with_role(
-    tool: fn() -> Tool,
-    execute_with_app: AppExecuteFn,
-    read_only: bool,
-    permission: Option<PermissionFn>,
-    role: ToolRegistrationRole,
+    disclosure: ToolDisclosure,
 ) -> ToolRegistration {
     ToolRegistration {
         tool,
         execute_with_app,
         permission,
         read_only,
-        role,
+        disclosure,
     }
 }
 fn registered_tools() -> &'static [ToolRegistration] {
@@ -269,18 +255,6 @@ fn validate_tool_input(name: &str, input: &Value) -> Result<(), String> {
     Ok(())
 }
 
-fn is_subagent_start_tool(name: &str) -> bool {
-    find_registered_tool(name)
-        .map(|entry| entry.role == ToolRegistrationRole::SubagentStart)
-        .unwrap_or(false)
-}
-
-fn is_subagent_stop_tool(name: &str) -> bool {
-    find_registered_tool(name)
-        .map(|entry| entry.role == ToolRegistrationRole::SubagentStop)
-        .unwrap_or(false)
-}
-
 pub(crate) fn is_read_only_tool(name: &str) -> bool {
     if let Some(entry) = find_registered_tool(name) {
         return entry.read_only;
@@ -344,7 +318,7 @@ fn emit_tool_failure(app: &AppHandle, name: &str, failure: &ToolFailure) {
     );
 }
 
-fn finalize_failure_result(
+async fn finalize_failure_result(
     app: &AppHandle,
     conversation_id: Option<&str>,
     id: String,
@@ -370,7 +344,8 @@ fn finalize_failure_result(
         &input,
         &failure.message,
         conversation_id,
-    );
+    )
+    .await;
     merge_controls(
         &mut additional_messages,
         &mut prevent_continuation,
@@ -400,6 +375,7 @@ fn finalize_failure_result(
 pub(crate) async fn execute_single_tool_call(
     app: &AppHandle,
     conversation_id: Option<&str>,
+    policy_override: Option<crate::llm::utils::permissions::ApprovalPolicy>,
     call: ToolCallRequest,
 ) -> ToolCallResult {
     let ToolCallRequest { id, name, input } = call;
@@ -407,20 +383,11 @@ pub(crate) async fn execute_single_tool_call(
     let mut prevent_continuation = false;
     let mut stop_reason: Option<String> = None;
 
-    if is_subagent_start_tool(&name) {
-        let subagent_start_hook =
-            crate::llm::services::hooks::run_subagent_start_hooks(app, &name, conversation_id);
-        additional_messages.extend(subagent_start_hook.additional_messages);
-        if subagent_start_hook.prevent_continuation {
-            prevent_continuation = true;
-            if stop_reason.is_none() {
-                stop_reason = subagent_start_hook.stop_reason;
-            }
-        }
-    }
-
+    // 子智能体生命周期挂钩（SubagentStart/SubagentStop）由 TaskTool 在
+    // 子代理真正启动/返回时自行触发，不在通用执行链里按工具角色猜测。
     let pre_hook =
-        crate::llm::services::hooks::run_pre_tool_use_hooks(app, &name, &input, conversation_id);
+        crate::llm::services::hooks::run_pre_tool_use_hooks(app, &name, &input, conversation_id)
+            .await;
     additional_messages.extend(pre_hook.additional_messages);
     if pre_hook.prevent_continuation {
         prevent_continuation = true;
@@ -438,7 +405,8 @@ pub(crate) async fn execute_single_tool_call(
             additional_messages,
             prevent_continuation,
             stop_reason,
-        );
+        )
+        .await;
     }
 
     if let Err(e) = validate_tool_input(&name, &input) {
@@ -452,10 +420,19 @@ pub(crate) async fn execute_single_tool_call(
             additional_messages,
             prevent_continuation,
             stop_reason,
-        );
+        )
+        .await;
     }
 
-    let outcome = match execute_tool_with_app(app, conversation_id, &name, input.clone()).await {
+    let outcome = match execute_tool_with_app(
+        app,
+        conversation_id,
+        policy_override,
+        &name,
+        input.clone(),
+    )
+    .await
+    {
         Ok(outcome) => outcome,
         Err(failure) => {
             return finalize_failure_result(
@@ -468,7 +445,8 @@ pub(crate) async fn execute_single_tool_call(
                 additional_messages,
                 prevent_continuation,
                 stop_reason,
-            );
+            )
+            .await;
         }
     };
 
@@ -488,7 +466,8 @@ pub(crate) async fn execute_single_tool_call(
         &input,
         &tool_output,
         conversation_id,
-    );
+    )
+    .await;
     merge_controls(
         &mut additional_messages,
         &mut prevent_continuation,
@@ -508,20 +487,8 @@ pub(crate) async fn execute_single_tool_call(
             additional_messages,
             prevent_continuation,
             stop_reason,
-        );
-    }
-
-    if is_subagent_stop_tool(&name) {
-        let subagent_stop_hook =
-            crate::llm::services::hooks::run_subagent_stop_hooks(app, &name, conversation_id);
-        merge_controls(
-            &mut additional_messages,
-            &mut prevent_continuation,
-            &mut stop_reason,
-            subagent_stop_hook.additional_messages,
-            subagent_stop_hook.prevent_continuation,
-            subagent_stop_hook.stop_reason,
-        );
+        )
+        .await;
     }
 
     ToolCallResult {
@@ -539,6 +506,7 @@ pub(crate) async fn execute_single_tool_call(
 async fn execute_read_only_batch(
     app: &AppHandle,
     conversation_id: Option<&str>,
+    policy_override: Option<crate::llm::utils::permissions::ApprovalPolicy>,
     calls: Vec<ToolCallRequest>,
 ) -> Vec<ToolCallResult> {
     let total = calls.len();
@@ -572,9 +540,13 @@ async fn execute_read_only_batch(
             let conversation_for_task = conversation_owned.clone();
             in_flight.insert(index, call.clone());
             tasks.spawn(async move {
-                let result =
-                    execute_single_tool_call(&app_clone, conversation_for_task.as_deref(), call)
-                        .await;
+                let result = execute_single_tool_call(
+                    &app_clone,
+                    conversation_for_task.as_deref(),
+                    policy_override,
+                    call,
+                )
+                .await;
                 (index, result)
             });
         }
@@ -625,6 +597,7 @@ async fn execute_read_only_batch(
 async fn flush_read_only_batch(
     app: &AppHandle,
     conversation_id: Option<&str>,
+    policy_override: Option<crate::llm::utils::permissions::ApprovalPolicy>,
     batch: &mut Vec<ToolCallRequest>,
     out: &mut Vec<ToolCallResult>,
 ) {
@@ -633,13 +606,15 @@ async fn flush_read_only_batch(
     }
 
     let drained = std::mem::take(batch);
-    let mut batch_results = execute_read_only_batch(app, conversation_id, drained).await;
+    let mut batch_results =
+        execute_read_only_batch(app, conversation_id, policy_override, drained).await;
     out.append(&mut batch_results);
 }
 
 pub async fn execute_tool_calls_with_app(
     app: &AppHandle,
     conversation_id: Option<&str>,
+    policy_override: Option<crate::llm::utils::permissions::ApprovalPolicy>,
     calls: Vec<ToolCallRequest>,
 ) -> Vec<ToolCallResult> {
     let mut results: Vec<ToolCallResult> = Vec::with_capacity(calls.len());
@@ -656,11 +631,25 @@ pub async fn execute_tool_calls_with_app(
             continue;
         }
 
-        flush_read_only_batch(app, conversation_id, &mut read_only_batch, &mut results).await;
-        results.push(execute_single_tool_call(app, conversation_id, call).await);
+        flush_read_only_batch(
+            app,
+            conversation_id,
+            policy_override,
+            &mut read_only_batch,
+            &mut results,
+        )
+        .await;
+        results.push(execute_single_tool_call(app, conversation_id, policy_override, call).await);
     }
 
-    flush_read_only_batch(app, conversation_id, &mut read_only_batch, &mut results).await;
+    flush_read_only_batch(
+        app,
+        conversation_id,
+        policy_override,
+        &mut read_only_batch,
+        &mut results,
+    )
+    .await;
     results
 }
 
@@ -680,6 +669,23 @@ pub fn get_available_tools() -> Vec<Tool> {
         .collect()
 }
 
+/// 所有声明为 Deferred 的内置工具定义（LoadTool 目录与按需加载用）。
+pub(crate) fn deferred_tool_definitions() -> Vec<Tool> {
+    registered_tools()
+        .iter()
+        .filter(|entry| entry.disclosure == ToolDisclosure::Deferred)
+        .map(|entry| (entry.tool)())
+        .collect()
+}
+
+/// 按名字查披露分级（未注册工具返回 None）。
+fn disclosure_for_tool(name: &str) -> Option<ToolDisclosure> {
+    find_registered_tool(name).map(|entry| entry.disclosure)
+}
+
+/// 渐进披露入口工具名（系统提示词与目录过滤共用）。
+pub(crate) const LOAD_TOOL_NAME: &str = "LoadTool";
+
 /// 内置工具名清单（插件工具名冲突校验用）。
 pub fn builtin_tool_names() -> Vec<String> {
     registered_tools()
@@ -693,6 +699,8 @@ pub fn builtin_tool_names() -> Vec<String> {
 /// provider adapter 一律走这里。启用插件的工具在此合并进同一工具池。
 /// 子代理会话（`:sub:` 派生 ID）：只暴露只读白名单，不含插件/MCP/Task，
 /// 防止子代理获得任何修改能力或递归派生。
+/// 渐进式披露开启时：内置工具仅保留 Core + 本会话已加载的 Deferred；
+/// MCP/插件工具不参与披露，全量保留。
 pub fn get_available_tools_for_agent(app: &AppHandle, conversation_id: Option<&str>) -> Vec<Tool> {
     // 分支问答会话（`:branch:` 派生 ID）：不暴露任何工具，纯文本问答，
     // 防止分支获得工作区修改能力。
@@ -710,15 +718,43 @@ pub fn get_available_tools_for_agent(app: &AppHandle, conversation_id: Option<&s
             .collect();
     }
 
-    let mut all = get_available_tools();
-    all.extend(crate::llm::services::plugins::plugin_tools(app));
-    match crate::llm::services::agent_bundles::active_bundle(app, conversation_id) {
-        None => all,
-        Some(bundle) => all
+    let builtin = get_available_tools();
+    let plugin_tools = crate::llm::services::plugins::plugin_tools(app);
+
+    // 智能体套件过滤：内置 + 插件工具同一口径。
+    let bundle_filtered: Vec<Tool> = match crate::llm::services::agent_bundles::active_bundle(app, conversation_id) {
+        None => builtin.into_iter().chain(plugin_tools).collect(),
+        Some(bundle) => builtin
             .into_iter()
+            .chain(plugin_tools)
             .filter(|tool| bundle.is_tool_enabled(&tool.name))
             .collect(),
+    };
+
+    // 披露开关关闭：全量暴露（与重构前行为一致），并隐藏孤立的 LoadTool。
+    let disclosure_enabled = crate::command::settings::load_settings(app)
+        .map(|settings| settings.progressive_tool_disclosure)
+        .unwrap_or(true);
+    if !disclosure_enabled {
+        return bundle_filtered
+            .into_iter()
+            .filter(|tool| tool.name != LOAD_TOOL_NAME)
+            .collect();
     }
+
+    let disclosed = crate::llm::services::tool_disclosure::disclosed_tools(app, conversation_id);
+    bundle_filtered
+        .into_iter()
+        .filter(|tool| {
+            match disclosure_for_tool(&tool.name) {
+                // 内置工具：Core 始终可见，Deferred 需本会话已加载。
+                Some(ToolDisclosure::Core) => true,
+                Some(ToolDisclosure::Deferred) => disclosed.contains(&tool.name),
+                // 非内置（MCP 动态/插件）：不参与披露。
+                None => true,
+            }
+        })
+        .collect()
 }
 
 /// 前端智能体配置页展示的工具目录（含 always_on 标记）。
@@ -733,7 +769,9 @@ pub fn configurable_tool_catalog(
         .iter()
         .filter(|entry| {
             let name = (entry.tool)().name;
+            // 记忆专属工具不进目录；LoadTool 是披露基础设施，不可被套件勾选。
             !crate::llm::services::agent_bundles::DEFAULT_ONLY_TOOLS.contains(&name.as_str())
+                && name != LOAD_TOOL_NAME
         })
         .map(|entry| {
             let tool = (entry.tool)();
@@ -759,9 +797,11 @@ pub fn configurable_tool_catalog(
 }
 
 // 在带 AppHandle 的环境中执行工具，附带权限校验和 MCP 代理能力。
+// policy_override：当轮审批策略覆盖（Auto 模式 → Never），None 时用全局设置。
 pub(crate) async fn execute_tool_with_app(
     app: &AppHandle,
     conversation_id: Option<&str>,
+    policy_override: Option<crate::llm::utils::permissions::ApprovalPolicy>,
     name: &str,
     input: Value,
 ) -> ToolExecResult {
@@ -779,6 +819,7 @@ pub(crate) async fn execute_tool_with_app(
     match crate::llm::utils::permissions::enforce_tool_permission(
         app,
         conversation_id,
+        policy_override,
         name,
         &input,
     ) {
@@ -793,6 +834,7 @@ pub(crate) async fn execute_tool_with_app(
             if let Err(e) = shared::permission_runtime::await_permission_and_recheck(
                 app,
                 conversation_id,
+                policy_override,
                 name,
                 &input,
                 request_id,

@@ -1,4 +1,4 @@
-use crate::llm::tools::{app_tool, AppExecuteFuture, ToolFailure, ToolOutcome, ToolRegistration};
+use crate::llm::tools::{app_tool, AppExecuteFuture, ToolDisclosure, ToolFailure, ToolOutcome, ToolRegistration};
 use crate::llm::types::Tool;
 use chrono::Local;
 use serde_json::{json, Value};
@@ -17,7 +17,7 @@ fn execute_with_app_boxed(
 // 返回 CronCreate 的注册信息。
 // 这里声明 `read_only=false`，因为它会创建新的计划任务记录。
 pub(super) fn registration() -> ToolRegistration {
-    app_tool(tool, execute_with_app_boxed, false, None)
+    app_tool(tool, execute_with_app_boxed, false, None, ToolDisclosure::Deferred)
 }
 
 // 返回暴露给模型的 CronCreate 元数据。

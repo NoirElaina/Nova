@@ -1,5 +1,5 @@
 use crate::llm::tools::shared::todo_state::{global_registry, TodoEntry};
-use crate::llm::tools::{app_tool, AppExecuteFuture, ToolFailure, ToolOutcome, ToolRegistration};
+use crate::llm::tools::{app_tool, AppExecuteFuture, ToolDisclosure, ToolFailure, ToolOutcome, ToolRegistration};
 use crate::llm::types::Tool;
 use serde_json::{json, Value};
 use tauri::{AppHandle, Emitter, Manager};
@@ -7,7 +7,7 @@ use tauri::{AppHandle, Emitter, Manager};
 pub(super) fn registration() -> ToolRegistration {
     // TodoWrite 是内部状态工具，无副作用，不需要权限审批，但也不是只读
     // （它修改状态），所以 read_only=false 避免被批量并发执行。
-    app_tool(tool, execute_with_app_boxed, false, None)
+    app_tool(tool, execute_with_app_boxed, false, None, ToolDisclosure::Core)
 }
 
 pub fn tool() -> Tool {

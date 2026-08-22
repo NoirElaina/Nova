@@ -12,7 +12,7 @@ use tauri::AppHandle;
 use tokio::sync::Mutex;
 
 use crate::llm::tools::{
-    app_tool, AppExecuteFuture, ToolFailure, ToolOutcome, ToolPermissionDescriptor,
+    app_tool, AppExecuteFuture, ToolDisclosure, ToolFailure, ToolOutcome, ToolPermissionDescriptor,
     ToolRegistration,
 };
 use crate::llm::types::{Content, ContentBlock, ImageSource, Message, Role, Tool};
@@ -47,13 +47,13 @@ fn permission(input: &Value) -> Option<ToolPermissionDescriptor> {
             "该操作会读取屏幕内容并注入鼠标或键盘输入，请仅在确认目标桌面环境安全时授权"
                 .to_string(),
         ),
-        needs_approval: true,
+        risk: crate::llm::utils::permissions::RiskLevel::Risky,
     })
 }
 
 // 注册 computer_use，同时挂上权限描述和截图后处理逻辑。
 pub(super) fn registration() -> ToolRegistration {
-    app_tool(tool, execute_with_app_boxed, false, Some(permission))
+    app_tool(tool, execute_with_app_boxed, false, Some(permission), ToolDisclosure::Deferred)
 }
 
 // 返回一个进程级互斥锁，保证同一时刻只有一个桌面控制操作在执行。

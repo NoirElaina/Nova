@@ -1,5 +1,5 @@
 use crate::llm::tools::shared::cron_store::remove_job;
-use crate::llm::tools::{app_tool, AppExecuteFuture, ToolFailure, ToolOutcome, ToolRegistration};
+use crate::llm::tools::{app_tool, AppExecuteFuture, ToolDisclosure, ToolFailure, ToolOutcome, ToolRegistration};
 use crate::llm::types::Tool;
 use serde_json::{json, Value};
 use tauri::AppHandle;
@@ -16,7 +16,7 @@ fn execute_with_app_boxed(
 // 返回 CronDelete 的注册信息。
 // `read_only=false`，因为它会删除已有的计划任务。
 pub(super) fn registration() -> ToolRegistration {
-    app_tool(tool, execute_with_app_boxed, false, None)
+    app_tool(tool, execute_with_app_boxed, false, None, ToolDisclosure::Deferred)
 }
 
 // 返回 CronDelete 暴露给模型的元数据。

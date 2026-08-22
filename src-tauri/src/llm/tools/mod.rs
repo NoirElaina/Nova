@@ -375,7 +375,6 @@ async fn finalize_failure_result(
 pub(crate) async fn execute_single_tool_call(
     app: &AppHandle,
     conversation_id: Option<&str>,
-    policy_override: Option<crate::llm::utils::permissions::ApprovalPolicy>,
     call: ToolCallRequest,
 ) -> ToolCallResult {
     let ToolCallRequest { id, name, input } = call;
@@ -424,15 +423,7 @@ pub(crate) async fn execute_single_tool_call(
         .await;
     }
 
-    let outcome = match execute_tool_with_app(
-        app,
-        conversation_id,
-        policy_override,
-        &name,
-        input.clone(),
-    )
-    .await
-    {
+    let outcome = match execute_tool_with_app(app, conversation_id, &name, input.clone()).await {
         Ok(outcome) => outcome,
         Err(failure) => {
             return finalize_failure_result(
@@ -506,7 +497,6 @@ pub(crate) async fn execute_single_tool_call(
 async fn execute_read_only_batch(
     app: &AppHandle,
     conversation_id: Option<&str>,
-    policy_override: Option<crate::llm::utils::permissions::ApprovalPolicy>,
     calls: Vec<ToolCallRequest>,
 ) -> Vec<ToolCallResult> {
     let total = calls.len();
@@ -540,13 +530,9 @@ async fn execute_read_only_batch(
             let conversation_for_task = conversation_owned.clone();
             in_flight.insert(index, call.clone());
             tasks.spawn(async move {
-                let result = execute_single_tool_call(
-                    &app_clone,
-                    conversation_for_task.as_deref(),
-                    policy_override,
-                    call,
-                )
-                .await;
+                let result =
+                    execute_single_tool_call(&app_clone, conversation_for_task.as_deref(), call)
+                        .await;
                 (index, result)
             });
         }
@@ -597,7 +583,6 @@ async fn execute_read_only_batch(
 async fn flush_read_only_batch(
     app: &AppHandle,
     conversation_id: Option<&str>,
-    policy_override: Option<crate::llm::utils::permissions::ApprovalPolicy>,
     batch: &mut Vec<ToolCallRequest>,
     out: &mut Vec<ToolCallResult>,
 ) {
@@ -606,15 +591,13 @@ async fn flush_read_only_batch(
     }
 
     let drained = std::mem::take(batch);
-    let mut batch_results =
-        execute_read_only_batch(app, conversation_id, policy_override, drained).await;
+    let mut batch_results = execute_read_only_batch(app, conversation_id, drained).await;
     out.append(&mut batch_results);
 }
 
 pub async fn execute_tool_calls_with_app(
     app: &AppHandle,
     conversation_id: Option<&str>,
-    policy_override: Option<crate::llm::utils::permissions::ApprovalPolicy>,
     calls: Vec<ToolCallRequest>,
 ) -> Vec<ToolCallResult> {
     let mut results: Vec<ToolCallResult> = Vec::with_capacity(calls.len());
@@ -631,25 +614,11 @@ pub async fn execute_tool_calls_with_app(
             continue;
         }
 
-        flush_read_only_batch(
-            app,
-            conversation_id,
-            policy_override,
-            &mut read_only_batch,
-            &mut results,
-        )
-        .await;
-        results.push(execute_single_tool_call(app, conversation_id, policy_override, call).await);
+        flush_read_only_batch(app, conversation_id, &mut read_only_batch, &mut results).await;
+        results.push(execute_single_tool_call(app, conversation_id, call).await);
     }
 
-    flush_read_only_batch(
-        app,
-        conversation_id,
-        policy_override,
-        &mut read_only_batch,
-        &mut results,
-    )
-    .await;
+    flush_read_only_batch(app, conversation_id, &mut read_only_batch, &mut results).await;
     results
 }
 
@@ -797,11 +766,9 @@ pub fn configurable_tool_catalog(
 }
 
 // 在带 AppHandle 的环境中执行工具，附带权限校验和 MCP 代理能力。
-// policy_override：当轮审批策略覆盖（Auto 模式 → Never），None 时用全局设置。
 pub(crate) async fn execute_tool_with_app(
     app: &AppHandle,
     conversation_id: Option<&str>,
-    policy_override: Option<crate::llm::utils::permissions::ApprovalPolicy>,
     name: &str,
     input: Value,
 ) -> ToolExecResult {
@@ -819,7 +786,6 @@ pub(crate) async fn execute_tool_with_app(
     match crate::llm::utils::permissions::enforce_tool_permission(
         app,
         conversation_id,
-        policy_override,
         name,
         &input,
     ) {
@@ -834,7 +800,6 @@ pub(crate) async fn execute_tool_with_app(
             if let Err(e) = shared::permission_runtime::await_permission_and_recheck(
                 app,
                 conversation_id,
-                policy_override,
                 name,
                 &input,
                 request_id,

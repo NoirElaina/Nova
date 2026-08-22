@@ -196,7 +196,6 @@ pub async fn run_streaming<P: StreamParser>(
     response: reqwest::Response,
     conversation_id: Option<&str>,
     model: &str,
-    policy_override: Option<crate::llm::utils::permissions::ApprovalPolicy>,
     cancel_token: CancellationToken,
 ) -> Result<ProviderTurnResult, ProviderTurnError> {
     let provider = parser.provider_name();
@@ -349,7 +348,6 @@ pub async fn run_streaming<P: StreamParser>(
                     delta,
                     app,
                     conversation_id,
-                    policy_override,
                     provider,
                     &mut assistant_output,
                     &mut tool_result_blocks,
@@ -385,7 +383,6 @@ pub async fn run_streaming<P: StreamParser>(
             delta,
             app,
             conversation_id,
-            policy_override,
             provider,
             &mut assistant_output,
             &mut tool_result_blocks,
@@ -585,7 +582,6 @@ async fn process_delta(
     delta: Delta,
     app: &AppHandle,
     conversation_id: Option<&str>,
-    policy_override: Option<crate::llm::utils::permissions::ApprovalPolicy>,
     provider: &str,
     assistant_output: &mut AssistantOutputBuilder,
     tool_result_blocks: &mut Vec<ContentBlock>,
@@ -726,8 +722,7 @@ async fn process_delta(
             }
 
             let executed_calls =
-                tools::execute_tool_calls_with_app(app, conversation_id, policy_override, call_requests)
-                    .await;
+                tools::execute_tool_calls_with_app(app, conversation_id, call_requests).await;
 
             for executed in executed_calls {
                 let serialized_input = serde_json::to_string_pretty(&executed.input)

@@ -12,7 +12,6 @@ pub async fn send_chat_message(
     app: AppHandle,
     conversation_id: Option<String>,
     messages: Vec<Message>,
-    plan_mode: Option<bool>,
     agent_mode: Option<AgentMode>,
 ) -> Result<(), String> {
     // 克隆会话 ID，便于请求前后使用同一作用域 key。
@@ -30,14 +29,8 @@ pub async fn send_chat_message(
     // 标记本轮开始，初始化取消标志位。
     crate::llm::cancellation::begin_turn(conversation_scope.as_deref());
 
-    // 兼容旧参数：未显式提供 agent_mode 时退化到 plan_mode 开关语义。
-    let resolved_mode = agent_mode.unwrap_or_else(|| {
-        if plan_mode.unwrap_or(false) {
-            AgentMode::Plan
-        } else {
-            AgentMode::Agent
-        }
-    });
+    // 未显式提供模式时默认 Agent；Plan 由 enter_plan_mode 工具切入后随请求带上。
+    let resolved_mode = agent_mode.unwrap_or(AgentMode::Agent);
 
     info!(
         conversation_id = %conversation_scope.as_deref().unwrap_or("__default__"),
@@ -46,8 +39,7 @@ pub async fn send_chat_message(
         "chat turn started"
     );
 
-    // Auto 模式的工具全放行不再在此写全局状态：由 providers 层映射为
-    // Never 审批策略随当轮执行链下传，轮次结束自动失效。
+    // 工具审批完全由全局审批策略（设置页/快捷开关）控制，回合层不再维护放行状态。
     let result =
         crate::llm::query_engine::send_chat_message(app, conversation_id, messages, resolved_mode)
             .await;

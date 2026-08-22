@@ -665,6 +665,82 @@ pub fn find_match(content: &str, old_string: &str, replace_all: bool) -> FindRes
     FindResult::NotFound
 }
 
+/// 全链匹配失败后，在文件里找与 old_string 最相近的块，随错误返回给模型，
+/// 让它能对照真实内容一次性改对，避免“盲重试 → 重读 → 再试”烧三四轮。
+///
+/// 策略：按 old_string 行数 ±2 的滑动窗口，首行相似度预筛（便宜），
+/// 通过后逐行 Levenshtein 求均分，取最高分块；分数低于阈值则不提示。
+pub fn closest_block_hint(content: &str, old_string: &str) -> Option<(usize, String)> {
+    const SIMILARITY_THRESHOLD: f64 = 0.45;
+    const FIRST_LINE_GATE: f64 = 0.3;
+    // 超长文件只扫前 20000 行，控制最坏情况成本（编辑目标几乎都在已读区域）。
+    const MAX_SCAN_LINES: usize = 20_000;
+    const MAX_HINT_CHARS: usize = 2_000;
+
+    let mut find_lines: Vec<&str> = old_string.split('\n').collect();
+    // 去掉尾随空行（模型常见多打一个换行）。
+    while find_lines.len() > 1 && find_lines.last().map(|s| s.trim().is_empty()).unwrap_or(false) {
+        find_lines.pop();
+    }
+    if find_lines.is_empty() || find_lines.iter().all(|l| l.trim().is_empty()) {
+        return None;
+    }
+
+    let content_lines: Vec<&str> = content.split('\n').collect();
+    let scan_lines = content_lines.len().min(MAX_SCAN_LINES);
+    if scan_lines == 0 {
+        return None;
+    }
+
+    let line_ratio = |a: &str, b: &str| -> f64 {
+        let max_len = a.chars().count().max(b.chars().count());
+        if max_len == 0 {
+            return 1.0;
+        }
+        let dist = levenshtein(a, b);
+        1.0 - (dist as f64 / max_len as f64).min(1.0)
+    };
+
+    let n = find_lines.len();
+    let min_win = n.saturating_sub(2).max(1);
+    let max_win = (n + 2).min(scan_lines);
+
+    let mut best_score = 0.0_f64;
+    let mut best: Option<(usize, String)> = None;
+
+    for win in min_win..=max_win {
+        if scan_lines < win {
+            continue;
+        }
+        for i in 0..=scan_lines - win {
+            // 便宜预筛：首行不相似则跳过整个窗口。
+            if line_ratio(content_lines[i], find_lines[0]) < FIRST_LINE_GATE {
+                continue;
+            }
+            // 逐行相似度均分；行数差用惩罚项折算。
+            let pairs = n.min(win);
+            let mut score = 0.0;
+            for j in 0..pairs {
+                score += line_ratio(content_lines[i + j], find_lines[j]);
+            }
+            score /= n.max(win) as f64;
+            if score > best_score {
+                let block = content_lines[i..i + win].join("\n");
+                // 超长块只留头部，避免提示本身灌满上下文。
+                let block: String = block.chars().take(MAX_HINT_CHARS).collect();
+                best_score = score;
+                best = Some((i + 1, block)); // 1-based 行号
+            }
+        }
+    }
+
+    if best_score >= SIMILARITY_THRESHOLD {
+        best
+    } else {
+        None
+    }
+}
+
 /// 执行替换。返回 (新内容, 替换次数)。
 /// 调用方需先调用 find_match 确认能匹配。
 pub fn apply_replace(
@@ -697,12 +773,69 @@ pub fn apply_replace(
              or provide more context to make old_string unique.",
             n
         )),
-        FindResult::NotFound => Err(format!(
-            "old_string not found in file.\n\n\
-             Tip: Read the file again to get exact content. \
-             Common causes: mismatched whitespace (tabs vs spaces), \
-             trailing whitespace, line ending differences (CRLF vs LF), \
-             or the text was modified since last read."
-        )),
+        FindResult::NotFound => {
+            let mut msg = String::from(
+                "old_string not found in file.\n\n\
+                 Tip: Read the file again to get exact content. \
+                 Common causes: mismatched whitespace (tabs vs spaces), \
+                 trailing whitespace, line ending differences (CRLF vs LF), \
+                 or the text was modified since last read.",
+            );
+            // 附带上文件中最相近的块，模型可对照修正，避免盲重试。
+            if let Some((line_no, block)) = closest_block_hint(content, old_string) {
+                msg.push_str(&format!(
+                    "\n\nClosest block in the file (around line {}):\n---\n{}\n---\n\
+                     Compare it with your old_string and retry using the exact file content.",
+                    line_no, block
+                ));
+            }
+            Err(msg)
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn hint_finds_near_miss_block() {
+        let content = "fn main() {\n    let x = compute_value();\n    println!(\"{}\", x);\n}\n";
+        // 模型的 old_string 与实际内容差了一点（函数名写错）。
+        let old_string = "fn main() {\n    let x = calculate_value();\n    println!(\"{}\", x);\n}";
+        let hint = closest_block_hint(content, old_string);
+        assert!(hint.is_some());
+        let (line_no, block) = hint.unwrap();
+        assert_eq!(line_no, 1);
+        assert!(block.contains("compute_value"));
+    }
+
+    #[test]
+    fn hint_locates_block_in_middle_of_file() {
+        let mut lines: Vec<String> = (0..50).map(|i| format!("// filler {}", i)).collect();
+        lines.insert(25, "target_line_a".into());
+        lines.insert(26, "target_line_b".into());
+        let content = lines.join("\n");
+        let old_string = "target_line_a\ntarget_line_B"; // 末行大小写差异
+        let hint = closest_block_hint(&content, old_string);
+        assert!(hint.is_some());
+        let (line_no, block) = hint.unwrap();
+        assert_eq!(line_no, 26); // 1-based
+        assert!(block.contains("target_line_b"));
+    }
+
+    #[test]
+    fn hint_none_for_unrelated_content() {
+        let content = "alpha\nbeta\ngamma\n";
+        let old_string = "completely different text\nnothing alike";
+        assert!(closest_block_hint(content, old_string).is_none());
+    }
+
+    #[test]
+    fn not_found_error_includes_hint_when_close_block_exists() {
+        let content = "let value = fetch_data();\n";
+        let err = apply_replace(content, "let value = get_data();\n", "x", false).unwrap_err();
+        assert!(err.contains("Closest block in the file"));
+        assert!(err.contains("fetch_data"));
     }
 }

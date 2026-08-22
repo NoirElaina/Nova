@@ -2,7 +2,6 @@
 import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch, shallowRef } from 'vue';
 import { useVirtualizer } from '@tanstack/vue-virtual';
 import type {
-  AgentMode,
   AskUserAnswerSubmission,
   AssistantTranscriptSegment,
   ChatMessage,
@@ -42,8 +41,6 @@ const props = defineProps<{
   currentTurnToolEntries: ToolExecutionEntry[];
   pendingQuestion?: NeedsUserInputPayload | null;
   pendingPermissionRequestId?: string | null;
-  planMode?: boolean;
-  agentMode?: AgentMode;
   pendingUploads?: PendingUploadFile[];
   contextUsage?: ContextUsage;
   contextCompacts?: ContextCompactSummary[];
@@ -65,7 +62,6 @@ const emit = defineEmits<{
   (e: 'ask-submit', value: AskUserAnswerSubmission): void;
   (e: 'ask-skip'): void;
   (e: 'cancel'): void;
-  (e: 'mode-change', mode: AgentMode): void;
   (e: 'upload-files', files: PendingUploadFile[]): void;
   (e: 'remove-upload', index: number): void;
   (e: 'compact'): void;
@@ -937,7 +933,6 @@ defineExpose({
           v-else
           ref="inputAreaRef"
           :isGenerating="isGenerating"
-          :agentMode="agentMode"
           :pendingUploads="pendingUploads"
           :contextUsage="contextUsage"
           :contextTokens="contextTokens"
@@ -948,7 +943,6 @@ defineExpose({
           @send="handleSend"
           @cancel="emit('cancel')"
           @remove-agent="emit('remove-agent')"
-          @mode-change="emit('mode-change', $event)"
           @upload-files="handleUploadFiles"
           @remove-upload="handleRemoveUpload"
           @compact="emit('compact')"

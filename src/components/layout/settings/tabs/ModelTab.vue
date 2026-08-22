@@ -21,8 +21,6 @@ const customModels = ref<Record<string, string[]>>({})
 const modelContextWindows = ref<Record<string, number>>({})
 const providerOrder = ref<string[]>([])
 
-const builtinProviderIds = new Set(['anthropic', 'openai'])
-
 const currentProviderId = ref('anthropic')
 const providerProfiles = ref<Record<string, ProviderProfile>>({})
 
@@ -129,7 +127,6 @@ const providersList = computed(() => {
         apiFormat: profile.apiFormat || 'openai',
         model: models.join(' / '),
         models,
-        isBuiltin: builtinProviderIds.has(id),
       }
     })
     .sort((a, b) => compareByProviderOrder(a.id, b.id))
@@ -208,7 +205,7 @@ const handleSaveDraft = async (draft: ProviderDraft, originalId: string | null) 
 }
 
 const handleDelete = (id: string) => {
-  if (builtinProviderIds.has(id)) return
+  // 所有提供商（含 anthropic/openai）均可删除，确认弹窗后执行。
   pendingDeleteId.value = id
 }
 
@@ -220,7 +217,8 @@ const confirmDelete = async () => {
   delete customModels.value[id]
   providerOrder.value = providerOrder.value.filter((item) => item !== id)
   if (currentProviderId.value === id) {
-    currentProviderId.value = 'openai'
+    // 回落到剩余的第一个提供商；全部删完时后端会重建默认空配置。
+    currentProviderId.value = providerOrder.value[0] ?? 'anthropic'
   }
   pendingDeleteId.value = null
   await saveSettings()

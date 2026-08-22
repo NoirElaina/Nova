@@ -31,7 +31,7 @@ Read tool output prefixes each line with: spaces + line number + tab (e.g. `    
 - `file_path` must be an absolute path to an existing file (creating files is Write's job).
 
 ## Failure recovery
-- If an edit fails, the file content differs from what you expect. Re-Read the file (or the relevant range), then retry with a corrected `old_string` — do not blindly resubmit the identical failed edit.
+- If an edit fails, the error includes the CLOSEST block found in the file (with its line number) when one exists — compare it against your `old_string`, adopt the exact file content, and retry. Only Re-Read if no closest block is shown or it is clearly unrelated.
 - After three consecutive failures on the same file, stop patching: rewrite the whole file (or the containing function) with Write instead of a fourth attempt.
 
 ## Common mistakes

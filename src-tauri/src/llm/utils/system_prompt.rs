@@ -21,17 +21,6 @@ const PLAN_MODE_SECTION: &str = r#"
 - Use `ask_user_question` for extra clarifications only when needed to unblock planning decisions.
 "#;
 
-// 自动迭代模式附加内容：鼓励在单轮中自主推进，只有被真实阻塞时再请求用户输入。
-const AUTO_MODE_SECTION: &str = r#"
-
-## Auto Iteration Mode
-- You are currently in auto iteration mode.
-- Drive the task forward proactively with focused tool usage and iterative verification.
-- Keep iterating until the task is meaningfully complete, then present a concise outcome.
-- Tool permissions are fully auto-approved in this mode: do not wait for user approval on bash, file writes, or other tools.
-- Ask for user input only when blocked by missing requirements or truly irreversible decisions that need human judgment.
-"#;
-
 const GLOBAL_MEMORY_SECTION: &str = r#"
 
 ## Memory
@@ -309,7 +298,6 @@ pub fn load_system_prompt(
     // 按执行模式拼接附加段。
     match agent_mode {
         AgentMode::Plan => Ok(format!("{}{}", prompt_with_memory, PLAN_MODE_SECTION)),
-        AgentMode::Auto => Ok(format!("{}{}", prompt_with_memory, AUTO_MODE_SECTION)),
         AgentMode::Agent => Ok(prompt_with_memory),
     }
 }

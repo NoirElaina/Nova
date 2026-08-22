@@ -67,8 +67,6 @@ const {
   conversationUsage,
   pendingQuestion,
   pendingPermissionRequestId,
-  agentMode,
-  planMode,
   currentTurnStartedAt,
   mainView,
   isSidebarOpen,
@@ -83,7 +81,6 @@ const {
   handleCancelGeneration,
   handlePendingQuestionSubmit,
   handlePendingQuestionSkip,
-  handleAgentModeChange,
   handleNewChat,
   handleSelectConversation,
   handleDeleteConversation,
@@ -502,7 +499,6 @@ onBeforeUnmount(() => {
           <WelcomeScreen
             v-if="messages.length === 0"
             :isGenerating="isGenerating"
-            :agentMode="agentMode"
             :pendingUploads="pendingUploads"
             :contextUsage="currentContextUsage"
             :contextCompacts="currentContextCompacts"
@@ -513,7 +509,6 @@ onBeforeUnmount(() => {
             @update:workspacePath="activeWorkspacePath = $event"
             @send="handleSendMessage"
             @remove-agent="removeConversationAgent"
-            @mode-change="handleAgentModeChange"
             @upload-files="handleUploadFiles"
             @remove-upload="handleRemovePendingUpload"
           />
@@ -532,8 +527,6 @@ onBeforeUnmount(() => {
             :currentTurnToolEntries="currentTurnToolExecutionLogs"
             :pendingQuestion="pendingQuestion"
             :pendingPermissionRequestId="pendingPermissionRequestId"
-            :agentMode="agentMode"
-            :planMode="planMode"
             :pendingUploads="pendingUploads"
             :contextUsage="currentContextUsage"
             :contextCompacts="currentContextCompacts"
@@ -547,7 +540,6 @@ onBeforeUnmount(() => {
             @send="handleSendMessage"
             @save-user-edit="handleEditMessage($event)"
             @cancel="handleCancelGeneration"
-            @mode-change="handleAgentModeChange"
             @upload-files="handleUploadFiles"
             @remove-upload="handleRemovePendingUpload"
             @ask-submit="handlePendingQuestionSubmit"

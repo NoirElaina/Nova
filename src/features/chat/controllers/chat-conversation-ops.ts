@@ -43,7 +43,6 @@ type ConversationOpsDeps = {
   /** 当前工作区路径（前端状态）。无活跃会话时由 EnvironmentBar 修改；有活跃会话时反映该会话的工作区。 */
   activeWorkspacePath: Ref<string>;
   agentMode: Ref<AgentMode>;
-  planMode: Ref<boolean>;
   isGenerating: Ref<boolean>;
   isCreatingNewChat: Ref<boolean>;
   conversations: Ref<ConversationMeta[]>;
@@ -67,7 +66,6 @@ export function createConversationOperations(deps: ConversationOpsDeps) {
     activeConversationId,
     activeWorkspacePath,
     agentMode,
-    planMode,
     isGenerating,
     isCreatingNewChat,
     conversations,
@@ -259,7 +257,6 @@ export function createConversationOperations(deps: ConversationOpsDeps) {
     activeConversationId.value = targetConversationId;
     const conversationMeta = conversations.value.find((c) => c.id === targetConversationId);
     activeWorkspacePath.value = conversationMeta?.workspacePath || '';
-    planMode.value = agentMode.value === "plan";
     pendingUploads.value = [];
 
     try {
@@ -347,7 +344,6 @@ export function createConversationOperations(deps: ConversationOpsDeps) {
     conversationFiles.value = [];
     conversationUsage.value = null;
     toolExecutionLogs.value = [];
-    planMode.value = agentMode.value === "plan";
   }
 
   async function handleNewChat() {

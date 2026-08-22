@@ -198,7 +198,6 @@ type StreamOpsDeps = {
   activeRuntimeState: ConversationTurnRuntimeState;
   activeConversationId: Ref<string>;
   agentMode: Ref<AgentMode>;
-  planMode: Ref<boolean>;
   messages: Ref<ChatMessage[]>;
   runtimeStateByConversation: Map<string, ConversationTurnRuntimeState>;
   persistMessage: (message: ChatMessage, conversationId?: string) => Promise<void>;
@@ -217,7 +216,6 @@ export function createChatStreamOperations(deps: StreamOpsDeps) {
     activeRuntimeState,
     activeConversationId,
     agentMode,
-    planMode,
     messages,
     runtimeStateByConversation,
     persistMessage,
@@ -663,7 +661,6 @@ export function createChatStreamOperations(deps: StreamOpsDeps) {
           const planModeChange = parsePlanModeChange(result);
           if (planModeChange) {
             const nextIsPlanMode = planModeChange.mode === "plan";
-            planMode.value = nextIsPlanMode;
             agentMode.value = nextIsPlanMode ? "plan" : "agent";
           }
         }

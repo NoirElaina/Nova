@@ -2,7 +2,6 @@
 import InputArea from '../layout/InputArea.vue';
 import EnvironmentBar from './EnvironmentBar.vue';
 import type {
-  AgentMode,
   ContextCompactSummary,
   ContextUsage,
   PendingUploadFile,
@@ -10,7 +9,6 @@ import type {
 
 defineProps<{
   isGenerating?: boolean;
-  agentMode?: AgentMode;
   pendingUploads?: PendingUploadFile[];
   contextUsage?: ContextUsage;
   contextCompacts?: ContextCompactSummary[];
@@ -24,7 +22,6 @@ defineProps<{
 const emit = defineEmits<{
   (e: 'send', msg: string): void;
   (e: 'remove-agent'): void;
-  (e: 'mode-change', mode: AgentMode): void;
   (e: 'upload-files', files: PendingUploadFile[]): void;
   (e: 'remove-upload', index: number): void;
   (e: 'update:workspacePath', path: string): void;
@@ -54,14 +51,12 @@ const handleSend = (msg: string) => {
 
       <InputArea
         :isGenerating="isGenerating"
-        :agentMode="agentMode"
         :pendingUploads="pendingUploads"
         :contextUsage="contextUsage"
         :contextTokens="contextTokens"
         :activeAgent="activeAgent"
         @send="handleSend"
         @remove-agent="emit('remove-agent')"
-        @mode-change="emit('mode-change', $event)"
         @upload-files="emit('upload-files', $event)"
         @remove-upload="emit('remove-upload', $event)"
       />

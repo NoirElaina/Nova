@@ -175,19 +175,69 @@ fn shell_failure_text(reason: &str, result: &ShellExecutionResult) -> String {
 // 超出则保留头部并追加截断标记，避免大型命令输出灌满上下文、触发 prompt_too_long。
 const MAX_OUTPUT_CHARS: usize = 30_000;
 
+/// 超长输出截断：保头部 2/3 + 尾部 1/3。
+/// 编译/测试的报错信息几乎总在输出尾部，只保头部会让模型“看不见错误”
+/// 而盲目重试；尾部必须保留。
 fn truncate_output(content: &str) -> String {
     if content.len() <= MAX_OUTPUT_CHARS {
         return content.to_string();
     }
-    // 截到 <= MAX_OUTPUT_CHARS 的合法 UTF-8 字符边界。
-    let mut cut = MAX_OUTPUT_CHARS;
-    while cut > 0 && !content.is_char_boundary(cut) {
-        cut -= 1;
+
+    let head_budget = MAX_OUTPUT_CHARS * 2 / 3;
+    let tail_budget = MAX_OUTPUT_CHARS - head_budget;
+
+    // 头部：从预算位置往前退到合法 UTF-8 字符边界。
+    let mut head_cut = head_budget;
+    while head_cut > 0 && !content.is_char_boundary(head_cut) {
+        head_cut -= 1;
     }
-    let remaining_lines = content[cut..].matches('\n').count() + 1;
+    // 尾部：从预算位置往后推到合法 UTF-8 字符边界。
+    // len > MAX_OUTPUT_CHARS = head_budget + tail_budget 保证 tail_start > head_cut。
+    let mut tail_start = content.len() - tail_budget;
+    while tail_start < content.len() && !content.is_char_boundary(tail_start) {
+        tail_start += 1;
+    }
+
+    let omitted = &content[head_cut..tail_start];
+    let omitted_lines = omitted.matches('\n').count();
     format!(
-        "{}\n\n... [{} lines truncated] ...",
-        &content[..cut],
-        remaining_lines
+        "{}\n\n... [middle omitted: ~{} chars / {} lines] ...\n\n{}",
+        &content[..head_cut],
+        omitted.len(),
+        omitted_lines,
+        &content[tail_start..]
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn short_output_unchanged() {
+        assert_eq!(truncate_output("hello"), "hello");
+    }
+
+    #[test]
+    fn long_output_keeps_head_and_tail() {
+        // 40000 行号行，超出 30000 上限。
+        let content = (0..40_000).map(|i| format!("line{}", i)).collect::<Vec<_>>().join("\n");
+        let out = truncate_output(&content);
+        // 头部保留：第一行还在。
+        assert!(out.starts_with("line0"));
+        // 尾部保留：最后一行还在（旧实现会把它截丢）。
+        assert!(out.contains("line39999"));
+        // 中间省略标记存在。
+        assert!(out.contains("[middle omitted:"));
+        // 总长受控（≈上限 + 标记开销）。
+        assert!(out.len() <= MAX_OUTPUT_CHARS + 200);
+    }
+
+    #[test]
+    fn truncation_is_multibyte_safe() {
+        // 中文 3 字节/字符：构造超限内容，截断后仍是合法 UTF-8。
+        let content = "错".repeat(20_000);
+        let out = truncate_output(&content);
+        assert!(out.chars().count() <= MAX_OUTPUT_CHARS + 64);
+    }
 }

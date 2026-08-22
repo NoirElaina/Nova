@@ -81,7 +81,9 @@ export type AssistantTranscriptSegment =
       toolIds: string[];
     };
 
-export type AgentMode = "agent" | "plan" | "auto";
+// 对话执行模式：agent = 默认；plan 由模型通过 enter_plan_mode 工具自行进入，
+// 不再提供手动选择入口。
+export type AgentMode = "agent" | "plan";
 
 export type AttachmentKind = "document" | "image";
 

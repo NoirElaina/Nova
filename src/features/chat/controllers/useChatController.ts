@@ -69,7 +69,6 @@ export function useChatController() {
   /** 智能体页「启用」暂存的智能体 id：首次发送创建对话时挂载，之后清空。 */
   const pendingAgentBundleId = ref<string | null>(null);
   const agentMode = ref<AgentMode>("agent");
-  const planMode = ref(false);
   const isCreatingNewChat = ref(false);
   const isSidebarOpen = ref(true);
   const toolExecutionLogs = ref<ToolExecutionEntry[]>([]);
@@ -157,11 +156,6 @@ export function useChatController() {
     );
   }
 
-  function handleAgentModeChange(mode: AgentMode) {
-    agentMode.value = mode;
-    planMode.value = mode === "plan";
-  }
-
   const isCompacting = ref(false);
 
   async function handleCompactConversation() {
@@ -203,7 +197,6 @@ export function useChatController() {
     activeConversationId,
     activeWorkspacePath,
     agentMode,
-    planMode,
     isGenerating,
     isCreatingNewChat,
     conversations,
@@ -227,7 +220,6 @@ export function useChatController() {
     activeRuntimeState,
     activeConversationId,
     agentMode,
-    planMode,
     messages,
     runtimeStateByConversation,
     persistMessage: conversationOps.persistMessage,
@@ -245,7 +237,6 @@ export function useChatController() {
     pendingUploads,
     pendingPermissionRequestId,
     mainView,
-    planMode,
     agentMode,
     assistantResponse,
     assistantReasoning,
@@ -448,8 +439,6 @@ export function useChatController() {
     currentContextCompacts,
     currentContextTokens: displayContextTokens,
     conversationUsage,
-    agentMode,
-    planMode,
     currentTurnStartedAt,
     currentTurnToolExecutionLogs,
     mainView,
@@ -468,7 +457,6 @@ export function useChatController() {
     handleCancelGeneration: sendOps.handleCancelGeneration,
     handlePendingQuestionSubmit: sendOps.handlePendingQuestionSubmit,
     handlePendingQuestionSkip: sendOps.handlePendingQuestionSkip,
-    handleAgentModeChange,
     handleNewChat,
     handleSelectConversation,
     handleDeleteConversation,

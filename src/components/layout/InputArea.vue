@@ -3,7 +3,6 @@ import { nextTick, onMounted, onUnmounted, ref, watch, computed } from 'vue';
 import { invoke } from '@tauri-apps/api/core';
 import { listen, type UnlistenFn } from '@tauri-apps/api/event';
 import type {
-  AgentMode,
   PendingUploadFile,
   ContextUsage,
   ConversationUsageSummary,
@@ -17,7 +16,7 @@ import {
   notifyRejectedUploads,
 } from '../../lib/upload-files';
 import { emitToast, emitErrorToast } from '../../lib/toast';
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
+import { Select, SelectContent, SelectGroup, SelectItem, SelectLabel, SelectTrigger, SelectValue } from '@/components/ui/select';
 import ContextUsageIndicator from './ContextUsageIndicator.vue';
 import ConversationUsageBar from './ConversationUsageBar.vue';
 import { getWorkspaceDiff } from '../../features/chat/services/chat-api';
@@ -58,7 +57,6 @@ type SkillSummary = {
 
 const props = defineProps<{
   isGenerating?: boolean;
-  agentMode?: AgentMode;
   pendingUploads?: PendingUploadFile[];
   contextUsage?: ContextUsage;
   contextTokens?: number;
@@ -73,7 +71,6 @@ const props = defineProps<{
 const emit = defineEmits<{
   (e: 'send', msg: string): void;
   (e: 'cancel'): void;
-  (e: 'mode-change', mode: AgentMode): void;
   (e: 'upload-files', files: PendingUploadFile[]): void;
   (e: 'remove-upload', index: number): void;
   (e: 'compact'): void;
@@ -140,36 +137,117 @@ const ensureActiveProfile = () => {
   return settings.value.providerProfiles[provider];
 };
 
-const availableModels = computed(() => {
-  if (!settings.value?.provider) return [];
-  const provider = normalizeProviderKey(settings.value.provider);
-  const listed = settings.value.customModels?.[provider];
-  if (Array.isArray(listed) && listed.length > 0) {
-    return listed;
+type ProviderGroup = { key: string; label: string; models: string[] };
+
+// 模型按提供商分组展示：选其它提供商的模型会同时切换活跃提供商，
+// 免进设置页换提供商。无可用模型的提供商不进列表。
+const providerGroups = computed<ProviderGroup[]>(() => {
+  if (!settings.value) return [];
+  const profiles = (settings.value.providerProfiles ?? {}) as Record<string, any>;
+  const customModels = (settings.value.customModels ?? {}) as Record<string, string[]>;
+  const groups: ProviderGroup[] = [];
+  for (const key of Object.keys(profiles)) {
+    const provider = normalizeProviderKey(key);
+    const listed = customModels[provider];
+    const profileModel = typeof profiles[key]?.model === 'string' ? profiles[key].model.trim() : '';
+    const models = Array.isArray(listed) && listed.length > 0 ? listed : profileModel ? [profileModel] : [];
+    if (models.length === 0) continue;
+    const displayName =
+      typeof profiles[key]?.displayName === 'string' ? profiles[key].displayName.trim() : '';
+    groups.push({ key: provider, label: displayName || provider, models });
   }
-  const profile = settings.value.providerProfiles?.[provider];
-  const fallbackModel = typeof profile?.model === 'string' ? profile.model.trim() : '';
-  return fallbackModel ? [fallbackModel] : [];
+  // 当前活跃提供商排最前，其余按名称排序。
+  const active = normalizeProviderKey(settings.value.provider || 'anthropic');
+  groups.sort((a, b) =>
+    a.key === active ? -1 : b.key === active ? 1 : a.label.localeCompare(b.label),
+  );
+  return groups;
 });
 
-const currentModel = computed({
-  get: () => {
-    const profile = ensureActiveProfile();
-    return profile?.model || '';
-  },
-  set: (value: string) => {
-    const profile = ensureActiveProfile();
-    if (!profile) return;
-    profile.model = value;
-  },
+const hasAnyModel = computed(() => providerGroups.value.some((g) => g.models.length > 0));
+
+const currentModel = computed(() => {
+  const profile = ensureActiveProfile();
+  return profile?.model || '';
 });
 
-const localAgentMode = computed<AgentMode>({
-  get: () => props.agentMode ?? 'agent',
-  set: (value: AgentMode) => {
-    emit('mode-change', value);
-  },
+// Select 的 value 用 "provider::model"，区分不同提供商下的同名模型。
+const currentModelKey = computed(() => {
+  const provider = normalizeProviderKey(settings.value?.provider || 'anthropic');
+  return `${provider}::${currentModel.value}`;
 });
+
+// 切换模型（可跨提供商）：以最新设置为基底，同时写回 provider 与目标 profile.model。
+const onModelKeyChange = async (value: unknown) => {
+  if (typeof value !== 'string' || !settings.value) return;
+  const sep = value.indexOf('::');
+  if (sep <= 0) return;
+  const provider = value.slice(0, sep);
+  const model = value.slice(sep + 2);
+  if (!provider || !model) return;
+  try {
+    const base = await invoke<Record<string, any>>('get_settings');
+    const profiles = { ...(base.providerProfiles ?? {}) };
+    profiles[provider] = { ...(profiles[provider] ?? {}), model };
+    const next = { ...base, provider, providerProfiles: profiles };
+    await invoke('save_settings', { settings: next });
+    settings.value = next;
+    window.dispatchEvent(new CustomEvent('settings-updated'));
+  } catch (error) {
+    emitErrorToast('切换模型失败', error, 'model-switcher');
+  }
+};
+
+// ── 审批策略 / 工具披露快捷开关（全局设置，免进设置页） ──
+type ApprovalPolicyValue = 'always_ask' | 'on_request' | 'never';
+
+const policyMenuOpen = ref(false);
+const policyButtonRef = ref<HTMLElement | null>(null);
+
+const policyOptions: { value: ApprovalPolicyValue; label: string; desc: string }[] = [
+  { value: 'always_ask', label: '每次都问', desc: '凡受控操作都弹审批（严格）' },
+  { value: 'on_request', label: '仅风险操作询问', desc: 'Safe 直接放行，仅 Risky 弹审批（推荐）' },
+  { value: 'never', label: '从不询问', desc: '除硬拒绝项外全部放行（慎用）' },
+];
+
+const approvalPolicy = computed<ApprovalPolicyValue>(() => {
+  const v = settings.value?.approvalPolicy;
+  return v === 'always_ask' || v === 'never' ? v : 'on_request';
+});
+
+const disclosureEnabled = computed(() => settings.value?.progressiveToolDisclosure !== false);
+
+// 按钮上只显示短标签，完整文案在浮层里。
+const policyShortLabel = computed(
+  () =>
+    ({
+      always_ask: '每次询问',
+      on_request: '仅风险',
+      never: '从不询问',
+    })[approvalPolicy.value],
+);
+
+// 补丁式保存：以最新设置为基底展开，避免旧副本覆写其他字段。
+const patchSettings = async (patch: Record<string, unknown>) => {
+  try {
+    const base = await invoke<Record<string, unknown>>('get_settings');
+    const next = { ...base, ...patch };
+    await invoke('save_settings', { settings: next });
+    settings.value = next;
+    window.dispatchEvent(new CustomEvent('settings-updated'));
+  } catch (error) {
+    emitErrorToast('保存设置失败', error, 'policy-switcher');
+  }
+};
+
+const setApprovalPolicy = (value: ApprovalPolicyValue) => {
+  if (value === approvalPolicy.value) return;
+  void patchSettings({ approvalPolicy: value });
+};
+
+const toggleDisclosure = () => {
+  void patchSettings({ progressiveToolDisclosure: !disclosureEnabled.value });
+};
 
 const pendingUploads = computed(() => props.pendingUploads ?? []);
 const hasPendingUploads = computed(() => pendingUploads.value.length > 0);
@@ -615,15 +693,6 @@ const executeSlashCommand = async (parsed: { entry: SlashCommandEntry; rest: str
 
 
 
-const onModelValueChange = async (value: unknown) => {
-  if (typeof value !== 'string' || !settings.value) return;
-  currentModel.value = value;
-  try {
-    await invoke('save_settings', { settings: settings.value });
-  } catch (error) {
-    console.error('Failed to save model change:', error);
-  }
-};
 
 const triggerFilePicker = () => {
   if (props.isGenerating) return;
@@ -810,9 +879,18 @@ const handlePluginsChanged = () => {
   void loadPluginCommands();
 };
 
-// 点击浮层外部时关闭 + 菜单和 memory 浮层
+// 点击浮层外部时关闭 + 菜单、memory 浮层和策略快捷开关
 const handleDocumentClick = (e: MouseEvent) => {
   const target = e.target as Node | null;
+  // 关闭策略快捷开关
+  if (policyMenuOpen.value) {
+    if (policyButtonRef.value && target && policyButtonRef.value.contains(target)) return;
+    const policyMenus = document.querySelectorAll('[data-policy-menu]');
+    for (const menu of policyMenus) {
+      if (menu.contains(target)) return;
+    }
+    policyMenuOpen.value = false;
+  }
   // 关闭 + 菜单
   if (plusMenuView.value !== null) {
     if (plusButtonRef.value && target && plusButtonRef.value.contains(target)) return;
@@ -1097,28 +1175,88 @@ defineExpose({
             </svg>
           </button>
 
-          <div class="w-[92px] shrink-0">
-            <Select v-model="localAgentMode">
-              <SelectTrigger size="sm" class="w-full text-xs">
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent class="text-xs">
-                <SelectItem value="agent">Agent</SelectItem>
-                <SelectItem value="plan">Plan</SelectItem>
-                <SelectItem value="auto">Auto</SelectItem>
-              </SelectContent>
-            </Select>
+          <!-- 审批策略 / 工具披露快捷开关：紧凑样式与两侧 Select 对齐 -->
+          <div class="relative shrink-0">
+            <button
+              ref="policyButtonRef"
+              type="button"
+              class="flex h-7 items-center gap-1 rounded-md border border-input bg-transparent px-2 text-xs text-muted-foreground transition-colors hover:bg-secondary/60"
+              :class="{ 'bg-secondary/60': policyMenuOpen }"
+              title="审批策略与工具披露快捷开关"
+              @click="policyMenuOpen = !policyMenuOpen"
+            >
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+                stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z" />
+              </svg>
+              <span>{{ policyShortLabel }}</span>
+            </button>
+
+            <div
+              v-if="policyMenuOpen"
+              data-policy-menu
+              class="absolute bottom-full left-0 z-50 mb-2 w-[280px] rounded-lg border border-border bg-popover p-2 shadow-lg"
+            >
+              <div class="px-1.5 pb-1 text-[11px] font-medium text-muted-foreground">审批策略</div>
+              <button
+                v-for="opt in policyOptions"
+                :key="opt.value"
+                type="button"
+                class="flex w-full items-start gap-2 rounded-md px-1.5 py-1.5 text-left transition-colors hover:bg-secondary/80"
+                @click="setApprovalPolicy(opt.value)"
+              >
+                <span
+                  class="mt-0.5 flex h-3.5 w-3.5 shrink-0 items-center justify-center rounded-full border"
+                  :class="approvalPolicy === opt.value ? 'border-[#2563eb]' : 'border-muted-foreground/40'"
+                >
+                  <span v-if="approvalPolicy === opt.value" class="h-1.5 w-1.5 rounded-full bg-[#2563eb]" />
+                </span>
+                <span class="min-w-0">
+                  <span class="block text-xs font-medium">{{ opt.label }}</span>
+                  <span class="block text-[11px] leading-snug text-muted-foreground">{{ opt.desc }}</span>
+                </span>
+              </button>
+
+              <div class="my-1.5 border-t border-border" />
+
+              <button
+                type="button"
+                class="flex w-full items-start gap-2 rounded-md px-1.5 py-1.5 text-left transition-colors hover:bg-secondary/80"
+                @click="toggleDisclosure"
+              >
+                <span
+                  class="mt-0.5 flex h-3.5 w-3.5 shrink-0 items-center justify-center rounded border"
+                  :class="disclosureEnabled ? 'border-[#2563eb] bg-[#2563eb]' : 'border-muted-foreground/40'"
+                >
+                  <svg v-if="disclosureEnabled" width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="#fff"
+                    stroke-width="3" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                    <path d="M20 6 9 17l-5-5" />
+                  </svg>
+                </span>
+                <span class="min-w-0">
+                  <span class="block text-xs font-medium">渐进式工具披露</span>
+                  <span class="block text-[11px] leading-snug text-muted-foreground">低频工具不进默认清单，由 LoadTool 按需加载，节省上下文</span>
+                </span>
+              </button>
+            </div>
           </div>
 
-          <div v-if="availableModels.length > 0 && settings" class="flex min-w-0 shrink-0 items-center gap-1.5">
-            <Select :model-value="currentModel" @update:model-value="onModelValueChange">
-              <SelectTrigger size="sm" class="w-[150px] max-w-[28vw] text-xs">
+          <div v-if="hasAnyModel && settings" class="flex min-w-0 shrink-0 items-center gap-1.5">
+            <Select :model-value="currentModelKey" @update:model-value="onModelKeyChange">
+              <SelectTrigger size="sm" class="w-[170px] max-w-[28vw] text-xs">
                 <SelectValue placeholder="选择模型" />
               </SelectTrigger>
-              <SelectContent class="text-xs">
-                <SelectItem v-for="model in availableModels" :key="model" :value="model">
-                  {{ model }}
-                </SelectItem>
+              <SelectContent class="max-h-[300px] text-xs">
+                <SelectGroup v-for="group in providerGroups" :key="group.key">
+                  <SelectLabel class="text-muted-foreground">{{ group.label }}</SelectLabel>
+                  <SelectItem
+                    v-for="model in group.models"
+                    :key="`${group.key}::${model}`"
+                    :value="`${group.key}::${model}`"
+                  >
+                    {{ model }}
+                  </SelectItem>
+                </SelectGroup>
               </SelectContent>
             </Select>
             <ContextUsageIndicator :usage="contextUsage" :usedTokens="contextTokens" :model="currentModel" :compacting="compacting" @compact="emit('compact')" />

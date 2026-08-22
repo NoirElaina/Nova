@@ -15,14 +15,12 @@ pub enum Role {
 
 // 对话执行模式：
 // - Agent: 默认智能代理执行
-// - Plan: 规划优先，不直接实现
-// - Auto: 自动迭代，尽量一次完成闭环
+// - Plan: 规划优先，不直接实现（由 enter_plan_mode 工具进入，无手动入口）
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 pub enum AgentMode {
     Agent,
     Plan,
-    Auto,
 }
 
 // 消息内容：

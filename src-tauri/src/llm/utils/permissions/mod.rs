@@ -3,7 +3,7 @@
 //! 三层结构：
 //! 1. 描述符（descriptors/checks）：操作是什么、风险多高（Safe/Risky/Forbidden）；
 //! 2. 持久化规则（rules）：用户"始终允许/拒绝"的跨会话决定，命令类支持前缀匹配；
-//! 3. 审批策略（ApprovalPolicy）：AlwaysAsk / OnRequest / Never，Auto 模式当轮覆盖为 Never。
+//! 3. 审批策略（ApprovalPolicy）：AlwaysAsk / OnRequest / Never，存于全局设置。
 //!
 //! 裁决顺序：硬拒绝（Forbidden）→ 持久规则 → 会话允许集 → 策略裁决 → AskUser。
 
@@ -293,14 +293,8 @@ fn operation_from_input(app: &AppHandle, tool_name: &str, input: &Value) -> Opti
     None
 }
 
-/// 有效审批策略：当轮覆盖（Auto 模式 → Never）优先于全局设置。
-pub fn effective_approval_policy(
-    app: &AppHandle,
-    policy_override: Option<ApprovalPolicy>,
-) -> ApprovalPolicy {
-    if let Some(policy) = policy_override {
-        return policy;
-    }
+/// 有效审批策略：读全局设置，非法值回落默认。
+pub fn effective_approval_policy(app: &AppHandle) -> ApprovalPolicy {
     match crate::command::settings::load_settings(app) {
         Ok(settings) => ApprovalPolicy::parse(&settings.approval_policy).unwrap_or_default(),
         Err(_) => ApprovalPolicy::default(),
@@ -557,7 +551,6 @@ pub async fn await_permission_decision(
 pub fn enforce_tool_permission(
     app: &AppHandle,
     conversation_id: Option<&str>,
-    policy_override: Option<ApprovalPolicy>,
     tool_name: &str,
     input: &Value,
 ) -> PermissionEnforcement {
@@ -616,8 +609,8 @@ pub fn enforce_tool_permission(
         }
     }
 
-    // 4. 策略裁决：Auto 模式当轮覆盖为 Never。
-    let policy = effective_approval_policy(app, policy_override);
+    // 4. 策略裁决：读全局审批策略设置。
+    let policy = effective_approval_policy(app);
     let needs_ask = match policy {
         ApprovalPolicy::Never => false,
         ApprovalPolicy::OnRequest => operation.risk == RiskLevel::Risky,

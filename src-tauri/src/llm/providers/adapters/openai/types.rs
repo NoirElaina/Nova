@@ -81,8 +81,32 @@ pub(crate) struct OpenAiPromptTokensDetails {
 
 #[derive(Debug, Deserialize)]
 pub(crate) struct OpenAiChoice {
-    pub(crate) delta: OpenAiDelta,
+    // 部分提供商的收尾 chunk 不带 delta，只给 finish_reason/usage，因此可选。
+    #[serde(default)]
+    pub(crate) delta: Option<OpenAiDelta>,
+    // 非增量形态：部分 OpenRouter 上游/中转后端不流式推工具调用碎片，
+    // 而是在单个 chunk 的 message 里一次性给出完整工具调用。
+    #[serde(default)]
+    pub(crate) message: Option<OpenAiStreamMessage>,
     pub(crate) finish_reason: Option<String>,
+}
+
+/// chunk 内完整形态的助手消息（非增量提供商使用）。
+#[derive(Debug, Deserialize)]
+pub(crate) struct OpenAiStreamMessage {
+    #[serde(default)]
+    pub(crate) content: Option<String>,
+    #[serde(default)]
+    pub(crate) tool_calls: Option<Vec<OpenAiCompleteToolCall>>,
+}
+
+/// 完整形态的工具调用：id/name/arguments 一次性给全。
+#[derive(Debug, Deserialize)]
+pub(crate) struct OpenAiCompleteToolCall {
+    #[serde(default)]
+    pub(crate) id: Option<String>,
+    #[serde(default)]
+    pub(crate) function: Option<OpenAiFunctionCall>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -104,7 +128,9 @@ pub(crate) struct OpenAiDelta {
 
 #[derive(Debug, Deserialize)]
 pub(crate) struct OpenAiToolCall {
-    pub(crate) index: usize,
+    // 少数提供商不带 index（通常一次只发一个完整工具调用），缺省回落到 0。
+    #[serde(default)]
+    pub(crate) index: Option<usize>,
     pub(crate) id: Option<String>,
     pub(crate) function: Option<OpenAiFunctionCall>,
 }

@@ -54,7 +54,6 @@ type SendOpsDeps = {
   pendingUploads: Ref<PendingUploadFile[]>;
   pendingPermissionRequestId: Ref<string | null>;
   mainView: Ref<"chat" | "hooks" | "agent" | "plugins" | "schedule" | "settings">;
-  planMode: Ref<boolean>;
   agentMode: Ref<AgentMode>;
   assistantResponse: Ref<string>;
   assistantReasoning: Ref<string>;
@@ -95,7 +94,6 @@ export function createSendOperations(deps: SendOpsDeps) {
     pendingUploads,
     pendingPermissionRequestId,
     mainView,
-    planMode,
     agentMode,
     assistantResponse,
     assistantReasoning,
@@ -164,7 +162,6 @@ export function createSendOperations(deps: SendOpsDeps) {
       await sendChatMessage(
         sendingConversationId || null,
         rustMessages,
-        planMode.value,
         agentMode.value,
       );
     } catch (err: unknown) {

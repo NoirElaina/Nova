@@ -391,13 +391,11 @@ export async function initGitRepo(
 export async function sendChatMessage(
   conversationId: string | null,
   messages: ChatRequestMessage[],
-  planMode: boolean,
   agentMode: AgentMode,
 ): Promise<void> {
   await invoke("send_chat_message", {
     conversationId,
     messages,
-    planMode,
     agentMode,
   });
 }

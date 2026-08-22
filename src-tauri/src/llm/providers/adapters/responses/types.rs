@@ -209,6 +209,23 @@ pub(crate) enum ResponsesStreamEvent {
         text: String,
     },
 
+    // 非标准扩展：OpenRouter 等网关会直接流式推送原始推理文本（而非 summary）。
+    #[serde(rename = "response.reasoning_text.delta")]
+    ReasoningTextDelta {
+        #[serde(default)]
+        output_index: usize,
+        #[serde(default)]
+        delta: String,
+    },
+
+    #[serde(rename = "response.reasoning_text.done")]
+    ReasoningTextDone {
+        #[serde(default)]
+        output_index: usize,
+        #[serde(default)]
+        text: String,
+    },
+
     #[serde(rename = "response.function_call_arguments.delta")]
     FunctionCallArgumentsDelta { output_index: usize, delta: String },
 
@@ -244,6 +261,11 @@ pub(crate) enum ResponsesStreamEvent {
         code: Option<String>,
         message: Option<String>,
     },
+
+    // 兜底：网关后续新增的任何未知事件类型都收进这里静默忽略，
+    // 避免"unknown variant"直接终止整个回合。
+    #[serde(other)]
+    Other,
 }
 
 #[derive(Debug, Deserialize)]

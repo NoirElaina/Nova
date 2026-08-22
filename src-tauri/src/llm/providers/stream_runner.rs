@@ -98,6 +98,9 @@ pub enum Delta {
     ThinkingBlock { thinking: String, signature: String },
     /// 流内发生错误，附带错误消息（runner 会上报并返回 Err）。
     Error(String),
+    /// 非致命警告（如未识别的事件类型被容忍忽略）：不阻断回合，
+    /// runner 会通过 backend-warning 通道通知前端，确保丢弃的信息对用户可见。
+    StreamWarning(String),
 }
 
 // ─────────────────────────────────────────────
@@ -848,6 +851,15 @@ async fn process_delta(
                 Some("stream.provider_error"),
             );
             return Err(msg);
+        }
+
+        Delta::StreamWarning(msg) => {
+            crate::llm::utils::error_event::emit_backend_warning(
+                app,
+                &format!("llm.providers.{}", provider),
+                msg.clone(),
+                Some("stream.warning"),
+            );
         }
     }
     Ok(())

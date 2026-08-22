@@ -3,6 +3,7 @@ import { ref, watch } from 'vue'
 import { invoke } from '@tauri-apps/api/core'
 import { X } from 'lucide-vue-next'
 import { Button } from '@/components/ui/button'
+import { Checkbox } from '@/components/ui/checkbox'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
@@ -35,8 +36,18 @@ const emit = defineEmits<{
 
 const newModelInput = ref('')
 const saveError = ref('')
+/** 完整填写模式：Base URL 由用户手动填完整地址；
+ * 关闭时切换协议会自动补充该协议的官方默认 Base URL。 */
+const fullEntry = ref(false)
 /** 内置/默认解析值，仅作占位提示 */
 const resolvedHints = ref<Record<string, number>>({})
+
+/** 各协议的官方默认 Base URL（后端会自动补齐 /chat/completions 等路径）。 */
+const DEFAULT_BASE_URLS: Record<string, string> = {
+  openai: 'https://api.openai.com/v1',
+  anthropic: 'https://api.anthropic.com',
+  openai_responses: 'https://api.openai.com/v1',
+}
 
 const localDraft = ref<ProviderDraft>({
   id: '',
@@ -46,6 +57,17 @@ const localDraft = ref<ProviderDraft>({
   baseUrl: '',
   models: [],
 })
+
+/** 切换协议：非完整填写模式下自动补充默认 Base URL。 */
+const handleApiFormatChange = (raw: unknown) => {
+  const format = String(raw ?? '')
+  localDraft.value.apiFormat = format
+  if (fullEntry.value) return
+  const defaultUrl = DEFAULT_BASE_URLS[format]
+  if (defaultUrl) {
+    localDraft.value.baseUrl = defaultUrl
+  }
+}
 
 const normalizeModels = (models: ModelDraftItem[]): ModelDraftItem[] => {
   const seen = new Set<string>()
@@ -99,6 +121,8 @@ watch(() => props.open, async (newVal) => {
     }
   }
   newModelInput.value = ''
+  // 编辑既有配置：已填自定义 Base URL 时视为完整填写模式，避免切换协议覆盖它。
+  fullEntry.value = !!(newVal && props.draft && props.draft.baseUrl.trim())
   if (newVal) {
     await refreshHints(localDraft.value.models)
   }
@@ -183,7 +207,7 @@ const handleSave = () => {
 
           <div class="grid gap-2">
             <Label>接口协议格式 (API Format)</Label>
-            <Select v-model="localDraft.apiFormat">
+            <Select :model-value="localDraft.apiFormat" @update:model-value="handleApiFormatChange">
               <SelectTrigger>
                 <SelectValue placeholder="选择协议" />
               </SelectTrigger>
@@ -201,8 +225,21 @@ const handleSave = () => {
           </div>
 
           <div class="grid gap-2">
-            <Label for="baseUrl">Base URL</Label>
-            <Input id="baseUrl" v-model="localDraft.baseUrl" placeholder="https://api.openai.com/v1" />
+            <div class="flex items-center justify-between gap-2">
+              <Label for="baseUrl">Base URL</Label>
+              <label class="flex cursor-pointer select-none items-center gap-1.5 text-xs text-muted-foreground">
+                <Checkbox v-model:checked="fullEntry" />
+                完整填写
+              </label>
+            </div>
+            <Input
+              id="baseUrl"
+              v-model="localDraft.baseUrl"
+              :placeholder="fullEntry ? 'https://第三方中转的完整地址，例如 https://xxx.com/anthropic/v1/messages' : DEFAULT_BASE_URLS[localDraft.apiFormat] || 'https://api.openai.com/v1'"
+            />
+            <p class="text-xs text-muted-foreground">
+              {{ fullEntry ? '完整填写：手动输入中转/自定义的完整地址。' : '不勾选“完整填写”时，切换协议会自动补充官方默认地址；第三方中转请勾选后手填。' }}
+            </p>
           </div>
 
           <div class="grid gap-2">

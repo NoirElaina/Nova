@@ -1,6 +1,18 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+/// 容忍显式 `null` 的反序列化助手：缺失或 null 都取类型默认值。
+/// serde 的 `#[serde(default)]` 只处理"字段缺失"，而部分中转网关（OpenRouter
+/// 的 Anthropic 兼容层）会把 cache_*_tokens 等计数字段显式发成 null，
+/// 导致 u32 反序列化直接失败、整个回合被终止。
+pub(crate) fn null_to_default<'de, D, T>(deserializer: D) -> Result<T, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: Deserialize<'de> + Default,
+{
+    Ok(Option::<T>::deserialize(deserializer)?.unwrap_or_default())
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub(crate) struct CacheControl {
     #[serde(rename = "type")]
@@ -122,13 +134,13 @@ pub(crate) struct AnthropicTool {
 
 #[derive(Debug, Deserialize, Serialize, Clone)]
 pub(crate) struct AnthropicUsage {
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_to_default")]
     pub(crate) input_tokens: u32,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_to_default")]
     pub(crate) output_tokens: u32,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_to_default")]
     pub(crate) cache_read_input_tokens: u32,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_to_default")]
     pub(crate) cache_creation_input_tokens: u32,
 }
 
@@ -172,6 +184,11 @@ pub(crate) enum StreamEvent {
 
     #[serde(rename = "error")]
     Error { error: AnthropicStreamError },
+
+    // 兜底：网关新增的未知事件类型收进这里容忍忽略，
+    // 避免"unknown variant"直接终止整个回合（通知由适配器层发出）。
+    #[serde(other)]
+    Other,
 }
 
 #[derive(Debug, Deserialize)]
@@ -223,11 +240,12 @@ pub(crate) struct MessageDelta {
 
 #[derive(Debug, Deserialize)]
 pub(crate) struct StreamUsage {
+    #[serde(default, deserialize_with = "null_to_default")]
     pub(crate) output_tokens: u32,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_to_default")]
     pub(crate) input_tokens: u32,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_to_default")]
     pub(crate) cache_read_input_tokens: u32,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_to_default")]
     pub(crate) cache_creation_input_tokens: u32,
 }

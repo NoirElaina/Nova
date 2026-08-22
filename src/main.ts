@@ -2,7 +2,7 @@ import { createApp } from "vue";
 import App from "./App.vue";
 import BrowserWindowShell from "./components/chat/workspace/BrowserWindowShell.vue";
 import "./main.css"
-import { installBackendErrorToastListener, installGlobalErrorToastHandlers } from "./lib/toast";
+import { installBackendErrorToastListener, installBackendWarningToastListener, installGlobalErrorToastHandlers } from "./lib/toast";
 import { applyUiTheme, getStoredUiTheme } from "./lib/ui-preferences";
 
 applyUiTheme(getStoredUiTheme());
@@ -14,5 +14,6 @@ if (params.get("novaBrowserWindow") === "1") {
 } else {
   installGlobalErrorToastHandlers();
   void installBackendErrorToastListener();
+  void installBackendWarningToastListener();
   createApp(App).mount("#app");
 }

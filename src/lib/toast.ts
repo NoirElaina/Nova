@@ -20,6 +20,7 @@ export type ChatErrorPayload = {
 
 let handlersInstalled = false;
 let backendErrorListenerInstalled = false;
+let backendWarningListenerInstalled = false;
 
 export function emitChatError(payload: ChatErrorPayload): void {
   const message = payload.message?.trim();
@@ -97,6 +98,32 @@ export async function installBackendErrorToastListener(): Promise<void> {
     emitToast({
       variant: 'error',
       source: 'backend-error',
+      message,
+    });
+  });
+}
+
+/** 后端警告监听：容忍但丢弃了信息的场景（如流里未识别的事件类型），
+ *  以警告 toast 提示，让用户知道丢了什么、可据此反馈适配。 */
+export async function installBackendWarningToastListener(): Promise<void> {
+  if (backendWarningListenerInstalled || typeof window === 'undefined') {
+    return;
+  }
+
+  backendWarningListenerInstalled = true;
+  await listen<{
+    source?: string;
+    message?: string;
+    stage?: string | null;
+  }>('backend-warning', (event) => {
+    const payload = event.payload ?? {};
+    const message = `${payload.message ?? ''}`.trim();
+    if (!message) {
+      return;
+    }
+    emitToast({
+      variant: 'warning',
+      source: 'backend-warning',
       message,
     });
   });

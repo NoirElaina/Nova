@@ -1,6 +1,6 @@
 use serde::Serialize;
 use tauri::{AppHandle, Emitter};
-use tracing::error;
+use tracing::{error, warn};
 
 #[derive(Debug, Serialize, Clone)]
 #[serde(rename_all = "camelCase")]
@@ -56,4 +56,35 @@ pub fn report_backend_result<T>(
         emit_backend_error(app, source, error.clone(), stage);
     }
     result
+}
+
+/// 后端警告：不阻断流程，但必须让用户可见（前端 backend-warning 监听弹提示）。
+/// 用于"容忍但丢了信息"的场景，如流里收到未识别的事件类型被忽略。
+pub fn emit_backend_warning(
+    app: &AppHandle,
+    source: &str,
+    message: impl Into<String>,
+    stage: Option<&str>,
+) {
+    let raw_message = message.into();
+    let payload = BackendErrorEvent {
+        source: source.to_string(),
+        message: raw_message.clone(),
+        stage: stage.map(|s| s.to_string()),
+    };
+
+    warn!(
+        source = %payload.source,
+        stage = %payload.stage.as_deref().unwrap_or("-"),
+        message = %raw_message,
+        "backend warning"
+    );
+    // 广播后端警告事件给前端；失败不阻断主流程。
+    let _ = app.emit("backend-warning", payload.clone());
+    eprintln!(
+        "[backend-warning] source={} stage={} message={}",
+        payload.source,
+        payload.stage.as_deref().unwrap_or("-"),
+        raw_message
+    );
 }

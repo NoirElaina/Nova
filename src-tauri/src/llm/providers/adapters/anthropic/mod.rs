@@ -3,6 +3,7 @@ pub(crate) mod types;
 
 use reqwest::RequestBuilder;
 use serde_json::Value;
+use std::collections::HashSet;
 
 use super::reasoning::{extract_reasoning_field_text, push_inline_parts, InlineThinkExtractor};
 use crate::llm::providers::adapters::ApiAdapter;
@@ -23,6 +24,8 @@ pub struct AnthropicAdapter {
     inline_think: InlineThinkExtractor,
     pending_tool_calls: Vec<tools::ToolCallRequest>,
     pending_stop_reason: Option<String>,
+    // 本回合已通知过的未知事件类型：同类型只提示一次，避免刷屏。
+    seen_unknown_events: HashSet<String>,
 }
 
 impl AnthropicAdapter {
@@ -36,6 +39,7 @@ impl AnthropicAdapter {
             inline_think: InlineThinkExtractor::default(),
             pending_tool_calls: Vec::new(),
             pending_stop_reason: None,
+            seen_unknown_events: HashSet::new(),
         }
     }
 }
@@ -87,6 +91,12 @@ impl ApiAdapter for AnthropicAdapter {
             .get("delta")
             .and_then(extract_reasoning_field_text)
             .or_else(|| extract_reasoning_field_text(&raw));
+        // `#[serde(other)]` 兜底变体会丢弃原始 type 名，先提取出来供未知事件通知使用。
+        let event_type = raw
+            .get("type")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string();
 
         let event = match serde_json::from_value::<StreamEvent>(raw) {
             Ok(e) => e,
@@ -240,6 +250,17 @@ impl ApiAdapter for AnthropicAdapter {
             }
 
             StreamEvent::Ping => {}
+
+            // 未知事件类型：容忍忽略，但同一类型每回合只通知一次，
+            // 让用户知道有信息被丢弃、可据此扩展适配器。
+            StreamEvent::Other => {
+                if !event_type.is_empty() && self.seen_unknown_events.insert(event_type.clone()) {
+                    deltas.push(Delta::StreamWarning(format!(
+                        "Anthropic 流收到未识别的事件类型 `{}`，已忽略（本轮不再重复提示）。若该特性重要，请扩展 anthropic 适配器。",
+                        event_type
+                    )));
+                }
+            }
         }
 
         Ok(deltas)
@@ -259,4 +280,53 @@ pub fn estimate_prompt_tokens(
     conversation_id: Option<&str>,
 ) -> Result<ProviderPromptEstimate, ProviderTurnError> {
     prompt::build_request(app, messages, agent_mode, conversation_id).map(|built| built.estimate)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // 回归：OpenRouter 的 Anthropic 兼容层把 usage 计数字段显式发成 null（报文取自生产抓包），
+    // 旧类型定义直接报 "invalid type: null, expected u32" 终止回合；修复后应按 0 容忍。
+    #[test]
+    fn parses_message_start_with_null_usage_fields() {
+        let mut adapter = AnthropicAdapter::new();
+        let data = r#"{"type":"message_start","message":{"id":"gen-1","type":"message","role":"assistant","container":null,"content":[],"model":"deepseek/deepseek-v4-pro","stop_reason":null,"stop_details":null,"stop_sequence":null,"usage":{"input_tokens":0,"output_tokens":0,"output_tokens_details":null,"cache_creation_input_tokens":null,"cache_read_input_tokens":null,"cache_creation":null,"inference_geo":null,"server_tool_use":null,"service_tier":null,"speed":"standard"},"provider":"Baidu"}}"#;
+        let deltas = adapter.parse_event(data).expect("message_start 应解析成功");
+        let usage = deltas.iter().find_map(|d| match d {
+            Delta::Usage { input, output, .. } => Some((*input, *output)),
+            _ => None,
+        });
+        assert_eq!(usage, Some((Some(0), Some(0))));
+    }
+
+    // message_delta 的 usage 同样容忍 null（部分网关在收尾块上也会发 null）。
+    #[test]
+    fn parses_message_delta_with_null_usage_fields() {
+        let mut adapter = AnthropicAdapter::new();
+        let data = r#"{"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":12,"input_tokens":null,"cache_read_input_tokens":null,"cache_creation_input_tokens":null}}"#;
+        let deltas = adapter.parse_event(data).expect("message_delta 应解析成功");
+        assert!(deltas.iter().any(|d| matches!(d, Delta::Usage { output: Some(12), .. })));
+    }
+
+    // 未知事件类型：容忍不终止回合，首次警告带类型名，同类型同回合只警告一次。
+    #[test]
+    fn unknown_event_type_warns_once_and_is_ignored() {
+        let mut adapter = AnthropicAdapter::new();
+        let data = r#"{"type":"message.some_future_event","foo":1}"#;
+
+        let first = adapter.parse_event(data).expect("未知事件应被容忍");
+        let warnings: Vec<_> = first
+            .iter()
+            .filter_map(|d| match d {
+                Delta::StreamWarning(msg) => Some(msg.clone()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(warnings.len(), 1);
+        assert!(warnings[0].contains("message.some_future_event"));
+
+        let second = adapter.parse_event(data).expect("未知事件应被容忍");
+        assert!(second.is_empty());
+    }
 }

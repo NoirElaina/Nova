@@ -2,7 +2,8 @@ pub(crate) mod prompt;
 pub(crate) mod types;
 
 use reqwest::RequestBuilder;
-use std::collections::BTreeMap;
+use serde_json::Value;
+use std::collections::{BTreeMap, HashSet};
 
 use crate::llm::providers::adapters::ApiAdapter;
 use crate::llm::providers::stream_runner::{Delta, ReadyToolCall};
@@ -29,6 +30,8 @@ struct PendingReasoning {
 pub struct ResponsesAdapter {
     pending_fn_calls: BTreeMap<usize, PendingFunctionCall>,
     pending_reasoning: BTreeMap<usize, PendingReasoning>,
+    // 本回合已通知过的未知事件类型：同类型只提示一次，避免刷屏。
+    seen_unknown_events: HashSet<String>,
 }
 
 impl ResponsesAdapter {
@@ -36,6 +39,7 @@ impl ResponsesAdapter {
         Self {
             pending_fn_calls: BTreeMap::new(),
             pending_reasoning: BTreeMap::new(),
+            seen_unknown_events: HashSet::new(),
         }
     }
 }
@@ -156,7 +160,22 @@ impl ApiAdapter for ResponsesAdapter {
             return Ok(Vec::new());
         }
 
-        let event: ResponsesStreamEvent = serde_json::from_str(data).map_err(|e| {
+        // 先解析为 Value 提取事件类型：`#[serde(other)]` 兜底变体会丢弃原始 type 名，
+        // 而未知事件的通知需要带上类型名才能定位适配缺口。
+        let value: Value = serde_json::from_str(data).map_err(|e| {
+            format!(
+                "Failed to parse Responses API SSE event JSON: {}. Data: {}",
+                e,
+                truncate_for_log(data, 1200)
+            )
+        })?;
+        let event_type = value
+            .get("type")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string();
+
+        let event: ResponsesStreamEvent = serde_json::from_value(value).map_err(|e| {
             format!(
                 "Failed to parse Responses API SSE event: {}. Data: {}",
                 e,
@@ -234,6 +253,29 @@ impl ApiAdapter for ResponsesAdapter {
             }
 
             ResponsesStreamEvent::ReasoningSummaryTextDone {
+                output_index, text, ..
+            } => {
+                if !text.is_empty() {
+                    let entry = self.pending_reasoning.entry(output_index).or_default();
+                    if entry.summary.is_empty() {
+                        entry.summary = text.clone();
+                        deltas.push(Delta::Reasoning(text));
+                    }
+                }
+            }
+
+            // OpenRouter 等网关直推的原始推理文本：与 summary 同样处理。
+            ResponsesStreamEvent::ReasoningTextDelta {
+                output_index, delta, ..
+            } => {
+                if !delta.is_empty() {
+                    let entry = self.pending_reasoning.entry(output_index).or_default();
+                    entry.summary.push_str(&delta);
+                    deltas.push(Delta::Reasoning(delta));
+                }
+            }
+
+            ResponsesStreamEvent::ReasoningTextDone {
                 output_index, text, ..
             } => {
                 if !text.is_empty() {
@@ -337,9 +379,58 @@ impl ApiAdapter for ResponsesAdapter {
                     message.unwrap_or_else(|| "unknown error".to_string())
                 ));
             }
+
+            // 未知事件类型：容忍忽略，但同一类型每回合只通知一次，
+            // 让用户知道有信息被丢弃、可据此扩展适配器。
+            ResponsesStreamEvent::Other => {
+                if !event_type.is_empty() && self.seen_unknown_events.insert(event_type.clone()) {
+                    deltas.push(Delta::StreamWarning(format!(
+                        "Responses API 收到未识别的事件类型 `{}`，已忽略（本轮不再重复提示）。若该特性重要，请扩展 responses 适配器。",
+                        event_type
+                    )));
+                }
+            }
         }
 
         Ok(deltas)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // 回归：OpenRouter 直推原始推理文本（报文取自生产抓包），
+    // 旧枚举无此变体直接报 unknown variant 终止回合。
+    #[test]
+    fn parses_reasoning_text_delta() {
+        let mut adapter = ResponsesAdapter::new();
+        let data = r#"{"type":"response.reasoning_text.delta","output_index":0,"item_id":"rs_tmp_ovr9b5057r","content_index":0,"delta":"The","sequence_number":4}"#;
+        let deltas = adapter.parse_event(data).expect("reasoning_text.delta 应解析成功");
+        assert!(deltas.iter().any(|d| matches!(d, Delta::Reasoning(text) if text == "The")));
+    }
+
+    // 网关未来新增的未知事件类型：容忍不终止回合，且首次收到时发出警告（带类型名），
+    // 同一类型同回合只警告一次。
+    #[test]
+    fn unknown_event_type_warns_once_and_is_ignored() {
+        let mut adapter = ResponsesAdapter::new();
+        let data = r#"{"type":"response.some_future_event","foo":1}"#;
+
+        let first = adapter.parse_event(data).expect("未知事件应被容忍");
+        let warnings: Vec<_> = first
+            .iter()
+            .filter_map(|d| match d {
+                Delta::StreamWarning(msg) => Some(msg.clone()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(warnings.len(), 1);
+        assert!(warnings[0].contains("response.some_future_event"));
+
+        // 同类型第二次出现：不再重复警告。
+        let second = adapter.parse_event(data).expect("未知事件应被容忍");
+        assert!(second.is_empty());
     }
 }
 

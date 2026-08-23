@@ -1,12 +1,17 @@
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue';
 import { readSessionFile, type SessionFileMeta } from '../../../features/chat/services/chat-api';
+import WorkspaceOverviewTab from './WorkspaceOverviewTab.vue';
 
 const props = defineProps<{
   files: SessionFileMeta[];
   selectedFileId?: string | null;
   conversationId?: string | null;
 }>();
+
+/** 子视图：会话文件（上传）/ 工作区目录（项目树），合并前分属两个页签。 */
+type FilesView = 'session' | 'workspace';
+const activeView = ref<FilesView>('session');
 
 // 用 filename 作为唯一标识（后端不再返回 readPath）
 const selectedFilename = ref<string | null>(null);
@@ -106,14 +111,39 @@ watch(
 </script>
 
 <template>
-  <div class="flex h-full min-h-0 bg-white text-[#202124] dark:bg-[#1e1e1e] dark:text-[#ececec]">
-    <aside class="flex w-[280px] shrink-0 flex-col border-r border-[#eef0f3] dark:border-[#2c2c2c]">
-      <!-- 列表头：标题 + 计数，不再套内嵌卡片 -->
-      <div class="flex h-10 shrink-0 items-center justify-between px-3">
-        <span class="text-[13px] font-medium text-[#202124] dark:text-[#ececec]">会话文件</span>
-        <span class="rounded-full bg-[#f3f4f6] px-2 py-0.5 text-[11px] text-[#6b7280] dark:bg-white/5 dark:text-[#aaa]">{{ files.length }}</span>
-      </div>
+  <div class="flex h-full min-h-0 flex-col bg-white text-[#202124] dark:bg-[#1e1e1e] dark:text-[#ececec]">
+    <!-- 子视图切换：会话文件 / 工作区目录 -->
+    <div class="flex h-10 shrink-0 items-center gap-0.5 border-b border-[#eef0f3] px-2 dark:border-[#2c2c2c]">
+      <button
+        type="button"
+        class="flex h-7 items-center gap-1.5 rounded-lg px-2 text-[12px] transition-colors"
+        :class="activeView === 'session'
+          ? 'bg-[#eef2f7] font-medium text-[#111827] dark:bg-white/10 dark:text-[#ececec]'
+          : 'text-[#64748b] hover:bg-[#f5f6f8] hover:text-[#334155] dark:text-[#8a8a8a] dark:hover:bg-white/5 dark:hover:text-[#ccc]'"
+        @click="activeView = 'session'"
+      >
+        会话文件
+        <span class="rounded-full bg-black/5 px-1.5 py-0.5 text-[10px] text-[#64748b] dark:bg-white/10 dark:text-[#cbd5e1]">{{ files.length }}</span>
+      </button>
+      <button
+        type="button"
+        class="flex h-7 items-center gap-1.5 rounded-lg px-2 text-[12px] transition-colors"
+        :class="activeView === 'workspace'
+          ? 'bg-[#eef2f7] font-medium text-[#111827] dark:bg-white/10 dark:text-[#ececec]'
+          : 'text-[#64748b] hover:bg-[#f5f6f8] hover:text-[#334155] dark:text-[#8a8a8a] dark:hover:bg-white/5 dark:hover:text-[#ccc]'"
+        @click="activeView = 'workspace'"
+      >
+        工作区目录
+      </button>
+    </div>
 
+    <!-- 工作区目录树（独立自含组件，直接嵌入） -->
+    <WorkspaceOverviewTab v-if="activeView === 'workspace'" :conversationId="conversationId ?? null" />
+
+    <!-- 会话文件：左列表右预览 -->
+    <template v-else>
+    <div class="flex min-h-0 flex-1">
+    <aside class="flex w-[280px] shrink-0 flex-col border-r border-[#eef0f3] dark:border-[#2c2c2c]">
       <div v-if="files.length === 0" class="px-3 py-4 text-[13px] leading-6 text-[#6b7280] dark:text-[#aaa]">
         当前会话还没有会话文件。上传文件并发送后会出现在这里。
       </div>
@@ -174,5 +204,7 @@ watch(
         </div>
       </div>
     </section>
+    </div>
+    </template>
   </div>
 </template>

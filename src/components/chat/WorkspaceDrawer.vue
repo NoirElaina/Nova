@@ -5,8 +5,6 @@ import {
   FileText,
   FolderOpen,
   Globe,
-  LayoutGrid,
-  ListChecks,
   Route,
   SquareTerminal,
   X,
@@ -17,9 +15,7 @@ import type { SessionFileMeta } from '../../features/chat/services/chat-api';
 import CodeDiffTab from './workspace/CodeDiffTab.vue';
 import FilesTab from './workspace/FilesTab.vue';
 import BrowserTab from './workspace/BrowserTab.vue';
-import PlanTab from './workspace/PlanTab.vue';
 import TraceTab from './workspace/TraceTab.vue';
-import WorkspaceOverviewTab from './workspace/WorkspaceOverviewTab.vue';
 
 const TerminalTab = defineAsyncComponent(() => import('./workspace/TerminalTab.vue'));
 
@@ -29,7 +25,7 @@ const emit = defineEmits<{
   (e: 'resize-end'): void;
 }>();
 
-type TabId = 'workspace' | 'plan' | 'diff' | 'files' | 'terminal' | 'browser' | 'trace';
+type TabId = 'files' | 'diff' | 'terminal' | 'browser' | 'trace';
 
 const props = defineProps<{
   open: boolean;
@@ -46,13 +42,12 @@ const props = defineProps<{
   width?: number;
 }>();
 
-const activeTab = ref<TabId>('workspace');
+const activeTab = ref<TabId>('files');
 
+// 工作区目录树已并入"文件"页签的子视图；计划已拆为独立侧边面板（PlanPanel）。
 const tabs: { id: TabId; label: string; icon: Component }[] = [
-  { id: 'workspace', label: '工作区', icon: LayoutGrid },
-  { id: 'plan', label: '计划', icon: ListChecks },
-  { id: 'diff', label: '审查', icon: FileText },
   { id: 'files', label: '文件', icon: FolderOpen },
+  { id: 'diff', label: '审查', icon: FileText },
   { id: 'terminal', label: '终端', icon: SquareTerminal },
   { id: 'browser', label: '浏览器', icon: Globe },
   { id: 'trace', label: '轨迹', icon: Route },
@@ -171,25 +166,15 @@ onBeforeUnmount(() => {
           </div>
 
           <div class="min-h-0 flex-1 overflow-hidden">
-          <WorkspaceOverviewTab
-            v-if="activeTab === 'workspace'"
-            :conversationId="conversationId ?? null"
-          />
-
-          <PlanTab
-            v-else-if="activeTab === 'plan'"
+          <FilesTab
+            v-if="activeTab === 'files'"
+            :files="files"
+            :selectedFileId="selectedFileId"
             :conversationId="conversationId ?? null"
           />
 
           <CodeDiffTab
             v-else-if="activeTab === 'diff'"
-            :conversationId="conversationId ?? null"
-          />
-
-          <FilesTab
-            v-else-if="activeTab === 'files'"
-            :files="files"
-            :selectedFileId="selectedFileId"
             :conversationId="conversationId ?? null"
           />
 

@@ -1,6 +1,6 @@
 // 会话 plan 查询命令入口。
 //
-// plan 文件由 exit_plan_mode 工具写入 {app_data_dir}/plans/{conversation_id}.md，
+// plan 文件由 write_plan 工具写入 {app_data_dir}/plans/{conversation_id}.md，
 // 每会话仅一份。前端加载会话时通过此命令读取，用于渲染结构化 Plan 面板。
 
 use tauri::AppHandle;

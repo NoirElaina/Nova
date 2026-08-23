@@ -9,6 +9,7 @@ import ChatScreen from "./components/chat/ChatScreen.vue";
 import ExecutionTracePopover from "./components/chat/files/ExecutionTracePopover.vue";
 import TodoProgressPopover from "./components/chat/files/TodoProgressPopover.vue";
 import WorkspaceDrawer from "./components/chat/WorkspaceDrawer.vue";
+import PlanPanel from "./components/chat/PlanPanel.vue";
 import HooksConfigScreen from "./components/hooks/HooksConfigScreen.vue";
 import AgentConfigScreen from "./components/agent/AgentConfigScreen.vue";
 import PluginMarketScreen from "./components/plugins/PluginMarketScreen.vue";
@@ -40,7 +41,7 @@ import {
   clampDrawerWidth,
 } from "./lib/ui-preferences";
 
-type WorkspaceTabId = "workspace" | "plan" | "diff" | "files" | "terminal" | "browser" | "trace";
+type WorkspaceTabId = "files" | "diff" | "terminal" | "browser" | "trace";
 type BrowserOpenRequest = {
   conversationId?: string;
 };
@@ -186,7 +187,9 @@ const activeWorkspaceName = computed(() => {
 
 
 const isDrawerOpen = ref(false);
-const activeWorkspaceTab = ref<WorkspaceTabId>("workspace");
+const activeWorkspaceTab = ref<WorkspaceTabId>("files");
+/** 计划侧边面板：AI 产出计划后自动弹出，也可从输入框上方小框打开。 */
+const isPlanPanelOpen = ref(false);
 const browserOpenRequestKey = ref(0);
 
 // 侧边栏宽度：拖动时实时更新，松手后持久化到 localStorage。
@@ -370,7 +373,7 @@ onMounted(() => {
     console.warn("Browser annotation listener failed:", error);
   });
 
-  // exit_plan_mode 保存 plan 后自动打开抽屉的「计划」页，让计划直接可见。
+  // write_plan 保存 plan 后自动弹出计划侧边面板，让计划直接可见。
   void listen<{ conversationId?: string | null }>("plan-updated", (event) => {
     const payloadConversationId = event.payload?.conversationId?.trim();
     if (
@@ -381,8 +384,7 @@ onMounted(() => {
       return;
     }
     if (mainView.value !== "chat") return;
-    activeWorkspaceTab.value = "plan";
-    isDrawerOpen.value = true;
+    isPlanPanelOpen.value = true;
   }).then((unlisten) => {
     unlistenPlanUpdated = unlisten;
   }).catch((error) => {
@@ -536,6 +538,7 @@ onBeforeUnmount(() => {
             :chatError="chatError"
             :activeAgent="displayAgent"
             :conversationId="activeConversationId"
+            @open-plan="isPlanPanelOpen = true"
             @remove-agent="removeConversationAgent"
             @send="handleSendMessage"
             @save-user-edit="handleEditMessage($event)"
@@ -564,6 +567,14 @@ onBeforeUnmount(() => {
           </div>
         </div>
       </section>
+
+      <!-- 计划侧边面板：独立于工作区抽屉，只在有计划交互时弹出 -->
+      <PlanPanel
+        v-if="mainView === 'chat'"
+        :open="isPlanPanelOpen"
+        :conversationId="activeConversationId || null"
+        @close="isPlanPanelOpen = false"
+      />
 
       <WorkspaceDrawer
         v-if="mainView === 'chat'"

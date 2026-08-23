@@ -81,9 +81,8 @@ export type AssistantTranscriptSegment =
       toolIds: string[];
     };
 
-// 对话执行模式：agent = 默认；plan 由模型通过 enter_plan_mode 工具自行进入，
-// 不再提供手动选择入口。
-export type AgentMode = "agent" | "plan";
+// 对话执行模式：仅 agent（计划由 write_plan 工具直接写入，无独立计划模式）。
+export type AgentMode = "agent";
 
 export type AttachmentKind = "document" | "image";
 
@@ -245,15 +244,4 @@ export interface AskUserAnswerItem {
 export interface AskUserAnswerSubmission {
   answers: Record<string, string | string[]>;
   answerItems?: AskUserAnswerItem[];
-}
-
-export interface PlanModeChangePayload {
-  type?: string;
-  mode?: string;
-  goal?: string;
-  summary?: string;
-  message?: string;
-  /** exit_plan_mode 保存的完整计划文本（Markdown）。 */
-  plan?: string;
-  planUpdatedAt?: number;
 }

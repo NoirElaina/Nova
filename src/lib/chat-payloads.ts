@@ -1,7 +1,6 @@
 import type {
   AskUserAnswerSubmission,
   NeedsUserInputPayload,
-  PlanModeChangePayload,
 } from "./chat-types";
 
 export type PermissionActionName =
@@ -144,20 +143,6 @@ export function parseNeedsUserInput(raw: string): NeedsUserInputPayload | null {
         allow_freeform: parsed.allow_freeform ?? true,
         questions: parsed.questions,
       };
-    }
-  } catch {
-    return null;
-  }
-  return null;
-}
-
-export function parsePlanModeChange(raw: string): PlanModeChangePayload | null {
-  const trimmed = raw.trim();
-  if (!trimmed) return null;
-  try {
-    const parsed = JSON.parse(trimmed) as PlanModeChangePayload;
-    if (parsed?.type === "plan_mode_change" && parsed.mode) {
-      return parsed;
     }
   } catch {
     return null;

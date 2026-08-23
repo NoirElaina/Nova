@@ -8,7 +8,7 @@ const props = defineProps<{
   conversationId: string | null;
 }>();
 
-/** plan 文件由 exit_plan_mode 工具写入；这里只负责读取与实时刷新。 */
+/** plan 文件由 write_plan 工具写入；这里只负责读取与实时刷新。 */
 const planContent = ref('');
 const planUpdatedAt = ref(0);
 

@@ -15,6 +15,7 @@ import type {
 import type { LiveTurnStage } from '../../features/chat/controllers/chat-controller-types';
 import InputArea from '../layout/InputArea.vue';
 import AskUserInputDialog from './AskUserInputDialog.vue';
+import PlanChip from './PlanChip.vue';
 import AssistantMessageBubble from './messages/AssistantMessageBubble.vue';
 import AssistantTranscript from './messages/AssistantTranscript.vue';
 import BranchSidebar from './branch/BranchSidebar.vue';
@@ -66,6 +67,7 @@ const emit = defineEmits<{
   (e: 'remove-upload', index: number): void;
   (e: 'compact'): void;
   (e: 'dismiss-error'): void;
+  (e: 'open-plan'): void;
 }>();
 
 const chatAreaRef = ref<HTMLElement | null>(null);
@@ -923,6 +925,8 @@ defineExpose({
 
     <div class="w-full bg-transparent px-4 pt-6 pb-6">
       <div class="w-full max-w-[900px] mx-auto">
+        <!-- 计划小框：当前会话有计划时显示，点击打开计划侧边面板 -->
+        <PlanChip :conversationId="conversationId" @open="emit('open-plan')" />
         <AskUserInputDialog
           v-if="pendingQuestion"
           :request="pendingQuestion"

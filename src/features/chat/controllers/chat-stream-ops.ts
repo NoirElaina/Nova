@@ -2,11 +2,9 @@ import type { Ref } from "vue";
 import { emitToast } from "../../../lib/toast";
 import {
   parseNeedsUserInput,
-  parsePlanModeChange,
   renderToolResult,
 } from "../../../lib/chat-payloads";
 import type {
-  AgentMode,
   ChatMessage,
   ChatMessageEvent,
   ContextCompactSummary,
@@ -197,7 +195,6 @@ type StreamOpsDeps = {
   activeRuntimeRefs: ActiveRuntimeRefs;
   activeRuntimeState: ConversationTurnRuntimeState;
   activeConversationId: Ref<string>;
-  agentMode: Ref<AgentMode>;
   messages: Ref<ChatMessage[]>;
   runtimeStateByConversation: Map<string, ConversationTurnRuntimeState>;
   persistMessage: (message: ChatMessage, conversationId?: string) => Promise<void>;
@@ -215,7 +212,6 @@ export function createChatStreamOperations(deps: StreamOpsDeps) {
     activeRuntimeRefs,
     activeRuntimeState,
     activeConversationId,
-    agentMode,
     messages,
     runtimeStateByConversation,
     persistMessage,
@@ -657,14 +653,6 @@ export function createChatStreamOperations(deps: StreamOpsDeps) {
       }
 
       if (result) {
-        if (isActive) {
-          const planModeChange = parsePlanModeChange(result);
-          if (planModeChange) {
-            const nextIsPlanMode = planModeChange.mode === "plan";
-            agentMode.value = nextIsPlanMode ? "plan" : "agent";
-          }
-        }
-
         const needsUserInput = parseNeedsUserInput(result);
         if (needsUserInput) {
           state.pendingPermissionRequestId = null;

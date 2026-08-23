@@ -212,7 +212,6 @@ export function useChatController() {
     activeRuntimeRefs,
     activeRuntimeState,
     activeConversationId,
-    agentMode,
     messages,
     runtimeStateByConversation,
     persistMessage: conversationOps.persistMessage,

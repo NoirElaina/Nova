@@ -1,6 +1,6 @@
 // 会话计划（plan）文件存储。
 //
-// 每个会话只保留一份最新 plan：exit_plan_mode 工具执行时把完整计划写入
+// 每个会话只保留一份最新 plan：write_plan 工具执行时把完整计划写入
 // {app_data_dir}/plans/{conversation_id}.md，覆盖旧文件。
 // 与 session_files 不同，plan 永远存在应用数据目录，不进用户工作区。
 

@@ -76,7 +76,7 @@ export type SessionFileMeta = {
   createdAt: number;
 };
 
-/** 会话计划：exit_plan_mode 工具写入应用数据 plans 目录，每会话仅一份。 */
+/** 会话计划：write_plan 工具写入应用数据 plans 目录，每会话仅一份。 */
 export type ConversationPlan = {
   content: string;
   updatedAt: number;

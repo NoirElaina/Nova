@@ -1,29 +1,29 @@
-use crate::llm::tools::{app_tool, AppExecuteFuture, ToolDisclosure, ToolOutcome, ToolRegistration};
 use crate::llm::services::plan_files;
+use crate::llm::tools::{app_tool, AppExecuteFuture, ToolDisclosure, ToolOutcome, ToolRegistration};
 use crate::llm::types::Tool;
 use serde_json::{json, Value};
 use tauri::{AppHandle, Emitter, Manager};
 
-// 注册 exit_plan_mode，声明它是无权限要求的同步状态切换工具。
+// 注册 write_plan：唯一的计划工具，直接写入计划，无进入/退出模式概念。
 pub(super) fn registration() -> ToolRegistration {
     app_tool(tool, execute_with_app_boxed, false, None, ToolDisclosure::Core)
 }
 
-// 返回暴露给模型的工具元数据，告诉模型这个工具用于退出 plan 模式。
+// 返回暴露给模型的工具元数据：直接把完整计划写入会话。
 pub fn tool() -> Tool {
     Tool {
-        name: "exit_plan_mode".into(),
-        description: "Exit plan mode after the planning phase is complete and resume normal implementation work. You MUST pass the full final plan text via `plan`; it is saved as the conversation plan and shown to the user as a structured panel.".into(),
+        name: "write_plan".into(),
+        description: "Write or update the conversation plan directly. Pass the full plan text via `plan`; it is saved as the conversation plan and shown to the user as a structured panel. Use it when the user asks for a plan or before starting a complex multi-step task. There is no separate plan mode — keep working normally after writing the plan.".into(),
         input_schema: json!({
             "type": "object",
             "properties": {
                 "plan": {
                     "type": "string",
-                    "description": "REQUIRED. The full final plan in Markdown: a concise title, context/background, goal, numbered implementation steps, and verification notes."
+                    "description": "REQUIRED. The full plan in Markdown: a concise title, context/background, goal, numbered implementation steps, and verification notes."
                 },
                 "summary": {
                     "type": "string",
-                    "description": "Optional one-line summary of the agreed plan"
+                    "description": "Optional one-line summary of the plan"
                 }
             },
             "required": ["plan"]
@@ -31,8 +31,8 @@ pub fn tool() -> Tool {
     }
 }
 
-// 读取 plan 全文并写入应用数据 plans 目录（每会话仅一份，覆盖旧版），
-// 再返回 plan_mode_change payload 给前端切换模式并刷新 Plan 面板。
+// 把计划全文写入应用数据 plans 目录（每会话仅一份，覆盖旧版），
+// 并通知前端刷新计划面板。
 fn execute_local(
     app: &AppHandle,
     conversation_id: Option<&str>,
@@ -43,7 +43,7 @@ fn execute_local(
         .and_then(|v| v.as_str())
         .map(|s| s.trim().to_string())
         .filter(|s| !s.is_empty())
-        .ok_or_else(|| "exit_plan_mode 需要 plan 参数（完整计划文本）".to_string())?;
+        .ok_or_else(|| "write_plan 需要 plan 参数（完整计划文本）".to_string())?;
 
     let summary = input
         .get("summary")
@@ -55,17 +55,15 @@ fn execute_local(
     emit_plan_updated(app, conversation_id, &saved.content, saved.updated_at);
 
     Ok(json!({
-        "type": "plan_mode_change",
-        "mode": "default",
+        "type": "plan_saved",
         "summary": summary,
-        "plan": saved.content,
         "planUpdatedAt": saved.updated_at,
-        "message": "Exited plan mode. The plan was saved and shown to the user. You may now implement the approved plan."
+        "message": "The plan was saved and shown to the user. Continue working normally."
     })
     .to_string())
 }
 
-// 通知前端刷新 Plan 面板（与 TodoWrite 的 todo-updated 事件模式一致）。
+// 通知前端刷新计划面板（与 TodoWrite 的 todo-updated 事件模式一致）。
 fn emit_plan_updated(
     app: &AppHandle,
     conversation_id: Option<&str>,

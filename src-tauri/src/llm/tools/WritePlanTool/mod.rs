@@ -1,7 +1,7 @@
-mod exit_plan_mode;
+mod write_plan;
 
 use super::ToolRegistration;
 
 pub(crate) fn registrations() -> Vec<ToolRegistration> {
-    vec![exit_plan_mode::registration()]
+    vec![write_plan::registration()]
 }

@@ -31,7 +31,7 @@ pub async fn send_chat_message(
     // 标记本轮开始，初始化取消标志位。
     crate::llm::cancellation::begin_turn(conversation_scope.as_deref());
 
-    // 未显式提供模式时默认 Agent；Plan 由 enter_plan_mode 工具切入后随请求带上。
+    // 未显式提供模式时默认 Agent（目前也仅有 Agent 一种模式）。
     let resolved_mode = agent_mode.unwrap_or(AgentMode::Agent);
 
     info!(

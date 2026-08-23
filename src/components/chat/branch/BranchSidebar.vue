@@ -128,21 +128,21 @@ const drawerTop = '56px';
     <Transition name="branch-drawer">
       <aside
         v-if="visible && session"
-        class="branch-drawer fixed right-4 bottom-4 z-[45] flex w-[400px] max-w-[calc(100vw-32px)] flex-col overflow-hidden rounded-2xl border border-[#e5e7eb] bg-white/95 shadow-[0_12px_40px_rgba(15,23,42,0.12)] backdrop-blur-[10px] dark:border-[#333] dark:bg-[#242424]/95 dark:shadow-[0_12px_40px_rgba(0,0,0,0.4)]"
+        class="branch-drawer fixed right-4 bottom-4 z-[45] flex w-[400px] max-w-[calc(100vw-32px)] flex-col overflow-hidden rounded-2xl border border-[#e7e9ee] bg-white/95 shadow-[0_12px_40px_rgba(15,23,42,0.12)] backdrop-blur-[10px] dark:border-[#343434] dark:bg-[#242424]/95 dark:shadow-[0_12px_40px_rgba(0,0,0,0.4)]"
         :style="{ top: drawerTop, height: 'calc(100vh - 56px - 32px)' }"
         role="complementary"
         aria-label="分支对话"
       >
-        <!-- 头部 -->
-        <header class="flex shrink-0 items-center gap-2 border-b border-[#e5e7eb] px-4 py-3 dark:border-[#333]">
-          <div class="text-[15px] font-semibold text-[#111827] dark:text-[#ececec]">分支问答</div>
-          <div class="flex-1 text-[12px] text-[#94a3b8] dark:text-[#737373]" title="分支内容仅保存在内存，关闭后不保留">
+        <!-- 头部：与其它面板工具栏同规格（40px + 细分隔线） -->
+        <header class="flex h-10 shrink-0 items-center gap-2 border-b border-[#eef0f3] px-3 dark:border-[#2c2c2c]">
+          <div class="text-[13px] font-medium text-[#111827] dark:text-[#ececec]">分支问答</div>
+          <div class="flex-1 truncate text-[11px] text-[#94a3b8] dark:text-[#737373]" title="分支内容仅保存在内存，关闭后不保留">
             临时 · 不保存
           </div>
           <Button
             variant="ghost"
             size="sm"
-            class="h-7 gap-1 rounded-md px-2 text-[12px] text-[#64748b] hover:bg-[#f1f5f9] hover:text-[#111827] dark:text-[#a3a3a3] dark:hover:bg-white/8 dark:hover:text-[#ececec]"
+            class="h-7 gap-1 rounded-md px-2 text-[12px] text-[#64748b] hover:bg-[#f7f7f8] hover:text-[#111827] dark:text-[#a3a3a3] dark:hover:bg-white/8 dark:hover:text-[#ececec]"
             :disabled="session.messages.length === 0 || session.phase === 'running' || session.exported"
             :title="session.exported ? '已保存为新会话' : '把分支内容保存为正式会话'"
             @click="handleExport"
@@ -157,7 +157,7 @@ const drawerTop = '56px';
           <Button
             variant="ghost"
             size="icon-sm"
-            class="h-7 w-7 rounded-md text-[#64748b] hover:bg-[#f1f5f9] hover:text-[#111827] dark:text-[#a3a3a3] dark:hover:bg-white/8 dark:hover:text-[#ececec]"
+            class="h-7 w-7 rounded-md text-[#64748b] hover:bg-[#f7f7f8] hover:text-[#111827] dark:text-[#a3a3a3] dark:hover:bg-white/8 dark:hover:text-[#ececec]"
             aria-label="关闭分支面板"
             title="关闭并丢弃该分支"
             @click="handleClose"
@@ -170,15 +170,15 @@ const drawerTop = '56px';
         </header>
 
         <!-- 多分支切换 chips -->
-        <div v-if="branchList.length > 1" class="flex shrink-0 gap-1.5 overflow-x-auto px-4 pt-2.5">
+        <div v-if="branchList.length > 1" class="flex shrink-0 gap-1.5 overflow-x-auto px-3 pt-2">
           <button
             v-for="item in branchList"
             :key="item.branchId"
             type="button"
             class="inline-flex shrink-0 cursor-pointer items-center gap-1 whitespace-nowrap rounded-full border px-2.5 py-1 text-[11px] transition-colors"
             :class="item.branchId === session.branchId
-              ? 'border-[#cbd5e1] bg-[#f1f5f9] font-semibold text-[#111827] dark:border-[#4a4a4a] dark:bg-white/8 dark:text-[#ececec]'
-              : 'border-[#e2e8f0] bg-[#f8fafc] text-[#64748b] hover:border-[#cbd5e1] dark:border-[#333] dark:bg-white/4 dark:text-[#94a3b8] dark:hover:border-[#4a4a4a]'"
+              ? 'border-transparent bg-[#eef2f7] font-medium text-[#111827] dark:border-transparent dark:bg-white/10 dark:text-[#ececec]'
+              : 'border-[#e7e9ee] text-[#64748b] hover:bg-[#f7f7f8] dark:border-[#343434] dark:text-[#94a3b8] dark:hover:bg-white/5'"
             :title="item.quotedText"
             @click="setActiveBranch(item.branchId)"
           >
@@ -197,22 +197,22 @@ const drawerTop = '56px';
           </button>
         </div>
 
-        <!-- 引用内容 -->
+        <!-- 引用内容：更轻量的底色块，去掉粗边框 -->
         <div
-          class="mx-4 mt-2.5 shrink-0 rounded-xl border border-[#e5e7eb] border-l-[3px] border-l-[#cbd5e1] bg-[#f8fafc] px-3 py-2.5 dark:border-[#333] dark:border-l-[#4a4a4a] dark:bg-white/4"
+          class="mx-3 mt-2 shrink-0 rounded-lg bg-[#f5f6f8] px-2.5 py-2 dark:bg-white/5"
           :title="session.quotedText"
         >
-          <div class="mb-1 text-[10px] uppercase tracking-[0.04em] text-[#94a3b8] dark:text-[#737373]">引用自主对话</div>
-          <div class="max-h-[84px] overflow-y-auto whitespace-pre-wrap break-words text-[12px] leading-relaxed text-[#475569] dark:text-[#d4d4d4]">
+          <div class="mb-0.5 text-[10px] uppercase tracking-[0.04em] text-[#94a3b8] dark:text-[#737373]">引用自主对话</div>
+          <div class="max-h-[72px] overflow-y-auto whitespace-pre-wrap break-words text-[12px] leading-relaxed text-[#475569] dark:text-[#d4d4d4]">
             {{ session.quotedText }}
           </div>
         </div>
 
         <!-- 消息区 -->
-        <div ref="messagesEl" class="branch-scrollbar flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto px-4 py-3.5">
+        <div ref="messagesEl" class="branch-scrollbar flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto px-3 py-3">
           <template v-for="(message, index) in session.messages" :key="index">
             <div v-if="message.role === 'user'" class="flex justify-end">
-              <div class="max-w-[88%] whitespace-pre-wrap break-words rounded-xl border border-[#e5e7eb] bg-[#f3f4f6] px-3 py-2 text-[0.92rem] leading-relaxed text-[#111827] dark:border-[#3c3c3c] dark:bg-[#2d2d2d] dark:text-[#ececec]">
+              <div class="max-w-[88%] whitespace-pre-wrap break-words rounded-xl bg-[#eef2f7] px-3 py-2 text-[0.92rem] leading-relaxed text-[#111827] dark:bg-white/10 dark:text-[#ececec]">
                 {{ message.content }}
               </div>
             </div>
@@ -244,8 +244,8 @@ const drawerTop = '56px';
         </div>
 
         <!-- 输入区 -->
-        <footer class="shrink-0 border-t border-[#e5e7eb] px-4 pb-3.5 pt-3 dark:border-[#333]">
-          <div class="flex items-end gap-2 rounded-2xl border border-[#e5e7eb] bg-white p-2 pl-3 shadow-[0_1px_2px_rgba(15,23,42,0.04)] transition-colors focus-within:border-[#cbd5e1] dark:border-[#3a3a3a] dark:bg-[#2a2a2a] dark:shadow-none dark:focus-within:border-[#4a4a4a]">
+        <footer class="shrink-0 border-t border-[#eef0f3] px-3 pb-3 pt-2.5 dark:border-[#2c2c2c]">
+          <div class="flex items-end gap-2 rounded-xl border border-[#e7e9ee] bg-white p-1.5 pl-2.5 transition-colors focus-within:border-[#cbd5e1] dark:border-[#343434] dark:bg-[#2a2a2a] dark:focus-within:border-[#4a4a4a]">
             <Textarea
               ref="composerRef"
               v-model="draft"
@@ -314,12 +314,12 @@ const drawerTop = '56px';
 }
 
 .branch-scrollbar::-webkit-scrollbar-thumb {
-  background: #e2e8f0;
+  background: var(--color-border, #e5e5e5);
   border-radius: 999px;
 }
 
 .dark .branch-scrollbar::-webkit-scrollbar-thumb {
-  background: #4b5563;
+  background: #444;
 }
 
 /* 思考中跳动圆点 */

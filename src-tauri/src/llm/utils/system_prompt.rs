@@ -9,18 +9,6 @@ use crate::llm::types::AgentMode;
 // 系统提示文件名（相对工程目录 src/prompt）
 const SYSTEM_PROMPT_FILE_NAME: &str = "system_prompt.md";
 
-// 计划模式附加内容：当 agent_mode=plan 时合并到系统提示中。
-// 该段与正常模式分离方便 semantics 清晰、可测。
-const PLAN_MODE_SECTION: &str = r#"
-
-## Plan Mode
-- You are currently in plan mode.
-- In this mode, prioritize understanding the problem, exploring the codebase, identifying constraints, and proposing a concrete implementation strategy.
-- Do not edit files or run implementation tools before explicit user approval.
-- When your plan is ready, call `exit_plan_mode` and pass the full final plan in its required `plan` argument (Markdown: title, context/background, goal, numbered implementation steps, verification notes). The plan is saved automatically and shown to the user as a structured panel — you do not need to manage plan files yourself.
-- Use `ask_user_question` for extra clarifications only when needed to unblock planning decisions.
-"#;
-
 const GLOBAL_MEMORY_SECTION: &str = r#"
 
 ## Memory
@@ -144,7 +132,7 @@ Before using one, call `LoadTool` with its name (it becomes callable from the ne
 
 pub fn load_system_prompt(
     app: &AppHandle,
-    agent_mode: AgentMode,
+    _agent_mode: AgentMode,
     conversation_id: Option<&str>,
 ) -> Result<String, String> {
     // 分支问答会话：纯问答精简提示词，完全跳过主工程协议、
@@ -292,12 +280,8 @@ pub fn load_system_prompt(
         None => prompt_with_memory,
     };
 
-    // 插件提示词片段（end 锚点）：Skills 段之后、模式段之前。
+    // 插件提示词片段（end 锚点）：Skills 段之后。
     let prompt_with_memory = append_plugin_prompt_sections(prompt_with_memory, app, "end");
 
-    // 按执行模式拼接附加段。
-    match agent_mode {
-        AgentMode::Plan => Ok(format!("{}{}", prompt_with_memory, PLAN_MODE_SECTION)),
-        AgentMode::Agent => Ok(prompt_with_memory),
-    }
+    Ok(prompt_with_memory)
 }

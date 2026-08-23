@@ -144,10 +144,11 @@ pub(crate) fn hooks_file_path(app: &AppHandle) -> Result<std::path::PathBuf, Str
         .map_err(|e| format!("Failed to resolve app_data_dir for hooks.toml: {}", e))
 }
 
-/// 解析结果缓存：(mtime, 文件大小, 配置)。工具事件高频触发分发，
+/// 解析结果缓存：(文件指纹, 配置)。工具事件高频触发分发，
 /// 文件未变时避免每次重新读盘解析；保存配置时经 invalidate_hooks_cache 失效。
-static HOOKS_CACHE: std::sync::Mutex<Option<(std::time::SystemTime, u64, HooksFile)>> =
-    std::sync::Mutex::new(None);
+static HOOKS_CACHE: std::sync::Mutex<
+    Option<(crate::llm::utils::fingerprint::FileFingerprint, HooksFile)>,
+> = std::sync::Mutex::new(None);
 
 /// 失效解析缓存（保存/删除 hooks.toml 后调用）。
 pub fn invalidate_hooks_cache() {
@@ -179,15 +180,13 @@ pub(crate) fn load_hooks_file(app: &AppHandle) -> HooksFile {
         return HooksFile::default();
     }
 
-    // 缓存命中判断：mtime + 文件大小双条件（Windows mtime 精度有限，
-    // 同秒内等长覆写靠尺寸变化兼容；两者都未变则视为未变）。
-    let fingerprint = std::fs::metadata(&path)
-        .ok()
-        .and_then(|meta| meta.modified().ok().map(|mtime| (mtime, meta.len())));
-    if let Some((mtime, size)) = fingerprint {
+    // 缓存命中判断：统一文件指纹（mtime + size 双条件，
+    // Windows mtime 精度有限，同秒内等长覆写靠尺寸变化兼容）。
+    let fingerprint = crate::llm::utils::fingerprint::FileFingerprint::of(&path);
+    if let Some(fp) = fingerprint {
         if let Ok(guard) = HOOKS_CACHE.lock() {
-            if let Some((cached_mtime, cached_size, cached_file)) = guard.as_ref() {
-                if *cached_mtime == mtime && *cached_size == size {
+            if let Some((cached_fp, cached_file)) = guard.as_ref() {
+                if *cached_fp == fp {
                     return cached_file.clone();
                 }
             }
@@ -214,8 +213,8 @@ pub(crate) fn load_hooks_file(app: &AppHandle) -> HooksFile {
 
     match toml::from_str::<HooksFile>(&raw) {
         Ok(file) => {
-            if let (Some((mtime, size)), Ok(mut guard)) = (fingerprint, HOOKS_CACHE.lock()) {
-                *guard = Some((mtime, size, file.clone()));
+            if let (Some(fp), Ok(mut guard)) = (fingerprint, HOOKS_CACHE.lock()) {
+                *guard = Some((fp, file.clone()));
             }
             file
         }

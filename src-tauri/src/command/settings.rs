@@ -345,15 +345,41 @@ fn validate_provider_profiles(settings: &AppSettings) -> Result<(), String> {
     Ok(())
 }
 
+/// 设置指纹缓存（对标 claude-code settingsCache）：load_settings 是每次 provider 请求、
+/// 系统提示词组装、工具披露判定的热路径，文件未变时直接返回内存克隆，
+/// 避免重复读盘/解析/密钥解密；保存后由 invalidate_settings_cache 失效。
+static SETTINGS_CACHE: std::sync::Mutex<
+    Option<(crate::llm::utils::fingerprint::FileFingerprint, AppSettings)>,
+> = std::sync::Mutex::new(None);
+
+/// 失效设置缓存（写盘成功后调用）。
+pub fn invalidate_settings_cache() {
+    if let Ok(mut guard) = SETTINGS_CACHE.lock() {
+        *guard = None;
+    }
+}
+
 /// 内部加载设置（不走 command 错误上报），供 query/compact/window tokens 等路径复用。
 pub fn load_settings(app: &AppHandle) -> Result<AppSettings, String> {
     let path = get_settings_path(app)?;
 
-    // 首次启动还没有 settings.json 时，返回运行时默认配置。
+    // 首次启动还没有 settings.json 时，返回运行时默认配置（不进缓存）。
     if !path.exists() {
         let mut settings = AppSettings::default();
         settings.normalize_for_runtime();
         return Ok(settings);
+    }
+
+    // 指纹命中：文件未变直接返回缓存克隆。
+    let fingerprint = crate::llm::utils::fingerprint::FileFingerprint::of(&path);
+    if let Some(fp) = fingerprint {
+        if let Ok(guard) = SETTINGS_CACHE.lock() {
+            if let Some((cached_fp, cached_settings)) = guard.as_ref() {
+                if *cached_fp == fp {
+                    return Ok(cached_settings.clone());
+                }
+            }
+        }
     }
 
     let content = std::fs::read_to_string(&path)
@@ -380,6 +406,13 @@ pub fn load_settings(app: &AppHandle) -> Result<AppSettings, String> {
         }
     }
     crate::command::settings_secrets::decrypt_provider_api_keys(&mut settings);
+
+    // 写入缓存：迁移回写可能已改变文件，重新取指纹；取不到则不入缓存（下次重走完整路径）。
+    if let Some(fp) = crate::llm::utils::fingerprint::FileFingerprint::of(&path) {
+        if let Ok(mut guard) = SETTINGS_CACHE.lock() {
+            *guard = Some((fp, settings.clone()));
+        }
+    }
     Ok(settings)
 }
 
@@ -409,6 +442,8 @@ pub fn save_settings_inner(app: &AppHandle, settings: AppSettings) -> Result<(),
     let content = serde_json::to_string_pretty(&normalized).map_err(|e| e.to_string())?;
     // 写入文件。
     std::fs::write(path, content).map_err(|e| e.to_string())?;
+    // 写盘成功后立即失效缓存，下次加载重走完整路径。
+    invalidate_settings_cache();
     crate::logging::set_file_logging_enabled(normalized.enable_app_log);
     Ok(())
 }

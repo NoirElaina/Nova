@@ -124,6 +124,18 @@ pub fn refresh_conversation_agent_cache(entries: &[(String, Option<String>)]) {
     }
 }
 
+/// 驱逐会话挂载缓存条目（会话删除时由缓存注册表统一调用）；`None` 全量清空。
+pub fn evict_conversation_agent_cache(conversation_id: Option<&str>) {
+    if let Ok(mut cache) = conversation_agent_cache().write() {
+        match conversation_id {
+            Some(id) => {
+                cache.remove(id.trim());
+            }
+            None => cache.clear(),
+        }
+    }
+}
+
 /// 异步刷新单个会话的缓存（轮次开始时兜底，防止冷启动读不到）。
 pub async fn refresh_single_conversation_agent(app: &AppHandle, conversation_id: &str) {
     let normalized = conversation_id.trim();

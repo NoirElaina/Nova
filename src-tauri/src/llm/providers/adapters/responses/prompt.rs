@@ -290,6 +290,8 @@ pub(crate) fn build_request(
             },
         },
         stream: true,
+        // 会话级缓存亲和键：同一会话的所有请求共用一个 key（对标 codex 用 session_id）。
+        prompt_cache_key: conversation_id.map(|id| format!("nova:{}", id)),
     };
 
     let input_tokens = token_counter::estimate_tokens_for_serializable(&request)

@@ -65,6 +65,18 @@ pub async fn refresh_workspace_cache(entries: &[(String, Option<String>)]) {
     }
 }
 
+// 驱逐会话工作区缓存条目（会话删除时由缓存注册表统一调用）；`None` 全量清空。
+pub fn evict_conversation_workspace(conversation_id: Option<&str>) {
+    if let Ok(mut cache) = conversation_workspace_cache().write() {
+        match conversation_id {
+            Some(id) => {
+                cache.remove(id);
+            }
+            None => cache.clear(),
+        }
+    }
+}
+
 fn normalize_conversation_id(conversation_id: Option<&str>) -> Option<String> {
     conversation_id
         .map(str::trim)

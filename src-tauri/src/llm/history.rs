@@ -775,6 +775,8 @@ pub async fn clear_history(app: &AppHandle, conversation_id: Option<String>) -> 
         let _ = crate::llm::services::plan_files::delete_conversation_plan(app, Some(&id));
         crate::llm::services::shell_sessions::close_session(Some(&id)).await;
         let _ = crate::llm::services::user_terminal::stop_session(Some(&id));
+        // 内存级 per-conversation 缓存统一回收（注册表单一入口）。
+        crate::llm::utils::cache_registry::clear_conversation_caches(Some(&id));
     } else {
         sqlx::query("DELETE FROM session_events")
             .execute(&mut *tx)
@@ -793,6 +795,8 @@ pub async fn clear_history(app: &AppHandle, conversation_id: Option<String>) -> 
         crate::command::session_files::delete_all_session_files_all(app).await?;
         crate::llm::services::shell_sessions::close_all_sessions().await;
         crate::llm::services::user_terminal::close_all_sessions();
+        // 全量清除路径：所有会话级内存缓存一并清空。
+        crate::llm::utils::cache_registry::clear_conversation_caches(None);
     }
 
     Ok(())
@@ -844,9 +848,8 @@ pub async fn delete_conversation(app: &AppHandle, conversation_id: &str) -> Resu
     crate::llm::services::shell_sessions::close_session(Some(conversation_id)).await;
     let _ = crate::llm::services::user_terminal::stop_session(Some(conversation_id));
 
-    // 清理内存级 per-conversation todo_state（TodoWrite 清单）。
-    crate::llm::tools::shared::todo_state::global_registry()
-        .clear_session(Some(conversation_id));
+    // 内存级 per-conversation 缓存统一回收（注册表单一入口）。
+    crate::llm::utils::cache_registry::clear_conversation_caches(Some(conversation_id));
 
     Ok(())
 }

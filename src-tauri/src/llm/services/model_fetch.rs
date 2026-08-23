@@ -173,18 +173,48 @@ pub fn build_models_url_candidates(
     }
 
     if is_full_url {
+        // 完整地址推导模型列表端点（用户可能填完整端点，也可能只填到域名）：
+        // 1. 含 /v1/ → 取 host + 路径前缀拼 /v1/models（如 https://h.com/api/v1/messages → https://h.com/api/v1/models）；
+        // 2. 命中兼容后缀（/anthropic 等）→ 去后缀后再拼；
+        // 3. 有一个以上路径段 → 去末段拼 /v1/models；
+        // 4. 只有域名（无路径）→ 直接在其上拼候选。
+        // 始终至少产出候选，拒绝推导会让"完整填写"模式无法获取模型。
         if let Some(idx) = trimmed.find("/v1/") {
-            candidates.push(format!("{}/v1/models", &trimmed[..idx]));
+            let prefix = trimmed[..idx].trim_end_matches('/');
+            candidates.push(format!("{prefix}/v1/models"));
+            if let Some(stripped) = strip_compat_suffix(prefix) {
+                let root = stripped.trim_end_matches('/');
+                if !root.is_empty() && root.contains("://") {
+                    candidates.push(format!("{root}/v1/models"));
+                }
+            }
         } else if let Some(idx) = trimmed.rfind('/') {
             let root = &trimmed[..idx];
             if root.contains("://") && root.len() > root.find("://").unwrap() + 3 {
                 candidates.push(format!("{root}/v1/models"));
+                if let Some(stripped) = strip_compat_suffix(root) {
+                    let bare = stripped.trim_end_matches('/');
+                    if !bare.is_empty() && bare != root {
+                        candidates.push(format!("{bare}/v1/models"));
+                    }
+                }
+            } else {
+                // 只有 scheme://host（无路径段）：直接在其上拼候选。
+                candidates.push(format!("{trimmed}/v1/models"));
+                candidates.push(format!("{trimmed}/models"));
+            }
+        } else {
+            // 连 / 都没有的极端输入也尽力尝试。
+            candidates.push(format!("{trimmed}/v1/models"));
+        }
+
+        let mut unique: Vec<String> = Vec::with_capacity(candidates.len());
+        for url in candidates {
+            if !unique.iter().any(|u| u == &url) {
+                unique.push(url);
             }
         }
-        if candidates.is_empty() {
-            return Err("Cannot derive models endpoint from full URL".to_string());
-        }
-        return Ok(candidates);
+        return Ok(unique);
     }
 
     if ends_with_version_segment(trimmed) {
@@ -246,4 +276,66 @@ fn host_matches(url: &str, domain: &str) -> bool {
     let bare = host.rsplit('@').next().unwrap_or(&host);
     let host_only = bare.split(':').next().unwrap_or(bare);
     host_only == domain || host_only.ends_with(&format!(".{domain}"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn full(url: &str) -> Vec<String> {
+        build_models_url_candidates(url, true, None).expect("full-url derivation must not fail")
+    }
+
+    #[test]
+    fn full_url_with_v1_endpoint_derives_models_path() {
+        assert_eq!(
+            full("https://relay.example.com/api/v1/messages"),
+            vec!["https://relay.example.com/api/v1/models"]
+        );
+    }
+
+    #[test]
+    fn full_url_with_compat_suffix_also_tries_host_root() {
+        let candidates = full("https://relay.example.com/anthropic/v1/messages");
+        assert!(candidates.contains(&"https://relay.example.com/anthropic/v1/models".to_string()));
+        assert!(candidates.contains(&"https://relay.example.com/v1/models".to_string()));
+    }
+
+    #[test]
+    fn full_url_without_v1_strips_last_segment() {
+        assert_eq!(
+            full("https://relay.example.com/some/endpoint"),
+            vec!["https://relay.example.com/some/v1/models"]
+        );
+    }
+
+    #[test]
+    fn full_url_host_only_never_errors() {
+        // 旧实现在这里直接报 "Cannot derive models endpoint from full URL"。
+        assert_eq!(
+            full("https://relay.example.com"),
+            vec![
+                "https://relay.example.com/v1/models",
+                "https://relay.example.com/models",
+            ]
+        );
+    }
+
+    #[test]
+    fn override_wins_over_derivation() {
+        assert_eq!(
+            build_models_url_candidates("https://ignored.example.com", true, Some("https://x.com/m"))
+                .expect("override"),
+            vec!["https://x.com/m"]
+        );
+    }
+
+    #[test]
+    fn non_full_url_keeps_existing_behavior() {
+        assert_eq!(
+            build_models_url_candidates("https://api.openai.com/v1", false, None)
+                .expect("base url"),
+            vec!["https://api.openai.com/v1/models"]
+        );
+    }
 }

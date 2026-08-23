@@ -18,8 +18,7 @@ Returns a structured text summary of all changed files with their change type (a
 - No parameters needed: automatically resolves the conversation's workspace.
 - Includes both staged and unstaged changes, plus untracked files.
 - Use this instead of `git diff` via Bash when you need a clean, structured view of current changes without permission prompts.
-
-The workspace's git status summary (branch + dirty file list + recent commits) is already injected into your context every turn via `[Project Context]`. Use this tool only when you need the actual diff content for specific files.
+- Git status is not injected into your context automatically; call this tool whenever you need to see branch / dirty files / diff content.
 "#
             .into(),
         input_schema: json!({

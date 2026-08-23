@@ -31,8 +31,9 @@ const GLOBAL_MEMORY_SECTION: &str = r#"
 "#;
 
 fn read_non_empty_file(path: &PathBuf) -> Option<String> {
-    // 读取文件文本，读取失败返回 None。
-    let text = std::fs::read_to_string(path).ok()?;
+    // 经全局文件内容缓存读取（指纹失效）：主提示词文件较大，
+    // 避免每轮请求重复读盘；文件未变时直接命中内存。
+    let (text, _) = crate::llm::utils::file_io::read_file_meta(path).ok()?;
     // 去掉首尾空白后判断是否为空。
     let trimmed = text.trim();
     // 空文件或全空白文件视为无效。

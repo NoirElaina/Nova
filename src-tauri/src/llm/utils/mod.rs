@@ -19,8 +19,8 @@ pub mod pricing;
 // 全项目唯一的 token 计数器（o200k_base BPE 分词器）。
 pub mod token_counter;
 
-// 上下文组装入口：整合会话恢复与可选扩展上下文。
-pub mod context_assembler;
+// 缓存友好的上下文注入器：会话文件 / MCP 目录 / 阶段提示的差量持久化注入。
+pub mod context_injection;
 
 // 统一后端错误事件输出到前端 telemetry 和 toast。
 // 封装 backend-error 事件结构与发射方法。
@@ -32,6 +32,12 @@ pub mod paths;
 
 // Write/Edit 工具共用的文件 I/O 辅助。
 pub mod file_io;
+
+// 统一文件指纹（mtime + size）：所有文件内容缓存共用的判重类型。
+pub mod fingerprint;
+
+// 会话级缓存统一清理注册表：会话删除时的单一回收入口。
+pub mod cache_registry;
 
 // 原子写入：tempfile + fsync + rename + EXDEV fallback（记忆/会话文件 crash 安全）
 pub mod atomic_write;

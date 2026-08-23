@@ -219,7 +219,7 @@ onMounted(() => {
 </script>
 
 <template>
-  <div class="flex max-w-3xl flex-col gap-4">
+  <div class="flex w-full flex-col gap-4">
     <!-- 外观：主题 + 语言合并为一张卡片，每行左标题右控件 -->
     <Card class="rounded-xl border-[#e7e9ee] dark:border-[#343434]">
       <CardHeader class="pb-1">

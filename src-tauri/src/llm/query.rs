@@ -8,7 +8,7 @@ use crate::llm::query_engine::ChatMessageEvent;
 use crate::llm::services::compact;
 use crate::llm::utils::token_counter;
 use crate::llm::types::{AgentMode, Content, ContentBlock, Message, Role};
-use crate::llm::utils::context_assembler::{self, AssembleOptions};
+use crate::llm::utils::context_injection;
 use crate::llm::utils::error_event::emit_backend_error;
 use crate::llm::utils::pricing::TurnCostBreakdown;
 
@@ -85,7 +85,9 @@ async fn log_new_model_messages(
     }
 }
 
-/// 写压缩检查点：base_context = 压缩后剥离注入上下文的起点上下文。
+/// 写压缩检查点：base_context = 压缩后的起点上下文。
+/// 注入块（会话文件 / MCP / 阶段）是合法历史的一部分，随基线原样保留。
+/// 压缩后历史整体变短，同步重置缓存击穿检测基线，防止自然下降误报。
 async fn log_compact_boundary(
     app: &AppHandle,
     conversation_id: Option<&str>,
@@ -95,14 +97,12 @@ async fn log_compact_boundary(
     tokens_before: u32,
     tokens_after: u32,
 ) {
-    let mut base = context.to_vec();
-    strip_injected_context(&mut base);
     log_session_event(
         app,
         conversation_id,
         turn_id,
         crate::llm::session_log::SessionEvent::CompactBoundary {
-            base_context: base,
+            base_context: context.to_vec(),
             summary: format!("[{}] context compaction", level),
             level: level.to_string(),
             tokens_before,
@@ -110,6 +110,7 @@ async fn log_compact_boundary(
         },
     )
     .await;
+    crate::llm::services::prompt_cache_break::reset_baseline(conversation_id);
 }
 
 fn strip_images_to_text(messages: &[Message]) -> Vec<Message> {
@@ -138,7 +139,6 @@ fn strip_images_to_text(messages: &[Message]) -> Vec<Message> {
         })
         .collect()
 }
-const MCP_SERVER_CONTEXT_MARKER: &str = "[MCP Server Catalog]";
 const RESPONSE_RESERVE_TOKENS: u32 = 8_000;
 
 fn clamp_i64_to_u32(value: i64) -> u32 {
@@ -366,7 +366,7 @@ fn emit_context_usage_event(
 // 从消息内容中提取纯文本
 // 作用：把 Content::Text 或 Content::Blocks 统一转成纯文本字符串。
 // 处理逻辑：Content::Text 直接 trim 返回；Content::Blocks 只取 Text 类块，跳过图片/工具调用，用 \n 拼接
-// 用途：后续 strip_injected_context 需要扫描文本内容来移除动态注入的上下文（如 RAG、MCP 目录）。
+// 用途：遗留清理列表扫描文本内容来移除旧时代停产标记（[Project Context] / [Global Memory]）。
 fn text_from_content(content: &Content) -> String {
     match content {
         Content::Text(text) => text.trim().to_string(),
@@ -403,54 +403,6 @@ fn truncate_chars(input: &str, limit: usize) -> String {
     }
 }
 
-// 构建 MCP 服务器上下文消息
-// 作用：获取已连接的 MCP 服务器列表，注入到上下文让 AI 知道有哪些外部工具可用。
-// 处理逻辑：
-// 1. 调用 connected_server_catalog 获取已连接服务器列表
-// 2. 如果没有服务器则返回 None
-// 3. 格式化为带标记的上下文消息，包含服务器名称、类型、工具数量
-// 用途：让 AI 知道可以调用哪些 MCP 工具，但不直接暴露工具细节。
-async fn build_mcp_server_context_message(
-    app: &AppHandle,
-    conversation_id: Option<&str>,
-) -> Option<Message> {
-    let statuses = crate::llm::services::mcp_tools::connected_server_catalog(app).await;
-    // 会话挂载的智能体套件决定可见范围：按 enabled_mcp_servers 引用清单过滤；
-    // 默认 Nova（未挂载）可见全部已连接 server。
-    let statuses: Vec<_> = match crate::llm::services::agent_bundles::active_bundle(
-        app,
-        conversation_id,
-    ) {
-        Some(bundle) => statuses
-            .into_iter()
-            .filter(|s| bundle.is_mcp_server_enabled(&s.name))
-            .collect(),
-        None => statuses,
-    };
-    if statuses.is_empty() {
-        return None;
-    }
-
-    let mut lines = vec![
-		MCP_SERVER_CONTEXT_MARKER.to_string(),
-		"Connected MCP servers are available. Do not assume their internal tools up front.".to_string(),
-		"Use `mcp_auth` with `action=\"list_tools\"` to inspect a server before calling one of its tools.".to_string(),
-		"Use `mcp_auth` with `action=\"call_tool\"` to invoke a specific MCP tool after inspection.".to_string(),
-	];
-
-    for status in statuses {
-        lines.push(format!(
-            "- {} (type={}, tools={})",
-            status.name, status.r#type, status.tool_count
-        ));
-    }
-
-    Some(Message {
-        role: Role::User,
-        content: Content::Text(lines.join("\n")),
-    })
-}
-
 // 判断是否是会话开始回合
 // 作用：检查消息列表是否从未成功完成过一轮对话。
 // 判断标准：没有任何 assistant 消息（不限制 user 数量）。
@@ -477,32 +429,17 @@ async fn apply_post_compact_hook(
     Ok(())
 }
 
-// 从消息列表中移除每轮动态注入的上下文消息（MCP catalog、全局记忆、会话文件、所有 hook 注入）。
-// 重建/入日志前调用，确保持久化的只包含真实对话内容。
-fn strip_injected_context(messages: &mut Vec<Message>) {
-    const MARKERS: &[&str] = &[
-        MCP_SERVER_CONTEXT_MARKER,
-        "[Global Memory]",
-        "[Session Files]",
-        "[Project Context]",
-        "[Phase]",
-        // lifecycle hooks — 每轮动态注入，不应固化进事件日志
-        "[SessionStart]",
-        "[UserPromptSubmit]",
-        "[PreCompact]",
-        "[PostCompact]",
-        "[SubagentStart]",
-        "[SubagentStop]",
-        // tool flow hooks
-        "[PreToolUse]",
-        "[PostToolUse]",
-        "[PostToolUseFailure]",
-        // stop hooks
-        "[Stop]",
-    ];
+// 遗留清理列表：仅针对旧剥离+重注入时代烙进 compact 边界 base_context 的已停产标记。
+// 新代码永不生产这两个标记（[Project Context] 已删除，[Global Memory] 改由系统提示词承载），
+// 剥离是确定性纯函数（同一事件流每轮结果逐字节一致），不产生新的缓存分叉。
+// 注意：新注入块标记（会话文件 / MCP / 阶段 / hooks）绝不在此列——它们是合法历史。
+fn strip_legacy_injected_context(messages: &mut Vec<Message>) {
+    const LEGACY_MARKERS: &[&str] = &["[Project Context]", "[Global Memory]"];
     messages.retain(|m| {
         let text = text_from_content(&m.content);
-        !MARKERS.iter().any(|marker| text.starts_with(marker))
+        !LEGACY_MARKERS
+            .iter()
+            .any(|marker| text.starts_with(marker))
     });
 }
 
@@ -512,30 +449,32 @@ fn strip_injected_context(messages: &mut Vec<Message>) {
 //
 // 核心职责：
 // 1) 重放会话事件日志恢复可信历史；非首轮无事件时直接失败，不用前端 UI 历史兜底。
-// 2) 每轮重新注入动态上下文（global memory / hooks / session RAG / MCP catalog），入日志前剥离。
+// 2) 缓存友好的上下文注入：会话文件 / MCP 目录 / 阶段提示由 context_injection 差量持久化，
+//    写入即永久、状态未变零注入；hooks 注入内容随回合原样持久化（用户意图的组成部分）。
 // 3) 循环调用 provider，把 assistant 输出、tool_use、tool_result 和工具 side-channel 消息回灌进 current_messages 并写入事件日志。
 // 4) 处理 cancelled / needs_user_input / stop hook 阻断 / provider error / prompt too long reactive compact。
 // 5) 正常收尾时执行 session_end_hooks，并向前端发送最终 stop 事件。
 //
 // send_chat_message
 //     │
-//     ├─ 1. 回合前输入准备 + 事件写入（TurnStart/用户输入/标题与活跃度）
+//     ├─ 1. 回合前输入准备 + 事件写入（TurnStart/注入块/用户输入/标题与活跃度）
 //     │       ├─ latest user text                  → 提取 RAG query / 原始上传文件行
-//     │       ├─ run_user_prompt_submit_hooks      → 追加提示提交上下文（不入日志）
-//     │       └─ (首轮) run_session_start_hooks    → 追加会话开始上下文（不入日志）
+//     │       ├─ run_user_prompt_submit_hooks      → 追加提示提交上下文（随回合持久化）
+//     │       └─ (首轮) run_session_start_hooks    → 追加会话开始上下文（随回合持久化）
 //     │
 //     ├─ 2. 可信历史恢复（事件日志重放，遇压缩检查点重置）
-//     │       ├─ load_events + reconstruct         → 重建上一轮完整模型上下文
-//     │       ├─ strip_injected_context            → 移除动态注入内容
-//     │       ├─ append current turn input/hooks   → 只追加本轮新增用户输入
+//     │       ├─ load_events + reconstruct         → 重建上一轮完整模型上下文（含持久化的注入块）
+//     │       ├─ strip_legacy_injected_context     → 仅清理旧时代停产标记（确定性）
+//     │       ├─ context_injection 差量注入        → 变化才追加，先落 ContextMessage 事件
+//     │       ├─ append current turn input/hooks   → 只追加本轮新增用户输入（注入块位于其前）
 //     │       └─ 无事件且非首轮                     → Err（旧数据不兼容）
 //     │
 //     ├─ 3. 请求前上下文构建
-//     │       ├─ context_assembler                 → 注入 global memory / 项目上下文 / 会话文件
+//     │       ├─ run_pre_compact_hooks             → 压缩前临时上下文
 //     │       ├─ run_pre_compact_hooks             → 压缩前临时上下文
 //     │       ├─ compact                           → proactive compact / 大型 tool_result 瘦身（写 CompactBoundary 事件）
 //     │       ├─ run_post_compact_hooks            → 仅在发生 compact 后追加
-//     │       ├─ session RAG                       → 当前会话文档检索 / 直接附件上下文
+//     │       └─ session RAG                       → 当前会话文档检索 / 直接附件上下文
 //     │       └─ MCP server catalog                → 注入已连接 MCP server 概览
 //     │
 //     ├─ 4. 主循环 loop（provider 输出增量写入事件日志）
@@ -603,8 +542,9 @@ pub async fn send_chat_message(
         }
     }
 
-    // ── 会话事件日志：回合开始 + 本轮新输入 ──
-    // hook 注入上下文带 [Event] 标记，经 strip 过滤后不会入日志（与快照剥离策略一致）。
+    // ── 会话事件日志：回合开始 + 差量注入块 + 本轮新输入 ──
+    // 事件顺序固定为 TurnStart → 注入块（如有）→ 用户消息，
+    // 使注入块落在"历史末尾与新用户消息之间"：下一轮请求的字节前缀恰好是本轮末次请求的完整前缀。
     let turn_id = uuid::Uuid::new_v4().to_string();
     log_session_event(
         &app,
@@ -615,10 +555,42 @@ pub async fn send_chat_message(
         },
     )
     .await;
+    // ── 可信历史重建 + 差量注入 + 事件日志写入 ──
+    // 缓存友好约束（对标 codex world_state）：
+    // - 重建结果只清理旧时代停产标记（确定性剥离，不产生分叉），注入块作为合法历史原样保留；
+    // - 事件顺序固定为 TurnStart → 注入块（如有）→ 用户消息，注入块落在"历史末尾与新用户消息之间"：
+    //   下一轮请求的字节前缀恰好是本轮末次请求的完整前缀，跨回合全量命中；
+    // - 差量注入与历史末块比对，状态未变时零注入；
+    // - hooks 注入内容随回合持久化，请求与历史逐字节一致。
+    let Some(conv_id) = conversation_id.as_deref() else {
+        return Err("send_chat_message requires conversation_id".to_string());
+    };
+    let events = crate::llm::session_log::load_events(&app, conv_id).await?;
+    if events.is_empty() && !session_start_turn {
+        return Err(format!(
+            "会话 {} 无事件日志且不是首轮请求，拒绝使用前端历史兜底（旧数据不兼容，请新开对话）",
+            conv_id
+        ));
+    }
+    // 重建历史（含持久化的注入块）并计算差量注入；先落注入事件、再落用户消息事件。
+    let mut reconstructed = crate::llm::session_log::projection::reconstruct_model_context(&events);
+    strip_legacy_injected_context(&mut reconstructed);
+    let injections =
+        context_injection::ensure_injections(&app, Some(conv_id), &reconstructed).await;
+    for message in &injections {
+        log_session_event(
+            &app,
+            conversation_id.as_deref(),
+            Some(&turn_id),
+            crate::llm::session_log::SessionEvent::ContextMessage {
+                message: message.clone(),
+            },
+        )
+        .await;
+    }
     {
         let new_start = frontend_msg_count.saturating_sub(1);
-        let mut new_inputs: Vec<Message> = turn_messages[new_start..].to_vec();
-        strip_injected_context(&mut new_inputs);
+        let new_inputs: Vec<Message> = turn_messages[new_start..].to_vec();
         log_new_model_messages(
             &app,
             conversation_id.as_deref(),
@@ -647,45 +619,18 @@ pub async fn send_chat_message(
         }
     }
 
-    // 恢复可信历史：重放会话事件日志重建模型上下文（遇压缩检查点重置），
-    // 只追加本轮新增输入。历史必须来自事件日志，不用前端 UI 历史兜底。
-    let working_messages = if let Some(conv_id) = conversation_id.as_deref() {
-        let events = crate::llm::session_log::load_events(&app, conv_id).await?;
-        if events.is_empty() {
-            if session_start_turn {
-                turn_messages
-            } else {
-                return Err(format!(
-                    "会话 {} 无事件日志且不是首轮请求，拒绝使用前端历史兜底（旧数据不兼容，请新开对话）",
-                    conv_id
-                ));
-            }
-        } else {
-            let mut ctx = crate::llm::session_log::projection::reconstruct_model_context(&events);
-            // 剥离每轮动态注入的上下文，后续会按当前状态重新注入。
-            strip_injected_context(&mut ctx);
-            // 前端消息只用来定位本轮新增输入；历史必须来自事件日志。
-            // hooks 已追加到 turn_messages 尾部，因此从最新用户消息开始整体追加。
-            let new_start = frontend_msg_count.saturating_sub(1);
-            ctx.extend_from_slice(&turn_messages[new_start..]);
-            ctx
-        }
-    } else {
-        return Err("send_chat_message requires conversation_id".to_string());
+    // 组装本轮工作上下文：重建历史 + 注入块 + 本轮新增输入（含 hooks 消息）。
+    let working_messages = {
+        let mut ctx = reconstructed;
+        ctx.extend(injections);
+        // 前端消息只用来定位本轮新增输入；历史必须来自事件日志。
+        // hooks 已追加到 turn_messages 尾部，因此从最新用户消息开始整体追加。
+        let new_start = frontend_msg_count.saturating_sub(1);
+        ctx.extend_from_slice(&turn_messages[new_start..]);
+        ctx
     };
 
-    // 1. 每轮都先组装请求前的全局记忆。
-    // 正常 agent 流只信任事件日志重建的上下文，不做摘要式会话恢复，
-    // 避免用摘要恢复污染模型上下文。
-    let mut assembled_messages = context_assembler::assemble_messages_for_turn(
-        &app,
-        conversation_id.as_deref(),
-        &working_messages,
-        AssembleOptions {
-            include_env_contexts: false,
-        },
-    )
-    .await;
+    let mut current_messages = working_messages;
 
     // 压缩前挂钩：由 hooks.toml 声明（上下文注入/命令挂钩），
     // 注入的消息放在 compact 前，让它也参与 token 估算和压缩决策。
@@ -695,7 +640,7 @@ pub async fn send_chat_message(
         return Err(error);
     }
     if !pre_compact_hook.additional_messages.is_empty() {
-        assembled_messages.extend(pre_compact_hook.additional_messages);
+        current_messages.extend(pre_compact_hook.additional_messages);
     }
 
     // 根据当前模型上下文窗口选择压缩策略：
@@ -706,14 +651,14 @@ pub async fn send_chat_message(
     let compact_outcome = compact::compact_messages_for_turn_with_report(
         &app,
         conversation_id.as_deref(),
-        &assembled_messages,
+        &current_messages,
     )
     .await?;
 
     // 只有真的发生 compact 时才跑 post compact 挂钩（hooks.toml 声明）。
     // compact 通知只用于前端展示本轮节省了多少上下文，不改变历史来源。
     let did_compact = compact_outcome.did_compact();
-    let mut current_messages = compact_outcome.messages;
+    current_messages = compact_outcome.messages;
     if did_compact {
         apply_post_compact_hook(&app, conversation_id.as_deref(), &mut current_messages).await?;
         let after_tokens = clamp_i64_to_u32(token_counter::count_messages(&current_messages));
@@ -737,14 +682,6 @@ pub async fn send_chat_message(
         )
         .await;
     }
-
-    // MCP catalog 也是本轮临时上下文：
-    // 告诉模型当前连接了哪些 MCP server，但不提前展开具体工具。
-    // 模型后续需要时再通过 mcp_auth/list_tools/call_tool 走正式工具流。
-    if let Some(mcp_context) = build_mcp_server_context_message(&app, conversation_id.as_deref()).await {
-        current_messages.push(mcp_context);
-    }
-    // println!("current_messages:{:?}", current_messages);
 
     let mut provider = LlmClient::new(&app)?;
 
@@ -829,6 +766,27 @@ pub async fn send_chat_message(
         } else {
             messages_for_provider
         };
+
+        // 缓存击穿检测（请求侧）：记录系统提示词/工具集/模型/提供商指纹，
+        // 与上一次请求比对供响应侧归因；三家提供商共用此处一处挂接。
+        {
+            let system_for_fingerprint =
+                crate::llm::utils::system_prompt::load_system_prompt(
+                    &app,
+                    agent_mode,
+                    conversation_id.as_deref(),
+                )
+                .unwrap_or_default();
+            let tools_for_fingerprint =
+                crate::llm::tools::get_available_tools_for_agent(&app, conversation_id.as_deref());
+            crate::llm::services::prompt_cache_break::record_request(
+                conversation_id.as_deref(),
+                provider.provider_name(),
+                &system_for_fingerprint,
+                &tools_for_fingerprint,
+                &model,
+            );
+        }
 
         // 发起 provider 请求并等待结果。
         let (provider_result, prompt_estimate) = match provider
@@ -1029,6 +987,12 @@ pub async fn send_chat_message(
             provider_result.cache_creation_tokens,
             provider_result.cost.as_ref(),
             input_token_source,
+        );
+        // 缓存击穿检测（响应侧）：仅在提供商报告 cache_read 时判定。
+        crate::llm::services::prompt_cache_break::check_response(
+            &app,
+            conversation_id.as_deref(),
+            provider_result.cache_read_tokens,
         );
         let log_cost = provider_result
             .cost

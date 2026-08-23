@@ -19,6 +19,11 @@ pub(crate) struct ResponsesRequest {
     pub(crate) reasoning: Option<ResponsesReasoningRequest>,
     pub(crate) text: ResponsesTextConfig,
     pub(crate) stream: bool,
+    /// 会话级缓存亲和键（对标 codex client.rs 的 prompt_cache_key）：
+    /// 帮服务端把同一会话的请求认成同一前缀缓存域，提升自动前缀缓存命中率。
+    /// 不支持该字段的网关会忽略，无兼容风险。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) prompt_cache_key: Option<String>,
 }
 
 #[derive(Debug, Serialize)]

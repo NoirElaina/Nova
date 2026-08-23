@@ -53,11 +53,15 @@ impl TodoRegistry {
         guard.get(&key).cloned().unwrap_or_default()
     }
 
-    /// 会话删除时清理对应桶。
+    /// 会话删除时清理对应桶；`None` 表示"清除全部会话"路径，全量清空。
     pub fn clear_session(&self, conversation_id: Option<&str>) {
-        let key = Self::bucket_key(conversation_id);
         let mut guard = self.inner.lock().unwrap();
-        guard.remove(&key);
+        match conversation_id {
+            Some(id) => {
+                guard.remove(id);
+            }
+            None => guard.clear(),
+        }
     }
 }
 

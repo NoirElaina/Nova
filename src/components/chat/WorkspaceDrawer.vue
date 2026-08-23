@@ -130,9 +130,9 @@ onBeforeUnmount(() => {
         />
       </div>
       <div class="flex h-full flex-col py-2 pl-1.5 pr-2">
-        <!-- 悬浮圆角卡片：四周留白 + 大圆角 + 柔和阴影，替代贴边直角矩形 -->
+        <!-- 悬浮圆角卡片：四周留白 + 大圆角 + 柔和阴影，仅靠阴影与背景分隔，不额外加边框 -->
         <div
-          class="flex min-h-0 flex-1 flex-col overflow-hidden rounded-2xl border border-[#e7e9ee] bg-white shadow-[0_8px_30px_rgba(15,23,42,0.08)] dark:border-[#343434] dark:bg-[#1e1e1e] dark:shadow-[0_8px_30px_rgba(0,0,0,0.4)]"
+          class="flex min-h-0 flex-1 flex-col overflow-hidden rounded-2xl bg-white shadow-[0_8px_30px_rgba(15,23,42,0.08)] dark:bg-[#1e1e1e] dark:shadow-[0_8px_30px_rgba(0,0,0,0.4)]"
         >
           <div class="flex h-11 shrink-0 items-center justify-between gap-2 border-b border-[#eef0f3] px-2 dark:border-[#2c2c2c]">
             <!-- 页签条：全部页签直接平铺，图标+文字，点击即切换 -->

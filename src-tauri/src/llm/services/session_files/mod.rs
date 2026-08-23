@@ -1,7 +1,6 @@
 use serde::{Deserialize, Serialize};
 use std::path::{Component, Path, PathBuf};
 use tauri::AppHandle;
-use tracing::warn;
 
 /// 会话文件元信息，返回给前端展示。
 ///
@@ -24,7 +23,7 @@ pub struct SessionFileMeta {
 /// 独立工作区下：app_data/workspace/{conv_id}/session/，AI 可直接用 Read/Bash 访问。
 /// 手动工作区下：app_data/workspace/{conv_id}/session/（仍存独立目录，避免污染用户项目），
 ///   AI 通过绝对路径（见 [Session Files] 注入）用 Read/Bash 访问。
-fn session_files_dir(app: &AppHandle, conversation_id: &str) -> Result<PathBuf, String> {
+pub(crate) fn session_files_dir(app: &AppHandle, conversation_id: &str) -> Result<PathBuf, String> {
     let base = crate::command::workspace::default_workspace_root(app)?;
     Ok(base.join(conversation_id).join("session"))
 }
@@ -348,53 +347,4 @@ pub fn delete_all_session_files_all(app: &AppHandle) -> Result<(), String> {
         }
     }
     Ok(())
-}
-
-/// 为 context_assembler 构建会话文件列表文本注入。
-pub async fn build_session_files_message(
-    app: &AppHandle,
-    conversation_id: Option<&str>,
-) -> Option<crate::llm::types::Message> {
-    let Some(conv_id) = conversation_id.map(str::trim).filter(|s| !s.is_empty()) else {
-        return None;
-    };
-
-    let files = match list_session_files(app, conv_id) {
-        Ok(f) => f,
-        Err(e) => {
-            warn!(error = %e, "Failed to list session files for context injection");
-            return None;
-        }
-    };
-
-    if files.is_empty() {
-        return None;
-    }
-
-    let dir = match session_files_dir(app, conv_id) {
-        Ok(d) => d,
-        Err(e) => {
-            warn!(error = %e, "Failed to resolve session files dir for context injection");
-            return None;
-        }
-    };
-    let dir_display = crate::command::workspace::display_path_string(&dir);
-
-    let mut lines = vec![
-        "[Session Files]".to_string(),
-        format!("Uploaded files are stored at: {}", dir_display),
-        "Use Read/Bash/Grep/Glob tools to access them via the absolute paths below:".to_string(),
-    ];
-
-    // 暴露绝对路径，AI 用 Read 工具直接访问。
-    for file in &files {
-        let file_path = dir.join(&file.filename);
-        let file_display = crate::command::workspace::display_path_string(&file_path);
-        lines.push(format!("- {}", file_display));
-    }
-
-    Some(crate::llm::types::Message {
-        role: crate::llm::types::Role::User,
-        content: crate::llm::types::Content::Text(lines.join("\n")),
-    })
 }

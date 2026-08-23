@@ -64,6 +64,18 @@ pub fn record(conversation_id: Option<&str>, path: &Path, content: &str) {
     );
 }
 
+/// 清理指定会话的全部文件读取状态（`None` = 清全部），由缓存注册表在会话删除时统一调用。
+pub fn clear_conversation(conversation_id: Option<&str>) {
+    let mut state = store().lock().unwrap_or_else(|e| e.into_inner());
+    match conversation_id {
+        Some(id) => {
+            let prefix = format!("{}::", id);
+            state.retain(|key, _| !key.starts_with(&prefix));
+        }
+        None => state.clear(),
+    }
+}
+
 /// 校验文件可被编辑/覆盖：必须读过且内容未在读取后被外部改动。
 /// `current_content` 为本次操作开始时读到的归一化 LF 文本。
 ///

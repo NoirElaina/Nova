@@ -136,7 +136,7 @@ watch(() => props.open, async (newVal) => {
   }
 })
 
-/** 表格末尾添加一行空模型（模型通过下拉选择）。 */
+/** 表格末尾添加一行空模型（模型可手输或从下拉候选选择）。 */
 const addEmptyModelRow = () => {
   localDraft.value.models = [
     ...localDraft.value.models,
@@ -149,39 +149,80 @@ const removeModel = (index: number) => {
   localDraft.value.models = localDraft.value.models.filter((_, itemIndex) => itemIndex !== index)
 }
 
-/** 行下拉候选：获取到的模型列表，排除其它行已占用的模型；
- * 当前行的值若不在列表里（未获取/手输）也补进去，保证能显示与选中。 */
+/** 行下拉候选：获取到的全部模型都在每行下拉里可见（不排除其它行已用的），
+ * 当前行的值若不在列表里（手输模型）也补进去保证能显示与选中；重复由保存时去重兜底。 */
 const selectOptionsFor = (index: number) => {
   const current = localDraft.value.models[index]?.name.trim() ?? ''
-  const exclude = new Set(
-    localDraft.value.models.filter((_, i) => i !== index).map((m) => m.name.trim()),
-  )
-  const options = fetchedModels.value.filter((m) => !exclude.has(m.id))
+  const options = [...fetchedModels.value]
   if (current && !options.some((m) => m.id === current)) {
     options.unshift({ id: current })
   }
   return options
 }
 
-/** 下拉点选：直接替换当前行的模型名。 */
+// ─────────────────────────────────────────────
+// 模型选择：平时只用手输输入框；点击「获取模型列表」成功后，
+// 每行旁出现紧凑下拉（Select 自管弹出定位），可从候选中选择填入。
+// ─────────────────────────────────────────────
+
+/** 行列宽：获取到候选后多出一个紧凑选择列。 */
+const modelRowGridClass = () =>
+  fetchedModels.value.length > 0
+    ? 'grid-cols-[minmax(0,1.6fr)_2.5rem_minmax(0,1fr)_2rem]'
+    : 'grid-cols-[minmax(0,1.6fr)_minmax(0,1fr)_2rem]'
+
+/** 从获取到的候选里选中一个：填入当前行并刷新窗口提示。 */
 const pickModelOption = async (index: number, raw: unknown) => {
-  const item = localDraft.value.models[index]
   const id = String(raw ?? '').trim()
-  if (!item || !id) return
-  item.name = id
+  if (!id) return
+  setModelName(index, id)
+  await commitModelName(index)
+}
+
+/** 手输/点选模型名：直接写回当前行（保存时会 trim 与去重）。 */
+const setModelName = (index: number, raw: unknown) => {
+  const item = localDraft.value.models[index]
+  if (!item) return
+  item.name = String(raw ?? '')
   saveError.value = ''
-  if (resolvedHints.value[id] == null) {
+}
+
+/** 模型名提交（输入完成/从候选点选）：刷新上下文窗口解析提示。 */
+const commitModelName = async (index: number) => {
+  const id = localDraft.value.models[index]?.name.trim() ?? ''
+  if (!id || resolvedHints.value[id] != null) return
+  let hint = 200000
+  try {
+    hint = await invoke<number>('get_model_window_tokens', { model: id })
+  } catch {
+    // keep default
+  }
+  resolvedHints.value = { ...resolvedHints.value, [id]: hint }
+}
+
+/** 把获取到的模型一并填入表格：已在列表里的跳过，新模型追加为新行（上下文窗口走内置库解析）。 */
+const appendFetchedModels = async () => {
+  const existing = new Set(localDraft.value.models.map((m) => m.name.trim()))
+  const additions: ModelDraftItem[] = []
+  for (const item of fetchedModels.value) {
+    if (!item.id || existing.has(item.id)) continue
     let hint = 200000
     try {
-      hint = await invoke<number>('get_model_window_tokens', { model: id })
+      hint = await invoke<number>('get_model_window_tokens', { model: item.id })
     } catch {
       // keep default
     }
-    resolvedHints.value = { ...resolvedHints.value, [id]: hint }
+    resolvedHints.value = { ...resolvedHints.value, [item.id]: hint }
+    additions.push({ name: item.id, contextWindow: hint })
   }
+  if (additions.length > 0) {
+    localDraft.value.models = [...localDraft.value.models, ...additions]
+    saveError.value = ''
+  }
+  return additions.length
 }
 
-/** 用当前表单里的 API Key / Base URL 直接拉取供应商模型列表。 */
+/** 用当前表单里的 API Key / Base URL 直接拉取供应商模型列表，成功后自动填入表格。 */
 const fetchModels = async () => {
   fetchError.value = ''
   const apiKey = localDraft.value.apiKey.trim()
@@ -199,39 +240,20 @@ const fetchModels = async () => {
       apiFormat: localDraft.value.apiFormat,
     })
     fetchedModels.value = models
+    console.info(`[ProviderDialog] 模型列表获取成功：${models.length} 个`, models.slice(0, 5))
     if (models.length === 0) {
       fetchError.value = '接口返回成功，但未包含任何模型'
+      return
     }
+    // 获取成功即自动把新模型追加为表格行（已存在的跳过；全部已存在则静默跳过，不报错）。
+    await appendFetchedModels()
   } catch (err) {
     fetchedModels.value = []
     fetchError.value = getRawErrorText(err) || '获取模型失败'
+    console.warn('[ProviderDialog] 模型列表获取失败', err)
   } finally {
     fetching.value = false
   }
-}
-
-/** 把获取到的模型一键全部填入表格（上下文窗口走内置库解析）。 */
-const addAllFetchedModels = async () => {
-  const existing = new Set(localDraft.value.models.map((m) => m.name.trim()))
-  const additions: ModelDraftItem[] = []
-  for (const item of fetchedModels.value) {
-    if (!item.id || existing.has(item.id)) continue
-    let hint = 200000
-    try {
-      hint = await invoke<number>('get_model_window_tokens', { model: item.id })
-    } catch {
-      // keep default
-    }
-    resolvedHints.value = { ...resolvedHints.value, [item.id]: hint }
-    additions.push({ name: item.id, contextWindow: hint })
-  }
-  if (additions.length === 0) {
-    fetchError.value = '获取到的模型均已在列表中'
-    return
-  }
-  localDraft.value.models = [...localDraft.value.models, ...additions]
-  fetchError.value = ''
-  saveError.value = ''
 }
 
 const setContextWindow = (index: number, raw: string) => {
@@ -270,7 +292,7 @@ const handleSave = () => {
 
 <template>
   <div v-if="open" class="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4 backdrop-blur-sm">
-    <div class="flex max-h-[min(90vh,720px)] w-full max-w-2xl flex-col rounded-xl border bg-background shadow-lg">
+    <div class="flex max-h-[min(90vh,720px)] w-full max-w-3xl flex-col rounded-xl border bg-background shadow-lg">
       <div class="shrink-0 border-b px-6 py-5">
         <h2 class="text-xl font-bold tracking-tight">{{ isNew ? '添加模型配置' : '编辑模型配置' }}</h2>
       </div>
@@ -360,8 +382,9 @@ const handleSave = () => {
               </div>
             </div>
 
-            <div v-if="localDraft.models.length > 0" class="grid grid-cols-[minmax(0,1.6fr)_minmax(0,1fr)_2rem] gap-x-2">
+            <div v-if="localDraft.models.length > 0" class="grid gap-x-2" :class="modelRowGridClass()">
               <span class="px-1 pb-1 text-[11px] font-medium text-muted-foreground">模型</span>
+              <span v-if="fetchedModels.length > 0"></span>
               <span class="px-1 pb-1 text-[11px] font-medium text-muted-foreground">上下文窗口</span>
               <span></span>
             </div>
@@ -371,15 +394,23 @@ const handleSave = () => {
                 <div
                   v-for="(model, index) in localDraft.models"
                   :key="index"
-                  class="grid grid-cols-[minmax(0,1.6fr)_minmax(0,1fr)_2rem] items-center gap-x-2"
+                  class="grid items-center gap-x-2"
+                  :class="modelRowGridClass()"
                 >
+                  <Input
+                    class="h-9 text-sm"
+                    :model-value="model.name"
+                    autocomplete="off"
+                    spellcheck="false"
+                    placeholder="输入模型名"
+                    @update:model-value="setModelName(index, $event)"
+                    @change="commitModelName(index)"
+                  />
                   <Select
-                    :model-value="model.name || undefined"
+                    v-if="fetchedModels.length > 0"
                     @update:model-value="pickModelOption(index, $event)"
                   >
-                    <SelectTrigger class="h-9 w-full text-sm">
-                      <SelectValue :placeholder="fetchedModels.length > 0 ? '选择模型' : '请先获取模型列表'" />
-                    </SelectTrigger>
+                    <SelectTrigger class="h-9 w-full justify-center px-0" aria-label="从获取的列表选择模型" />
                     <SelectContent class="max-h-64">
                       <SelectItem
                         v-for="option in selectOptionsFor(index)"
@@ -414,13 +445,9 @@ const handleSave = () => {
               v-if="localDraft.models.length === 0"
               class="rounded-lg border border-dashed border-border px-3 py-4 text-center text-xs text-muted-foreground"
             >
-              尚未添加模型，点右上“获取模型列表”拉取后在下拉里选择，或点“添加模型”新增一行。
+              尚未添加模型，点“添加模型”直接手输模型名，或填好 API Key / Base URL 后点“获取模型列表”再选择。
             </p>
 
-            <div v-if="fetchedModels.length > 0" class="flex items-center justify-between gap-2 text-xs text-muted-foreground">
-              <span>已获取 {{ fetchedModels.length }} 个可选模型</span>
-              <Button variant="ghost" size="sm" class="h-6 px-2 text-xs" @click="addAllFetchedModels">全部添加</Button>
-            </div>
             <p v-if="fetchError" class="text-xs text-destructive">{{ fetchError }}</p>
 
             <p class="text-xs text-muted-foreground">

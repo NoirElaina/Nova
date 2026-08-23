@@ -16,6 +16,7 @@ import type { LiveTurnStage } from '../../features/chat/controllers/chat-control
 import InputArea from '../layout/InputArea.vue';
 import AskUserInputDialog from './AskUserInputDialog.vue';
 import PlanChip from './PlanChip.vue';
+import TodoChip from './TodoChip.vue';
 import AssistantMessageBubble from './messages/AssistantMessageBubble.vue';
 import AssistantTranscript from './messages/AssistantTranscript.vue';
 import BranchSidebar from './branch/BranchSidebar.vue';
@@ -751,6 +752,13 @@ defineExpose({
 </script>
 
 <template>
+  <div class="relative h-full w-full">
+    <!-- 消息时间线导航：锚定聊天区容器左边缘（不随居中内容列浮动） -->
+    <MessageTimelineNavigator
+      :items="userTimelineItems"
+      :activeIndex="activeUserMessageIndex"
+      @select="scrollToMessageIndex"
+    />
   <div class="relative flex flex-col h-full w-full max-w-4xl mx-auto pt-14">
     <div
       class="chat-scroll-area flex-1 overflow-y-auto px-4 pb-4 custom-scrollbar"
@@ -868,12 +876,6 @@ defineExpose({
       </div>
     </div>
 
-    <MessageTimelineNavigator
-      :items="userTimelineItems"
-      :activeIndex="activeUserMessageIndex"
-      @select="scrollToMessageIndex"
-    />
-
     <SubagentPanel :conversation-id="conversationId" />
 
     <button
@@ -925,8 +927,11 @@ defineExpose({
 
     <div class="w-full bg-transparent px-4 pt-6 pb-6">
       <div class="w-full max-w-[900px] mx-auto">
-        <!-- 计划小框：当前会话有计划时显示，点击打开计划侧边面板 -->
-        <PlanChip :conversationId="conversationId" @open="emit('open-plan')" />
+        <!-- 输入框上方小框：计划 / 任务进度，与工具栏同规格的紧凑控件 -->
+        <div class="mb-1.5 flex flex-wrap items-center gap-1.5">
+          <PlanChip :conversationId="conversationId" @open="emit('open-plan')" />
+          <TodoChip :conversationId="conversationId" />
+        </div>
         <AskUserInputDialog
           v-if="pendingQuestion"
           :request="pendingQuestion"
@@ -963,6 +968,7 @@ defineExpose({
     />
 
     <BranchSidebar :conversation-id="conversationId" />
+  </div>
   </div>
 </template>
 

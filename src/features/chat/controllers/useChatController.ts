@@ -6,7 +6,6 @@ import {
   getConversationUsage,
   submitPermissionDecision,
   type SessionFileMeta,
-  upsertConversationToolLog,
 } from "../services/chat-api";
 import type {
   AgentMode,
@@ -140,14 +139,8 @@ export function useChatController() {
   let unlistenChatStream: UnlistenFn | null = null;
   let unlistenScheduledTaskTrigger: UnlistenFn | null = null;
 
-  function persistToolExecutionLog(entry: ToolExecutionEntry, conversationId = activeConversationId.value) {
-    if (!conversationId || entry.status === "running") {
-      return;
-    }
-
-    void upsertConversationToolLog(conversationId, entry).catch((err) => {
-      console.error("Failed to persist tool execution log:", err);
-    });
+  function persistToolExecutionLog(_entry: ToolExecutionEntry, _conversationId = activeConversationId.value) {
+    // 工具日志已收归后端会话事件日志（ToolCall/ToolResult 事件），前端不再直写。
   }
 
   function hasConversationContent(): boolean {

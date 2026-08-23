@@ -328,6 +328,7 @@ async fn finalize_failure_result(
     mut additional_messages: Vec<Message>,
     mut prevent_continuation: bool,
     mut stop_reason: Option<String>,
+    started_at: i64,
 ) -> ToolCallResult {
     merge_controls(
         &mut additional_messages,
@@ -360,6 +361,18 @@ async fn finalize_failure_result(
 
     emit_tool_failure(app, &name, &failure);
 
+    // 事件日志：失败结果（与 ToolCall 按 call_id 配对投影出工具日志）。
+    log_tool_result_event(
+        app,
+        conversation_id,
+        &id,
+        &name,
+        &failure.message,
+        true,
+        started_at,
+    )
+    .await;
+
     ToolCallResult {
         id,
         name,
@@ -378,6 +391,9 @@ pub(crate) async fn execute_single_tool_call(
     call: ToolCallRequest,
 ) -> ToolCallResult {
     let ToolCallRequest { id, name, input } = call;
+    let started_at = chrono::Utc::now().timestamp_millis();
+    // 事件日志：工具调用开始（失败/完成后另有 ToolResult 事件配对）。
+    log_tool_call_event(app, conversation_id, &id, &name, &input).await;
     let mut additional_messages = Vec::new();
     let mut prevent_continuation = false;
     let mut stop_reason: Option<String> = None;
@@ -404,6 +420,7 @@ pub(crate) async fn execute_single_tool_call(
             additional_messages,
             prevent_continuation,
             stop_reason,
+            started_at,
         )
         .await;
     }
@@ -419,6 +436,7 @@ pub(crate) async fn execute_single_tool_call(
             additional_messages,
             prevent_continuation,
             stop_reason,
+            started_at,
         )
         .await;
     }
@@ -436,6 +454,7 @@ pub(crate) async fn execute_single_tool_call(
                 additional_messages,
                 prevent_continuation,
                 stop_reason,
+                started_at,
             )
             .await;
         }
@@ -478,9 +497,22 @@ pub(crate) async fn execute_single_tool_call(
             additional_messages,
             prevent_continuation,
             stop_reason,
+            started_at,
         )
         .await;
     }
+
+    // 事件日志：成功结果。
+    log_tool_result_event(
+        app,
+        conversation_id,
+        &id,
+        &name,
+        &tool_output,
+        false,
+        started_at,
+    )
+    .await;
 
     ToolCallResult {
         id,
@@ -491,6 +523,54 @@ pub(crate) async fn execute_single_tool_call(
         additional_messages,
         prevent_continuation,
         stop_reason,
+    }
+}
+
+/// 事件日志辅助：写 ToolCall 事件（best-effort，失败仅告警）。
+async fn log_tool_call_event(
+    app: &AppHandle,
+    conversation_id: Option<&str>,
+    call_id: &str,
+    tool_name: &str,
+    input: &Value,
+) {
+    let Some(conv_id) = conversation_id else {
+        return;
+    };
+    let event = crate::llm::session_log::SessionEvent::ToolCall {
+        call_id: call_id.to_string(),
+        tool_name: tool_name.to_string(),
+        input: serde_json::to_string(input).unwrap_or_default(),
+        turn_id: None,
+    };
+    if let Err(error) = crate::llm::session_log::append_event(app, conv_id, None, &event).await {
+        tracing::warn!(error = %error, conversation_id = %conv_id, tool = %tool_name, "tool_call event append failed");
+    }
+}
+
+/// 事件日志辅助：写 ToolResult 事件（best-effort，失败仅告警）。
+async fn log_tool_result_event(
+    app: &AppHandle,
+    conversation_id: Option<&str>,
+    call_id: &str,
+    tool_name: &str,
+    output: &str,
+    is_error: bool,
+    started_at: i64,
+) {
+    let Some(conv_id) = conversation_id else {
+        return;
+    };
+    let event = crate::llm::session_log::SessionEvent::ToolResult {
+        call_id: call_id.to_string(),
+        tool_name: tool_name.to_string(),
+        output: output.to_string(),
+        is_error,
+        started_at,
+        finished_at: chrono::Utc::now().timestamp_millis(),
+    };
+    if let Err(error) = crate::llm::session_log::append_event(app, conv_id, None, &event).await {
+        tracing::warn!(error = %error, conversation_id = %conv_id, tool = %tool_name, "tool_result event append failed");
     }
 }
 

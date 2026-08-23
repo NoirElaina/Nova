@@ -38,7 +38,7 @@ pub struct HistoryAttachment {
 #[derive(Debug, Serialize, Deserialize, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct HistoryMessage {
-    // 数据库主键（conversation_messages.id）；写入时可选，读取时回填。
+    // 事件日志中的 seq（稳定唯一，前端作消息键使用）。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub id: Option<i64>,
     // 消息角色（user/assistant）。
@@ -60,7 +60,7 @@ pub struct HistoryMessage {
 pub struct HistoryToolExecution {
     // 工具调用唯一 ID（会话内唯一）。
     pub id: String,
-    // 所属对话回合 ID（旧记录可能为空）。
+    // 所属对话回合 ID（可能为空）。
     pub turn_id: Option<String>,
     // 工具名称。
     pub tool_name: String,
@@ -74,89 +74,4 @@ pub struct HistoryToolExecution {
     pub started_at: i64,
     // 结束时间（unix 毫秒，可选）。
     pub finished_at: Option<i64>,
-}
-
-#[derive(Debug, Serialize, Deserialize, Clone)]
-#[serde(rename_all = "camelCase")]
-pub struct ConversationMemory {
-    // 会话摘要。
-    pub summary: String,
-    // 关键事实列表。
-    pub key_facts: Vec<String>,
-    // 记忆更新时间（unix 秒）。
-    pub updated_at: i64,
-}
-
-#[derive(Debug, Serialize, Deserialize, Clone)]
-#[serde(rename_all = "camelCase")]
-pub struct ConversationHandover {
-    // 会话 ID。
-    pub conversation_id: String,
-    // 会话标题。
-    pub title: String,
-    // 摘要文本。
-    pub summary: String,
-    // 关键事实。
-    pub key_facts: Vec<String>,
-    // 最近消息列表。
-    pub recent_messages: Vec<HistoryMessage>,
-    // 被省略消息数。
-    pub omitted_message_count: i64,
-    // 总消息数。
-    pub total_message_count: i64,
-    // 更新时间（unix 秒）。
-    pub updated_at: i64,
-}
-
-#[derive(Debug, Serialize, Deserialize, Clone)]
-#[serde(rename_all = "camelCase")]
-pub struct CompactContext {
-    // 会话 ID。
-    pub conversation_id: String,
-    // 压缩上下文文本。
-    pub context_text: String,
-    // 采用的 recent limit。
-    pub recent_limit: i64,
-    // 被省略消息数。
-    pub omitted_message_count: i64,
-    // 总消息数。
-    pub total_message_count: i64,
-    // 估算 token 数。
-    pub estimated_tokens: i64,
-    // 更新时间（unix 秒）。
-    pub updated_at: i64,
-}
-
-#[derive(Debug, Serialize, Deserialize, Clone)]
-#[serde(rename_all = "camelCase")]
-pub struct CompactBoundary {
-    // 边界记录 ID。
-    pub id: i64,
-    // 会话 ID。
-    pub conversation_id: String,
-    // 该次 compact 的文本上下文。
-    pub context_text: String,
-    // compact 摘要。
-    pub summary: String,
-    // compact 关键事实。
-    pub key_facts: Vec<String>,
-    // recent limit。
-    pub recent_limit: i64,
-    // 被省略消息数。
-    pub omitted_message_count: i64,
-    // 总消息数。
-    pub total_message_count: i64,
-    // 估算 token 数。
-    pub estimated_tokens: i64,
-    // 创建时间（unix 秒）。
-    pub created_at: i64,
-}
-
-#[derive(Debug, Serialize, Deserialize, Clone)]
-#[serde(rename_all = "camelCase")]
-pub struct ResumeContext {
-    // 恢复基线边界。
-    pub boundary: CompactBoundary,
-    // 边界之后的消息列表。
-    pub messages_since_boundary: Vec<HistoryMessage>,
 }

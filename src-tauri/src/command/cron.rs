@@ -1,4 +1,3 @@
-use crate::llm::commands::types::HistoryMessage;
 use crate::llm::services::cron_schedule;
 use crate::llm::tools::shared::cron_store::{add_job, list_jobs, remove_job, CronJob};
 use crate::llm::types::{AgentMode, Content, Message, Role};
@@ -52,39 +51,6 @@ async fn create_bound_conversation_for_task(
     Ok(conversation.id)
 }
 
-async fn append_trigger_prompt_to_bound_conversation(
-    app: &AppHandle,
-    job: &CronJob,
-    triggered_at: &str,
-) -> Result<(), String> {
-    let Some(conversation_id) = job
-        .conversation_id
-        .as_deref()
-        .map(str::trim)
-        .filter(|id| !id.is_empty())
-    else {
-        return Ok(());
-    };
-
-    let content = build_scheduled_trigger_user_content(job, triggered_at);
-
-    crate::llm::history::append_history(
-        app,
-        conversation_id,
-        HistoryMessage {
-            id: None,
-            role: "user".to_string(),
-            content,
-            reasoning: None,
-            attachments: None,
-            token_usage: None,
-            cost: None,
-        },
-    )
-    .await
-    .map(|_| ())
-}
-
 fn build_scheduled_trigger_user_content(job: &CronJob, triggered_at: &str) -> String {
     format!(
         "[Scheduled Task Trigger]\nTask ID: {}\nCron: {}\nTriggered At: {}\n\n{}",
@@ -118,6 +84,7 @@ async fn execute_scheduled_prompt_in_bound_conversation(
         Some(conversation_id.to_string()),
         turn_messages,
         AgentMode::Agent,
+        None,
     )
     .await;
     crate::llm::cancellation::finish_turn(Some(conversation_id));
@@ -166,16 +133,7 @@ pub async fn run_scheduler_loop(app: AppHandle) {
                 continue;
             }
 
-            if let Err(e) = append_trigger_prompt_to_bound_conversation(&app, &job, &now_utc).await
-            {
-                error!(
-                    operation = "command.cron.append_trigger_prompt_to_bound_conversation",
-                    job_id = %job.id,
-                    error = %e,
-                    "failed to append scheduled trigger prompt"
-                );
-            }
-
+            // 触发提示由发送流程随事件流落盘，不再预写，避免重复记录。
             let app_for_turn = app.clone();
             let job_for_turn = job.clone();
             let triggered_at_for_turn = now_utc.clone();

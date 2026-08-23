@@ -16,6 +16,102 @@ mod state_machine;
 
 use state_machine::TurnOutcome;
 
+/// 会话事件日志写入：best-effort，失败仅告警不阻断对话主流程。
+async fn log_session_event(
+    app: &AppHandle,
+    conversation_id: Option<&str>,
+    turn_id: Option<&str>,
+    event: crate::llm::session_log::SessionEvent,
+) {
+    let Some(conv_id) = conversation_id else {
+        return;
+    };
+    if let Err(error) =
+        crate::llm::session_log::append_event(app, conv_id, turn_id, &event).await
+    {
+        tracing::warn!(error = %error, conversation_id = %conv_id, event = event.type_name(), "session event append failed");
+    }
+}
+
+/// 把一批新增模型消息写入事件日志（按角色归类；注入类上下文不应出现在这里）。
+/// usage 非空时归到批内最后一条助手消息（与该请求的计费口径一致）；
+/// user_attachments 非空时挂到批内最后一条用户消息（UI 展示用）。
+async fn log_new_model_messages(
+    app: &AppHandle,
+    conversation_id: Option<&str>,
+    turn_id: Option<&str>,
+    messages: &[Message],
+    usage: Option<(i64, serde_json::Value)>,
+    user_attachments: Option<Vec<crate::llm::commands::types::HistoryAttachment>>,
+) {
+    if messages.is_empty() {
+        return;
+    }
+    let mut events: Vec<crate::llm::session_log::SessionEvent> = messages
+        .iter()
+        .cloned()
+        .map(crate::llm::session_log::SessionEvent::from_model_message)
+        .collect();
+    if let Some((tokens, cost)) = usage {
+        if let Some(last_assistant) = events
+            .iter_mut()
+            .rev()
+            .find(|e| matches!(e, crate::llm::session_log::SessionEvent::AssistantMessage { .. }))
+        {
+            if let crate::llm::session_log::SessionEvent::AssistantMessage { token_usage, cost: cost_slot, .. } = last_assistant {
+                *token_usage = Some(tokens);
+                *cost_slot = Some(cost);
+            }
+        }
+    }
+    if let Some(attachments) = user_attachments {
+        if !attachments.is_empty() {
+            if let Some(last_user) = events
+                .iter_mut()
+                .rev()
+                .find(|e| matches!(e, crate::llm::session_log::SessionEvent::UserMessage { .. }))
+            {
+                if let crate::llm::session_log::SessionEvent::UserMessage { attachments: slot, .. } = last_user {
+                    *slot = Some(attachments);
+                }
+            }
+        }
+    }
+    let Some(conv_id) = conversation_id else {
+        return;
+    };
+    if let Err(error) = crate::llm::session_log::append_events(app, conv_id, turn_id, &events).await {
+        tracing::warn!(error = %error, conversation_id = %conv_id, count = events.len(), "session events append failed");
+    }
+}
+
+/// 写压缩检查点：base_context = 压缩后剥离注入上下文的起点上下文。
+async fn log_compact_boundary(
+    app: &AppHandle,
+    conversation_id: Option<&str>,
+    turn_id: Option<&str>,
+    context: &[Message],
+    level: &str,
+    tokens_before: u32,
+    tokens_after: u32,
+) {
+    let mut base = context.to_vec();
+    strip_injected_context(&mut base);
+    log_session_event(
+        app,
+        conversation_id,
+        turn_id,
+        crate::llm::session_log::SessionEvent::CompactBoundary {
+            base_context: base,
+            summary: format!("[{}] context compaction", level),
+            level: level.to_string(),
+            tokens_before,
+            tokens_after,
+        },
+    )
+    .await;
+}
+
 fn strip_images_to_text(messages: &[Message]) -> Vec<Message> {
     const PLACEHOLDER: &str = "错误：当前模型不支持图片输入，请告知用户切换到支持图片输入的模型，或描述图片内容。";
     messages
@@ -358,9 +454,9 @@ async fn build_mcp_server_context_message(
 // 判断是否是会话开始回合
 // 作用：检查消息列表是否从未成功完成过一轮对话。
 // 判断标准：没有任何 assistant 消息（不限制 user 数量）。
-// 用途：决定是否注入 session_start_hooks，以及无快照时是否允许用前端历史启动。
+// 用途：决定是否注入 session_start_hooks，以及无事件日志时是否允许用前端输入启动。
 // 不限制 user 数量的原因：首轮发送失败后重发，历史里会有 2 条 user 消息，
-// 若按数量判定会被误判为非首轮，撞上"缺少 turn snapshot"错误且 hooks 不再注入。
+// 若按数量判定会被误判为非首轮，撞上"无事件日志"错误且 hooks 不再注入。
 fn is_session_start_turn(messages: &[Message]) -> bool {
     messages.iter().all(|m| m.role != Role::Assistant)
 }
@@ -381,17 +477,16 @@ async fn apply_post_compact_hook(
     Ok(())
 }
 
-// 从消息列表中移除每轮动态注入的上下文消息（RAG、MCP catalog、会话恢复、全局记忆、所有 hook 注入）。
-// 保存快照前调用，确保快照只包含真实对话内容。
+// 从消息列表中移除每轮动态注入的上下文消息（MCP catalog、全局记忆、会话文件、所有 hook 注入）。
+// 重建/入日志前调用，确保持久化的只包含真实对话内容。
 fn strip_injected_context(messages: &mut Vec<Message>) {
     const MARKERS: &[&str] = &[
         MCP_SERVER_CONTEXT_MARKER,
-        "[Session Restore Context]",
         "[Global Memory]",
         "[Session Files]",
         "[Project Context]",
         "[Phase]",
-        // lifecycle hooks — 每轮动态注入，不应固化进 snapshot
+        // lifecycle hooks — 每轮动态注入，不应固化进事件日志
         "[SessionStart]",
         "[UserPromptSubmit]",
         "[PreCompact]",
@@ -412,44 +507,44 @@ fn strip_injected_context(messages: &mut Vec<Message>) {
 }
 
 // 入口函数：发送用户聊天消息，驱动一整个 agent turn。
-// 它负责把“前端输入 → 后端可信模型上下文 → provider 流式输出 → 工具环回 → snapshot 持久化”
+// 它负责把“前端输入 → 事件日志重建的可信上下文 → provider 流式输出 → 工具环回 → 事件日志增量落盘”
 // 收敛成一条可恢复、可取消、ToolUse/ToolResult 成对合法的主流程。
 //
 // 核心职责：
-// 1) 从 turn snapshot 恢复可信历史；非首轮缺 snapshot 时直接失败，不用前端 UI 历史兜底。
-// 2) 每轮重新注入动态上下文（global memory / hooks / session RAG / MCP catalog），保存前再剥离。
-// 3) 循环调用 provider，把 assistant 输出、tool_use、tool_result 和工具 side-channel 消息回灌进 current_messages。
+// 1) 重放会话事件日志恢复可信历史；非首轮无事件时直接失败，不用前端 UI 历史兜底。
+// 2) 每轮重新注入动态上下文（global memory / hooks / session RAG / MCP catalog），入日志前剥离。
+// 3) 循环调用 provider，把 assistant 输出、tool_use、tool_result 和工具 side-channel 消息回灌进 current_messages 并写入事件日志。
 // 4) 处理 cancelled / needs_user_input / stop hook 阻断 / provider error / prompt too long reactive compact。
-// 5) 正常收尾时执行 session_end_hooks、保存 clean snapshot，并向前端发送最终 stop 事件。
+// 5) 正常收尾时执行 session_end_hooks，并向前端发送最终 stop 事件。
 //
 // send_chat_message
 //     │
-//     ├─ 1. 回合前输入准备
+//     ├─ 1. 回合前输入准备 + 事件写入（TurnStart/用户输入/标题与活跃度）
 //     │       ├─ latest user text                  → 提取 RAG query / 原始上传文件行
-//     │       ├─ run_user_prompt_submit_hooks      → 追加提示提交上下文
-//     │       └─ (首轮) run_session_start_hooks    → 追加会话开始上下文
+//     │       ├─ run_user_prompt_submit_hooks      → 追加提示提交上下文（不入日志）
+//     │       └─ (首轮) run_session_start_hooks    → 追加会话开始上下文（不入日志）
 //     │
-//     ├─ 2. 可信历史恢复
-//     │       ├─ load_turn_snapshot                → 恢复上一轮完整模型上下文
-//     │       ├─ strip_injected_context            → 移除上一轮动态注入内容
+//     ├─ 2. 可信历史恢复（事件日志重放，遇压缩检查点重置）
+//     │       ├─ load_events + reconstruct         → 重建上一轮完整模型上下文
+//     │       ├─ strip_injected_context            → 移除动态注入内容
 //     │       ├─ append current turn input/hooks   → 只追加本轮新增用户输入
-//     │       └─ missing snapshot on non-first turn → Err
+//     │       └─ 无事件且非首轮                     → Err（旧数据不兼容）
 //     │
 //     ├─ 3. 请求前上下文构建
-//     │       ├─ context_assembler                 → 注入 global memory；正常 agent 流不注入 session_restore
+//     │       ├─ context_assembler                 → 注入 global memory / 项目上下文 / 会话文件
 //     │       ├─ run_pre_compact_hooks             → 压缩前临时上下文
-//     │       ├─ compact                           → proactive compact / 大型 tool_result 瘦身
+//     │       ├─ compact                           → proactive compact / 大型 tool_result 瘦身（写 CompactBoundary 事件）
 //     │       ├─ run_post_compact_hooks            → 仅在发生 compact 后追加
 //     │       ├─ session RAG                       → 当前会话文档检索 / 直接附件上下文
 //     │       └─ MCP server catalog                → 注入已连接 MCP server 概览
 //     │
-//     ├─ 4. 主循环 loop
+//     ├─ 4. 主循环 loop（provider 输出增量写入事件日志）
 //     │       ├─ cancellation check                → cancelled
-//     │       ├─ apply_tool_result_context_editing → 清理较早的大型工具结果
-//     │       ├─ provider.send_request             → 流式输出 + 工具执行
-//     │       │       ├─ prompt too long           → reactive compact 后重试一次
-//     │       │       └─ other error               → 保存 partial snapshot + error hooks + stop(error)
-//     │       ├─ provider returned cancelled       → 保留 partial，补齐缺失 ToolResult，写入 interrupted marker
+//     │       ├─ apply_tool_result_context_editing → 清理较早的大型工具结果（仅请求副本，不改日志）
+//     │       ├─ provider.send_request             → 流式输出 + 工具执行（ToolCall/ToolResult 事件）
+//     │       │       ├─ prompt too long           → reactive compact（写 CompactBoundary）后重试一次
+//     │       │       └─ other error               → 部分输出入日志 + error hooks + stop(error)
+//     │       ├─ provider returned cancelled       → 保留 partial 入日志，补齐缺失 ToolResult，写入 interrupted marker
 //     │       ├─ merge provider_result.messages    → 回灌 assistant / tool_result / side-channel messages
 //     │       ├─ tool_call invariant check         → tool_use stop_reason 必须带 ToolResult
 //     │       ├─ needs_user_input                  → break
@@ -462,14 +557,14 @@ fn strip_injected_context(messages: &mut Vec<Message>) {
 //     │
 //     └─ 5. 回合收尾（非 provider error 路径）
 //             ├─ run_session_end_hooks             → 可覆盖 stop_reason
-//             ├─ strip_injected_context
-//             ├─ save_turn_snapshot                → 持久化 clean model context
+//             ├─ TurnEnd 事件
 //             └─ emit final stop                   → return Ok
 pub async fn send_chat_message(
     app: AppHandle,
     conversation_id: Option<String>,
     messages: Vec<Message>,
     agent_mode: AgentMode,
+    attachments: Option<Vec<crate::llm::commands::types::HistoryAttachment>>,
 ) -> Result<(), String> {
     // 轮次开始：从 DB 刷新该会话挂载的智能体缓存（写穿透兜底，防冷启动读不到）。
     // 之后 provider adapter / system_prompt / SkillTool 的同步读都命中缓存。
@@ -508,46 +603,85 @@ pub async fn send_chat_message(
         }
     }
 
-    // 尝试加载上一轮保存的完整模型上下文快照（含 tool_use / tool_result blocks）。
-    // - 有快照：用快照恢复历史，只追加本轮新增输入和 hooks 上下文。
-    // - 首轮无快照：允许用前端传入的当前用户消息启动会话。
-    // - 非首轮无快照：视为后端状态缺失，直接报错，避免用前端 UI 历史兜底。
-    let working_messages = if let Some(conv_id) = conversation_id.as_deref() {
-        match crate::llm::history::load_turn_snapshot(&app, conv_id).await {
-            Ok(Some(mut snap)) => {
-                // 剥离每轮动态注入的上下文，后续会按当前状态重新注入。
-                strip_injected_context(&mut snap);
-                // 前端消息只用来定位本轮新增输入；历史必须来自 snapshot。
-                // hooks 已追加到 turn_messages 尾部，因此从最新用户消息开始整体追加。
-                let new_start = frontend_msg_count.saturating_sub(1);
-                snap.extend_from_slice(&turn_messages[new_start..]);
-                snap
+    // ── 会话事件日志：回合开始 + 本轮新输入 ──
+    // hook 注入上下文带 [Event] 标记，经 strip 过滤后不会入日志（与快照剥离策略一致）。
+    let turn_id = uuid::Uuid::new_v4().to_string();
+    log_session_event(
+        &app,
+        conversation_id.as_deref(),
+        Some(&turn_id),
+        crate::llm::session_log::SessionEvent::TurnStart {
+            turn_id: turn_id.clone(),
+        },
+    )
+    .await;
+    {
+        let new_start = frontend_msg_count.saturating_sub(1);
+        let mut new_inputs: Vec<Message> = turn_messages[new_start..].to_vec();
+        strip_injected_context(&mut new_inputs);
+        log_new_model_messages(
+            &app,
+            conversation_id.as_deref(),
+            Some(&turn_id),
+            &new_inputs,
+            None,
+            attachments,
+        )
+        .await;
+        // 后端接管持久化维护：刷新会话活跃时间与标题（首条用户消息时派生）。
+        let latest_user_text = new_inputs
+            .iter()
+            .rev()
+            .find(|m| matches!(m.role, Role::User))
+            .map(|m| crate::llm::session_log::projection::content_text(&m.content));
+        if let Some(conv_id) = conversation_id.as_deref() {
+            if let Err(error) = crate::llm::history::refresh_conversation_activity(
+                &app,
+                conv_id,
+                latest_user_text.as_deref(),
+            )
+            .await
+            {
+                tracing::warn!(error = %error, conversation_id = %conv_id, "refresh conversation activity failed");
             }
-            Ok(None) if session_start_turn => turn_messages,
-            Ok(None) => {
+        }
+    }
+
+    // 恢复可信历史：重放会话事件日志重建模型上下文（遇压缩检查点重置），
+    // 只追加本轮新增输入。历史必须来自事件日志，不用前端 UI 历史兜底。
+    let working_messages = if let Some(conv_id) = conversation_id.as_deref() {
+        let events = crate::llm::session_log::load_events(&app, conv_id).await?;
+        if events.is_empty() {
+            if session_start_turn {
+                turn_messages
+            } else {
                 return Err(format!(
-                    "会话 {} 缺少 turn snapshot，且不是首轮请求，拒绝使用前端历史兜底",
+                    "会话 {} 无事件日志且不是首轮请求，拒绝使用前端历史兜底（旧数据不兼容，请新开对话）",
                     conv_id
                 ));
             }
-            Err(e) => {
-                return Err(format!("加载会话 {} 的 turn snapshot 失败: {}", conv_id, e));
-            }
+        } else {
+            let mut ctx = crate::llm::session_log::projection::reconstruct_model_context(&events);
+            // 剥离每轮动态注入的上下文，后续会按当前状态重新注入。
+            strip_injected_context(&mut ctx);
+            // 前端消息只用来定位本轮新增输入；历史必须来自事件日志。
+            // hooks 已追加到 turn_messages 尾部，因此从最新用户消息开始整体追加。
+            let new_start = frontend_msg_count.saturating_sub(1);
+            ctx.extend_from_slice(&turn_messages[new_start..]);
+            ctx
         }
     } else {
         return Err("send_chat_message requires conversation_id".to_string());
     };
 
     // 1. 每轮都先组装请求前的全局记忆。
-    // 正常 agent 流只信任新设计下的 turn snapshot：
-    // 首轮用当前输入启动，非首轮缺 snapshot 已在前面报错；
-    // 因此这里不注入 session_restore，避免用摘要恢复污染模型上下文。
+    // 正常 agent 流只信任事件日志重建的上下文，不做摘要式会话恢复，
+    // 避免用摘要恢复污染模型上下文。
     let mut assembled_messages = context_assembler::assemble_messages_for_turn(
         &app,
         conversation_id.as_deref(),
         &working_messages,
         AssembleOptions {
-            include_session_restore: false,
             include_env_contexts: false,
         },
     )
@@ -591,6 +725,17 @@ pub async fn send_chat_message(
             clamp_i64_to_u32(compact_outcome.estimated_tokens),
             after_tokens,
         );
+        // 事件日志压缩检查点：重建模型上下文时丢弃旧事件，以 base_context 为起点。
+        log_compact_boundary(
+            &app,
+            conversation_id.as_deref(),
+            Some(&turn_id),
+            &current_messages,
+            compact_outcome.level,
+            clamp_i64_to_u32(compact_outcome.estimated_tokens),
+            after_tokens,
+        )
+        .await;
     }
 
     // MCP catalog 也是本轮临时上下文：
@@ -622,7 +767,7 @@ pub async fn send_chat_message(
 
         // 会话途中压缩：与轮开始同一强度（≥80% Micro / ≥90% Full）。
         // 单轮内多轮工具调用的结果增长只有轮开始压缩覆盖不到，这里每次请求前兜住。
-        // 持久化修改 current_messages（与轮开始压缩一致，会进入 turn snapshot）；
+        // 压缩后的上下文随 CompactBoundary 事件持久化；
         // 最近一轮尚未消费的工具结果保留原文。
         let mid_compact = compact::compact_messages_mid_turn(
             &app,
@@ -641,14 +786,21 @@ pub async fn send_chat_message(
                 clamp_i64_to_u32(mid_compact.tokens_before),
                 clamp_i64_to_u32(mid_compact.tokens_after),
             );
+            log_compact_boundary(
+                &app,
+                conversation_id.as_deref(),
+                Some(&turn_id),
+                &current_messages,
+                mid_compact.level,
+                clamp_i64_to_u32(mid_compact.tokens_before),
+                clamp_i64_to_u32(mid_compact.tokens_after),
+            )
+            .await;
         }
 
         // 不支持图片输入的模型：剥离图片为占位文本，但只在临时变量上操作，
-        // 不覆盖 current_messages。否则回合结束后保存的 turn_snapshot 会丢失
-        // 原始图片数据，即使用户切回支持图片的模型也无法恢复。
-        //
-        // 此前的写法 `current_messages = strip_images_to_text(&current_messages)`
-        // 直接覆盖了 current_messages，导致 snapshot 保存的是已替换的版本。
+        // 不覆盖 current_messages。否则写入事件日志时会丢失原始图片数据，
+        // 即使用户切回支持图片的模型也无法恢复。
         let messages_for_provider: Vec<Message> =
             if crate::llm::utils::model_context::supports_image_input(&model) {
                 current_messages.clone()
@@ -721,20 +873,33 @@ pub async fn send_chat_message(
                             before_tokens,
                             after_tokens,
                         );
+                        log_compact_boundary(
+                            &app,
+                            conversation_id.as_deref(),
+                            Some(&turn_id),
+                            &current_messages,
+                            "reactive",
+                            before_tokens,
+                            after_tokens,
+                        )
+                        .await;
                         has_attempted_reactive_compact = true;
                         continue;
                     }
                 }
 
-                // 流中断前已有部分输出时，保存 partial snapshot，避免下轮上下文丢失。
+                // 流中断前已有部分输出时，把部分输出写入事件日志，避免下轮上下文丢失。
                 if !provider_err.partial_messages.is_empty() {
                     if let Some(conv_id) = conversation_id.as_deref() {
-                        let mut snapshot = current_messages.clone();
-                        snapshot.extend(provider_err.partial_messages);
-                        strip_injected_context(&mut snapshot);
-                        // 错误路径的 snapshot 保存是 best-effort，失败不阻断错误返回。
-                        let _ =
-                            crate::llm::history::save_turn_snapshot(&app, conv_id, &snapshot).await;
+                        log_new_model_messages(
+                            &app,
+                            Some(conv_id),
+                            Some(&turn_id),
+                            &provider_err.partial_messages,
+                            None,
+                            None,
+                        )
+                        .await;
                     }
                 }
 
@@ -817,10 +982,31 @@ pub async fn send_chat_message(
                 text: "[Request interrupted by user]".to_string(),
             });
 
-            current_messages.push(Message {
+            let interrupt_message = Message {
                 role: Role::User,
                 content: Content::Blocks(user_blocks),
-            });
+            };
+            current_messages.push(interrupt_message.clone());
+
+            // 事件日志：记录半截输出与中断标记。
+            log_new_model_messages(
+                &app,
+                conversation_id.as_deref(),
+                Some(&turn_id),
+                &provider_result.messages,
+                None,
+                None,
+            )
+            .await;
+            log_new_model_messages(
+                &app,
+                conversation_id.as_deref(),
+                Some(&turn_id),
+                std::slice::from_ref(&interrupt_message),
+                None,
+                None,
+            )
+            .await;
 
             break TurnOutcome::cancelled();
         }
@@ -891,6 +1077,19 @@ pub async fn send_chat_message(
         let new_messages = provider_result.messages;
         // 将新增消息并入上下文，供后续轮继续使用。
         current_messages.extend(new_messages.clone());
+        // 事件日志：助手输出/工具结果回填等新增消息全部入日志；
+        // 本请求的 token/成本归到批内最后一条助手消息。
+        let usage_for_log = {
+            let total = input_tokens
+                .unwrap_or(0)
+                .saturating_add(provider_result.output_tokens.unwrap_or(0));
+            provider_result
+                .cost
+                .as_ref()
+                .and_then(|c| serde_json::to_value(c).ok())
+                .map(|cost| (total as i64, cost))
+        };
+        log_new_model_messages(&app, conversation_id.as_deref(), Some(&turn_id), &new_messages, usage_for_log, None).await;
 
         // 判断新增消息中是否包含 tool_result 块。
         let has_tool_result = new_messages.iter().any(|m| {
@@ -922,13 +1121,7 @@ pub async fn send_chat_message(
                 msg.clone(),
                 Some("provider_result"),
             );
-            // 保存 partial snapshot：provider 返回了 tool_use 但缺少对应的 ToolResult，
-            // current_messages 已包含 provider 输出，保存以避免下轮上下文丢失。
-            if let Some(conv_id) = conversation_id.as_deref() {
-                let mut snapshot = current_messages.clone();
-                strip_injected_context(&mut snapshot);
-                let _ = crate::llm::history::save_turn_snapshot(&app, conv_id, &snapshot).await;
-            }
+            // provider 输出已在上方写入事件日志，下轮重建不会丢上下文。
             break TurnOutcome::error(msg);
         }
 
@@ -991,6 +1184,18 @@ pub async fn send_chat_message(
         }
     };
 
+    // 事件日志：回合终态（completed/cancelled/error/needs_user_input 均记录）。
+    log_session_event(
+        &app,
+        conversation_id.as_deref(),
+        Some(&turn_id),
+        crate::llm::session_log::SessionEvent::TurnEnd {
+            turn_id: turn_id.clone(),
+            stop_reason: Some(final_outcome.stop_reason.clone()),
+        },
+    )
+    .await;
+
     // Error 路径：跳过 session_end_hooks 和完整 snapshot 保存，
     // 因为回合未正常完成，partial snapshot 已在循环内保存。
     if matches!(final_outcome.turn_state, state_machine::TurnState::Error) {
@@ -1033,22 +1238,8 @@ pub async fn send_chat_message(
         final_outcome.stop_reason = hooked_reason;
     }
 
-    // 保存本轮完整消息快照（含 tool_use / tool_result blocks），供下一轮直接复用。
-    // 保存前剥离动态注入上下文（RAG/MCP/session_restore/global_memory），它们每轮重新生成。
-    if let Some(conv_id) = conversation_id.as_deref() {
-        let mut snapshot = current_messages.clone();
-        strip_injected_context(&mut snapshot);
-        if let Err(e) = crate::llm::history::save_turn_snapshot(&app, conv_id, &snapshot).await {
-            let error_text = format!("保存会话 {} 的 turn snapshot 失败: {}", conv_id, e);
-            emit_backend_error(
-                &app,
-                "llm.turn_snapshot.save",
-                error_text.clone(),
-                Some("save_turn_snapshot"),
-            );
-            return Err(error_text);
-        }
-    }
+    // 模型上下文持久化已全部由事件日志承担（回合内增量写入），
+    // 此处不再有快照保存步骤。
 
     // 4. 业务终止：告知前端本轮结束，并携带 stop_reason/turn_state 以区分 completed/needs_user_input/error。
     // 统一发送 stop 事件，前端据此收口渲染状态。

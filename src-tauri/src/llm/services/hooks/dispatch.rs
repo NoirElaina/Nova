@@ -12,7 +12,7 @@ use tauri::AppHandle;
 use super::command::{apply_blocked, context_message_from_hook, run_command_handler, CommandHookResult};
 use super::config::{load_hooks_file, HookHandlerConfig, MatcherGroup};
 use super::shared::{has_exact_user_message, latest_assistant_text};
-use super::types::HookOutcome;
+use super::types::{HookEvent, HookOutcome};
 use crate::llm::types::{Content, Message};
 
 /// 工具名匹配：大小写不敏感，支持 `*` 通配符；缺省/空/`*` 匹配一切。
@@ -221,46 +221,169 @@ async fn apply_handler(
 }
 
 // ---------------------------------------------------------------------------
-// 12 个对外入口：签名与调用点一一对应，内部全部走声明式分发。
+// 统一事件入口（观察者模式）：调用点只发射 HookEvent，本函数按事件名
+// 查 hooks.toml 分组并分发。旧 12 个 run_* 函数保留为薄封装兼容存量调用点。
 // ---------------------------------------------------------------------------
 
-async fn dispatch_lifecycle(
-    app: &AppHandle,
-    event_name: &'static str,
-    conversation_id: Option<&str>,
-) -> HookOutcome {
-    let file = load_hooks_file(app);
-    let groups = file
-        .hooks
-        .all_groups()
-        .into_iter()
-        .find(|(name, _)| *name == event_name)
-        .map(|(_, groups)| groups.clone())
-        .unwrap_or_default();
-    let payload = json!({
-        "event": event_name,
-        "conversation_id": conversation_id.unwrap_or_default(),
-    });
-    dispatch(event_name, groups, payload, None, None).await
+/// 事件 → (事件名, payload, 工具名, 消息历史) 的分发参数。
+fn event_into_parts(event: HookEvent) -> (&'static str, Value, Option<String>, Option<Vec<Message>>) {
+    match event {
+        HookEvent::SessionStart { conversation_id } => (
+            "SessionStart",
+            json!({
+                "event": "SessionStart",
+                "conversation_id": conversation_id.unwrap_or_default(),
+            }),
+            None,
+            None,
+        ),
+        HookEvent::UserPromptSubmit { conversation_id } => (
+            "UserPromptSubmit",
+            json!({
+                "event": "UserPromptSubmit",
+                "conversation_id": conversation_id.unwrap_or_default(),
+            }),
+            None,
+            None,
+        ),
+        HookEvent::PreCompact { conversation_id } => (
+            "PreCompact",
+            json!({
+                "event": "PreCompact",
+                "conversation_id": conversation_id.unwrap_or_default(),
+            }),
+            None,
+            None,
+        ),
+        HookEvent::PostCompact { conversation_id } => (
+            "PostCompact",
+            json!({
+                "event": "PostCompact",
+                "conversation_id": conversation_id.unwrap_or_default(),
+            }),
+            None,
+            None,
+        ),
+        HookEvent::SessionEnd { conversation_id, stop_reason } => (
+            "SessionEnd",
+            json!({
+                "event": "SessionEnd",
+                "conversation_id": conversation_id.unwrap_or_default(),
+                "stop_reason": stop_reason,
+            }),
+            None,
+            None,
+        ),
+        HookEvent::Error { conversation_id, error } => (
+            "Error",
+            json!({
+                "event": "Error",
+                "conversation_id": conversation_id.unwrap_or_default(),
+                "error": error,
+            }),
+            None,
+            None,
+        ),
+        HookEvent::SubagentStart { conversation_id, subagent_name } => (
+            "SubagentStart",
+            json!({
+                "event": "SubagentStart",
+                "conversation_id": conversation_id.unwrap_or_default(),
+                "subagent_name": subagent_name,
+            }),
+            None,
+            None,
+        ),
+        HookEvent::SubagentStop { conversation_id, subagent_name } => (
+            "SubagentStop",
+            json!({
+                "event": "SubagentStop",
+                "conversation_id": conversation_id.unwrap_or_default(),
+                "subagent_name": subagent_name,
+            }),
+            None,
+            None,
+        ),
+        HookEvent::PreToolUse { conversation_id, tool_name, input } => (
+            "PreToolUse",
+            json!({
+                "event": "PreToolUse",
+                "conversation_id": conversation_id.unwrap_or_default(),
+                "tool_name": tool_name,
+                "tool_input": input,
+            }),
+            Some(tool_name),
+            None,
+        ),
+        HookEvent::PostToolUse { conversation_id, tool_name, input, output } => (
+            "PostToolUse",
+            json!({
+                "event": "PostToolUse",
+                "conversation_id": conversation_id.unwrap_or_default(),
+                "tool_name": tool_name,
+                "tool_input": input,
+                "tool_output": output,
+            }),
+            Some(tool_name),
+            None,
+        ),
+        HookEvent::PostToolUseFailure { conversation_id, tool_name, input, error } => (
+            "PostToolUseFailure",
+            json!({
+                "event": "PostToolUseFailure",
+                "conversation_id": conversation_id.unwrap_or_default(),
+                "tool_name": tool_name,
+                "tool_input": input,
+                "error": error,
+            }),
+            Some(tool_name),
+            None,
+        ),
+        HookEvent::Stop { conversation_id, messages } => {
+            let assistant_count = messages
+                .iter()
+                .filter(|m| m.role == crate::llm::types::Role::Assistant)
+                .count();
+            let payload = json!({
+                "event": "Stop",
+                "conversation_id": conversation_id.unwrap_or_default(),
+                "assistant_message_count": assistant_count,
+                "latest_assistant_text": latest_assistant_text(&messages),
+            });
+            ("Stop", payload, None, Some(messages))
+        }
+    }
 }
 
+/// 挂钩事件唯一发射入口：按事件名从 hooks.toml 取分组并分发。
+pub async fn emit_hook_event(app: &AppHandle, event: HookEvent) -> HookOutcome {
+    let (event_name, payload, tool_name, messages) = event_into_parts(event);
+    let file = load_hooks_file(app);
+    let groups = file.hooks.groups_for(event_name);
+    dispatch(event_name, groups, payload, tool_name.as_deref(), messages.as_deref()).await
+}
+
+// ---------------------------------------------------------------------------
+// 兼容存量调用点的薄封装：签名不变，内部全部改走 emit_hook_event。
+// ---------------------------------------------------------------------------
+
 pub async fn run_session_start_hooks(app: &AppHandle, conversation_id: Option<&str>) -> HookOutcome {
-    dispatch_lifecycle(app, "SessionStart", conversation_id).await
+    emit_hook_event(app, HookEvent::SessionStart { conversation_id: conversation_id.map(str::to_string) }).await
 }
 
 pub async fn run_user_prompt_submit_hooks(
     app: &AppHandle,
     conversation_id: Option<&str>,
 ) -> HookOutcome {
-    dispatch_lifecycle(app, "UserPromptSubmit", conversation_id).await
+    emit_hook_event(app, HookEvent::UserPromptSubmit { conversation_id: conversation_id.map(str::to_string) }).await
 }
 
 pub async fn run_pre_compact_hooks(app: &AppHandle, conversation_id: Option<&str>) -> HookOutcome {
-    dispatch_lifecycle(app, "PreCompact", conversation_id).await
+    emit_hook_event(app, HookEvent::PreCompact { conversation_id: conversation_id.map(str::to_string) }).await
 }
 
 pub async fn run_post_compact_hooks(app: &AppHandle, conversation_id: Option<&str>) -> HookOutcome {
-    dispatch_lifecycle(app, "PostCompact", conversation_id).await
+    emit_hook_event(app, HookEvent::PostCompact { conversation_id: conversation_id.map(str::to_string) }).await
 }
 
 pub async fn run_session_end_hooks(
@@ -268,14 +391,14 @@ pub async fn run_session_end_hooks(
     stop_reason: &str,
     conversation_id: Option<&str>,
 ) -> HookOutcome {
-    let file = load_hooks_file(app);
-    let groups = file.hooks.session_end.clone();
-    let payload = json!({
-        "event": "SessionEnd",
-        "conversation_id": conversation_id.unwrap_or_default(),
-        "stop_reason": stop_reason,
-    });
-    dispatch("SessionEnd", groups, payload, None, None).await
+    emit_hook_event(
+        app,
+        HookEvent::SessionEnd {
+            conversation_id: conversation_id.map(str::to_string),
+            stop_reason: stop_reason.to_string(),
+        },
+    )
+    .await
 }
 
 pub async fn run_error_hooks(
@@ -283,14 +406,14 @@ pub async fn run_error_hooks(
     error: &str,
     conversation_id: Option<&str>,
 ) -> HookOutcome {
-    let file = load_hooks_file(app);
-    let groups = file.hooks.error.clone();
-    let payload = json!({
-        "event": "Error",
-        "conversation_id": conversation_id.unwrap_or_default(),
-        "error": error,
-    });
-    dispatch("Error", groups, payload, None, None).await
+    emit_hook_event(
+        app,
+        HookEvent::Error {
+            conversation_id: conversation_id.map(str::to_string),
+            error: error.to_string(),
+        },
+    )
+    .await
 }
 
 pub async fn run_subagent_start_hooks(
@@ -298,14 +421,14 @@ pub async fn run_subagent_start_hooks(
     subagent_name: &str,
     conversation_id: Option<&str>,
 ) -> HookOutcome {
-    let file = load_hooks_file(app);
-    let groups = file.hooks.subagent_start.clone();
-    let payload = json!({
-        "event": "SubagentStart",
-        "conversation_id": conversation_id.unwrap_or_default(),
-        "subagent_name": subagent_name,
-    });
-    dispatch("SubagentStart", groups, payload, None, None).await
+    emit_hook_event(
+        app,
+        HookEvent::SubagentStart {
+            conversation_id: conversation_id.map(str::to_string),
+            subagent_name: subagent_name.to_string(),
+        },
+    )
+    .await
 }
 
 pub async fn run_subagent_stop_hooks(
@@ -313,14 +436,14 @@ pub async fn run_subagent_stop_hooks(
     subagent_name: &str,
     conversation_id: Option<&str>,
 ) -> HookOutcome {
-    let file = load_hooks_file(app);
-    let groups = file.hooks.subagent_stop.clone();
-    let payload = json!({
-        "event": "SubagentStop",
-        "conversation_id": conversation_id.unwrap_or_default(),
-        "subagent_name": subagent_name,
-    });
-    dispatch("SubagentStop", groups, payload, None, None).await
+    emit_hook_event(
+        app,
+        HookEvent::SubagentStop {
+            conversation_id: conversation_id.map(str::to_string),
+            subagent_name: subagent_name.to_string(),
+        },
+    )
+    .await
 }
 
 pub async fn run_pre_tool_use_hooks(
@@ -329,15 +452,15 @@ pub async fn run_pre_tool_use_hooks(
     input: &Value,
     conversation_id: Option<&str>,
 ) -> HookOutcome {
-    let file = load_hooks_file(app);
-    let groups = file.hooks.pre_tool_use.clone();
-    let payload = json!({
-        "event": "PreToolUse",
-        "conversation_id": conversation_id.unwrap_or_default(),
-        "tool_name": tool_name,
-        "tool_input": input,
-    });
-    dispatch("PreToolUse", groups, payload, Some(tool_name), None).await
+    emit_hook_event(
+        app,
+        HookEvent::PreToolUse {
+            conversation_id: conversation_id.map(str::to_string),
+            tool_name: tool_name.to_string(),
+            input: input.clone(),
+        },
+    )
+    .await
 }
 
 pub async fn run_post_tool_use_hooks(
@@ -347,16 +470,16 @@ pub async fn run_post_tool_use_hooks(
     output: &str,
     conversation_id: Option<&str>,
 ) -> HookOutcome {
-    let file = load_hooks_file(app);
-    let groups = file.hooks.post_tool_use.clone();
-    let payload = json!({
-        "event": "PostToolUse",
-        "conversation_id": conversation_id.unwrap_or_default(),
-        "tool_name": tool_name,
-        "tool_input": input,
-        "tool_output": output,
-    });
-    dispatch("PostToolUse", groups, payload, Some(tool_name), None).await
+    emit_hook_event(
+        app,
+        HookEvent::PostToolUse {
+            conversation_id: conversation_id.map(str::to_string),
+            tool_name: tool_name.to_string(),
+            input: input.clone(),
+            output: output.to_string(),
+        },
+    )
+    .await
 }
 
 pub async fn run_post_tool_use_failure_hooks(
@@ -366,21 +489,14 @@ pub async fn run_post_tool_use_failure_hooks(
     error: &str,
     conversation_id: Option<&str>,
 ) -> HookOutcome {
-    let file = load_hooks_file(app);
-    let groups = file.hooks.post_tool_use_failure.clone();
-    let payload = json!({
-        "event": "PostToolUseFailure",
-        "conversation_id": conversation_id.unwrap_or_default(),
-        "tool_name": tool_name,
-        "tool_input": input,
-        "error": error,
-    });
-    dispatch(
-        "PostToolUseFailure",
-        groups,
-        payload,
-        Some(tool_name),
-        None,
+    emit_hook_event(
+        app,
+        HookEvent::PostToolUseFailure {
+            conversation_id: conversation_id.map(str::to_string),
+            tool_name: tool_name.to_string(),
+            input: input.clone(),
+            error: error.to_string(),
+        },
     )
     .await
 }
@@ -390,19 +506,14 @@ pub async fn run_stop_hooks(
     messages: &[Message],
     conversation_id: Option<&str>,
 ) -> HookOutcome {
-    let file = load_hooks_file(app);
-    let groups = file.hooks.stop.clone();
-    let assistant_count = messages
-        .iter()
-        .filter(|m| m.role == crate::llm::types::Role::Assistant)
-        .count();
-    let payload = json!({
-        "event": "Stop",
-        "conversation_id": conversation_id.unwrap_or_default(),
-        "assistant_message_count": assistant_count,
-        "latest_assistant_text": latest_assistant_text(messages),
-    });
-    dispatch("Stop", groups, payload, None, Some(messages)).await
+    emit_hook_event(
+        app,
+        HookEvent::Stop {
+            conversation_id: conversation_id.map(str::to_string),
+            messages: messages.to_vec(),
+        },
+    )
+    .await
 }
 
 #[cfg(test)]

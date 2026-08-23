@@ -209,11 +209,13 @@ pub async fn get_usage_stats(app: &AppHandle) -> Result<UsageStats, String> {
             .await
             .map_err(|e| e.to_string())?;
 
-    let total_messages: i64 =
-        sqlx::query_scalar("SELECT COUNT(*) FROM conversation_messages")
-            .fetch_one(&pool)
-            .await
-            .map_err(|e| e.to_string())?;
+    // 消息总数从会话事件日志统计（仅计真实用户/助手消息）。
+    let total_messages: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM session_events WHERE event_type IN ('user_message', 'assistant_message')",
+    )
+    .fetch_one(&pool)
+    .await
+    .map_err(|e| e.to_string())?;
 
     let totals = sqlx::query(
         r#"

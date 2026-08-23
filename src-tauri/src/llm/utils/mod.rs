@@ -9,10 +9,6 @@ pub mod system_prompt;
 // 提供工具执行前的风控判定与审批状态消费。
 pub mod permissions;
 
-// 对话会话恢复逻辑：构建被插入到 current_messages 中的恢复上下文。
-// 负责从历史边界提取摘要并生成恢复消息。
-pub mod session_restore;
-
 // 模型上下文窗口与输出 token 查询：从 litellm JSON 数据库按模型名精确/前缀匹配。
 // 提供 get_context_window_tokens / get_max_output_tokens，未命中时返回保守默认值。
 pub mod model_context;

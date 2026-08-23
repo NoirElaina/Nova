@@ -73,6 +73,15 @@ impl HookEventsToml {
             ("Error", &self.error),
         ]
     }
+
+    /// 按事件名取分组列表（统一事件分发入口用）；未知事件名返回空。
+    pub fn groups_for(&self, event_name: &str) -> Vec<MatcherGroup> {
+        self.all_groups()
+            .into_iter()
+            .find(|(name, _)| *name == event_name)
+            .map(|(_, groups)| groups.clone())
+            .unwrap_or_default()
+    }
 }
 
 /// 一个匹配器分组：命中 matcher 的工具事件执行组内全部挂钩。
@@ -135,9 +144,22 @@ pub(crate) fn hooks_file_path(app: &AppHandle) -> Result<std::path::PathBuf, Str
         .map_err(|e| format!("Failed to resolve app_data_dir for hooks.toml: {}", e))
 }
 
+/// 解析结果缓存：(mtime, 文件大小, 配置)。工具事件高频触发分发，
+/// 文件未变时避免每次重新读盘解析；保存配置时经 invalidate_hooks_cache 失效。
+static HOOKS_CACHE: std::sync::Mutex<Option<(std::time::SystemTime, u64, HooksFile)>> =
+    std::sync::Mutex::new(None);
+
+/// 失效解析缓存（保存/删除 hooks.toml 后调用）。
+pub fn invalidate_hooks_cache() {
+    if let Ok(mut guard) = HOOKS_CACHE.lock() {
+        *guard = None;
+    }
+}
+
 /// 加载并解析 hooks.toml。
 /// - 文件不存在：返回空配置（无任何挂钩）。
 /// - 读取/解析失败：上报后端错误事件并返回空配置，避免坏配置阻塞全部工具调用。
+/// - mtime+size 未变时命中内存缓存。
 pub(crate) fn load_hooks_file(app: &AppHandle) -> HooksFile {
     let path = match hooks_file_path(app) {
         Ok(path) => path,
@@ -153,7 +175,23 @@ pub(crate) fn load_hooks_file(app: &AppHandle) -> HooksFile {
     };
 
     if !path.exists() {
+        invalidate_hooks_cache();
         return HooksFile::default();
+    }
+
+    // 缓存命中判断：mtime + 文件大小双条件（Windows mtime 精度有限，
+    // 同秒内等长覆写靠尺寸变化兼容；两者都未变则视为未变）。
+    let fingerprint = std::fs::metadata(&path)
+        .ok()
+        .and_then(|meta| meta.modified().ok().map(|mtime| (mtime, meta.len())));
+    if let Some((mtime, size)) = fingerprint {
+        if let Ok(guard) = HOOKS_CACHE.lock() {
+            if let Some((cached_mtime, cached_size, cached_file)) = guard.as_ref() {
+                if *cached_mtime == mtime && *cached_size == size {
+                    return cached_file.clone();
+                }
+            }
+        }
     }
 
     let raw = match std::fs::read_to_string(&path) {
@@ -170,11 +208,17 @@ pub(crate) fn load_hooks_file(app: &AppHandle) -> HooksFile {
     };
 
     if raw.trim().is_empty() {
+        invalidate_hooks_cache();
         return HooksFile::default();
     }
 
     match toml::from_str::<HooksFile>(&raw) {
-        Ok(file) => file,
+        Ok(file) => {
+            if let (Some((mtime, size)), Ok(mut guard)) = (fingerprint, HOOKS_CACHE.lock()) {
+                *guard = Some((mtime, size, file.clone()));
+            }
+            file
+        }
         Err(error) => {
             crate::llm::utils::error_event::emit_backend_error(
                 app,

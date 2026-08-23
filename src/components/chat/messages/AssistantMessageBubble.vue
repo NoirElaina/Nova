@@ -62,8 +62,8 @@ const triggerReaction = (value: 'up' | 'down') => {
   <div class="w-full max-w-[85%]">
     <div class="min-w-0 flex-1 text-[0.95rem] leading-relaxed break-words text-[#1a1a1a] dark:text-[#ececec]">
       <ContextCompactNotice
-        v-if="message.cost && message.cost.contextCompacts.length > 0"
-        :items="message.cost.contextCompacts"
+        v-if="(message.cost?.contextCompacts?.length ?? 0) > 0"
+        :items="message.cost?.contextCompacts ?? []"
       />
       <AssistantTranscript
         :segments="transcriptSegments"

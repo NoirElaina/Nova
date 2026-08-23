@@ -35,7 +35,9 @@ pub async fn send_chat_message(
     conversation_id: Option<String>,
     messages: Vec<Message>,
     agent_mode: AgentMode,
+    attachments: Option<Vec<crate::llm::commands::types::HistoryAttachment>>,
 ) -> Result<(), String> {
     // 直接委托给新版 query 模块，保持旧 API 兼容。
-    crate::llm::query::send_chat_message(app, conversation_id, messages, agent_mode).await
+    crate::llm::query::send_chat_message(app, conversation_id, messages, agent_mode, attachments)
+        .await
 }

@@ -1,4 +1,3 @@
-use serde_json::Value;
 use sqlx::{Row, SqlitePool};
 use std::path::{Path, PathBuf};
 use tauri::{AppHandle, Manager};
@@ -9,7 +8,7 @@ use crate::llm::commands::memory;
 use crate::llm::commands::types::{
     ConversationMeta, HistoryMessage, HistoryToolExecution,
 };
-use crate::llm::types::{Content, ContentBlock, Message, Role};
+use crate::llm::types::{Content, Message, Role};
 
 // Build sqlite database URL under app data directory.
 // Format: sqlite:<path>?mode=rwc (read/write/create).
@@ -29,6 +28,11 @@ fn get_db_url(app: &AppHandle) -> Result<String, String> {
 
 static DB_POOL: OnceCell<SqlitePool> = OnceCell::const_new();
 
+/// 获取历史库连接池（含 schema 保证）。session_log 等模块复用同一连接池。
+pub async fn history_pool(app: &AppHandle) -> Result<SqlitePool, String> {
+    get_pool_with_schema(app).await
+}
+
 // Create a sqlx sqlite pool for history DB.
 async fn get_pool(app: &AppHandle) -> Result<SqlitePool, String> {
     let pool = DB_POOL
@@ -45,81 +49,22 @@ async fn get_pool(app: &AppHandle) -> Result<SqlitePool, String> {
 }
 
 // Ensure required schema exists.
+// 事件日志时代仅保留三张表：
+// - conversations：会话元数据；
+// - session_events：会话事实唯一事实源（append-only，结构见 session_log/store.rs）；
+// - token_usage_log：计费流水。
 async fn ensure_schema(pool: &SqlitePool) -> Result<(), String> {
     sqlx::query(
         r#"
-        CREATE TABLE IF NOT EXISTS messages (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            role TEXT NOT NULL,
-            content TEXT NOT NULL,
-            created_at INTEGER NOT NULL
-        );
-
         CREATE TABLE IF NOT EXISTS conversations (
             id TEXT PRIMARY KEY,
             title TEXT NOT NULL,
             created_at INTEGER NOT NULL,
             updated_at INTEGER NOT NULL,
             pinned_at INTEGER,
-            workspace_path TEXT
+            workspace_path TEXT,
+            active_agent_id TEXT
         );
-
-        CREATE TABLE IF NOT EXISTS conversation_messages (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            conversation_id TEXT NOT NULL,
-            role TEXT NOT NULL,
-            content TEXT NOT NULL,
-            reasoning TEXT,
-            attachments_json TEXT,
-            token_usage INTEGER,
-            cost_json TEXT,
-            created_at INTEGER NOT NULL,
-            FOREIGN KEY (conversation_id) REFERENCES conversations(id)
-        );
-
-        CREATE TABLE IF NOT EXISTS conversation_tool_logs (
-            conversation_id TEXT NOT NULL,
-            log_id TEXT NOT NULL,
-            turn_id TEXT,
-            tool_name TEXT NOT NULL,
-            input_text TEXT NOT NULL,
-            result_text TEXT NOT NULL,
-            status TEXT NOT NULL,
-            started_at INTEGER NOT NULL,
-            finished_at INTEGER,
-            updated_at INTEGER NOT NULL,
-            PRIMARY KEY (conversation_id, log_id),
-            FOREIGN KEY (conversation_id) REFERENCES conversations(id)
-        );
-
-        CREATE TABLE IF NOT EXISTS conversation_memory (
-            conversation_id TEXT PRIMARY KEY,
-            summary TEXT NOT NULL,
-            key_facts_json TEXT NOT NULL,
-            updated_at INTEGER NOT NULL,
-            FOREIGN KEY (conversation_id) REFERENCES conversations(id)
-        );
-
-        CREATE TABLE IF NOT EXISTS conversation_compact_boundaries (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            conversation_id TEXT NOT NULL,
-            context_text TEXT NOT NULL,
-            summary TEXT NOT NULL,
-            key_facts_json TEXT NOT NULL,
-            recent_limit INTEGER NOT NULL,
-            omitted_message_count INTEGER NOT NULL,
-            total_message_count INTEGER NOT NULL,
-            estimated_tokens INTEGER NOT NULL,
-            created_at INTEGER NOT NULL,
-            FOREIGN KEY (conversation_id) REFERENCES conversations(id)
-        );
-
-        CREATE TABLE IF NOT EXISTS conversation_turn_snapshots (
-            conversation_id TEXT PRIMARY KEY,
-            snapshot_json TEXT NOT NULL,
-            updated_at INTEGER NOT NULL
-        );
-
         "#,
     )
     .execute(pool)
@@ -142,13 +87,13 @@ async fn ensure_schema(pool: &SqlitePool) -> Result<(), String> {
             source TEXT,
             created_at INTEGER NOT NULL
         );
-
+    
         CREATE INDEX IF NOT EXISTS idx_token_usage_log_created
             ON token_usage_log(created_at DESC);
-
+    
         CREATE INDEX IF NOT EXISTS idx_token_usage_log_model
             ON token_usage_log(model);
-
+    
         CREATE INDEX IF NOT EXISTS idx_token_usage_log_conversation
             ON token_usage_log(conversation_id);
         "#,
@@ -156,6 +101,12 @@ async fn ensure_schema(pool: &SqlitePool) -> Result<(), String> {
     .execute(pool)
     .await
     .map_err(|e| e.to_string())?;
+
+    // 会话事件日志表（唯一事实源；结构定义见 session_log/store.rs）。
+    sqlx::query(crate::llm::session_log::store::SESSION_EVENTS_SCHEMA)
+        .execute(pool)
+        .await
+        .map_err(|e| e.to_string())?;
 
     // 会话级智能体：旧库补列（已存在则忽略报错）。
     sqlx::query("ALTER TABLE conversations ADD COLUMN active_agent_id TEXT")
@@ -186,111 +137,6 @@ pub async fn remove_memory_entry(app: &AppHandle, old_text: &str) -> Result<(), 
 
 pub async fn clear_memory_entries(app: &AppHandle) -> Result<(), String> {
     crate::llm::services::memory_dir::memory_clear(app).await
-}
-
-async fn conversation_exists(pool: &SqlitePool, conversation_id: &str) -> Result<bool, String> {
-    let normalized = conversation_id.trim();
-    if normalized.is_empty() {
-        return Ok(false);
-    }
-
-    let exists: i64 = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM conversations WHERE id = ?)")
-        .bind(normalized)
-        .fetch_one(pool)
-        .await
-        .map_err(|e| e.to_string())?;
-
-    Ok(exists != 0)
-}
-
-fn message_plain_text(content: &Content) -> String {
-    match content {
-        Content::Text(text) => text.clone(),
-        Content::Blocks(blocks) => blocks
-            .iter()
-            .filter_map(|block| match block {
-                ContentBlock::Text { text } => Some(text.as_str()),
-                _ => None,
-            })
-            .collect::<Vec<_>>()
-            .join("\n"),
-    }
-}
-
-/// 与前端 UI 可见的 user 气泡对齐的“对话用户轮次”。
-/// 排除：tool_result 专用消息、纯图片 side-channel、compact 摘要、hook/注入标记。
-/// 旧实现把 Image/摘要也算进 ordinal，编辑第 N 条用户消息时会截到更早位置，
-/// 表现为模型上下文（甚至配合错误 index 时 UI）丢掉更前面的轮次。
-fn is_conversation_user_turn(message: &Message) -> bool {
-    if message.role != Role::User {
-        return false;
-    }
-
-    const SYNTHETIC_PREFIXES: &[&str] = &[
-        "[Auto Compact Summary]",
-        "[Session Restore Context]",
-        "[Global Memory]",
-        "[Session Files]",
-        "[Project Context]",
-        "[Phase]",
-        "[SessionStart]",
-        "[UserPromptSubmit]",
-        "[PreCompact]",
-        "[PostCompact]",
-        "[SubagentStart]",
-        "[SubagentStop]",
-        "[PreToolUse]",
-        "[PostToolUse]",
-        "[PostToolUseFailure]",
-        "[Stop]",
-        "[MCP",
-    ];
-
-    match &message.content {
-        Content::Text(text) => {
-            let trimmed = text.trim();
-            if trimmed.is_empty() {
-                return false;
-            }
-            !SYNTHETIC_PREFIXES
-                .iter()
-                .any(|prefix| trimmed.starts_with(prefix))
-        }
-        Content::Blocks(blocks) => {
-            // 必须有可见文本；纯 tool_result / 纯 image 不计为 UI 用户轮次
-            let has_text = blocks.iter().any(|block| {
-                matches!(block, ContentBlock::Text { text } if !text.trim().is_empty())
-            });
-            if !has_text {
-                return false;
-            }
-            let text = message_plain_text(&message.content);
-            let trimmed = text.trim();
-            !SYNTHETIC_PREFIXES
-                .iter()
-                .any(|prefix| trimmed.starts_with(prefix))
-        }
-    }
-}
-
-fn snapshot_before_user_ordinal(snapshot: &[Message], user_ordinal: usize) -> Vec<Message> {
-    if user_ordinal == 0 {
-        return Vec::new();
-    }
-
-    let mut seen_users = 0usize;
-    for (index, message) in snapshot.iter().enumerate() {
-        if is_conversation_user_turn(message) {
-            seen_users += 1;
-            if seen_users == user_ordinal {
-                return snapshot[..index].to_vec();
-            }
-        }
-    }
-
-    // 找不到对应 ordinal：保守清空后续不可靠尾部，避免把“编辑点之后”的旧上下文留给模型。
-    // 若 snapshot 用户轮次少于 UI，说明已 compact/漂移，保留全部已知前缀胜于截错。
-    snapshot.to_vec()
 }
 
 fn resolved_conversation_title(current_title: &str, first_user_message: Option<&str>) -> String {
@@ -372,33 +218,22 @@ async fn load_conversation_export_data(
 ) -> Result<ConversationExportData, String> {
     let pool = get_pool_with_schema(app).await?;
 
-    let row = sqlx::query(
-        r#"
-        SELECT
-            c.title,
-            (
-                SELECT m.content
-                FROM conversation_messages m
-                WHERE m.conversation_id = c.id AND m.role = 'user'
-                ORDER BY m.created_at ASC, m.id ASC
-                LIMIT 1
-            ) AS first_user_content
-        FROM conversations c
-        WHERE c.id = ?
-        "#,
-    )
-    .bind(conversation_id)
-    .fetch_optional(&pool)
-    .await
-    .map_err(|e| e.to_string())?
-    .ok_or_else(|| "conversation not found".to_string())?;
+    let title_row: Option<String> =
+        sqlx::query_scalar("SELECT title FROM conversations WHERE id = ?")
+            .bind(conversation_id)
+            .fetch_optional(&pool)
+            .await
+            .map_err(|e| e.to_string())?
+            .flatten();
+    let title_row = title_row.ok_or_else(|| "conversation not found".to_string())?;
 
-    let title = resolved_conversation_title(
-        &row.get::<String, _>("title"),
-        row.get::<Option<String>, _>("first_user_content")
-            .as_deref(),
-    );
     let messages = load_history(app, conversation_id).await?;
+    // 标题兜底：占位标题时从事件投影出的首条用户消息派生。
+    let first_user = messages
+        .iter()
+        .find(|m| m.role.eq_ignore_ascii_case("user"))
+        .map(|m| m.content.clone());
+    let title = resolved_conversation_title(&title_row, first_user.as_deref());
 
     Ok(ConversationExportData { title, messages })
 }
@@ -526,10 +361,7 @@ pub async fn create_conversation(
         }
     };
 
-    // 会话行与空 turn snapshot 同事务写入，维持不变式：会话存在 ⇔ 快照存在。
-    // 这样首轮发送失败（provider 错误时 partial 为空、不落快照）也不会让会话
-    // 陷入"无快照且非首轮"的永久报错状态；快照会在每轮结束时正常覆盖更新。
-    let mut tx = pool.begin().await.map_err(|e| e.to_string())?;
+    // 会话元数据单行写入；消息内容后续由会话事件日志承担。
     sqlx::query(
         "INSERT INTO conversations (id, title, created_at, updated_at, workspace_path) VALUES (?, ?, ?, ?, ?)",
     )
@@ -538,19 +370,9 @@ pub async fn create_conversation(
     .bind(now)
     .bind(now)
     .bind(&ws_path)
-    .execute(&mut *tx)
+    .execute(&pool)
     .await
     .map_err(|e| e.to_string())?;
-    sqlx::query(
-        "INSERT INTO conversation_turn_snapshots (conversation_id, snapshot_json, updated_at) VALUES (?, ?, ?)",
-    )
-    .bind(&id)
-    .bind("[]")
-    .bind(now)
-    .execute(&mut *tx)
-    .await
-    .map_err(|e| e.to_string())?;
-    tx.commit().await.map_err(|e| e.to_string())?;
 
     // 写入进程内缓存，供同步热路径读取。
     crate::command::workspace::cache_conversation_workspace(&id, &ws_path);
@@ -577,14 +399,7 @@ pub async fn list_conversations(app: &AppHandle) -> Result<Vec<ConversationMeta>
             c.updated_at,
             c.pinned_at,
             c.workspace_path,
-            c.active_agent_id,
-            (
-                SELECT m.content
-                FROM conversation_messages m
-                WHERE m.conversation_id = c.id AND m.role = 'user'
-                ORDER BY m.created_at ASC, m.id ASC
-                LIMIT 1
-            ) AS first_user_content
+            c.active_agent_id
         FROM conversations c
         ORDER BY
             CASE WHEN c.pinned_at IS NULL THEN 1 ELSE 0 END ASC,
@@ -604,11 +419,8 @@ pub async fn list_conversations(app: &AppHandle) -> Result<Vec<ConversationMeta>
                 .filter(|p| !p.trim().is_empty());
             ConversationMeta {
                 id: row.get::<String, _>("id"),
-                title: resolved_conversation_title(
-                    &row.get::<String, _>("title"),
-                    row.get::<Option<String>, _>("first_user_content")
-                        .as_deref(),
-                ),
+                // 标题在首条用户消息发送时已派生落库，这里只做占位规范化。
+                title: resolved_conversation_title(&row.get::<String, _>("title"), None),
                 updated_at: row.get::<i64, _>("updated_at"),
                 pinned_at: row.get::<Option<i64>, _>("pinned_at"),
                 workspace_path: ws_path,
@@ -803,408 +615,140 @@ pub async fn export_rendered_conversation_pdf(
     Ok(output_path.display().to_string())
 }
 
-// Load all persisted messages for a conversation in stable chronological order.
-// cost_json is parsed into JSON when possible; malformed JSON is safely ignored.
-pub async fn load_history(
+/// 会话活跃度与标题维护（事件日志时代的持久化入口）：
+/// 刷新 updated_at；user_text 非空且标题仍为占位时从首条用户消息派生标题。
+pub async fn refresh_conversation_activity(
     app: &AppHandle,
     conversation_id: &str,
-) -> Result<Vec<HistoryMessage>, String> {
+    user_text: Option<&str>,
+) -> Result<(), String> {
     let pool = get_pool_with_schema(app).await?;
-
-    let rows = sqlx::query(
-        "SELECT id, role, content, reasoning, attachments_json, token_usage, cost_json, created_at FROM conversation_messages WHERE conversation_id = ? ORDER BY created_at ASC, id ASC",
-    )
-    .bind(conversation_id)
-    .fetch_all(&pool)
-    .await
-    .map_err(|e| e.to_string())?;
-
-    let result = rows
-        .into_iter()
-        .map(|row| HistoryMessage {
-            id: Some(row.get::<i64, _>("id")),
-            role: row.get::<String, _>("role"),
-            content: row.get::<String, _>("content"),
-            reasoning: row.get::<Option<String>, _>("reasoning"),
-            attachments: row
-                .get::<Option<String>, _>("attachments_json")
-                .and_then(|s| serde_json::from_str(&s).ok()),
-            token_usage: row.get::<Option<i64>, _>("token_usage"),
-            cost: row
-                .get::<Option<String>, _>("cost_json")
-                .and_then(|s| serde_json::from_str::<Value>(&s).ok()),
-        })
-        .collect();
-
-    Ok(result)
-}
-
-// Append one message to conversation history and maintain related metadata:
-// 1) insert message row
-// 2) auto-derive title on first user message when title is still default
-// 3) update conversation updated_at
-// 4) refresh conversation memory summary/facts
-pub async fn append_history(
-    app: &AppHandle,
-    conversation_id: &str,
-    message: HistoryMessage,
-) -> Result<i64, String> {
-    let pool = get_pool_with_schema(app).await?;
-    let normalized_conversation_id = conversation_id.trim();
-
-    // Stream callbacks may outlive a conversation (reload/delete/clear); skip stale writes.
-    if !conversation_exists(&pool, normalized_conversation_id).await? {
-        return Ok(0);
-    }
-
-    // 毫秒时间戳，避免同一秒内多条消息仅靠 id 排序时与 UI 观感不一致。
-    let now = chrono::Utc::now().timestamp_millis();
-    let role = message.role.clone();
-    let content = message.content.clone();
-    let reasoning = message
-        .reasoning
-        .map(|v| v.trim().to_string())
-        .filter(|v| !v.is_empty());
-    let attachments_json = message
-        .attachments
-        .and_then(|v| serde_json::to_string(&v).ok());
-    let token_usage = message.token_usage;
-    let cost_json = message.cost.and_then(|v| serde_json::to_string(&v).ok());
-
-    let result = sqlx::query(
-        "INSERT INTO conversation_messages (conversation_id, role, content, reasoning, attachments_json, token_usage, cost_json, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-    )
-    .bind(normalized_conversation_id)
-    .bind(&role)
-    .bind(&content)
-    .bind(reasoning)
-    .bind(attachments_json)
-    .bind(token_usage)
-    .bind(cost_json)
-    .bind(now)
-    .execute(&pool)
-    .await
-    .map_err(|e| e.to_string())?;
-    let inserted_id = result.last_insert_rowid();
-
-    // Auto-title whenever a placeholder title is still present.
-    if role.eq_ignore_ascii_case("user") {
-        let current_title: Option<String> =
-            sqlx::query_scalar("SELECT title FROM conversations WHERE id = ?")
-                .bind(normalized_conversation_id)
-                .fetch_optional(&pool)
-                .await
-                .map_err(|e| e.to_string())?;
-
-        let should_update = current_title
-            .as_deref()
-            .map(|title| {
-                let trimmed = title.trim();
-                trimmed.is_empty() || trimmed == "New chat"
-            })
-            .unwrap_or(true);
-
-        if should_update {
-            let first_user_content: Option<String> = sqlx::query_scalar(
-                "SELECT content FROM conversation_messages WHERE conversation_id = ? AND role = 'user' ORDER BY created_at ASC, id ASC LIMIT 1",
-            )
-            .bind(normalized_conversation_id)
-            .fetch_optional(&pool)
-            .await
-            .map_err(|e| e.to_string())?;
-
-            let new_title = first_user_content
-                .as_deref()
-                .map(memory::derive_title_from_message)
-                .unwrap_or_else(|| memory::derive_title_from_message(&content));
-            sqlx::query("UPDATE conversations SET title = ? WHERE id = ?")
-                .bind(new_title)
-                .bind(normalized_conversation_id)
-                .execute(&pool)
-                .await
-                .map_err(|e| e.to_string())?;
-        }
-    }
-
-    let now_secs = now / 1000;
-    // Touch conversation timestamp so list order reflects latest activity.
+    let now = chrono::Utc::now().timestamp();
     sqlx::query("UPDATE conversations SET updated_at = ? WHERE id = ?")
-        .bind(now_secs)
-        .bind(normalized_conversation_id)
+        .bind(now)
+        .bind(conversation_id)
         .execute(&pool)
         .await
         .map_err(|e| e.to_string())?;
 
-    Ok(inserted_id)
-}
-
-pub async fn replace_history(
-    app: &AppHandle,
-    conversation_id: &str,
-    messages: Vec<HistoryMessage>,
-) -> Result<(), String> {
-    let pool = get_pool_with_schema(app).await?;
-    let normalized_conversation_id = conversation_id.trim();
-
-    if !conversation_exists(&pool, normalized_conversation_id).await? {
+    let Some(text) = user_text.map(str::trim).filter(|t| !t.is_empty()) else {
         return Ok(());
-    }
+    };
 
-    let now = chrono::Utc::now().timestamp_millis();
-    let now_secs = now / 1000;
     let current_title: Option<String> =
         sqlx::query_scalar("SELECT title FROM conversations WHERE id = ?")
-            .bind(normalized_conversation_id)
+            .bind(conversation_id)
             .fetch_optional(&pool)
             .await
             .map_err(|e| e.to_string())?;
-    let replacement_snapshot = if messages
-        .last()
-        .map(|message| message.role.eq_ignore_ascii_case("user"))
-        .unwrap_or(false)
-    {
-        // 与 UI 一致：只按可见 user 气泡计数（有正文的 user 行）。
-        let user_ordinal = messages
-            .iter()
-            .filter(|message| {
-                message.role.eq_ignore_ascii_case("user") && !message.content.trim().is_empty()
-            })
-            .count();
-        if user_ordinal <= 1 {
-            Some(Vec::new())
-        } else {
-            let snapshot = load_turn_snapshot(app, normalized_conversation_id)
-                .await?
-                .ok_or_else(|| {
-                    format!(
-                        "会话 {} 缺少 turn snapshot，无法从数据库可见历史安全重建，请新开对话",
-                        normalized_conversation_id
-                    )
-                })?;
-            Some(snapshot_before_user_ordinal(&snapshot, user_ordinal))
-        }
-    } else {
-        None
-    };
-
-    let mut tx = pool.begin().await.map_err(|e| e.to_string())?;
-
-    sqlx::query("DELETE FROM conversation_messages WHERE conversation_id = ?")
-        .bind(normalized_conversation_id)
-        .execute(&mut *tx)
-        .await
-        .map_err(|e| e.to_string())?;
-    sqlx::query("DELETE FROM conversation_tool_logs WHERE conversation_id = ?")
-        .bind(normalized_conversation_id)
-        .execute(&mut *tx)
-        .await
-        .map_err(|e| e.to_string())?;
-    sqlx::query("DELETE FROM conversation_memory WHERE conversation_id = ?")
-        .bind(normalized_conversation_id)
-        .execute(&mut *tx)
-        .await
-        .map_err(|e| e.to_string())?;
-    sqlx::query("DELETE FROM conversation_compact_boundaries WHERE conversation_id = ?")
-        .bind(normalized_conversation_id)
-        .execute(&mut *tx)
-        .await
-        .map_err(|e| e.to_string())?;
-    sqlx::query("DELETE FROM conversation_turn_snapshots WHERE conversation_id = ?")
-        .bind(normalized_conversation_id)
-        .execute(&mut *tx)
-        .await
-        .map_err(|e| e.to_string())?;
-
-    for (index, message) in messages.iter().enumerate() {
-        // 稳定递增毫秒，保证 ORDER BY created_at, id 与传入顺序一致。
-        let created_at = now + index as i64;
-        let reasoning = message
-            .reasoning
-            .as_ref()
-            .map(|v| v.trim().to_string())
-            .filter(|v| !v.is_empty());
-        let attachments_json = message
-            .attachments
-            .as_ref()
-            .and_then(|v| serde_json::to_string(v).ok());
-        let cost_json = message
-            .cost
-            .as_ref()
-            .and_then(|v| serde_json::to_string(v).ok());
-
-        sqlx::query(
-            "INSERT INTO conversation_messages (conversation_id, role, content, reasoning, attachments_json, token_usage, cost_json, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-        )
-        .bind(normalized_conversation_id)
-        .bind(&message.role)
-        .bind(&message.content)
-        .bind(reasoning)
-        .bind(attachments_json)
-        .bind(message.token_usage)
-        .bind(cost_json)
-        .bind(created_at)
-        .execute(&mut *tx)
-        .await
-        .map_err(|e| e.to_string())?;
-    }
-
-    let should_update_title = current_title
+    let should_update = current_title
         .as_deref()
         .map(|title| {
             let trimmed = title.trim();
             trimmed.is_empty() || trimmed == "New chat"
         })
-        .unwrap_or(true);
-
-    if should_update_title {
-        let next_title = messages
-            .iter()
-            .find(|message| message.role.eq_ignore_ascii_case("user"))
-            .map(|message| memory::derive_title_from_message(&message.content))
-            .unwrap_or_default();
-
-        sqlx::query("UPDATE conversations SET title = ?, updated_at = ? WHERE id = ?")
-            .bind(next_title)
-            .bind(now_secs)
-            .bind(normalized_conversation_id)
-            .execute(&mut *tx)
-            .await
-            .map_err(|e| e.to_string())?;
-    } else {
-        sqlx::query("UPDATE conversations SET updated_at = ? WHERE id = ?")
-            .bind(now_secs)
-            .bind(normalized_conversation_id)
-            .execute(&mut *tx)
-            .await
-            .map_err(|e| e.to_string())?;
+        .unwrap_or(false);
+    if !should_update {
+        return Ok(());
     }
 
-    tx.commit().await.map_err(|e| e.to_string())?;
-
-    if let Some(snapshot) = replacement_snapshot {
-        save_turn_snapshot(app, normalized_conversation_id, &snapshot).await?;
+    let new_title = memory::derive_title_from_message(text);
+    sqlx::query("UPDATE conversations SET title = ? WHERE id = ?")
+        .bind(&new_title)
+        .bind(conversation_id)
+        .execute(&pool)
+        .await
+        .map_err(|e| e.to_string())?;
+    let title_event = crate::llm::session_log::SessionEvent::TitleChanged { title: new_title };
+    if let Err(error) =
+        crate::llm::session_log::append_event(app, conversation_id, None, &title_event).await
+    {
+        tracing::warn!(error = %error, "title_changed event append failed");
     }
-
     Ok(())
+}
+
+/// 事件驱动的纯文本消息追加（分支转存等场景）：写事件日志并维护标题/活跃度。
+pub async fn append_plain_chat_message(
+    app: &AppHandle,
+    conversation_id: &str,
+    role: &str,
+    content: &str,
+) -> Result<(), String> {
+    let message_role = if role.eq_ignore_ascii_case("assistant") {
+        Role::Assistant
+    } else {
+        Role::User
+    };
+    let message = Message {
+        role: message_role.clone(),
+        content: Content::Text(content.to_string()),
+    };
+    let event = crate::llm::session_log::SessionEvent::from_model_message(message);
+    crate::llm::session_log::append_event(app, conversation_id, None, &event).await?;
+    let user_text = matches!(message_role, Role::User).then_some(content);
+    refresh_conversation_activity(app, conversation_id, user_text).await
+}
+
+/// 事件驱动的历史重置（编辑消息重发用）：清空该会话事件流，
+/// 再把传入消息序列重写为事件（用户消息保留附件，助手消息保留 token/成本）。
+pub async fn reset_conversation_messages(
+    app: &AppHandle,
+    conversation_id: &str,
+    messages: &[HistoryMessage],
+) -> Result<(), String> {
+    crate::llm::session_log::delete_events(app, conversation_id).await?;
+
+    let mut events = Vec::with_capacity(messages.len());
+    for message in messages {
+        let role = if message.role.eq_ignore_ascii_case("assistant") {
+            Role::Assistant
+        } else {
+            Role::User
+        };
+        let model_message = Message {
+            role: role.clone(),
+            content: Content::Text(message.content.clone()),
+        };
+        let event = match role {
+            Role::User => crate::llm::session_log::SessionEvent::UserMessage {
+                message: model_message,
+                attachments: message.attachments.clone(),
+            },
+            Role::Assistant => crate::llm::session_log::SessionEvent::AssistantMessage {
+                message: model_message,
+                token_usage: message.token_usage,
+                cost: message.cost.clone(),
+            },
+        };
+        events.push(event);
+    }
+    crate::llm::session_log::append_events(app, conversation_id, None, &events).await?;
+
+    let first_user = messages
+        .iter()
+        .find(|m| m.role.eq_ignore_ascii_case("user"))
+        .map(|m| m.content.as_str());
+    refresh_conversation_activity(app, conversation_id, first_user).await
+}
+
+// Load all persisted messages for a conversation in stable chronological order.
+// 纯事件投影：从会话事件日志渲染（旧数据不兼容，无事件的会话返回空）。
+pub async fn load_history(
+    app: &AppHandle,
+    conversation_id: &str,
+) -> Result<Vec<HistoryMessage>, String> {
+    let events = crate::llm::session_log::load_events(app, conversation_id).await?;
+    Ok(crate::llm::session_log::projection::render_ui_history(&events))
 }
 
 pub async fn load_conversation_tool_logs(
     app: &AppHandle,
     conversation_id: &str,
 ) -> Result<Vec<HistoryToolExecution>, String> {
-    let pool = get_pool_with_schema(app).await?;
-
-    let rows = sqlx::query(
-        "SELECT log_id, turn_id, tool_name, input_text, result_text, status, started_at, finished_at FROM conversation_tool_logs WHERE conversation_id = ? ORDER BY started_at ASC, log_id ASC",
-    )
-    .bind(conversation_id)
-    .fetch_all(&pool)
-    .await
-    .map_err(|e| e.to_string())?;
-
-    let items = rows
-        .into_iter()
-        .map(|row| HistoryToolExecution {
-            id: row.get::<String, _>("log_id"),
-            turn_id: row.get::<Option<String>, _>("turn_id"),
-            tool_name: row.get::<String, _>("tool_name"),
-            input: row.get::<String, _>("input_text"),
-            result: row.get::<String, _>("result_text"),
-            status: row.get::<String, _>("status"),
-            started_at: row.get::<i64, _>("started_at"),
-            finished_at: row.get::<Option<i64>, _>("finished_at"),
-        })
-        .collect::<Vec<_>>();
-
-    Ok(items)
-}
-
-pub async fn upsert_conversation_tool_log(
-    app: &AppHandle,
-    conversation_id: &str,
-    log: HistoryToolExecution,
-) -> Result<(), String> {
-    let pool = get_pool_with_schema(app).await?;
-    let normalized_conversation_id = conversation_id.trim();
-
-    // Tool traces can arrive after conversation deletion; ignore stale persistence.
-    if !conversation_exists(&pool, normalized_conversation_id).await? {
-        return Ok(());
-    }
-
-    let log_id = log.id.trim();
-    if log_id.is_empty() {
-        return Err("tool log id is required".to_string());
-    }
-
-    let tool_name = log.tool_name.trim();
-    if tool_name.is_empty() {
-        return Err("tool_name is required".to_string());
-    }
-
-    let status = log.status.trim().to_ascii_lowercase();
-    if !matches!(
-        status.as_str(),
-        "running" | "completed" | "error" | "cancelled"
-    ) {
-        return Err(format!("invalid tool status: {}", log.status));
-    }
-
-    let now = chrono::Utc::now().timestamp_millis();
-    let started_at = if log.started_at > 0 {
-        log.started_at
-    } else {
-        now
-    };
-    let finished_at = log
-        .finished_at
-        .and_then(|ts| if ts > 0 { Some(ts) } else { None });
-
-    sqlx::query(
-        r#"
-        INSERT INTO conversation_tool_logs (
-            conversation_id,
-            log_id,
-            turn_id,
-            tool_name,
-            input_text,
-            result_text,
-            status,
-            started_at,
-            finished_at,
-            updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        ON CONFLICT(conversation_id, log_id) DO UPDATE SET
-            turn_id = excluded.turn_id,
-            tool_name = excluded.tool_name,
-            input_text = excluded.input_text,
-            result_text = excluded.result_text,
-            status = excluded.status,
-            started_at = excluded.started_at,
-            finished_at = excluded.finished_at,
-            updated_at = excluded.updated_at
-        "#,
-    )
-    .bind(normalized_conversation_id)
-    .bind(log_id)
-    .bind(
-        log.turn_id
-            .as_deref()
-            .map(str::trim)
-            .filter(|v| !v.is_empty()),
-    )
-    .bind(tool_name)
-    .bind(log.input)
-    .bind(log.result)
-    .bind(status)
-    .bind(started_at)
-    .bind(finished_at)
-    .bind(now)
-    .execute(&pool)
-    .await
-    .map_err(|e| e.to_string())?;
-
-    Ok(())
+    // 纯事件投影：从 ToolCall/ToolResult 事件配对渲染。
+    let events = crate::llm::session_log::load_events(app, conversation_id).await?;
+    Ok(crate::llm::session_log::projection::render_tool_logs(&events))
 }
 
 // Clear history data.
@@ -1215,36 +759,16 @@ pub async fn clear_history(app: &AppHandle, conversation_id: Option<String>) -> 
     let mut tx = pool.begin().await.map_err(|e| e.to_string())?;
 
     if let Some(id) = conversation_id {
-        sqlx::query("DELETE FROM conversation_messages WHERE conversation_id = ?")
+        sqlx::query("DELETE FROM session_events WHERE conversation_id = ?")
             .bind(&id)
             .execute(&mut *tx)
             .await
             .map_err(|e| e.to_string())?;
-        sqlx::query("DELETE FROM conversation_tool_logs WHERE conversation_id = ?")
+        sqlx::query("UPDATE token_usage_log SET conversation_id = NULL WHERE conversation_id = ?")
             .bind(&id)
             .execute(&mut *tx)
             .await
             .map_err(|e| e.to_string())?;
-        sqlx::query("DELETE FROM conversation_memory WHERE conversation_id = ?")
-            .bind(&id)
-            .execute(&mut *tx)
-            .await
-            .map_err(|e| e.to_string())?;
-        sqlx::query("DELETE FROM conversation_compact_boundaries WHERE conversation_id = ?")
-            .bind(&id)
-            .execute(&mut *tx)
-            .await
-            .map_err(|e| e.to_string())?;
-        sqlx::query("DELETE FROM conversation_turn_snapshots WHERE conversation_id = ?")
-            .bind(&id)
-            .execute(&mut *tx)
-            .await
-            .map_err(|e| e.to_string())?;
-    sqlx::query("UPDATE token_usage_log SET conversation_id = NULL WHERE conversation_id = ?")
-        .bind(&id)
-        .execute(&mut *tx)
-        .await
-        .map_err(|e| e.to_string())?;
 
         tx.commit().await.map_err(|e| e.to_string())?;
         crate::command::session_files::delete_all_session_files(app, &id).await?;
@@ -1252,31 +776,11 @@ pub async fn clear_history(app: &AppHandle, conversation_id: Option<String>) -> 
         crate::llm::services::shell_sessions::close_session(Some(&id)).await;
         let _ = crate::llm::services::user_terminal::stop_session(Some(&id));
     } else {
-        sqlx::query("DELETE FROM conversation_messages")
-            .execute(&mut *tx)
-            .await
-            .map_err(|e| e.to_string())?;
-        sqlx::query("DELETE FROM conversation_tool_logs")
-            .execute(&mut *tx)
-            .await
-            .map_err(|e| e.to_string())?;
-        sqlx::query("DELETE FROM conversation_memory")
-            .execute(&mut *tx)
-            .await
-            .map_err(|e| e.to_string())?;
-        sqlx::query("DELETE FROM conversation_compact_boundaries")
-            .execute(&mut *tx)
-            .await
-            .map_err(|e| e.to_string())?;
-        sqlx::query("DELETE FROM conversation_turn_snapshots")
+        sqlx::query("DELETE FROM session_events")
             .execute(&mut *tx)
             .await
             .map_err(|e| e.to_string())?;
         sqlx::query("DELETE FROM conversations")
-            .execute(&mut *tx)
-            .await
-            .map_err(|e| e.to_string())?;
-        sqlx::query("DELETE FROM messages")
             .execute(&mut *tx)
             .await
             .map_err(|e| e.to_string())?;
@@ -1295,7 +799,6 @@ pub async fn clear_history(app: &AppHandle, conversation_id: Option<String>) -> 
 }
 
 // Delete one conversation and all dependent rows.
-// Order matters to satisfy FK constraints in environments that enforce them.
 pub async fn delete_conversation(app: &AppHandle, conversation_id: &str) -> Result<(), String> {
     let pool = get_pool_with_schema(app).await?;
 
@@ -1318,31 +821,7 @@ pub async fn delete_conversation(app: &AppHandle, conversation_id: &str) -> Resu
         }
     }
 
-    sqlx::query("DELETE FROM conversation_messages WHERE conversation_id = ?")
-        .bind(conversation_id)
-        .execute(&pool)
-        .await
-        .map_err(|e| e.to_string())?;
-
-    sqlx::query("DELETE FROM conversation_tool_logs WHERE conversation_id = ?")
-        .bind(conversation_id)
-        .execute(&pool)
-        .await
-        .map_err(|e| e.to_string())?;
-
-    sqlx::query("DELETE FROM conversation_memory WHERE conversation_id = ?")
-        .bind(conversation_id)
-        .execute(&pool)
-        .await
-        .map_err(|e| e.to_string())?;
-
-    sqlx::query("DELETE FROM conversation_compact_boundaries WHERE conversation_id = ?")
-        .bind(conversation_id)
-        .execute(&pool)
-        .await
-        .map_err(|e| e.to_string())?;
-
-    sqlx::query("DELETE FROM conversation_turn_snapshots WHERE conversation_id = ?")
+    sqlx::query("DELETE FROM session_events WHERE conversation_id = ?")
         .bind(conversation_id)
         .execute(&pool)
         .await
@@ -1370,47 +849,4 @@ pub async fn delete_conversation(app: &AppHandle, conversation_id: &str) -> Resu
         .clear_session(Some(conversation_id));
 
     Ok(())
-}
-
-pub async fn save_turn_snapshot(
-    app: &AppHandle,
-    conversation_id: &str,
-    messages: &[crate::llm::types::Message],
-) -> Result<(), String> {
-    let pool = get_pool_with_schema(app).await?;
-    let json = serde_json::to_string(messages).map_err(|e| e.to_string())?;
-    let now = chrono::Utc::now().timestamp();
-    sqlx::query(
-        "INSERT OR REPLACE INTO conversation_turn_snapshots (conversation_id, snapshot_json, updated_at) VALUES (?, ?, ?)",
-    )
-    .bind(conversation_id)
-    .bind(&json)
-    .bind(now)
-    .execute(&pool)
-    .await
-    .map_err(|e| e.to_string())?;
-    Ok(())
-}
-
-pub async fn load_turn_snapshot(
-    app: &AppHandle,
-    conversation_id: &str,
-) -> Result<Option<Vec<crate::llm::types::Message>>, String> {
-    let pool = get_pool_with_schema(app).await?;
-    let row: Option<String> = sqlx::query_scalar(
-        "SELECT snapshot_json FROM conversation_turn_snapshots WHERE conversation_id = ?",
-    )
-    .bind(conversation_id)
-    .fetch_optional(&pool)
-    .await
-    .map_err(|e| e.to_string())?;
-
-    match row {
-        None => Ok(None),
-        Some(json) => {
-            let messages = serde_json::from_str::<Vec<crate::llm::types::Message>>(&json)
-                .map_err(|e| e.to_string())?;
-            Ok(Some(messages))
-        }
-    }
 }

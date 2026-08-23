@@ -27,6 +27,7 @@ pub fn save_hooks_toml(app: AppHandle, content: String) -> Result<usize, String>
             std::fs::remove_file(&path)
                 .map_err(|e| format!("Failed to remove {}: {}", path.display(), e))?;
         }
+        hooks::invalidate_hooks_cache();
         return Ok(0);
     }
 
@@ -36,5 +37,6 @@ pub fn save_hooks_toml(app: AppHandle, content: String) -> Result<usize, String>
     }
     crate::llm::utils::atomic_write::write_str(&path, &content)
         .map_err(|e| format!("Failed to write {}: {}", path.display(), e))?;
+    hooks::invalidate_hooks_cache();
     Ok(handler_count)
 }

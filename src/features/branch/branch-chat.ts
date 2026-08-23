@@ -7,7 +7,7 @@ import { computed, reactive, ref } from 'vue';
 import { listen } from '@tauri-apps/api/event';
 import { invoke } from '@tauri-apps/api/core';
 import {
-  appendConversationMessage,
+  appendPlainChatMessage,
   createConversation,
 } from '../chat/services/chat-api';
 import { emitToast } from '../../lib/toast';
@@ -262,7 +262,7 @@ export async function exportBranchAsConversation(session: BranchSession) {
         index === 0 && m.role === 'user'
           ? `我在主对话中读到以下内容：\n\n> ${session.quotedText.split('\n').join('\n> ')}\n\n我的问题是：${m.content}`
           : m.content;
-      await appendConversationMessage(meta.id, { role: m.role, content });
+      await appendPlainChatMessage(meta.id, m.role === 'assistant' ? 'assistant' : 'user', content);
     }
     session.exported = true;
     emitToast({ message: '已保存为新会话，可在左侧会话列表查看', variant: 'success' });

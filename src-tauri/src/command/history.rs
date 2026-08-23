@@ -1,12 +1,10 @@
 use tauri::AppHandle;
 
-use crate::llm::commands::{compact, memory, resume};
 use crate::llm::history;
 use crate::llm::utils::error_event::report_backend_result;
 // 对外复用 llm/commands 公共类型。
 pub use crate::llm::commands::types::{
-    CompactBoundary, CompactContext, ConversationHandover, ConversationMemory, ConversationMeta,
-    HistoryMessage, HistoryToolExecution, ResumeContext,
+    ConversationMeta, HistoryMessage, HistoryToolExecution,
 };
 
 #[tauri::command]
@@ -93,30 +91,53 @@ pub async fn load_history(
 }
 
 #[tauri::command]
-pub async fn append_history(
-    app: AppHandle,
-    conversation_id: String,
-    message: HistoryMessage,
-) -> Result<i64, String> {
-    // 向指定会话追加一条历史消息，返回数据库行 id。
-    report_backend_result(
-        &app,
-        "command.history.append_history",
-        history::append_history(&app, &conversation_id, message).await,
-        None,
-    )
-}
-
-#[tauri::command]
 pub async fn replace_history(
     app: AppHandle,
     conversation_id: String,
     messages: Vec<HistoryMessage>,
 ) -> Result<(), String> {
+    // 事件日志时代：重置该会话事件流为传入的消息序列（编辑消息重发用）。
     report_backend_result(
         &app,
         "command.history.replace_history",
-        history::replace_history(&app, &conversation_id, messages).await,
+        history::reset_conversation_messages(&app, &conversation_id, &messages).await,
+        None,
+    )
+}
+
+#[tauri::command]
+pub async fn append_plain_chat_message(
+    app: AppHandle,
+    conversation_id: String,
+    role: String,
+    content: String,
+) -> Result<(), String> {
+    // 事件日志入口：追加一条纯文本消息（分支转存等场景）。
+    report_backend_result(
+        &app,
+        "command.history.append_plain_chat_message",
+        history::append_plain_chat_message(&app, &conversation_id, &role, &content).await,
+        None,
+    )
+}
+
+#[tauri::command]
+pub async fn update_assistant_message_meta(
+    app: AppHandle,
+    conversation_id: String,
+    cost: serde_json::Value,
+) -> Result<(), String> {
+    // 前端回写助手消息的展示元数据（transcript/压缩记录/耗时等），
+    // 富化事件日志里最后一条 assistant_message 的 cost 字段。
+    report_backend_result(
+        &app,
+        "command.history.update_assistant_message_meta",
+        crate::llm::session_log::update_last_assistant_message_cost(
+            &app,
+            &conversation_id,
+            &cost,
+        )
+        .await,
         None,
     )
 }
@@ -130,20 +151,6 @@ pub async fn load_conversation_tool_logs(
         &app,
         "command.history.load_conversation_tool_logs",
         history::load_conversation_tool_logs(&app, &conversation_id).await,
-        None,
-    )
-}
-
-#[tauri::command]
-pub async fn upsert_conversation_tool_log(
-    app: AppHandle,
-    conversation_id: String,
-    log: HistoryToolExecution,
-) -> Result<(), String> {
-    report_backend_result(
-        &app,
-        "command.history.upsert_conversation_tool_log",
-        history::upsert_conversation_tool_log(&app, &conversation_id, log).await,
         None,
     )
 }
@@ -173,164 +180,6 @@ pub async fn delete_conversation(app: AppHandle, conversation_id: String) -> Res
         crate::llm::services::tool_disclosure::forget_conversation(&app, Some(&conversation_id));
     }
     result
-}
-
-#[tauri::command]
-pub async fn get_conversation_memory(
-    app: AppHandle,
-    conversation_id: String,
-) -> Result<Option<ConversationMemory>, String> {
-    let result = async {
-        // 获取带 schema 的连接池。
-        let pool = history::get_pool_with_schema(&app).await?;
-        // 查询会话 memory。
-        memory::get_conversation_memory_by_pool(&pool, &conversation_id).await
-    }
-    .await;
-    report_backend_result(
-        &app,
-        "command.history.get_conversation_memory",
-        result,
-        None,
-    )
-}
-
-#[tauri::command]
-pub async fn get_conversation_handover(
-    app: AppHandle,
-    conversation_id: String,
-    recent_limit: Option<i64>,
-) -> Result<ConversationHandover, String> {
-    let result = async {
-        // 获取带 schema 的连接池。
-        let pool = history::get_pool_with_schema(&app).await?;
-        // 计算 handover 数据。
-        memory::get_conversation_handover_by_pool(&pool, &conversation_id, recent_limit).await
-    }
-    .await;
-    report_backend_result(
-        &app,
-        "command.history.get_conversation_handover",
-        result,
-        None,
-    )
-}
-
-#[tauri::command]
-pub async fn get_conversation_compact_context(
-    app: AppHandle,
-    conversation_id: String,
-    token_budget: Option<i64>,
-    recent_limit: Option<i64>,
-) -> Result<CompactContext, String> {
-    let result = async {
-        // 获取带 schema 的连接池。
-        let pool = history::get_pool_with_schema(&app).await?;
-        // 基于 memory 先构造 handover。
-        let handover =
-            memory::get_conversation_handover_by_pool(&pool, &conversation_id, recent_limit)
-                .await?;
-        // 在 handover 基础上构造 compact context。
-        Ok(compact::build_compact_context(
-            conversation_id,
-            handover,
-            token_budget,
-            recent_limit,
-        ))
-    }
-    .await;
-    report_backend_result(
-        &app,
-        "command.history.get_conversation_compact_context",
-        result,
-        None,
-    )
-}
-
-pub async fn record_compact_boundary(
-    app: AppHandle,
-    compact_ctx: &CompactContext,
-    summary: &str,
-    key_facts: &[String],
-) -> Result<CompactBoundary, String> {
-    // 获取带 schema 的连接池。
-    let pool = history::get_pool_with_schema(&app).await?;
-    // 持久化 compact 边界记录。
-    compact::record_compact_boundary_by_pool(&pool, compact_ctx, summary, key_facts).await
-}
-
-#[tauri::command]
-pub async fn get_latest_compact_boundary(
-    app: AppHandle,
-    conversation_id: String,
-) -> Result<Option<CompactBoundary>, String> {
-    let result = async {
-        // 获取带 schema 的连接池。
-        let pool = history::get_pool_with_schema(&app).await?;
-        // 查询最新 compact 边界。
-        compact::get_latest_compact_boundary_by_pool(&pool, &conversation_id).await
-    }
-    .await;
-    report_backend_result(
-        &app,
-        "command.history.get_latest_compact_boundary",
-        result,
-        None,
-    )
-}
-
-#[tauri::command]
-pub async fn get_conversation_resume_context(
-    app: AppHandle,
-    conversation_id: String,
-) -> Result<Option<ResumeContext>, String> {
-    let result = async {
-        // 获取带 schema 的连接池。
-        let pool = history::get_pool_with_schema(&app).await?;
-        // 先找最新 compact 边界。
-        let boundary =
-            match compact::get_latest_compact_boundary_by_pool(&pool, &conversation_id).await? {
-                Some(v) => v,
-                // 无边界则无 resume 上下文。
-                None => return Ok(None),
-            };
-        // 计算边界之后的 resume 上下文。
-        let ctx =
-            resume::get_conversation_resume_context_by_pool(&pool, &conversation_id, boundary)
-                .await?;
-        // 包装为 Some 返回。
-        Ok(Some(ctx))
-    }
-    .await;
-    report_backend_result(
-        &app,
-        "command.history.get_conversation_resume_context",
-        result,
-        None,
-    )
-}
-
-#[tauri::command]
-pub async fn upsert_conversation_memory(
-    app: AppHandle,
-    conversation_id: String,
-    summary: String,
-    key_facts: Vec<String>,
-) -> Result<(), String> {
-    let result = async {
-        // 获取带 schema 的连接池。
-        let pool = history::get_pool_with_schema(&app).await?;
-        // upsert 会话 memory。
-        memory::upsert_conversation_memory_by_pool(&pool, &conversation_id, &summary, &key_facts)
-            .await
-    }
-    .await;
-    report_backend_result(
-        &app,
-        "command.history.upsert_conversation_memory",
-        result,
-        None,
-    )
 }
 
 #[tauri::command]

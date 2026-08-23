@@ -131,7 +131,7 @@ export interface UploadedImageFile extends ChatAttachment {
 export type PendingUploadFile = UploadedDocumentFile | UploadedImageFile;
 
 export interface PersistedMessage {
-  /** SQLite conversation_messages.id */
+  /** 事件日志中的消息 seq（稳定唯一键）。 */
   id?: number | null;
   role: string;
   content: string;
@@ -139,12 +139,6 @@ export interface PersistedMessage {
   attachments?: ChatAttachment[];
   tokenUsage?: number;
   cost?: TurnCost;
-}
-
-export interface ConversationMemory {
-  summary: string;
-  keyFacts: string[];
-  updatedAt: number;
 }
 
 export interface ConversationMeta {

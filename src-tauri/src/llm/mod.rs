@@ -6,6 +6,7 @@ pub mod providers;
 pub mod query;
 pub mod query_engine;
 pub mod services;
+pub mod session_log;
 pub mod tools;
 pub mod types;
 pub mod utils;

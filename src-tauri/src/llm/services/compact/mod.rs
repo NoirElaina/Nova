@@ -7,7 +7,6 @@ use serde::Serialize;
 use serde_json::{json, Value};
 use tauri::AppHandle;
 
-use crate::llm::commands::types::{CompactContext, HistoryMessage};
 use crate::llm::types::{Content, ContentBlock, Message, Role};
 use crate::llm::utils::token_counter;
 
@@ -26,7 +25,6 @@ const TOOL_RESULT_TEXT_TRUNCATE_LIMIT: usize = 8000;
 // JSON 压缩上限，避免深层数组/对象导致多次迭代爆炸。
 const TOOL_RESULT_JSON_MAX_DEPTH: usize = 3;
 const TOOL_RESULT_JSON_MAX_ITEMS: usize = 12;
-const SESSION_RESTORE_MARKER: &str = "[Session Restore Context]";
 const REACTIVE_FULL_COMPACT_RECENT_LIMIT: i64 = 6;
 const REACTIVE_FALLBACK_KEEP_MESSAGES: usize = 8;
 const AUTO_COMPACT_SUMMARY_PREFIX: &str = "[Auto Compact Summary]";
@@ -75,36 +73,6 @@ pub struct ToolResultContextEditingOutcome {
     pub original_estimated_tokens: i64,
     pub edited_estimated_tokens: i64,
     pub cleared_tool_pairs: usize,
-}
-
-fn message_has_session_restore_marker(message: &Message) -> bool {
-    match &message.content {
-        Content::Text(t) => t.contains(SESSION_RESTORE_MARKER),
-        Content::Blocks(blocks) => blocks.iter().any(|b| {
-            if let ContentBlock::Text { text } = b {
-                text.contains(SESSION_RESTORE_MARKER)
-            } else {
-                false
-            }
-        }),
-    }
-}
-
-fn split_session_restore_message(messages: &[Message]) -> (Option<Message>, Vec<Message>) {
-    let marker_index = messages.iter().position(message_has_session_restore_marker);
-    let Some(marker_index) = marker_index else {
-        return (None, messages.to_vec());
-    };
-
-    let mut rest = Vec::with_capacity(messages.len().saturating_sub(1));
-    for (idx, msg) in messages.iter().enumerate() {
-        if idx == marker_index {
-            continue;
-        }
-        rest.push(msg.clone());
-    }
-
-    (Some(messages[marker_index].clone()), rest)
 }
 
 fn collect_clearable_tool_result_ids(messages: &[Message]) -> Vec<String> {
@@ -553,70 +521,25 @@ async fn apply_full_compact(
 
 async fn try_model_driven_full_compact(
     app: &AppHandle,
-    conversation_id: &str,
     messages: &[Message],
     recent_limit: i64,
 ) -> Result<Option<Vec<Message>>, String> {
-    let (session_restore_message, messages_without_restore) =
-        split_session_restore_message(messages);
     let keep_count = recent_limit.clamp(6, 30) as usize;
-    if messages_without_restore.len() <= keep_count + 1 {
+    if messages.len() <= keep_count + 1 {
         return Ok(None);
     }
 
-    let split_index = messages_without_restore.len().saturating_sub(keep_count);
+    let split_index = messages.len().saturating_sub(keep_count);
     if split_index == 0 {
         return Ok(None);
     }
 
-    let messages_to_summarize = &messages_without_restore[..split_index];
-    let recent_messages = messages_without_restore[split_index..].to_vec();
+    let messages_to_summarize = &messages[..split_index];
+    let recent_messages = messages[split_index..].to_vec();
     let summary = summary::summarize_messages_for_compact(app, messages_to_summarize).await?;
     let compact_message = build_auto_compact_summary_message(&summary);
 
-    if let Ok(handover) = crate::command::history::get_conversation_handover(
-        app.clone(),
-        conversation_id.to_string(),
-        Some(recent_limit),
-    )
-    .await
-    {
-        let compact_context = CompactContext {
-            conversation_id: conversation_id.to_string(),
-            context_text: match &compact_message.content {
-                Content::Text(text) => text.clone(),
-                Content::Blocks(_) => summary.clone(),
-            },
-            recent_limit,
-            omitted_message_count: handover.omitted_message_count,
-            total_message_count: handover.total_message_count,
-            estimated_tokens: token_counter::count_text(&summary),
-            updated_at: handover.updated_at,
-        };
-
-        if let Err(error) = crate::command::history::record_compact_boundary(
-            app.clone(),
-            &compact_context,
-            &summary,
-            &Vec::new(),
-        )
-        .await
-        {
-            tracing::warn!(
-                operation = "llm.services.compact.record_compact_boundary",
-                conversation_id = %conversation_id,
-                error = %error,
-                "failed to persist compact boundary"
-            );
-        }
-    }
-
-    let mut prepared = Vec::with_capacity(
-        recent_messages.len() + 1 + usize::from(session_restore_message.is_some()),
-    );
-    if let Some(restore) = session_restore_message {
-        prepared.push(restore);
-    }
+    let mut prepared = Vec::with_capacity(recent_messages.len() + 1);
     prepared.push(compact_message);
     prepared.extend(recent_messages);
     Ok(Some(prepared))
@@ -634,7 +557,7 @@ async fn apply_full_compact_with_limits(
     };
 
     if !state::is_auto_compact_circuit_open(Some(conversation_id)) {
-        match try_model_driven_full_compact(app, conversation_id, messages, recent_limit).await {
+        match try_model_driven_full_compact(app, messages, recent_limit).await {
             Ok(Some(compacted)) => {
                 state::record_auto_compact_success(Some(conversation_id));
                 return compacted;
@@ -677,26 +600,16 @@ fn same_messages(left: &[Message], right: &[Message]) -> bool {
 }
 
 fn truncate_oldest_messages_for_retry(messages: &[Message], keep_recent: usize) -> Vec<Message> {
-    let (session_restore_message, messages_without_restore) =
-        split_session_restore_message(messages);
-
-    if messages_without_restore.len() <= keep_recent {
+    if messages.len() <= keep_recent {
         return messages.to_vec();
     }
 
-    let mut start = messages_without_restore.len().saturating_sub(keep_recent);
-    while start > 0 && messages_without_restore[start].role == Role::Assistant {
+    let mut start = messages.len().saturating_sub(keep_recent);
+    while start > 0 && messages[start].role == Role::Assistant {
         start -= 1;
     }
 
-    let mut prepared = Vec::with_capacity(
-        messages_without_restore.len().saturating_sub(start)
-            + usize::from(session_restore_message.is_some()),
-    );
-    if let Some(restore) = session_restore_message {
-        prepared.push(restore);
-    }
-    prepared.extend(messages_without_restore[start..].iter().cloned());
+    let mut prepared = messages[start..].to_vec();
 
     // 截断边界可能切在 ToolUse 与其 ToolResult 之间，保留区会残留
     // 失去配对的块——Anthropic/OpenAI 都强制配对完整，会直接 400。
@@ -962,30 +875,22 @@ pub async fn manual_compact(
 
     let after_tokens = token_counter::count_messages(&new_messages) as u32;
 
-    let new_history: Vec<HistoryMessage> = new_messages
-        .iter()
-        .map(|m| HistoryMessage {
-            id: None,
-            role: match m.role {
-                Role::User => "user".to_string(),
-                Role::Assistant => "assistant".to_string(),
-            },
-            content: match &m.content {
-                Content::Text(t) => t.clone(),
-                Content::Blocks(_) => String::new(),
-            },
-            reasoning: None,
-            attachments: None,
-            token_usage: None,
-            cost: None,
-        })
-        .collect();
+    // 事件日志时代：UI 历史从事件流投影（压缩只影响模型上下文，不丢用户可见历史）；
+    // 模型上下文重建由下方的 CompactBoundary 检查点承担，不再需要快照。
 
-    crate::llm::history::replace_history(app, conversation_id, new_history).await?;
-
-    // replace_history 会清除 turn snapshot，这里用压缩后的消息重建一份，
-    // 否则下一轮 send_chat_message 会因找不到 snapshot 而拒绝执行。
-    crate::llm::history::save_turn_snapshot(app, conversation_id, &new_messages).await?;
+    // 事件日志压缩检查点：重建模型上下文时丢弃旧事件，以压缩后上下文为新起点。
+    let boundary = crate::llm::session_log::SessionEvent::CompactBoundary {
+        base_context: new_messages.clone(),
+        summary: summary.clone(),
+        level: "manual".to_string(),
+        tokens_before: before_tokens,
+        tokens_after: after_tokens,
+    };
+    if let Err(error) =
+        crate::llm::session_log::append_event(app, conversation_id, None, &boundary).await
+    {
+        tracing::warn!(error = %error, conversation_id = %conversation_id, "manual compact boundary append failed");
+    }
 
     Ok(ManualCompactOutcome {
         before_tokens,

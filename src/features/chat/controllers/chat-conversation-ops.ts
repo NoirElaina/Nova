@@ -12,7 +12,6 @@ import type {
 } from "../../../lib/chat-types";
 import {
   ackChatTurnStatus,
-  appendConversationMessage,
   createConversation,
   deleteConversation,
   getChatTurnStatus,
@@ -22,6 +21,7 @@ import {
   loadConversationHistory,
   loadConversationToolLogs,
   setConversationPinned,
+  updateAssistantMessageMeta,
   type SessionFileMeta,
 } from "../services/chat-api";
 import { clearBrowserTabState } from "../../browser/browser-tab-state";
@@ -313,25 +313,18 @@ export function createConversationOperations(deps: ConversationOpsDeps) {
 
   async function persistMessage(message: ChatMessage, conversationId = activeConversationId.value) {
     if (!conversationId) return;
+    // 消息本体由后端随回合写入事件日志；前端只回写助手消息的展示元数据
+    // （transcript/压缩记录/耗时等，仅 UI 层使用），再刷新会话列表。
     try {
-      const dbId = await appendConversationMessage(conversationId, message);
-      // 回写稳定数据库 id，编辑截断不再依赖易漂移的数组下标。
-      if (dbId > 0) {
-        const nextId = String(dbId);
-        const idx = messages.value.findIndex(
-          (item) => item === message || (!!message.id && item.id === message.id),
+      if (message.role === "assistant" && message.cost) {
+        await updateAssistantMessageMeta(
+          conversationId,
+          message.cost as unknown as Record<string, unknown>,
         );
-        if (idx >= 0 && messages.value[idx]?.id !== nextId) {
-          const next = messages.value.slice();
-          next[idx] = { ...next[idx], id: nextId };
-          messages.value = next;
-        } else if (message.id !== nextId) {
-          message.id = nextId;
-        }
       }
       await refreshConversations();
     } catch (err) {
-      console.error("Failed to persist message:", err);
+      console.error("Failed to persist message metadata:", err);
     }
   }
 

@@ -233,7 +233,7 @@ pub async fn run_streaming<P: StreamParser>(
             chunk = stream.next() => chunk,
             _ = cancel_token.cancelled() => {
                 // 把已流式输出的部分内容封装成 partial assistant 消息返回，
-                // 确保 turn_snapshot 与 UI 历史（conversation_messages）保持一致。
+                // 确保事件日志与 UI 历史保持一致。
                 let partial_messages = build_partial_cancelled_messages(
                     &mut assistant_output,
                     &mut tool_result_blocks,
@@ -542,9 +542,9 @@ pub async fn run_streaming<P: StreamParser>(
 // ─────────────────────────────────────────────
 
 /// 中断（取消或错误）时将已积累的流式输出打包成消息列表返回，
-/// 使 turn_snapshot 与前端 conversation_messages 保持一致。
+/// 写入会话事件日志，使下轮重建的上下文与前端已见内容一致。
 /// - 若 output_blocks 含 ToolUse，必须同时携带 tool_result_blocks，
-///   否则 snapshot 会处于"有 ToolUse 无 ToolResult"的非法状态。
+///  否则写入事件日志后会处于"有 ToolUse 无 ToolResult"的非法状态。
 /// - 若工具产生了 side-channel 上下文（例如截图 image message），也必须一并携带，
 ///   否则 ToolResult 会声称 attached_to_context=true，但真正的上下文消息已丢失。
 /// - 若尚无任何内容，返回空 Vec（query.rs 侧会补 [Request interrupted by user]）。

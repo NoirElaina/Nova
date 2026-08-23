@@ -237,17 +237,6 @@ function toHistoryMessagePayload(message: ChatMessage): Record<string, unknown> 
   return payload;
 }
 
-export async function appendConversationMessage(
-  conversationId: string,
-  message: ChatMessage,
-): Promise<number> {
-  const id = await invoke<number>("append_history", {
-    conversationId,
-    message: toHistoryMessagePayload(message),
-  });
-  return typeof id === "number" ? id : 0;
-}
-
 export async function replaceConversationHistory(
   conversationId: string,
   messages: ChatMessage[],
@@ -265,16 +254,6 @@ export async function loadConversationToolLogs(
     conversationId,
   });
   return logs || [];
-}
-
-export async function upsertConversationToolLog(
-  conversationId: string,
-  log: ToolExecutionEntry,
-): Promise<void> {
-  await invoke("upsert_conversation_tool_log", {
-    conversationId,
-    log,
-  });
 }
 
 export async function deleteConversation(conversationId: string): Promise<void> {
@@ -392,12 +371,33 @@ export async function sendChatMessage(
   conversationId: string | null,
   messages: ChatRequestMessage[],
   agentMode: AgentMode,
+  attachments?: Record<string, unknown>[] | null,
 ): Promise<void> {
   await invoke("send_chat_message", {
     conversationId,
     messages,
     agentMode,
+    // 本轮用户消息的附件元数据：持久化已收归后端事件日志，随发送一并落盘。
+    attachments: attachments && attachments.length > 0 ? attachments : null,
   });
+}
+
+/** 追加一条纯文本消息到会话事件日志（分支转存等场景）。 */
+export async function appendPlainChatMessage(
+  conversationId: string,
+  role: "user" | "assistant",
+  content: string,
+): Promise<void> {
+  await invoke("append_plain_chat_message", { conversationId, role, content });
+}
+
+/** 回写助手消息的展示元数据（transcript/压缩记录/耗时等）到事件日志。 */
+export async function updateAssistantMessageMeta(
+  conversationId: string,
+  cost: Record<string, unknown> | null | undefined,
+): Promise<void> {
+  if (!cost) return;
+  await invoke("update_assistant_message_meta", { conversationId, cost });
 }
 
 export async function getChatTurnStatus(

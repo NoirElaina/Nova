@@ -13,6 +13,8 @@ pub async fn send_chat_message(
     conversation_id: Option<String>,
     messages: Vec<Message>,
     agent_mode: Option<AgentMode>,
+    // 本轮用户消息的附件元数据（UI 展示用；持久化已收归后端事件日志）。
+    attachments: Option<Vec<crate::llm::commands::types::HistoryAttachment>>,
 ) -> Result<(), String> {
     // 克隆会话 ID，便于请求前后使用同一作用域 key。
     let conversation_scope = conversation_id.clone();
@@ -40,9 +42,14 @@ pub async fn send_chat_message(
     );
 
     // 工具审批完全由全局审批策略（设置页/快捷开关）控制，回合层不再维护放行状态。
-    let result =
-        crate::llm::query_engine::send_chat_message(app, conversation_id, messages, resolved_mode)
-            .await;
+    let result = crate::llm::query_engine::send_chat_message(
+        app,
+        conversation_id,
+        messages,
+        resolved_mode,
+        attachments,
+    )
+    .await;
 
     // 无论请求成功失败都结束本轮，清理取消状态。
     crate::llm::cancellation::finish_turn(conversation_scope.as_deref());

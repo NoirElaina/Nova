@@ -141,49 +141,21 @@ export interface PersistedMessage {
   cost?: TurnCost;
 }
 
-/** 回合内单次工具调用轨迹（调试面板用）。 */
-export interface ToolCallTrace {
-  callId: string;
-  toolName: string;
-  input: string;
-  output?: string | null;
-  isError: boolean;
-  startedAt: number;
-  finishedAt?: number | null;
-}
-
-/** 回合内发生的压缩事件。 */
-export interface CompactionTrace {
-  level: string;
-  tokensBefore: number;
-  tokensAfter: number;
-}
-
 /** 单次模型 API 的 wire 级请求/响应。 */
 export interface WireCallTrace {
-  url: string;
   /** 请求报文完整 JSON（含 system prompt/tools/消息数组）。 */
   request: Record<string, unknown> | string;
-  responseText?: string | null;
-  inputTokens?: number | null;
-  outputTokens?: number | null;
+  /** 流结束后的完整响应 JSON（内容块/文本/stop_reason/用量）。 */
+  response?: Record<string, unknown> | string | null;
 }
 
-/** 单个回合的完整交互轨迹（从会话事件日志投影）。 */
+/** 单个回合的轨迹（从会话事件日志投影，仅回合标识与模型收发）。 */
 export interface TurnTrace {
   turnId: string;
   seq: number;
   startedAt: number;
   endedAt?: number | null;
   stopReason?: string | null;
-  userInput?: string | null;
-  assistantText: string;
-  reasoning: string;
-  toolCalls: ToolCallTrace[];
-  injectedContextCount: number;
-  compactions: CompactionTrace[];
-  tokenUsage?: number | null;
-  cost?: Record<string, unknown> | null;
   /** 本回合发给模型 API 的 wire 级请求/响应（按顺序配对）。 */
   wireCalls: WireCallTrace[];
 }

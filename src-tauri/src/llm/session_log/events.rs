@@ -80,12 +80,8 @@ pub enum SessionEvent {
 
     /// 发给模型 API 的 wire 级 HTTP 请求报文（含 system prompt/tools/消息数组完整结构）。
     WireRequest { url: String, body: Value },
-    /// 模型 API 流结束后的汇总响应（完整回复文本 + token 用量）。
-    WireResponse {
-        text: String,
-        input_tokens: Option<u32>,
-        output_tokens: Option<u32>,
-    },
+    /// 模型 API 流结束后的完整响应 JSON（内容块/文本/stop_reason/用量）。
+    WireResponse { body: Value },
 }
 
 impl SessionEvent {

@@ -107,29 +107,26 @@ watch(
 
 <template>
   <div class="flex h-full min-h-0 bg-white text-[#202124] dark:bg-[#1e1e1e] dark:text-[#ececec]">
-    <aside class="flex w-[280px] shrink-0 flex-col border-r border-[#e5e7eb] bg-[#fbfbfc] dark:border-[#333] dark:bg-[#1f1f1f]">
-      <div class="shrink-0 border-b border-[#e5e7eb] p-2 dark:border-[#333]">
-        <div class="flex min-h-10 items-center justify-between rounded-xl border border-[#e7ebf0] bg-white px-3 py-2 shadow-[0_1px_2px_rgba(15,23,42,0.035)] dark:border-[#333] dark:bg-[#242424]">
-          <div class="min-w-0">
-            <div class="text-[13px] font-medium text-[#202124] dark:text-[#ececec]">会话文件</div>
-            <div class="text-[11px] text-[#6b7280] dark:text-[#aaa]">{{ files.length }} 个文件</div>
-          </div>
-        </div>
+    <aside class="flex w-[280px] shrink-0 flex-col border-r border-[#eef0f3] dark:border-[#2c2c2c]">
+      <!-- 列表头：标题 + 计数，不再套内嵌卡片 -->
+      <div class="flex h-10 shrink-0 items-center justify-between px-3">
+        <span class="text-[13px] font-medium text-[#202124] dark:text-[#ececec]">会话文件</span>
+        <span class="rounded-full bg-[#f3f4f6] px-2 py-0.5 text-[11px] text-[#6b7280] dark:bg-white/5 dark:text-[#aaa]">{{ files.length }}</span>
       </div>
 
       <div v-if="files.length === 0" class="px-3 py-4 text-[13px] leading-6 text-[#6b7280] dark:text-[#aaa]">
         当前会话还没有会话文件。上传文件并发送后会出现在这里。
       </div>
 
-      <div v-else class="min-h-0 flex-1 overflow-y-auto px-2 py-2">
+      <div v-else class="min-h-0 flex-1 overflow-y-auto px-2 py-1">
         <button
           v-for="file in files"
           :key="file.filename"
           type="button"
-          class="flex w-full items-start gap-2 rounded-md px-2 py-2 text-left transition-colors"
+          class="flex w-full items-start gap-2 rounded-lg px-2 py-2 text-left transition-colors"
           :class="selectedFilename === file.filename
-            ? 'bg-[#f7f7f8] text-[#111827] ring-1 ring-[#1a73e8] ring-inset dark:bg-[#2d2d2d] dark:text-[#ececec]'
-            : 'text-[#374151] hover:bg-[#f7f7f8] dark:text-[#d7d7d7] dark:hover:bg-[#2a2a2a]'"
+            ? 'bg-[#eef2f7] text-[#111827] dark:bg-white/10 dark:text-[#ececec]'
+            : 'text-[#374151] hover:bg-[#f7f7f8] dark:text-[#d7d7d7] dark:hover:bg-white/5'"
           @click="selectFile(file)"
         >
           <span class="mt-0.5 flex h-5 w-5 shrink-0 items-center justify-center text-[#6b7280]">
@@ -148,27 +145,20 @@ watch(
       </div>
     </aside>
 
-    <section class="flex min-w-0 flex-1 flex-col bg-white dark:bg-[#1e1e1e]">
-      <div class="shrink-0 border-b border-[#e5e7eb] p-2 dark:border-[#333]">
-        <div class="flex min-h-10 items-center rounded-xl border border-[#e7ebf0] bg-white px-3 py-2 shadow-[0_1px_2px_rgba(15,23,42,0.035)] dark:border-[#333] dark:bg-[#242424]">
-          <template v-if="selectedMeta">
-            <div class="min-w-0">
-              <div class="truncate text-[13px] font-semibold text-[#202124] dark:text-[#ececec]" :title="selectedMeta.filename">
-                {{ selectedMeta.filename }}
-              </div>
-              <div class="mt-0.5 flex min-w-0 gap-3 truncate text-[11px] text-[#6b7280] dark:text-[#aaa]">
-                <span>{{ formatFileSize(selectedMeta.size) }}</span>
-                <span class="truncate">创建于 {{ formatDocTime(selectedMeta.createdAt) }}</span>
-              </div>
-            </div>
-          </template>
-          <template v-else>
-            <div class="min-w-0">
-              <div class="text-[13px] font-semibold text-[#202124] dark:text-[#ececec]">文件内容</div>
-              <div class="mt-0.5 text-[11px] text-[#6b7280] dark:text-[#aaa]">选择一个文件查看内容。</div>
-            </div>
-          </template>
-        </div>
+    <section class="flex min-w-0 flex-1 flex-col">
+      <!-- 预览头：文件名 + 元信息，平铺不再套卡片 -->
+      <div class="flex h-10 shrink-0 items-center border-b border-[#eef0f3] px-3 dark:border-[#2c2c2c]">
+        <template v-if="selectedMeta">
+          <div class="flex min-w-0 items-baseline gap-2.5">
+            <span class="truncate text-[13px] font-medium text-[#202124] dark:text-[#ececec]" :title="selectedMeta.filename">
+              {{ selectedMeta.filename }}
+            </span>
+            <span class="shrink-0 text-[11px] text-[#6b7280] dark:text-[#aaa]">
+              {{ formatFileSize(selectedMeta.size) }} · 创建于 {{ formatDocTime(selectedMeta.createdAt) }}
+            </span>
+          </div>
+        </template>
+        <span v-else class="text-[13px] text-[#6b7280] dark:text-[#aaa]">选择一个文件查看内容</span>
       </div>
 
       <div class="min-h-0 flex-1 overflow-auto">

@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
+import { computed, ref, watch } from "vue";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { emitToast } from "../../../lib/toast";
@@ -22,8 +22,6 @@ const loadingPaths = ref<string[]>([]);
 const filterQuery = ref("");
 const selectedFile = ref<WorkspaceEntry | null>(null);
 const rootError = ref("");
-const moreMenuRef = ref<HTMLElement | null>(null);
-const isMoreMenuOpen = ref(false);
 
 const rootEntries = computed(() => childrenByPath.value[""] ?? []);
 
@@ -104,17 +102,8 @@ const selectFile = (entry: WorkspaceEntry) => {
   selectedFile.value = entry;
 };
 
-const closeMoreMenu = () => {
-  isMoreMenuOpen.value = false;
-};
-
-const toggleMoreMenu = () => {
-  isMoreMenuOpen.value = !isMoreMenuOpen.value;
-};
-
 const copyCurrentPath = async () => {
   const pathToCopy = selectedFile.value?.path || rootListing.value?.root;
-  closeMoreMenu();
   if (!pathToCopy) {
     emitToast({ variant: "error", source: "workspace", message: "当前没有可复制的路径。" });
     return;
@@ -129,28 +118,6 @@ const copyCurrentPath = async () => {
   }
 };
 
-const onDocumentMouseDown = (event: MouseEvent) => {
-  if (!isMoreMenuOpen.value) {
-    return;
-  }
-  const target = event.target as Node | null;
-  if (target && moreMenuRef.value?.contains(target)) {
-    return;
-  }
-  closeMoreMenu();
-};
-
-const onWindowKeyDown = (event: KeyboardEvent) => {
-  if (event.key === "Escape") {
-    closeMoreMenu();
-  }
-};
-
-onMounted(() => {
-  document.addEventListener("mousedown", onDocumentMouseDown);
-  window.addEventListener("keydown", onWindowKeyDown);
-});
-
 watch(
   () => props.conversationId,
   () => {
@@ -161,20 +128,28 @@ watch(
   },
   { immediate: true },
 );
-
-onBeforeUnmount(() => {
-  document.removeEventListener("mousedown", onDocumentMouseDown);
-  window.removeEventListener("keydown", onWindowKeyDown);
-});
 </script>
 
 <template>
-  <div class="flex h-full min-h-0 flex-col bg-white text-[#202124] dark:bg-[#1e1e1e] dark:text-[#ececec]">
-    <!-- 工具行：刷新 / 更多 -->
-    <div class="flex h-12 shrink-0 items-center justify-between border-b border-[#e5e7eb] px-3 dark:border-[#333]">
+  <div class="flex h-full min-h-0 flex-col text-[#202124] dark:text-[#ececec]">
+    <!-- 工具行：标题 + 复制路径 / 刷新 -->
+    <div class="flex h-10 shrink-0 items-center justify-between border-b border-[#eef0f3] px-3 dark:border-[#2c2c2c]">
       <div class="min-w-0 text-[13px] font-medium text-[#202124] dark:text-[#ececec]">工作区目录</div>
 
       <div class="flex items-center gap-1">
+        <Button
+          type="button"
+          variant="ghost"
+          size="icon-sm"
+          class="h-7 w-7 rounded-md text-[#6b7280] hover:bg-[#f7f7f8] dark:hover:bg-[#2d2d2d]"
+          title="复制路径（选中文件或工作区根目录）"
+          @click="copyCurrentPath"
+        >
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+            <rect x="9" y="9" width="13" height="13" rx="2" />
+            <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" />
+          </svg>
+        </Button>
         <Button
           type="button"
           variant="ghost"
@@ -188,42 +163,6 @@ onBeforeUnmount(() => {
             <path d="M21 3v6h-6"/>
           </svg>
         </Button>
-
-        <div ref="moreMenuRef" class="relative">
-          <Button
-            type="button"
-            variant="ghost"
-            size="icon-sm"
-            class="h-7 w-7 rounded-md text-[#6b7280] hover:bg-[#f7f7f8] dark:hover:bg-[#2d2d2d]"
-            :class="isMoreMenuOpen ? 'bg-[#f7f7f8] dark:bg-[#2d2d2d]' : ''"
-            title="更多"
-            @click.stop="toggleMoreMenu"
-          >
-            <svg width="15" height="15" viewBox="0 0 24 24" fill="none">
-              <circle cx="5" cy="12" r="1.6" fill="currentColor" />
-              <circle cx="12" cy="12" r="1.6" fill="currentColor" />
-              <circle cx="19" cy="12" r="1.6" fill="currentColor" />
-            </svg>
-          </Button>
-
-          <div
-            v-if="isMoreMenuOpen"
-            class="absolute right-0 top-9 z-30 w-52 rounded-xl border border-[#e5e7eb] bg-white p-1 shadow-[0_14px_40px_rgba(15,23,42,0.14)] dark:border-[#333] dark:bg-[#252525]"
-            @click.stop
-          >
-            <button
-              type="button"
-              class="flex h-9 w-full items-center gap-3 rounded-lg px-3 text-left text-sm text-[#202124] hover:bg-[#f3f4f6] dark:text-[#ececec] dark:hover:bg-[#303030]"
-              @click="copyCurrentPath"
-            >
-              <svg width="16" height="16" viewBox="0 0 24 24" fill="none">
-                <rect x="8" y="8" width="11" height="11" rx="2" stroke="currentColor" stroke-width="1.8" />
-                <rect x="4" y="4" width="11" height="11" rx="2" stroke="currentColor" stroke-width="1.8" />
-              </svg>
-              <span>复制路径</span>
-            </button>
-          </div>
-        </div>
       </div>
     </div>
 
@@ -238,7 +177,7 @@ onBeforeUnmount(() => {
           v-model="filterQuery"
           type="search"
           placeholder="筛选文件..."
-          class="h-9 rounded-xl border-[#e5e7eb] bg-white pl-9 text-sm text-[#202124] shadow-none focus-visible:ring-0 dark:border-[#333] dark:bg-[#252525] dark:text-[#ececec]"
+          class="h-9 rounded-lg border-[#e7e9ee] bg-[#fafbfc] pl-9 text-sm text-[#202124] shadow-none focus-visible:ring-0 dark:border-[#333] dark:bg-[#252525] dark:text-[#ececec]"
         />
       </div>
 

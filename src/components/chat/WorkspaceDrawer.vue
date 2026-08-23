@@ -1,6 +1,17 @@
 <script setup lang="ts">
 import { computed, defineAsyncComponent, onBeforeUnmount, ref, watch } from 'vue';
 import { Button } from '@/components/ui/button';
+import {
+  FileText,
+  FolderOpen,
+  Globe,
+  LayoutGrid,
+  ListChecks,
+  Route,
+  SquareTerminal,
+  X,
+} from 'lucide-vue-next';
+import type { Component } from 'vue';
 import type { ChatMessage, ToolExecutionEntry, TurnCost } from '../../lib/chat-types';
 import type { SessionFileMeta } from '../../features/chat/services/chat-api';
 import CodeDiffTab from './workspace/CodeDiffTab.vue';
@@ -18,7 +29,7 @@ const emit = defineEmits<{
   (e: 'resize-end'): void;
 }>();
 
-type TabId = 'workspace' | 'plan' | 'diff' | 'usage' | 'files' | 'terminal' | 'browser' | 'trace';
+type TabId = 'workspace' | 'plan' | 'diff' | 'files' | 'terminal' | 'browser' | 'trace';
 
 const props = defineProps<{
   open: boolean;
@@ -37,26 +48,18 @@ const props = defineProps<{
 
 const activeTab = ref<TabId>('workspace');
 
-const tabs: { id: TabId; label: string }[] = [
-  { id: 'workspace', label: '工作区' },
-  { id: 'plan', label: '计划' },
-  { id: 'diff', label: '审查' },
-  { id: 'files', label: '文件' },
-  { id: 'terminal', label: '终端' },
-  { id: 'browser', label: '浏览器' },
-  { id: 'trace', label: '轨迹' },
+const tabs: { id: TabId; label: string; icon: Component }[] = [
+  { id: 'workspace', label: '工作区', icon: LayoutGrid },
+  { id: 'plan', label: '计划', icon: ListChecks },
+  { id: 'diff', label: '审查', icon: FileText },
+  { id: 'files', label: '文件', icon: FolderOpen },
+  { id: 'terminal', label: '终端', icon: SquareTerminal },
+  { id: 'browser', label: '浏览器', icon: Globe },
+  { id: 'trace', label: '轨迹', icon: Route },
 ];
 
-const activeTabMeta = computed(() => tabs.find((tab) => tab.id === activeTab.value) ?? tabs[0]);
-
-// 页签只展示当前一个；点击页签或 + 号弹出列表切换/添加其它页签。
-const isTabMenuOpen = ref(false);
-const toggleTabMenu = () => {
-  isTabMenuOpen.value = !isTabMenuOpen.value;
-};
 const selectTab = (id: TabId) => {
   activeTab.value = id;
-  isTabMenuOpen.value = false;
 };
 
 watch(
@@ -131,95 +134,43 @@ onBeforeUnmount(() => {
           :class="isResizing ? 'bg-[#94a3b8]/70' : 'bg-transparent hover:bg-[#94a3b8]/40'"
         />
       </div>
-      <div class="flex h-full flex-col border-l border-[#e5e7eb] bg-white dark:border-[#333] dark:bg-[#1e1e1e]">
-        <div class="relative flex h-10 shrink-0 items-center justify-between border-b border-[#e5e7eb] px-2 dark:border-[#333]">
-          <!-- 页签条：只显示当前页签（胶囊样式，参考应用同款），+ 号弹出列表切换/添加 -->
-          <div class="flex min-w-0 items-center gap-1">
-            <button
-              type="button"
-              class="flex h-7 max-w-[180px] items-center gap-1 rounded-md bg-[#f3f4f6] px-2.5 text-[13px] font-medium text-[#111827] transition-colors hover:bg-[#e9ebef] dark:bg-white/10 dark:text-[#ececec] dark:hover:bg-white/15"
-              :title="activeTabMeta.label"
-              @click="toggleTabMenu"
-            >
-              <span class="truncate">{{ activeTabMeta.label }}</span>
-              <svg
-                width="11"
-                height="11"
-                viewBox="0 0 24 24"
-                fill="none"
-                stroke="currentColor"
-                stroke-width="2.2"
-                stroke-linecap="round"
-                stroke-linejoin="round"
-                class="shrink-0 text-[#64748b] transition-transform dark:text-[#9ca3af]"
-                :class="isTabMenuOpen ? 'rotate-180' : ''"
+      <div class="flex h-full flex-col py-2 pl-1.5 pr-2">
+        <!-- 悬浮圆角卡片：四周留白 + 大圆角 + 柔和阴影，替代贴边直角矩形 -->
+        <div
+          class="flex min-h-0 flex-1 flex-col overflow-hidden rounded-2xl border border-[#e7e9ee] bg-white shadow-[0_8px_30px_rgba(15,23,42,0.08)] dark:border-[#343434] dark:bg-[#1e1e1e] dark:shadow-[0_8px_30px_rgba(0,0,0,0.4)]"
+        >
+          <div class="flex h-11 shrink-0 items-center justify-between gap-2 border-b border-[#eef0f3] px-2 dark:border-[#2c2c2c]">
+            <!-- 页签条：全部页签直接平铺，图标+文字，点击即切换 -->
+            <div class="custom-scrollbar flex min-w-0 flex-1 items-center gap-0.5 overflow-x-auto">
+              <button
+                v-for="tab in tabs"
+                :key="tab.id"
+                type="button"
+                class="flex h-7 shrink-0 items-center gap-1.5 rounded-lg px-2 text-[12px] transition-colors"
+                :class="activeTab === tab.id
+                  ? 'bg-[#eef2f7] font-medium text-[#111827] dark:bg-white/12 dark:text-[#ececec]'
+                  : 'text-[#64748b] hover:bg-[#f5f6f8] hover:text-[#334155] dark:text-[#8a8a8a] dark:hover:bg-white/5 dark:hover:text-[#ccc]'"
+                :title="tab.label"
+                @click="selectTab(tab.id)"
               >
-                <path d="M6 9l6 6 6-6"/>
-              </svg>
-            </button>
+                <component :is="tab.icon" class="h-3.5 w-3.5 shrink-0" />
+                <span>{{ tab.label }}</span>
+              </button>
+            </div>
+
             <Button
               type="button"
               variant="ghost"
               size="icon-sm"
-              class="h-7 w-7 shrink-0 rounded-md text-[#64748b] hover:bg-[#f5f6f8] dark:text-muted-foreground dark:hover:bg-white/5"
-              title="添加页签"
-              @click="toggleTabMenu"
+              class="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg text-muted-foreground transition-colors hover:bg-black/5 dark:hover:bg-white/5"
+              title="关闭面板"
+              @click="emit('close')"
             >
-              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
-                <path d="M12 5v14M5 12h14"/>
-              </svg>
+              <X class="h-4 w-4" />
             </Button>
           </div>
 
-          <!-- 点击外部关闭菜单的透明遮罩 -->
-          <div v-if="isTabMenuOpen" class="fixed inset-0 z-40" @click="isTabMenuOpen = false" />
-          <!-- 页签列表弹层 -->
-          <div
-            v-if="isTabMenuOpen"
-            class="absolute left-2 top-[42px] z-50 w-40 rounded-xl border border-[#e5e7eb] bg-white p-1 shadow-[0_12px_28px_rgba(15,23,42,0.12)] dark:border-[#3b3b3b] dark:bg-[#252525]"
-          >
-            <button
-              v-for="tab in tabs"
-              :key="tab.id"
-              type="button"
-              class="flex w-full items-center justify-between rounded-lg px-2.5 py-1.5 text-left text-[13px] transition-colors"
-              :class="activeTab === tab.id
-                ? 'bg-[#f3f6fa] font-medium text-[#111827] dark:bg-white/10 dark:text-[#ececec]'
-                : 'text-[#334155] hover:bg-[#f3f6fa] dark:text-[#ccc] dark:hover:bg-white/5'"
-              @click="selectTab(tab.id)"
-            >
-              {{ tab.label }}
-              <svg
-                v-if="activeTab === tab.id"
-                width="13"
-                height="13"
-                viewBox="0 0 24 24"
-                fill="none"
-                stroke="currentColor"
-                stroke-width="2.4"
-                stroke-linecap="round"
-                stroke-linejoin="round"
-              >
-                <polyline points="20 6 9 17 4 12"/>
-              </svg>
-            </button>
-          </div>
-
-          <Button
-            type="button"
-            variant="ghost"
-            size="icon-sm"
-            class="flex h-7 w-7 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-black/5 dark:hover:bg-white/5"
-            @click="emit('close')"
-          >
-            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-              <line x1="18" y1="6" x2="6" y2="18"/>
-              <line x1="6" y1="6" x2="18" y2="18"/>
-            </svg>
-          </Button>
-        </div>
-
-        <div class="min-h-0 flex-1 overflow-hidden">
+          <div class="min-h-0 flex-1 overflow-hidden">
           <WorkspaceOverviewTab
             v-if="activeTab === 'workspace'"
             :conversationId="conversationId ?? null"
@@ -261,6 +212,7 @@ onBeforeUnmount(() => {
             v-if="activeTab === 'trace'"
             :conversationId="conversationId ?? null"
           />
+          </div>
         </div>
       </div>
     </aside>

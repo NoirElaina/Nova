@@ -31,6 +31,7 @@ const localeTexts = {
   'zh-CN': {
     appearanceTitle: '外观',
     appearanceDesc: '选择 Nova 在你的设备上的显示方式。',
+    themeLabel: '主题',
     languageTitle: '语言',
     languageDesc: '切换界面显示语言。',
     loggingTitle: '软件日志',
@@ -57,6 +58,7 @@ const localeTexts = {
   'en-US': {
     appearanceTitle: 'Appearance',
     appearanceDesc: 'Select how Nova looks on your device.',
+    themeLabel: 'Theme',
     languageTitle: 'Language',
     languageDesc: 'Change the interface language.',
     loggingTitle: 'Application Logging',
@@ -217,77 +219,63 @@ onMounted(() => {
 </script>
 
 <template>
-  <div class="flex flex-col gap-3">
-    <Card class="border-[#e5e7eb] dark:border-[#333]">
-      <CardHeader class="pb-2">
+  <div class="flex max-w-3xl flex-col gap-4">
+    <!-- 外观：主题 + 语言合并为一张卡片，每行左标题右控件 -->
+    <Card class="rounded-xl border-[#e7e9ee] dark:border-[#343434]">
+      <CardHeader class="pb-1">
         <CardTitle class="text-[0.9rem]">{{ t.appearanceTitle }}</CardTitle>
         <CardDescription>{{ t.appearanceDesc }}</CardDescription>
       </CardHeader>
-      <CardContent>
-        <div class="flex flex-wrap gap-2">
-          <Button
-            v-for="opt in themeOptions"
-            :key="opt.value"
-            size="sm"
-            :variant="theme === opt.value ? 'default' : 'outline'"
-            class="min-w-[88px]"
-            @click="setTheme(opt.value)"
-          >
-            {{ opt.label }}
-          </Button>
+      <CardContent class="flex flex-col">
+        <!-- 主题：分段选择器 -->
+        <div class="flex items-center justify-between gap-4 py-2.5">
+          <span class="text-[0.9rem] text-[#374151] dark:text-[#d7d7d7]">{{ t.themeLabel }}</span>
+          <div class="flex items-center gap-0.5 rounded-lg bg-[#f3f4f6] p-0.5 dark:bg-white/5">
+            <button
+              v-for="opt in themeOptions"
+              :key="opt.value"
+              type="button"
+              class="h-7 rounded-md px-3 text-[12.5px] transition-colors"
+              :class="theme === opt.value
+                ? 'bg-white font-medium text-[#111827] shadow-sm ring-1 ring-black/5 dark:bg-[#3a3a3a] dark:text-[#ececec] dark:ring-white/10'
+                : 'text-[#64748b] hover:text-[#111827] dark:text-[#9ca3af] dark:hover:text-[#ececec]'"
+              @click="setTheme(opt.value)"
+            >
+              {{ opt.label }}
+            </button>
+          </div>
+        </div>
+        <!-- 语言 -->
+        <div class="flex items-center justify-between gap-4 border-t border-[#eef0f3] py-2.5 dark:border-[#2c2c2c]">
+          <div class="min-w-0">
+            <div class="text-[0.9rem] text-[#374151] dark:text-[#d7d7d7]">{{ t.languageTitle }}</div>
+            <p class="mt-0.5 text-xs text-[#7b8494] dark:text-[#9ca3af]">{{ t.languageDesc }}</p>
+          </div>
+          <Select :model-value="language" @update:model-value="(value) => onLanguageSelect(String(value))">
+            <SelectTrigger class="h-8 w-[160px] shrink-0">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="zh-CN">{{ t.languageChinese }}</SelectItem>
+              <SelectItem value="en-US">{{ t.languageEnglish }}</SelectItem>
+            </SelectContent>
+          </Select>
         </div>
       </CardContent>
     </Card>
 
-    <Card class="border-[#e5e7eb] dark:border-[#333]">
-      <CardHeader class="pb-2">
-        <CardTitle class="text-[0.9rem]">{{ t.languageTitle }}</CardTitle>
-        <CardDescription>{{ t.languageDesc }}</CardDescription>
-      </CardHeader>
-      <CardContent>
-        <Select :model-value="language" @update:model-value="(value) => onLanguageSelect(String(value))">
-          <SelectTrigger class="w-[180px]">
-            <SelectValue />
-          </SelectTrigger>
-          <SelectContent>
-            <SelectItem value="zh-CN">{{ t.languageChinese }}</SelectItem>
-            <SelectItem value="en-US">{{ t.languageEnglish }}</SelectItem>
-          </SelectContent>
-        </Select>
-      </CardContent>
-    </Card>
-
-    <Card class="border-[#e5e7eb] dark:border-[#333]">
-      <CardHeader class="pb-2">
-        <CardTitle class="text-[0.9rem]">{{ t.loggingTitle }}</CardTitle>
-        <CardDescription>{{ t.loggingDesc }}</CardDescription>
-      </CardHeader>
-      <CardContent>
-        <div class="flex items-center gap-3">
-          <Checkbox
-            id="general-enable-app-log"
-            :model-value="enableAppLog"
-            @update:model-value="onEnableAppLogChange"
-          />
-          <Label for="general-enable-app-log" class="text-[0.9rem] font-normal text-[#374151] dark:text-[#d7d7d7]">
-            {{ t.loggingSwitchLabel }}
-          </Label>
-        </div>
-      </CardContent>
-    </Card>
-
-    <Card class="border-[#e5e7eb] dark:border-[#333]">
-      <CardHeader class="pb-2">
+    <!-- 安全与自动化 -->
+    <Card class="rounded-xl border-[#e7e9ee] dark:border-[#343434]">
+      <CardHeader class="pb-1">
         <CardTitle class="text-[0.9rem]">{{ t.securityTitle }}</CardTitle>
         <CardDescription>{{ t.securityDesc }}</CardDescription>
       </CardHeader>
-      <CardContent class="space-y-4">
-        <div class="space-y-1.5">
-          <Label class="text-[0.9rem] font-normal text-[#374151] dark:text-[#d7d7d7]">
-            {{ t.approvalPolicyLabel }}
-          </Label>
+      <CardContent class="flex flex-col">
+        <!-- 审批策略 -->
+        <div class="flex items-center justify-between gap-4 py-2.5">
+          <span class="text-[0.9rem] text-[#374151] dark:text-[#d7d7d7]">{{ t.approvalPolicyLabel }}</span>
           <Select :model-value="approvalPolicy" @update:model-value="(value) => onApprovalPolicySelect(String(value))">
-            <SelectTrigger class="w-[260px]">
+            <SelectTrigger class="h-8 w-[240px] shrink-0">
               <SelectValue />
             </SelectTrigger>
             <SelectContent>
@@ -297,22 +285,23 @@ onMounted(() => {
             </SelectContent>
           </Select>
         </div>
-
-        <div class="flex items-start gap-3">
-          <Checkbox
-            id="general-progressive-disclosure"
-            :model-value="progressiveToolDisclosure"
-            @update:model-value="onDisclosureChange"
-          />
-          <div class="space-y-0.5">
+        <!-- 渐进式工具披露 -->
+        <div class="flex items-center justify-between gap-4 border-t border-[#eef0f3] py-2.5 dark:border-[#2c2c2c]">
+          <div class="min-w-0">
             <Label for="general-progressive-disclosure" class="text-[0.9rem] font-normal text-[#374151] dark:text-[#d7d7d7]">
               {{ t.disclosureLabel }}
             </Label>
-            <p class="text-xs text-[#7b8494] dark:text-[#9ca3af]">{{ t.disclosureDesc }}</p>
+            <p class="mt-0.5 text-xs text-[#7b8494] dark:text-[#9ca3af]">{{ t.disclosureDesc }}</p>
           </div>
+          <Checkbox
+            id="general-progressive-disclosure"
+            class="shrink-0"
+            :model-value="progressiveToolDisclosure"
+            @update:model-value="onDisclosureChange"
+          />
         </div>
-
-        <div class="space-y-1.5">
+        <!-- 已记住的权限规则 -->
+        <div class="space-y-1.5 border-t border-[#eef0f3] py-2.5 dark:border-[#2c2c2c]">
           <Label class="text-[0.9rem] font-normal text-[#374151] dark:text-[#d7d7d7]">
             {{ t.rulesTitle }}
           </Label>
@@ -342,6 +331,24 @@ onMounted(() => {
             </li>
           </ul>
         </div>
+      </CardContent>
+    </Card>
+
+    <!-- 软件日志 -->
+    <Card class="rounded-xl border-[#e7e9ee] dark:border-[#343434]">
+      <CardContent class="flex items-center justify-between gap-4 py-3">
+        <div class="min-w-0">
+          <Label for="general-enable-app-log" class="text-[0.9rem] font-normal text-[#374151] dark:text-[#d7d7d7]">
+            {{ t.loggingSwitchLabel }}
+          </Label>
+          <p class="mt-0.5 text-xs text-[#7b8494] dark:text-[#9ca3af]">{{ t.loggingDesc }}</p>
+        </div>
+        <Checkbox
+          id="general-enable-app-log"
+          class="shrink-0"
+          :model-value="enableAppLog"
+          @update:model-value="onEnableAppLogChange"
+        />
       </CardContent>
     </Card>
   </div>

@@ -336,82 +336,80 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <div class="flex h-full min-h-0 flex-col bg-white text-black dark:bg-[#1e1e1e] dark:text-[#f3f3f3]">
-    <div class="flex h-12 shrink-0 items-center justify-between border-b border-[#e5e7eb] px-3 dark:border-[#333]">
-      <div class="flex min-w-0 items-center gap-2">
+  <div class="flex h-full min-h-0 flex-col text-black dark:text-[#f3f3f3]">
+    <!-- 页签栏：用户终端 / AI 终端，右侧工具按钮 -->
+    <div class="flex h-10 shrink-0 items-center justify-between border-b border-[#eef0f3] px-2 dark:border-[#2c2c2c]">
+      <div class="flex min-w-0 items-center gap-0.5">
         <button
           type="button"
-          class="flex h-8 max-w-[220px] items-center gap-2 rounded-lg px-2.5 text-[13px] transition-colors"
+          class="flex h-7 items-center gap-1.5 rounded-lg px-2 text-[12px] transition-colors"
           :class="activePane === 'user'
-            ? 'bg-[#f4f5f7] text-black dark:bg-[#2a2a2a] dark:text-[#f3f3f3]'
-            : 'text-[#64748b] hover:bg-[#f8f9fa] dark:text-[#94a3b8] dark:hover:bg-[#2a2a2a]'"
+            ? 'bg-[#eef2f7] font-medium text-[#111827] dark:bg-white/10 dark:text-[#ececec]'
+            : 'text-[#64748b] hover:bg-[#f5f6f8] hover:text-[#334155] dark:text-[#8a8a8a] dark:hover:bg-white/5 dark:hover:text-[#ccc]'"
           @click="switchPane('user')"
         >
-          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
             <path d="M4 5h16a1 1 0 0 1 1 1v12a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V6a1 1 0 0 1 1-1Z" />
             <path d="m7 9 3 3-3 3" />
             <path d="M12 15h5" />
           </svg>
-          <span class="truncate">{{ tabTitle }}</span>
+          <span class="max-w-[180px] truncate">{{ tabTitle }}</span>
         </button>
         <button
           type="button"
-          class="flex h-8 items-center gap-2 rounded-lg px-2.5 text-[13px] transition-colors"
+          class="flex h-7 items-center gap-1.5 rounded-lg px-2 text-[12px] transition-colors"
           :class="activePane === 'agent'
-            ? 'bg-[#f4f5f7] text-black dark:bg-[#2a2a2a] dark:text-[#f3f3f3]'
-            : 'text-[#64748b] hover:bg-[#f8f9fa] dark:text-[#94a3b8] dark:hover:bg-[#2a2a2a]'"
+            ? 'bg-[#eef2f7] font-medium text-[#111827] dark:bg-white/10 dark:text-[#ececec]'
+            : 'text-[#64748b] hover:bg-[#f5f6f8] hover:text-[#334155] dark:text-[#8a8a8a] dark:hover:bg-white/5 dark:hover:text-[#ccc]'"
           @click="switchPane('agent')"
         >
-          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
             <path d="M7 8h10" />
             <path d="M7 12h6" />
             <path d="M5 4h14a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2H8l-4 3v-3H5a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2Z" />
           </svg>
           <span>AI 终端</span>
-          <span class="rounded-full bg-black/5 px-1.5 py-0.5 text-[11px] text-[#64748b] dark:bg-white/10 dark:text-[#cbd5e1]">{{ aiTerminalCount }}</span>
+          <span class="rounded-full bg-black/5 px-1.5 py-0.5 text-[10px] text-[#64748b] dark:bg-white/10 dark:text-[#cbd5e1]">{{ aiTerminalCount }}</span>
         </button>
+      </div>
+
+      <div v-if="activePane === 'user'" class="flex items-center gap-1">
         <Button
-          v-if="activePane === 'user'"
           type="button"
           variant="ghost"
           size="icon-sm"
-          class="h-7 w-7 rounded-md text-[#64748b] hover:bg-[#f4f5f7] dark:hover:bg-[#2a2a2a]"
+          class="h-7 w-7 rounded-md text-[#6b7280] hover:bg-[#f7f7f8] dark:hover:bg-[#2d2d2d]"
           title="重启终端"
           :disabled="isStarting"
           @click="restartTerminal"
         >
-          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
-            <path d="M12 5v14" />
-            <path d="M5 12h14" />
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M21 12a9 9 0 1 1-2.64-6.36" />
+            <path d="M21 3v6h-6" />
           </svg>
         </Button>
         <Button
-          v-if="activePane === 'user'"
           type="button"
           variant="ghost"
           size="icon-sm"
-          class="h-7 w-7 rounded-md text-[#64748b] hover:bg-[#f4f5f7] dark:hover:bg-[#2a2a2a]"
+          class="h-7 w-7 rounded-md text-[#6b7280] hover:bg-[#f7f7f8] dark:hover:bg-[#2d2d2d]"
           title="滚动到底部"
           @click="terminal?.scrollToBottom()"
         >
-          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
             <path d="M12 5v14" />
             <path d="m19 12-7 7-7-7" />
           </svg>
         </Button>
-      </div>
-
-      <div class="flex items-center gap-1">
         <Button
-          v-if="activePane === 'user'"
           type="button"
           variant="ghost"
           size="icon-sm"
-          class="h-7 w-7 rounded-md text-[#64748b] hover:bg-[#f4f5f7] dark:hover:bg-[#2a2a2a]"
+          class="h-7 w-7 rounded-md text-[#6b7280] hover:bg-[#f7f7f8] dark:hover:bg-[#2d2d2d]"
           title="适配尺寸"
           @click="scheduleResize"
         >
-          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
             <path d="M8 3H5a2 2 0 0 0-2 2v3" />
             <path d="M16 3h3a2 2 0 0 1 2 2v3" />
             <path d="M8 21H5a2 2 0 0 1-2-2v-3" />
@@ -434,7 +432,7 @@ onBeforeUnmount(() => {
 
     <div
       v-show="activePane === 'agent'"
-      class="min-h-0 flex-1 overflow-y-auto bg-white px-4 py-3 font-mono text-[13px] leading-[1.5] text-[#111827] dark:bg-[#1e1e1e] dark:text-[#f3f3f3]"
+      class="min-h-0 flex-1 overflow-y-auto px-4 py-3 font-mono text-[13px] leading-[1.5] text-[#111827] dark:text-[#f3f3f3]"
     >
       <div v-if="aiTerminalEntries.length === 0" class="flex h-full items-center justify-center text-center font-sans text-sm text-[#64748b] dark:text-[#94a3b8]">
         AI 还没有执行终端命令。

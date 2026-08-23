@@ -493,14 +493,18 @@ pub async fn run_streaming<P: StreamParser>(
         last_stop_reason
     };
 
-    // wire 级响应写入会话事件日志：记录 AI 完整回复文本及 token 用量（流结束后写一次）。
-    if !assistant_output.full_text().is_empty() {
+    // wire 级响应写入会话事件日志：完整响应 JSON（内容块/文本/stop_reason/用量，流结束后写一次）。
+    if !output_blocks_empty {
         if let Some(conv_id) = conversation_id {
-            let event = crate::llm::session_log::SessionEvent::WireResponse {
-                text: assistant_output.full_text().to_string(),
-                input_tokens: current_input_tokens,
-                output_tokens: current_output_tokens,
-            };
+            let body = serde_json::json!({
+                "content": serde_json::to_value(&result_messages[0].content)
+                    .unwrap_or(serde_json::Value::Null),
+                "text": assistant_output.full_text(),
+                "stop_reason": final_stop_reason,
+                "input_tokens": current_input_tokens,
+                "output_tokens": current_output_tokens,
+            });
+            let event = crate::llm::session_log::SessionEvent::WireResponse { body };
             if let Err(error) =
                 crate::llm::session_log::append_event(app, conv_id, None, &event).await
             {

@@ -62,8 +62,8 @@ const handleClick = () => {
     <Button
       type="button"
       variant="ghost"
-      class="h-8 w-full justify-start gap-2 rounded-md px-2 py-0 text-left text-[0.86rem] font-normal text-[#202124] hover:bg-[#f1f3f4] dark:text-[#ececec] dark:hover:bg-[#2d2d2d]"
-      :class="isSelected ? 'bg-[#f1f3f4] ring-1 ring-[#1a73e8] ring-inset dark:bg-[#2d2d2d]' : ''"
+      class="h-8 w-full justify-start gap-2 rounded-lg px-2 py-0 text-left text-[0.86rem] font-normal text-[#202124] hover:bg-[#f1f3f4] dark:text-[#ececec] dark:hover:bg-white/5"
+      :class="isSelected ? 'bg-[#eef2f7] dark:bg-white/10' : ''"
       :style="{ paddingLeft: `${8 + depth * 18}px` }"
       @click="handleClick"
     >

@@ -40,7 +40,7 @@ import {
   clampDrawerWidth,
 } from "./lib/ui-preferences";
 
-type WorkspaceTabId = "workspace" | "plan" | "diff" | "usage" | "files" | "terminal" | "browser";
+type WorkspaceTabId = "workspace" | "plan" | "diff" | "files" | "terminal" | "browser" | "trace";
 type BrowserOpenRequest = {
   conversationId?: string;
 };

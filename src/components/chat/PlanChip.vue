@@ -77,7 +77,7 @@ onBeforeUnmount(() => {
   <button
     v-if="planTitle"
     type="button"
-    class="mb-1.5 inline-flex h-7 max-w-full items-center gap-1.5 rounded-lg border border-[#e7e9ee] bg-[#fafbfc] px-2 text-left transition-colors hover:bg-[#f3f5f8] dark:border-[#343434] dark:bg-white/5 dark:hover:bg-white/10"
+    class="inline-flex h-7 max-w-full items-center gap-1.5 rounded-lg border border-[#e7e9ee] bg-[#fafbfc] px-2 text-left transition-colors hover:bg-[#f3f5f8] dark:border-[#343434] dark:bg-white/5 dark:hover:bg-white/10"
     title="查看执行计划"
     @click="emit('open')"
   >

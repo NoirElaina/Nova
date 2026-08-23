@@ -97,7 +97,7 @@ const clearPreview = () => {
 .message-timeline-navigator {
   position: absolute;
   top: 50%;
-  right: -54px;
+  left: 10px;
   z-index: 9;
   transform: translateY(-50%);
 }
@@ -158,7 +158,7 @@ const clearPreview = () => {
 .message-timeline-panel {
   position: absolute;
   top: 50%;
-  right: 28px;
+  left: 28px;
   width: min(320px, calc(100vw - 96px));
   max-height: min(62vh, 480px);
   overflow-y: auto;
@@ -167,7 +167,7 @@ const clearPreview = () => {
   border-radius: 14px;
   background: rgba(255, 255, 255, 0.98);
   box-shadow: 0 18px 44px rgba(15, 23, 42, 0.14), 0 3px 10px rgba(15, 23, 42, 0.07);
-  transform: translateY(-50%) translateX(8px);
+  transform: translateY(-50%) translateX(-8px);
   opacity: 0;
   pointer-events: none;
   backdrop-filter: blur(16px);
@@ -278,7 +278,8 @@ const clearPreview = () => {
   color: #94a3b8;
 }
 
-@media (max-width: 1040px) {
+/* 窗口较窄时隐藏导航，避免遮挡聊天内容。 */
+@media (max-width: 1200px) {
   .message-timeline-navigator {
     display: none;
   }

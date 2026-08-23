@@ -6,8 +6,6 @@ import { Button } from "@/components/ui/button";
 import Sidebar from "./components/layout/Sidebar.vue";
 import WelcomeScreen from "./components/chat/WelcomeScreen.vue";
 import ChatScreen from "./components/chat/ChatScreen.vue";
-import ExecutionTracePopover from "./components/chat/files/ExecutionTracePopover.vue";
-import TodoProgressPopover from "./components/chat/files/TodoProgressPopover.vue";
 import WorkspaceDrawer from "./components/chat/WorkspaceDrawer.vue";
 import PlanPanel from "./components/chat/PlanPanel.vue";
 import HooksConfigScreen from "./components/hooks/HooksConfigScreen.vue";
@@ -456,8 +454,6 @@ onBeforeUnmount(() => {
           </div>
 
           <div v-if="mainView === 'chat'" class="flex items-center gap-2 pointer-events-auto">
-            <TodoProgressPopover :conversation-id="activeConversationId" />
-            <ExecutionTracePopover :entries="toolExecutionLogs" />
             <Button
               variant="ghost"
               size="icon-sm"

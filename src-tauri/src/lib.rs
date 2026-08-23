@@ -188,6 +188,7 @@ pub fn run() {
             command::plugins::list_plugin_commands,
             command::plugins::expand_plugin_command,
             command::hooks::get_hooks_toml,
+            command::hooks::get_hooks_structured,
             command::hooks::save_hooks_toml,
             command::permission_rules::list_permission_rules,
             command::permission_rules::delete_permission_rule

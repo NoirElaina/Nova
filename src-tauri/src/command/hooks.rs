@@ -15,6 +15,22 @@ pub fn get_hooks_toml(app: AppHandle) -> Result<String, String> {
         .map_err(|e| format!("Failed to read {}: {}", path.display(), e))
 }
 
+/// 读取 hooks.toml 的结构化 JSON（表单式配置页用）；
+/// 文件不存在返回空配置。解析失败时返回错误，不静默吞掉。
+#[tauri::command]
+pub fn get_hooks_structured(app: AppHandle) -> Result<serde_json::Value, String> {
+    let path = hooks::hooks_file_path(&app)?;
+    if !path.exists() {
+        let empty = hooks::HooksFile::default();
+        return serde_json::to_value(&empty).map_err(|e| e.to_string());
+    }
+    let raw = std::fs::read_to_string(&path)
+        .map_err(|e| format!("Failed to read {}: {}", path.display(), e))?;
+    let parsed: hooks::HooksFile =
+        toml::from_str(&raw).map_err(|e| format!("Failed to parse hooks.toml: {e}"))?;
+    serde_json::to_value(&parsed).map_err(|e| e.to_string())
+}
+
 /// 校验并保存 hooks.toml。解析失败直接返回错误，不落盘。
 /// 空内容视为清空（删除文件）。
 #[tauri::command]

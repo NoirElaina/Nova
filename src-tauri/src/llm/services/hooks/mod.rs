@@ -5,7 +5,7 @@ mod shared;
 mod types;
 
 pub(crate) use config::{hooks_file_path, validate_hooks_toml};
-pub use config::invalidate_hooks_cache;
+pub use config::{invalidate_hooks_cache, HooksFile};
 pub use dispatch::{
     emit_hook_event, run_error_hooks, run_post_compact_hooks, run_post_tool_use_failure_hooks,
     run_post_tool_use_hooks, run_pre_compact_hooks, run_pre_tool_use_hooks,

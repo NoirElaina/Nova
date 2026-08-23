@@ -7,6 +7,7 @@ import type {
   PersistedMessage,
   ScheduledTask,
   ToolExecutionEntry,
+  TurnTrace,
 } from "../../../lib/chat-types";
 import type { PermissionActionName } from "../../../lib/chat-payloads";
 import { buildConversationTitle } from "../utils/session-memory";
@@ -254,6 +255,16 @@ export async function loadConversationToolLogs(
     conversationId,
   });
   return logs || [];
+}
+
+/** 加载会话的回合轨迹（调试面板：按回合分组的完整交互记录）。 */
+export async function getConversationTurnTraces(
+  conversationId: string,
+): Promise<TurnTrace[]> {
+  const traces = await invoke<TurnTrace[]>("get_conversation_turn_traces", {
+    conversationId,
+  });
+  return traces || [];
 }
 
 export async function deleteConversation(conversationId: string): Promise<void> {

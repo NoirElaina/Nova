@@ -77,6 +77,15 @@ pub enum SessionEvent {
 
     /// 会话标题变化。
     TitleChanged { title: String },
+
+    /// 发给模型 API 的 wire 级 HTTP 请求报文（含 system prompt/tools/消息数组完整结构）。
+    WireRequest { url: String, body: Value },
+    /// 模型 API 流结束后的汇总响应（完整回复文本 + token 用量）。
+    WireResponse {
+        text: String,
+        input_tokens: Option<u32>,
+        output_tokens: Option<u32>,
+    },
 }
 
 impl SessionEvent {
@@ -92,6 +101,8 @@ impl SessionEvent {
             SessionEvent::ToolResult { .. } => "tool_result",
             SessionEvent::CompactBoundary { .. } => "compact_boundary",
             SessionEvent::TitleChanged { .. } => "title_changed",
+            SessionEvent::WireRequest { .. } => "wire_request",
+            SessionEvent::WireResponse { .. } => "wire_response",
         }
     }
 

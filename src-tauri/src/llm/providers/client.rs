@@ -121,10 +121,23 @@ impl LlmClient {
             .build()
             .map_err(|e| ProviderTurnError::new(e.to_string()))?;
 
-        if let Some(body) = request.body() {
-            if let Some(bytes) = body.as_bytes() {
-                if let Ok(wire) = std::str::from_utf8(bytes) {
-                    crate::llm::utils::turn_log::log_wire_request(app, conversation_id, &url, wire);
+        // wire 级请求报文写入会话事件日志（轨迹面板调试用，含完整 system prompt/tools/消息数组）。
+        if let Some(conv_id) = conversation_id {
+            if let Some(body) = request.body() {
+                if let Some(bytes) = body.as_bytes() {
+                    if let Ok(wire) = std::str::from_utf8(bytes) {
+                        let body_value = serde_json::from_str::<serde_json::Value>(wire)
+                            .unwrap_or(serde_json::Value::String(wire.to_string()));
+                        let event = crate::llm::session_log::SessionEvent::WireRequest {
+                            url: url.clone(),
+                            body: body_value,
+                        };
+                        if let Err(error) =
+                            crate::llm::session_log::append_event(app, conv_id, None, &event).await
+                        {
+                            tracing::warn!(error = %error, "wire_request event append failed");
+                        }
+                    }
                 }
             }
         }

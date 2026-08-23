@@ -493,15 +493,20 @@ pub async fn run_streaming<P: StreamParser>(
         last_stop_reason
     };
 
-    // @@日志记录 wire_response — 记录 AI 完整回复文本及 token 用量（流结束后写一次）。
+    // wire 级响应写入会话事件日志：记录 AI 完整回复文本及 token 用量（流结束后写一次）。
     if !assistant_output.full_text().is_empty() {
-        crate::llm::utils::turn_log::log_wire_response(
-            app,
-            conversation_id,
-            assistant_output.full_text(),
-            current_input_tokens,
-            current_output_tokens,
-        );
+        if let Some(conv_id) = conversation_id {
+            let event = crate::llm::session_log::SessionEvent::WireResponse {
+                text: assistant_output.full_text().to_string(),
+                input_tokens: current_input_tokens,
+                output_tokens: current_output_tokens,
+            };
+            if let Err(error) =
+                crate::llm::session_log::append_event(app, conv_id, None, &event).await
+            {
+                tracing::warn!(error = %error, "wire_response event append failed");
+            }
+        }
     }
 
     if output_blocks_empty && tool_result_blocks_empty {

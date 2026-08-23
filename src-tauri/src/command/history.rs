@@ -156,6 +156,25 @@ pub async fn load_conversation_tool_logs(
 }
 
 #[tauri::command]
+pub async fn get_conversation_turn_traces(
+    app: AppHandle,
+    conversation_id: String,
+) -> Result<Vec<crate::llm::session_log::projection::TurnTrace>, String> {
+    // 调试面板：从事件流投影出按回合分组的完整交互轨迹。
+    let result = async {
+        let events = crate::llm::session_log::load_events(&app, &conversation_id).await?;
+        Ok(crate::llm::session_log::projection::render_turn_traces(&events))
+    }
+    .await;
+    report_backend_result(
+        &app,
+        "command.history.get_conversation_turn_traces",
+        result,
+        None,
+    )
+}
+
+#[tauri::command]
 pub async fn clear_history(app: AppHandle, conversation_id: Option<String>) -> Result<(), String> {
     // 清理指定会话或全部会话历史。
     report_backend_result(

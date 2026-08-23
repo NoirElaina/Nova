@@ -110,6 +110,7 @@ pub fn run() {
             command::history::append_plain_chat_message,
             command::history::update_assistant_message_meta,
             command::history::load_conversation_tool_logs,
+            command::history::get_conversation_turn_traces,
             command::history::clear_history,
             command::history::delete_conversation,
             command::history::list_memory_entries,

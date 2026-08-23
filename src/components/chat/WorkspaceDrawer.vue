@@ -7,6 +7,7 @@ import CodeDiffTab from './workspace/CodeDiffTab.vue';
 import FilesTab from './workspace/FilesTab.vue';
 import BrowserTab from './workspace/BrowserTab.vue';
 import PlanTab from './workspace/PlanTab.vue';
+import TraceTab from './workspace/TraceTab.vue';
 import WorkspaceOverviewTab from './workspace/WorkspaceOverviewTab.vue';
 
 const TerminalTab = defineAsyncComponent(() => import('./workspace/TerminalTab.vue'));
@@ -17,7 +18,7 @@ const emit = defineEmits<{
   (e: 'resize-end'): void;
 }>();
 
-type TabId = 'workspace' | 'plan' | 'diff' | 'usage' | 'files' | 'terminal' | 'browser';
+type TabId = 'workspace' | 'plan' | 'diff' | 'usage' | 'files' | 'terminal' | 'browser' | 'trace';
 
 const props = defineProps<{
   open: boolean;
@@ -43,6 +44,7 @@ const tabs: { id: TabId; label: string }[] = [
   { id: 'files', label: '文件' },
   { id: 'terminal', label: '终端' },
   { id: 'browser', label: '浏览器' },
+  { id: 'trace', label: '轨迹' },
 ];
 
 const activeTabMeta = computed(() => tabs.find((tab) => tab.id === activeTab.value) ?? tabs[0]);
@@ -253,6 +255,11 @@ onBeforeUnmount(() => {
             :conversationId="conversationId"
             :visible="open && activeTab === 'browser'"
             :openRequestKey="browserOpenRequestKey"
+          />
+
+          <TraceTab
+            v-if="activeTab === 'trace'"
+            :conversationId="conversationId ?? null"
           />
         </div>
       </div>

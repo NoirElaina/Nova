@@ -46,6 +46,10 @@ import {
 } from "./chat-message-helpers";
 import { ackChatTurnStatus, estimateTextTokens } from "../services/chat-api";
 
+/** 出错中断标记（与后端 query.rs 的 ERROR_INTERRUPTED_MARKER 同文案）：
+ * 对应取消路径的“（已取消当前轮）”，标识半截回复。 */
+export const ERROR_INTERRUPTION_SUFFIX = "（本轮因错误中断）";
+
 type PersistToolExecutionLog = (
   entry: ToolExecutionEntry,
   conversationId?: string,
@@ -220,12 +224,12 @@ export function createChatStreamOperations(deps: StreamOpsDeps) {
     submitPermissionDecision,
   } = deps;
 
-  async function finalizeOrStopTurn(tokenUsage?: number) {
+  async function finalizeOrStopTurn(tokenUsage?: number, interruptionSuffix?: string) {
     if (
       activeRuntimeRefs.assistantResponse.value.trim().length > 0 ||
       activeRuntimeRefs.assistantReasoning.value.trim().length > 0
     ) {
-      await finalizeAssistantTurn(tokenUsage);
+      await finalizeAssistantTurn(tokenUsage, interruptionSuffix);
       return;
     }
     activeRuntimeRefs.assistantResponse.value = "";
@@ -320,7 +324,12 @@ export function createChatStreamOperations(deps: StreamOpsDeps) {
     }
   }
 
-  async function finalizeAssistantTurn(tokenUsage?: number) {
+  async function finalizeAssistantTurn(tokenUsage?: number, interruptionSuffix = "") {
+    // 重入保护：同一轮次的 stop 事件被重复处理（重复监听/并发竞态）时，
+    // 多个 finalize 会在 refs 清空前各自读到同一份内容，把相同消息追加多次。
+    // isGenerating 仅在回合完成时置回，这里同步置 false 即可串行化。
+    if (!activeRuntimeRefs.isGenerating.value) return;
+    activeRuntimeRefs.isGenerating.value = false;
     const finalText = activeRuntimeRefs.assistantResponse.value.trim();
     const finalReasoning = activeRuntimeRefs.assistantReasoning.value.trim();
     const fallbackTokenUsage = finalText
@@ -364,10 +373,13 @@ export function createChatStreamOperations(deps: StreamOpsDeps) {
     cost.turnDurationMs = computeTurnDurationMs(activeRuntimeRefs.currentTurnStartedAt.value);
     activeRuntimeRefs.assistantTurnCost.value = cost;
 
+    const baseContent = finalText || "（本轮没有返回可显示的文本内容）";
     const assistantMessage: ChatMessage = {
       id: `assistant-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
       role: "assistant",
-      content: finalText || "（本轮没有返回可显示的文本内容）",
+      content: interruptionSuffix
+        ? `${baseContent}\n\n${interruptionSuffix}`
+        : baseContent,
       reasoning: finalReasoning || undefined,
       transcriptSegments,
       tokenUsage: resolvedTokenUsage > 0 ? resolvedTokenUsage : undefined,
@@ -393,6 +405,9 @@ export function createChatStreamOperations(deps: StreamOpsDeps) {
   }
 
   async function finalizeCancelledTurn(tokenUsage?: number) {
+    // 与 finalizeAssistantTurn 同样的重入保护，避免取消事件重复处理追加多条相同消息。
+    if (!activeRuntimeRefs.isGenerating.value) return;
+    activeRuntimeRefs.isGenerating.value = false;
     const finalText = activeRuntimeRefs.assistantResponse.value.trim();
     const finalReasoning = activeRuntimeRefs.assistantReasoning.value.trim();
     const cancelledText = finalText ? `${finalText}\n\n（已取消当前轮）` : "已取消当前轮。";
@@ -785,12 +800,13 @@ export function createChatStreamOperations(deps: StreamOpsDeps) {
       );
 
       if (isActive) {
-        // 若流中断前已输出部分内容，提交为消息而非丢弃，与 cancel 行为保持一致。
+        // 若流中断前已输出部分内容，提交为消息而非丢弃，与 cancel 行为保持一致；
+        // 末尾追加中断标记，与后端落盘的半截消息观感一致。
         if (
           activeRuntimeRefs.assistantResponse.value.trim().length > 0 ||
           activeRuntimeRefs.assistantReasoning.value.trim().length > 0
         ) {
-          await finalizeOrStopTurn(undefined);
+          await finalizeOrStopTurn(undefined, ERROR_INTERRUPTION_SUFFIX);
         } else {
           state.isGenerating = false;
           switchStage(state, "processing");

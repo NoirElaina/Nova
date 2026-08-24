@@ -33,7 +33,10 @@ import {
   resetPendingPromptState,
 } from "./chat-runtime-state";
 import { createConversationOperations } from "./chat-conversation-ops";
-import { createChatStreamOperations } from "./chat-stream-ops";
+import {
+  createChatStreamOperations,
+  ERROR_INTERRUPTION_SUFFIX,
+} from "./chat-stream-ops";
 import { createSendOperations } from "./chat-send-ops";
 
 export function useChatController() {
@@ -253,6 +256,8 @@ export function useChatController() {
     persistMessage: conversationOps.persistMessage,
     refreshConversationFiles: conversationOps.refreshConversationFiles,
     resetBackgroundRuntimeState: streamOps.resetBackgroundRuntimeState,
+    finalizeActiveTurnOnError: () =>
+      streamOps.finalizeOrStopTurn(undefined, ERROR_INTERRUPTION_SUFFIX),
   });
 
   async function handleNewChat() {

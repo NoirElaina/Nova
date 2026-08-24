@@ -128,12 +128,31 @@ export function createConversationOperations(deps: ConversationOpsDeps) {
   }
 
   function isDuplicateAssistantMessage(content: string, reasoning: string) {
-    const last = messages.value[messages.value.length - 1];
-    return (
-      last?.role === "assistant" &&
-      last.content.trim() === content.trim() &&
-      (last.reasoning ?? "").trim() === reasoning.trim()
-    );
+    // 只比最后一条不够：报错回合的增量落库可能以纯 thinking/工具消息收尾（投影后被过滤），
+    // 或部分输出只是快照全文的子串。回扫尾部几条 assistant 消息，字段双向包含即视为重复，
+    // 避免快照恢复把已落盘内容再追加一遍。
+    const normalizedContent = content.trim();
+    const normalizedReasoning = reasoning.trim();
+    const overlaps = (a: string, b: string) =>
+      a.length > 0 && b.length > 0 && (a.includes(b) || b.includes(a));
+    const start = Math.max(0, messages.value.length - 5);
+    for (let index = messages.value.length - 1; index >= start; index -= 1) {
+      const candidate = messages.value[index];
+      if (candidate?.role !== "assistant") {
+        continue;
+      }
+      const existingContent = (candidate.content ?? "").trim();
+      const existingReasoning = (candidate.reasoning ?? "").trim();
+      const contentOverlaps = overlaps(existingContent, normalizedContent);
+      const reasoningOverlaps = overlaps(existingReasoning, normalizedReasoning);
+      const nonOverlapping =
+        (normalizedContent && !contentOverlaps) ||
+        (normalizedReasoning && !reasoningOverlaps);
+      if (!nonOverlapping && (contentOverlaps || reasoningOverlaps)) {
+        return true;
+      }
+    }
+    return false;
   }
 
   async function restoreLiveTurnStatus(conversationId: string) {

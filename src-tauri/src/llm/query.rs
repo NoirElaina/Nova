@@ -85,6 +85,51 @@ async fn log_new_model_messages(
     }
 }
 
+/// 追加到中断回复末尾的标记文本（对应取消路径的“（已取消当前轮）”，前端同文案）。
+pub const ERROR_INTERRUPTED_MARKER: &str = "（本轮因错误中断）";
+
+/// 网络/传输层瞬时错误的自动重发配置：5 秒间隔、最多 3 次，同一回合内完成。
+const TRANSPORT_RETRY_INTERVAL_SECS: u64 = 5;
+const MAX_TRANSPORT_RETRIES: u32 = 3;
+
+/// 判定是否为可自动重发的网络/传输层瞬时错误。
+/// 业务错误（4xx、协议解析失败、流内 error 事件）不重试，避免无意义消耗。
+fn is_transient_transport_error(msg: &str) -> bool {
+    msg.contains("stream chunk error")
+        || msg.contains("error sending request")
+        || msg.contains("empty assistant message")
+        || msg.contains("incomplete SSE event")
+        || msg.contains("API Error [429")
+        || msg.contains("API Error [500")
+        || msg.contains("API Error [502")
+        || msg.contains("API Error [503")
+        || msg.contains("API Error [504")
+}
+
+/// 把中断标记追加到部分输出的最后一条助手消息末尾：
+/// 尾块是 Text 时直接续写，否则新增一个 Text 块。
+/// 让 UI 与模型都能看出这是一条半截回复，下一轮不会把它当完整回答继续推理。
+fn append_error_interruption_marker(messages: &mut [Message]) {
+    let Some(assistant) = messages
+        .iter_mut()
+        .rev()
+        .find(|m| matches!(m.role, Role::Assistant))
+    else {
+        return;
+    };
+    if let Content::Blocks(blocks) = &mut assistant.content {
+        match blocks.last_mut() {
+            Some(ContentBlock::Text { text }) => {
+                text.push_str("\n\n");
+                text.push_str(ERROR_INTERRUPTED_MARKER);
+            }
+            _ => blocks.push(ContentBlock::Text {
+                text: ERROR_INTERRUPTED_MARKER.to_string(),
+            }),
+        }
+    }
+}
+
 /// 写压缩检查点：base_context = 压缩后的起点上下文。
 /// 注入块（会话文件 / MCP / 阶段）是合法历史的一部分，随基线原样保留。
 /// 压缩后历史整体变短，同步重置缓存击穿检测基线，防止自然下降误报。
@@ -588,9 +633,25 @@ pub async fn send_chat_message(
         )
         .await;
     }
+    let new_input_start = frontend_msg_count.saturating_sub(1);
+    // 错误后重发去重：上一回合零输出报错时（连接失败/空响应），用户消息已落库，
+    // 重建上下文末尾就是它；用户原样重发同一句话时不再重复落库与追加，
+    // 否则历史出现重复气泡，模型上下文还会出现连续两条同角色消息。
+    // 限制：本轮不带新附件（原消息已含同样的话，附件版本差异不走此路径）。
+    let duplicate_retry = attachments.as_ref().map(|a| a.is_empty()).unwrap_or(true)
+        && turn_messages
+            .get(new_input_start)
+            .zip(reconstructed.last())
+            .map(|(incoming, tail)| {
+                matches!(incoming.role, Role::User)
+                    && matches!(tail.role, Role::User)
+                    && crate::llm::session_log::projection::content_text(&incoming.content)
+                        == crate::llm::session_log::projection::content_text(&tail.content)
+            })
+            .unwrap_or(false);
     {
-        let new_start = frontend_msg_count.saturating_sub(1);
-        let new_inputs: Vec<Message> = turn_messages[new_start..].to_vec();
+        let new_inputs: Vec<Message> =
+            turn_messages[new_input_start + usize::from(duplicate_retry)..].to_vec();
         log_new_model_messages(
             &app,
             conversation_id.as_deref(),
@@ -624,8 +685,9 @@ pub async fn send_chat_message(
         let mut ctx = reconstructed;
         ctx.extend(injections);
         // 前端消息只用来定位本轮新增输入；历史必须来自事件日志。
-        // hooks 已追加到 turn_messages 尾部，因此从最新用户消息开始整体追加。
-        let new_start = frontend_msg_count.saturating_sub(1);
+        // hooks 已追加到 turn_messages 尾部，因此从最新用户消息开始整体追加；
+        // 与事件日志一致：命中错误重发去重时跳过重复的用户消息本身。
+        let new_start = new_input_start + usize::from(duplicate_retry);
         ctx.extend_from_slice(&turn_messages[new_start..]);
         ctx
     };
@@ -689,6 +751,8 @@ pub async fn send_chat_message(
     //    - 如果发生工具调用，结果会被“注入”到 current_messages 继续下一轮。
     //    - 如果 provider 返回 needs_user_input / 无工具结果，则结束。
     let mut has_attempted_reactive_compact = false;
+    // 网络层瞬时错误的自动重发计数（同一回合内，5 秒一次，上限 MAX_TRANSPORT_RETRIES）。
+    let mut transport_retry_count: u32 = 0;
     let mut final_outcome = loop {
         // 若收到取消请求，则立即以 cancelled 结束。
         if crate::llm::cancellation::is_cancelled(conversation_id.as_deref()) {
@@ -846,19 +910,74 @@ pub async fn send_chat_message(
                     }
                 }
 
-                // 流中断前已有部分输出时，把部分输出写入事件日志，避免下轮上下文丢失。
+                // 网络层瞬时错误且零输出（尚无任何内容落库）时，同一回合内自动重发：
+                // 5 秒一次、最多 3 次，每次通过 backend-warning 通知前端展示进度；
+                // 已有部分输出时不重试——半截回复已落库，重试会造成内容重复。
+                if provider_err.partial_messages.is_empty()
+                    && is_transient_transport_error(&e)
+                    && transport_retry_count < MAX_TRANSPORT_RETRIES
+                {
+                    transport_retry_count += 1;
+                    crate::llm::utils::error_event::emit_backend_warning(
+                        &app,
+                        "llm.query_engine",
+                        format!(
+                            "网络异常（{}），{} 秒后自动重发（第 {}/{} 次）",
+                            truncate_chars(&e, 80),
+                            TRANSPORT_RETRY_INTERVAL_SECS,
+                            transport_retry_count,
+                            MAX_TRANSPORT_RETRIES
+                        ),
+                        Some("provider.auto_retry"),
+                    );
+                    // 等待期间响应取消：用户点停止则直接收敛为 cancelled。
+                    let retry_cancel_token =
+                        crate::llm::cancellation::get_token(conversation_id.as_deref());
+                    tokio::select! {
+                        _ = tokio::time::sleep(std::time::Duration::from_secs(
+                            TRANSPORT_RETRY_INTERVAL_SECS,
+                        )) => {}
+                        _ = retry_cancel_token.cancelled() => {
+                            break TurnOutcome::cancelled();
+                        }
+                    }
+                    continue;
+                }
+
+                // 出错时无论如何都保存已输出内容（与主动取消同要求）：
+                // 部分输出写入事件日志，并在末尾追加中断标记；一点输出都没有则无消息可存。
                 if !provider_err.partial_messages.is_empty() {
+                    let mut partial = provider_err.partial_messages.clone();
+                    append_error_interruption_marker(&mut partial);
                     if let Some(conv_id) = conversation_id.as_deref() {
                         log_new_model_messages(
                             &app,
                             Some(conv_id),
                             Some(&turn_id),
-                            &provider_err.partial_messages,
+                            &partial,
                             None,
                             None,
                         )
                         .await;
                     }
+                } else {
+                    // 零输出：中断标记进模型上下文（与取消路径一致的 ContextMessage 设计，
+                    // 不在 UI 聊天气泡展示），告知下一轮上一条请求失败了。
+                    log_session_event(
+                        &app,
+                        conversation_id.as_deref(),
+                        Some(&turn_id),
+                        crate::llm::session_log::SessionEvent::ContextMessage {
+                            message: Message {
+                                role: Role::User,
+                                content: Content::Text(format!(
+                                    "[Request interrupted by provider error: {}]",
+                                    truncate_chars(&e, 200)
+                                )),
+                            },
+                        },
+                    )
+                    .await;
                 }
 
                 let error_hook = crate::llm::services::hooks::run_error_hooks(
@@ -946,7 +1065,7 @@ pub async fn send_chat_message(
             };
             current_messages.push(interrupt_message.clone());
 
-            // 事件日志：记录半截输出与中断标记。
+            // 事件日志：记录半截输出。
             log_new_model_messages(
                 &app,
                 conversation_id.as_deref(),
@@ -956,13 +1075,15 @@ pub async fn send_chat_message(
                 None,
             )
             .await;
-            log_new_model_messages(
+            // 中断标记进模型上下文（下一轮模型需知道上一条是被打断的），
+            // 但以 ContextMessage 落日志——不在 UI 聊天气泡展示。
+            log_session_event(
                 &app,
                 conversation_id.as_deref(),
                 Some(&turn_id),
-                std::slice::from_ref(&interrupt_message),
-                None,
-                None,
+                crate::llm::session_log::SessionEvent::ContextMessage {
+                    message: interrupt_message,
+                },
             )
             .await;
 

@@ -269,6 +269,15 @@ impl ApiAdapter for AnthropicAdapter {
     fn flush(&mut self) -> Vec<Delta> {
         let mut deltas = Vec::new();
         push_inline_parts(&mut deltas, self.inline_think.flush());
+        // 流在 content_block_stop 之前终止（上游异常/断连/取消）时，
+        // 把已累积的思考原样提交，用户已经看到的半截思考不丢。
+        // 此时 signature 可能残缺，重发侧会剥离空签名块。
+        if !self.current_thinking.is_empty() {
+            deltas.push(Delta::ThinkingBlock {
+                thinking: std::mem::take(&mut self.current_thinking),
+                signature: std::mem::take(&mut self.current_sig),
+            });
+        }
         deltas
     }
 }

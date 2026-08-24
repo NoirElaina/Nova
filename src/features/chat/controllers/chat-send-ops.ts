@@ -20,6 +20,7 @@ import type {
 } from "../../../lib/chat-types";
 import {
   cancelChatMessage,
+  getChatTurnStatus,
   replaceConversationHistory,
   sendChatMessage,
   submitPermissionDecision,
@@ -82,6 +83,8 @@ type SendOpsDeps = {
     state: ConversationTurnRuntimeState,
     preservePendingPrompt?: boolean,
   ) => void;
+  /** 出错时把已流出的内容收口为“中断”消息（重入保护保证与 stop 事件不会双写）。 */
+  finalizeActiveTurnOnError: () => Promise<void>;
 };
 
 export function createSendOperations(deps: SendOpsDeps) {
@@ -118,6 +121,7 @@ export function createSendOperations(deps: SendOpsDeps) {
     persistMessage,
     refreshConversationFiles,
     resetBackgroundRuntimeState,
+    finalizeActiveTurnOnError,
   } = deps;
 
   async function dispatchConversationMessages(
@@ -185,14 +189,33 @@ export function createSendOperations(deps: SendOpsDeps) {
           source: "send",
           message: raw || "消息发送失败，请检查后端日志后重试。",
         });
-        assistantResponse.value = "";
-        assistantReasoning.value = "";
-        assistantSegments.value = [];
-        assistantTokenUsage.value = undefined;
-        assistantTurnCost.value = undefined;
-        isGenerating.value = false;
-        resetTurnRuntimeState(activeRuntimeRefs);
-        runtimeStateByConversation.delete(normalizeConversationId(sendingConversationId));
+        // 并发重发被拒（后端回合仍在运行）时绝不能碰运行时状态：
+        // 此时 refs 里是仍在运行回合的实时内容，提前收口/清空会把正在进行的回复从画面抹掉。
+        // 以后端 live_turns 状态为准：仍在 running 则仅提示，等 stop 事件正常收口。
+        const liveTurn = await getChatTurnStatus(sendingConversationId).catch(() => null);
+        if (liveTurn?.state === "running") {
+          return;
+        }
+        // 出错也要保存已输出内容：若 invoke 拒绝先于 stop 事件到达，
+        // 这里把已流式内容收口为带中断标记的消息，避免半截回复直接从画面消失；
+        // stop 事件已先处理过时 refs 已清空，会落到下方清理分支（重入保护不会双写）。
+        if (
+          assistantResponse.value.trim().length > 0 ||
+          assistantReasoning.value.trim().length > 0
+        ) {
+          await finalizeActiveTurnOnError();
+          resetTurnRuntimeState(activeRuntimeRefs);
+          runtimeStateByConversation.delete(normalizeConversationId(sendingConversationId));
+        } else {
+          assistantResponse.value = "";
+          assistantReasoning.value = "";
+          assistantSegments.value = [];
+          assistantTokenUsage.value = undefined;
+          assistantTurnCost.value = undefined;
+          isGenerating.value = false;
+          resetTurnRuntimeState(activeRuntimeRefs);
+          runtimeStateByConversation.delete(normalizeConversationId(sendingConversationId));
+        }
       } else {
         const backgroundState = ensureRuntimeState(
           runtimeStateByConversation,

@@ -234,7 +234,8 @@ pub async fn run_streaming<P: StreamParser>(
             _ = cancel_token.cancelled() => {
                 // 把已流式输出的部分内容封装成 partial assistant 消息返回，
                 // 确保事件日志与 UI 历史保持一致。
-                let partial_messages = build_partial_cancelled_messages(
+                let partial_messages = build_partial_with_parser_flush(
+                    parser,
                     &mut assistant_output,
                     &mut tool_result_blocks,
                     &mut additional_context_messages,
@@ -277,7 +278,8 @@ pub async fn run_streaming<P: StreamParser>(
                 );
                 return Err(ProviderTurnError::with_partial(
                     msg,
-                    build_partial_cancelled_messages(
+                    build_partial_with_parser_flush(
+                        parser,
                         &mut assistant_output,
                         &mut tool_result_blocks,
                         &mut additional_context_messages,
@@ -310,7 +312,8 @@ pub async fn run_streaming<P: StreamParser>(
                     );
                     return Err(ProviderTurnError::with_partial(
                         msg,
-                        build_partial_cancelled_messages(
+                        build_partial_with_parser_flush(
+                            parser,
                             &mut assistant_output,
                             &mut tool_result_blocks,
                             &mut additional_context_messages,
@@ -336,7 +339,8 @@ pub async fn run_streaming<P: StreamParser>(
                     );
                     return Err(ProviderTurnError::with_partial(
                         e,
-                        build_partial_cancelled_messages(
+                        build_partial_with_parser_flush(
+                            parser,
                             &mut assistant_output,
                             &mut tool_result_blocks,
                             &mut additional_context_messages,
@@ -368,7 +372,8 @@ pub async fn run_streaming<P: StreamParser>(
                 {
                     return Err(ProviderTurnError::with_partial(
                         e,
-                        build_partial_cancelled_messages(
+                        build_partial_with_parser_flush(
+                            parser,
                             &mut assistant_output,
                             &mut tool_result_blocks,
                             &mut additional_context_messages,
@@ -429,7 +434,8 @@ pub async fn run_streaming<P: StreamParser>(
         );
         return Err(ProviderTurnError::with_partial(
             msg,
-            build_partial_cancelled_messages(
+            build_partial_with_parser_flush(
+                parser,
                 &mut assistant_output,
                 &mut tool_result_blocks,
                 &mut additional_context_messages,
@@ -582,6 +588,33 @@ fn build_partial_cancelled_messages(
         messages.extend(std::mem::take(additional_context_messages));
     }
     messages
+}
+
+/// 早退路径（取消/出错）组装 partial 消息的统一入口：
+/// 相比 build_partial_cancelled_messages，先 flush parser 的残余状态——
+/// 已流出但尚未收到收尾事件（如 content_block_stop）的 thinking/文本
+/// 会在这里被原样提交，确保用户已经看到的半截思考不丢。
+/// flush 可能产出非内容类 Delta（如 ToolsReady），早退路径只吸收内容块，不触发工具执行。
+fn build_partial_with_parser_flush<P: StreamParser>(
+    parser: &mut P,
+    assistant_output: &mut AssistantOutputBuilder,
+    tool_result_blocks: &mut Vec<ContentBlock>,
+    additional_context_messages: &mut Vec<Message>,
+) -> Vec<Message> {
+    for delta in parser.flush() {
+        match delta {
+            Delta::Text(text) => assistant_output.append_text(&text),
+            Delta::ThinkingBlock { thinking, signature } => {
+                assistant_output.push_thinking(thinking, signature);
+            }
+            _ => {}
+        }
+    }
+    build_partial_cancelled_messages(
+        assistant_output,
+        tool_result_blocks,
+        additional_context_messages,
+    )
 }
 
 // ─────────────────────────────────────────────

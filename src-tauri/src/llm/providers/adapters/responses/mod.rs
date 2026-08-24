@@ -394,6 +394,21 @@ impl ApiAdapter for ResponsesAdapter {
 
         Ok(deltas)
     }
+
+    fn flush(&mut self) -> Vec<Delta> {
+        // 流在 OutputItemDone 之前终止（上游异常/断连/取消）时，
+        // 把已累积的残余推理原样提交，用户已经看到的半截思考不丢。
+        let mut deltas = Vec::new();
+        for (_, entry) in std::mem::take(&mut self.pending_reasoning) {
+            if !entry.summary.trim().is_empty() {
+                deltas.push(Delta::ThinkingBlock {
+                    thinking: entry.summary,
+                    signature: String::new(),
+                });
+            }
+        }
+        deltas
+    }
 }
 
 #[cfg(test)]

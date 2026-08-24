@@ -107,6 +107,15 @@ fn nova_content_to_anthropic_content(
         Content::Text(text) => Ok(AnthropicMessageContent::Text(text.clone())),
         Content::Blocks(blocks) => blocks
             .iter()
+            // 被流中断截断的半截 thinking 块签名残缺（甚至为空），
+            // Anthropic 系端点会校验回传 thinking 块的 signature，直接剔除；
+            // 事件日志与 UI 展示不受影响，仅重发侧丢弃。
+            .filter(|block| {
+                !matches!(
+                    block,
+                    ContentBlock::Thinking { signature, .. } if signature.trim().is_empty()
+                )
+            })
             .map(nova_block_to_anthropic_block)
             .collect::<Result<Vec<_>, _>>()
             .map(AnthropicMessageContent::Blocks),
@@ -124,7 +133,18 @@ fn nova_messages_to_anthropic_messages(
                 content: nova_content_to_anthropic_content(&message.content)?,
             })
         })
-        .collect()
+        .collect::<Result<Vec<_>, _>>()
+        // 剔除 signature 后可能剩下空块列表的消息（如纯 thinking 半截回复），
+        // 空 content 对 Anthropic 系端点是非法报文。
+        .map(|converted| {
+            converted
+                .into_iter()
+                .filter(|message| match &message.content {
+                    AnthropicMessageContent::Blocks(blocks) => !blocks.is_empty(),
+                    AnthropicMessageContent::Text(_) => true,
+                })
+                .collect()
+        })
 }
 
 fn nova_tools_to_anthropic_tools(tools: Vec<Tool>) -> Vec<AnthropicTool> {

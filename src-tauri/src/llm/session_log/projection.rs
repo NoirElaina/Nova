@@ -63,6 +63,11 @@ pub fn render_ui_history(events: &[StoredEvent]) -> Vec<HistoryMessage> {
     for stored in events {
         match &stored.event {
             SessionEvent::UserMessage { message, attachments } => {
+                // 旧数据兼容：早期版本把中断标记以用户消息落日志，
+                // UI 不再展示这类状态消息（新数据已改以 ContextMessage 落日志）。
+                if extract_text(message).starts_with("[Request interrupted by user]") {
+                    continue;
+                }
                 out.push(HistoryMessage {
                     id: Some(stored.seq),
                     role: "user".to_string(),

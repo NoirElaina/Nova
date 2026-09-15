@@ -826,6 +826,9 @@ pub async fn send_chat_message(
                 clamp_i64_to_u32(context_editing.original_estimated_tokens),
                 clamp_i64_to_u32(context_editing.edited_estimated_tokens),
             );
+            // 工具结果清理改写了历史中段，前缀缓存必然失配，cache_read 下跌是预期；
+            // 与 compact 同理，重置击穿检测基线防误报。
+            crate::llm::services::prompt_cache_break::reset_baseline(conversation_id.as_deref());
             context_editing.messages
         } else {
             messages_for_provider

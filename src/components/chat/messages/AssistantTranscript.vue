@@ -84,6 +84,18 @@ function reasoningSummary(text: string): string {
   }
   return chars < 1000 ? `Thinking · ${chars} chars` : `Thinking · ${(chars / 1000).toFixed(1)}k chars`;
 }
+
+/** 流式思考预览：取最后一行非空文字的尾部（右对齐展示，溢出由 CSS 左侧渐隐收掉）。 */
+function reasoningLivePreview(text: string): string {
+  const lines = text.split(/\r?\n/);
+  for (let i = lines.length - 1; i >= 0; i -= 1) {
+    const line = lines[i].trim();
+    if (line) {
+      return line.length > 200 ? line.slice(-200) : line;
+    }
+  }
+  return "";
+}
 </script>
 
 <template>
@@ -105,6 +117,10 @@ function reasoningSummary(text: string): string {
         <summary class="transcript-reasoning__summary">
           <span class="transcript-reasoning__title">{{ reasoningSummary(segment.text) }}</span>
           <span class="transcript-reasoning__chevron">›</span>
+          <span
+            v-if="isLiveSegment(segment, index) && reasoningLivePreview(segment.text)"
+            class="transcript-reasoning__live"
+          ><span class="transcript-reasoning__live-text">{{ reasoningLivePreview(segment.text) }}</span></span>
         </summary>
         <div class="transcript-reasoning__body">
           <MarkdownRenderer
@@ -147,7 +163,8 @@ function reasoningSummary(text: string): string {
 .transcript-reasoning__summary {
   cursor: pointer;
   list-style: none;
-  display: inline-flex;
+  display: flex;
+  flex-wrap: wrap;
   align-items: center;
   gap: 5px;
   max-width: 100%;
@@ -168,6 +185,53 @@ function reasoningSummary(text: string): string {
   font-size: 18px;
   line-height: 1;
   transition: transform 0.16s ease;
+}
+
+/* 流式思考预览：单行最新思考文字 + 流光扫过动画；展开详情或思考结束后隐藏。
+   direction:rtl + text-align:left：短行左对齐，长行从左侧裁掉（最新内容恒可见），
+   左缘用遮罩渐隐代替省略号（文字透明，CSS 省略号不可见）。 */
+.transcript-reasoning__live {
+  flex-basis: 100%;
+  display: block;
+  direction: rtl;
+  text-align: left;
+  overflow: hidden;
+  white-space: nowrap;
+  margin-top: 1px;
+  font-size: 12.5px;
+  line-height: 1.5;
+  -webkit-mask-image: linear-gradient(90deg, transparent 0, #000 32px);
+  mask-image: linear-gradient(90deg, transparent 0, #000 32px);
+}
+
+.transcript-reasoning__live-text {
+  unicode-bidi: plaintext;
+  background: linear-gradient(
+    90deg,
+    #9aa3af 0%,
+    #9aa3af 35%,
+    #1f2937 50%,
+    #9aa3af 65%,
+    #9aa3af 100%
+  );
+  background-size: 200% 100%;
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+  animation: reasoning-shimmer 1.8s linear infinite;
+}
+
+.transcript-reasoning[open] .transcript-reasoning__live {
+  display: none;
+}
+
+@keyframes reasoning-shimmer {
+  from {
+    background-position: 200% 0;
+  }
+  to {
+    background-position: -200% 0;
+  }
 }
 
 .transcript-reasoning[open] .transcript-reasoning__chevron {
@@ -221,6 +285,20 @@ function reasoningSummary(text: string): string {
 
 .dark .transcript-reasoning[open] {
   color: #d4d4d4;
+}
+
+.dark .transcript-reasoning__live-text {
+  background: linear-gradient(
+    90deg,
+    #8a8f98 0%,
+    #8a8f98 35%,
+    #f3f4f6 50%,
+    #8a8f98 65%,
+    #8a8f98 100%
+  );
+  background-size: 200% 100%;
+  -webkit-background-clip: text;
+  background-clip: text;
 }
 
 .dark .transcript-reasoning__body {

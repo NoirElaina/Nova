@@ -10,7 +10,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::llm::commands::types::HistoryAttachment;
-use crate::llm::types::{Message, Role};
+use crate::llm::types::{Content, ContentBlock, Message, Role};
 
 /// 会话事件：一行 `session_events` 的语义载荷。
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -103,12 +103,28 @@ impl SessionEvent {
     }
 
     /// 把一条模型消息归类为对应事件：用户真实输入 / 助手输出。
+    ///
+    /// 例外：user 角色但内嵌 Image 块的消息是工具 side-channel 注入
+    /// （ReadTool 读图 / ComputerUse 截图回灌，见 read.rs / computer_use.rs），
+    /// 不是用户真实输入——落 ContextMessage，模型上下文保留、UI 不展示。
+    /// 真实用户的图片经事件 attachments 字段携带，消息体内不出现 Image 块。
     pub fn from_model_message(message: Message) -> SessionEvent {
         match message.role {
-            Role::User => SessionEvent::UserMessage {
-                message,
-                attachments: None,
-            },
+            Role::User => {
+                let has_inline_image = matches!(
+                    &message.content,
+                    Content::Blocks(blocks)
+                        if blocks.iter().any(|b| matches!(b, ContentBlock::Image { .. }))
+                );
+                if has_inline_image {
+                    SessionEvent::ContextMessage { message }
+                } else {
+                    SessionEvent::UserMessage {
+                        message,
+                        attachments: None,
+                    }
+                }
+            }
             Role::Assistant => SessionEvent::AssistantMessage {
                 message,
                 token_usage: None,

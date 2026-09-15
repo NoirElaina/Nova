@@ -318,7 +318,6 @@ const handleBrowserOpenRequest = async (payload: BrowserOpenRequest) => {
 
   handleChangeMainView("chat");
   activeWorkspaceTab.value = "browser";
-  isDrawerOpen.value = true;
   browserOpenRequestKey.value += 1;
 };
 
@@ -534,6 +533,7 @@ onBeforeUnmount(() => {
             :chatError="chatError"
             :activeAgent="displayAgent"
             :conversationId="activeConversationId"
+            :drawerOpen="isDrawerOpen"
             @open-plan="isPlanPanelOpen = true"
             @remove-agent="removeConversationAgent"
             @send="handleSendMessage"

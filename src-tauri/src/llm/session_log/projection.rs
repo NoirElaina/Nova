@@ -58,36 +58,94 @@ fn extract_reasoning(message: &crate::llm::types::Message) -> Option<String> {
 
 /// 投影 UI 聊天历史：仅 UserMessage / AssistantMessage 进消息流，
 /// id 用事件 seq（稳定唯一，前端作消息键使用）。
+///
+/// 同一回合的多次模型调用（thinking → tool → thinking → …）在事件流里是
+/// 多条 AssistantMessage；UI 上与流式期间保持一致——合并为一条消息，
+/// 由 cost.transcriptSegments 还原完整思考/工具/正文结构。
+/// tool_result 回填等不可见的 UserMessage（无文本/推理/附件）既不展示也不打断合并。
 pub fn render_ui_history(events: &[StoredEvent]) -> Vec<HistoryMessage> {
-    let mut out = Vec::new();
+    let mut out: Vec<HistoryMessage> = Vec::new();
     for stored in events {
         match &stored.event {
             SessionEvent::UserMessage { message, attachments } => {
                 // 旧数据兼容：早期版本把中断标记以用户消息落日志，
                 // UI 不再展示这类状态消息（新数据已改以 ContextMessage 落日志）。
-                if extract_text(message).starts_with("[Request interrupted by user]") {
+                let content = extract_text(message);
+                if content.starts_with("[Request interrupted by user]") {
+                    continue;
+                }
+                // 旧数据兼容：工具 side-channel 注入的图片消息（ReadTool/ComputerUse）
+                // 曾以 UserMessage 落日志，新数据已改落 ContextMessage；
+                // 这里跳过展示且不打断 assistant 合并。
+                let has_inline_image = matches!(
+                    &message.content,
+                    Content::Blocks(blocks)
+                        if blocks.iter().any(|b| matches!(b, ContentBlock::Image { .. }))
+                );
+                if has_inline_image {
+                    continue;
+                }
+                let reasoning = extract_reasoning(message);
+                let has_attachments = attachments
+                    .as_ref()
+                    .map(|list| !list.is_empty())
+                    .unwrap_or(false);
+                // 不可见用户消息（tool_result 回填等）：跳过且不打断 assistant 合并。
+                if content.trim().is_empty() && reasoning.is_none() && !has_attachments {
                     continue;
                 }
                 out.push(HistoryMessage {
                     id: Some(stored.seq),
                     role: "user".to_string(),
-                    content: extract_text(message),
-                    reasoning: extract_reasoning(message),
+                    content,
+                    reasoning,
                     attachments: attachments.clone(),
                     token_usage: None,
                     cost: None,
                 });
             }
             SessionEvent::AssistantMessage { message, token_usage, cost } => {
-                out.push(HistoryMessage {
-                    id: Some(stored.seq),
-                    role: "assistant".to_string(),
-                    content: extract_text(message),
-                    reasoning: extract_reasoning(message),
-                    attachments: None,
-                    token_usage: *token_usage,
-                    cost: cost.clone(),
-                });
+                let content = extract_text(message);
+                let reasoning = extract_reasoning(message);
+                // 与上一条 assistant 合并：同回合工具循环的拆分输出归为一条 UI 消息。
+                if let Some(last) = out.last_mut().filter(|m| m.role == "assistant") {
+                    if !content.trim().is_empty() {
+                        if last.content.trim().is_empty() {
+                            last.content = content;
+                        } else {
+                            last.content.push_str("\n\n");
+                            last.content.push_str(&content);
+                        }
+                    }
+                    if let Some(reasoning) = reasoning {
+                        match &mut last.reasoning {
+                            Some(existing) if !existing.trim().is_empty() => {
+                                existing.push_str("\n\n");
+                                existing.push_str(&reasoning);
+                            }
+                            _ => last.reasoning = Some(reasoning),
+                        }
+                    }
+                    // token_usage 为单次调用的用量，合并时累加为回合总量。
+                    if let Some(usage) = token_usage {
+                        last.token_usage = Some(last.token_usage.unwrap_or(0) + *usage);
+                    }
+                    // cost 取最后一条非空值：回合末条目的 cost 经前端回写，
+                    // 带完整 transcriptSegments / toolSummary / 耗时等展示元数据。
+                    if cost.is_some() {
+                        last.cost = cost.clone();
+                    }
+                } else {
+                    out.push(HistoryMessage {
+                        id: Some(stored.seq),
+                        role: "assistant".to_string(),
+                        content,
+                        reasoning,
+                        attachments: None,
+                        token_usage: *token_usage,
+                        cost: cost.clone(),
+                    });
+                }
             }
             _ => {}
         }

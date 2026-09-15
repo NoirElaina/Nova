@@ -138,8 +138,10 @@ pub fn record_request(
 ///
 /// 仅在上游报告了 `cache_read` 时判定（不支持缓存指标的门路自动跳过）；
 /// OpenAI/DeepSeek 无 cache_creation 概念，判定只看读取量，不受影响。
+/// 判定结果只写日志，不向前端弹 toast——击穿对最终用户不可操作，
+/// 前端已有会话用量条的缓存命中率可观察。
 pub fn check_response(
-    app: &AppHandle,
+    _app: &AppHandle,
     conversation_id: Option<&str>,
     cache_read: Option<u32>,
 ) {
@@ -211,13 +213,7 @@ pub fn check_response(
         prev_cache_read = prev,
         cache_read = read,
         cause = %cause,
-        "prompt cache break suspected"
-    );
-    crate::llm::utils::error_event::emit_backend_warning(
-        app,
-        "llm.prompt_cache_break",
-        message,
-        Some("check_response"),
+        "{message}"
     );
 }
 

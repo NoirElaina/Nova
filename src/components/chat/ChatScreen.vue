@@ -55,6 +55,8 @@ const props = defineProps<{
   activeAgent?: { id: string; name: string; description?: string } | null;
   /** 当前会话 id（插件命令展开 {workspace} 占位符用）。 */
   conversationId?: string | null;
+  /** 右侧工作区抽屉展开时隐藏消息时间线导航（避免遮挡收窄后的聊天内容）。 */
+  drawerOpen?: boolean;
 }>();
 
 const emit = defineEmits<{
@@ -755,6 +757,7 @@ defineExpose({
   <div class="relative h-full w-full">
     <!-- 消息时间线导航：锚定聊天区容器左边缘（不随居中内容列浮动） -->
     <MessageTimelineNavigator
+      v-if="!drawerOpen"
       :items="userTimelineItems"
       :activeIndex="activeUserMessageIndex"
       @select="scrollToMessageIndex"

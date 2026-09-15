@@ -3687,6 +3687,7 @@ dependencies = [
  "grep-regex",
  "grep-searcher",
  "ignore",
+ "image",
  "jsonschema",
  "libc",
  "libsqlite3-sys",

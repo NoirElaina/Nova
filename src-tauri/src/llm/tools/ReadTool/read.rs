@@ -148,6 +148,11 @@ fn is_pdf(path: &std::path::Path) -> bool {
 fn read_image(path: &std::path::Path) -> Result<(String, String), String> {
     let bytes = std::fs::read(path)
         .map_err(|e| format!("Error reading image {}: {}", path.display(), e))?;
+
+    // 真解码校验（用 image crate decode 一次），识别文件损坏（如 zlib 校验失败、残缺数据流等）
+    image::load_from_memory(&bytes)
+        .map_err(|e| format!("图片已损坏：{}", e))?;
+
     let media_type = match ext_lower(path).as_str() {
         "jpg" | "jpeg" => "image/jpeg",
         _ => "image/png",
@@ -387,7 +392,11 @@ async fn execute_async(
     }
     if is_image_ext(&path) {
         // 把图片作为真正的图像块附加到上下文，模型可直接“看到”，而不是把 base64 当文本灌入。
-        let (media_type, data) = read_image(&path).map_err(ToolFailure::new)?;
+        // 若真解码校验失败（如损坏的图片、zlib 校验失败等），降级为文本错误返回给模型，避免损坏的图像块导致 LLM API 请求失败。
+        let (media_type, data) = match read_image(&path) {
+            Ok(val) => val,
+            Err(err) => return Ok(ToolOutcome::text(err)),
+        };
         let note = format!("Image attached ({}). Inspect it directly.", media_type);
         let image_message = Message {
             role: Role::User,
@@ -423,4 +432,68 @@ fn execute_with_app_boxed(
     Box::pin(async move {
         execute_async(&app, conversation_id.as_deref(), input).await
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Write;
+
+    #[test]
+    fn test_read_image_valid_png() {
+        let dir = tempfile::tempdir().unwrap();
+        let file_path = dir.path().join("test.png");
+        let img = image::RgbaImage::new(2, 2);
+        img.save(&file_path).unwrap();
+
+        let res = read_image(&file_path);
+        assert!(res.is_ok());
+        let (media_type, data) = res.unwrap();
+        assert_eq!(media_type, "image/png");
+        assert!(!data.is_empty());
+    }
+
+    #[test]
+    fn test_read_image_magic_bytes_only_fails_decode() {
+        let dir = tempfile::tempdir().unwrap();
+        let file_path = dir.path().join("corrupted.png");
+        // PNG magic bytes followed by truncated/garbage bytes
+        let mut file = std::fs::File::create(&file_path).unwrap();
+        file.write_all(b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00\x00\x01\x08\x06\x00\x00\x00corrupted_payload").unwrap();
+
+        let res = read_image(&file_path);
+        assert!(res.is_err());
+        let err = res.unwrap_err();
+        assert!(
+            err.starts_with("图片已损坏："),
+            "Expected '图片已损坏：', got: {}",
+            err
+        );
+    }
+
+    #[test]
+    fn test_read_image_corrupted_zlib_fails_decode() {
+        let dir = tempfile::tempdir().unwrap();
+        let valid_path = dir.path().join("valid.png");
+        let corrupted_path = dir.path().join("corrupted_zlib.png");
+
+        let img = image::RgbaImage::new(10, 10);
+        img.save(&valid_path).unwrap();
+
+        let mut bytes = std::fs::read(&valid_path).unwrap();
+        // Corrupt the IDAT chunk payload (around the middle of the file)
+        let mid = bytes.len() / 2;
+        bytes[mid] ^= 0xFF;
+        bytes[mid + 1] ^= 0xAA;
+        std::fs::write(&corrupted_path, &bytes).unwrap();
+
+        let res = read_image(&corrupted_path);
+        assert!(res.is_err());
+        let err = res.unwrap_err();
+        assert!(
+            err.starts_with("图片已损坏："),
+            "Expected '图片已损坏：', got: {}",
+            err
+        );
+    }
 }

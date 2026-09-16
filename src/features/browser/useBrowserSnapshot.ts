@@ -444,11 +444,18 @@ export function useBrowserSnapshot(browserLabel: string, currentUrl: Ref<string>
       .join('\n\n')
       .slice(0, 52000);
     const topPage = capturedFrames[0]?.page ?? {};
+    const topUrl = (typeof topPage.url === 'string' && topPage.url)
+      ? topPage.url
+      : (capturedFrames[0]?.frame?.url || frames[0]?.url || currentUrl.value || '');
+
+    if (topUrl && topUrl !== currentUrl.value) {
+      currentUrl.value = topUrl;
+    }
 
     return {
       mode: 'cdp-frame-dom-summary',
       title: topPage.title ?? '',
-      url: currentUrl.value || topPage.url || '',
+      url: topUrl,
       text: textByFrame,
       elements: allElements,
       headings: allHeadings,

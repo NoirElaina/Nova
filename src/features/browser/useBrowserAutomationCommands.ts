@@ -90,6 +90,18 @@ export function useBrowserAutomationCommands(options: UseBrowserAutomationComman
 
       try {
         const page = await options.captureBrowserSnapshot();
+        const realUrl = (typeof page.url === 'string' && page.url) ? page.url : null;
+        if (realUrl && realUrl !== options.currentUrl.value) {
+          options.currentUrl.value = realUrl;
+          options.addressInput.value = realUrl;
+          const nextHistory = options.history.value.slice(0, options.historyIndex.value + 1);
+          if (nextHistory[nextHistory.length - 1] !== realUrl) {
+            nextHistory.push(realUrl);
+          }
+          options.history.value = nextHistory;
+          options.historyIndex.value = nextHistory.length - 1;
+          void options.updateBrowserSessionUrl();
+        }
         return browserStatePayload({
           contentAvailable: true,
           title: page.title ?? null,

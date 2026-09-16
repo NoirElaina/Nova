@@ -209,6 +209,9 @@ fn build_ready_marker_script() -> String {
 fn build_foreground_wrapper(command_id: &str, command: &str) -> String {
     let encoded = encode_utf8_base64(command);
     // 不用 Write-Output 发 marker：成功流在重定向时可能块缓冲，双 marker 死等会拖到 timeout。
+    // 使用 | Out-Default 强制格式化引擎立即将对象（如 Get-Location、Get-ChildItem）渲染并输出，
+    // 避免 PowerShell 默认 formatter 缓存对象导致下一条命令输出错位。
+    // 同步设置 [System.Environment]::CurrentDirectory 保证 .NET API 相对路径解析与工作区一致。
     format!(
         r#"$__novaCommandId = '{command_id}'
 $__novaEncodedCommand = '{encoded}'
@@ -216,10 +219,11 @@ $__novaCommand = [System.Text.Encoding]::UTF8.GetString([System.Convert]::FromBa
 $env:NO_COLOR = '1'
 if ($PSStyle) {{ $PSStyle.OutputRendering = 'PlainText' }}
 $global:LASTEXITCODE = 0
+[System.Environment]::CurrentDirectory = (Get-Location).Path
 try {{
-    Invoke-Expression $__novaCommand
+    & {{ Invoke-Expression $__novaCommand }} | Out-Default
     $__novaCommandSucceeded = $?
-    $__novaExitCode = if ($LASTEXITCODE -is [int]) {{
+    $__novaExitCode = if ($LASTEXITCODE -is [int] -and $LASTEXITCODE -ne 0) {{
         [int]$LASTEXITCODE
     }} elseif ($__novaCommandSucceeded) {{
         0
@@ -230,10 +234,11 @@ try {{
     $__novaExitCode = 1
     Write-Error $_
 }}
+$__novaCwd = (Get-Location).Path
+[System.Environment]::CurrentDirectory = $__novaCwd
 # 先刷出命令输出，再写 marker，避免管道块缓冲把 stdout 和 marker 一起卡住
 [Console]::Out.Flush()
 [Console]::Error.Flush()
-$__novaCwd = (Get-Location).Path
 $__novaCwdB64 = [Convert]::ToBase64String([System.Text.Encoding]::UTF8.GetBytes($__novaCwd))
 $__novaMarker = "{prefix}$__novaCommandId|$__novaExitCode|$__novaCwdB64|0"
 [Console]::Out.WriteLine($__novaMarker)
@@ -251,6 +256,7 @@ fn build_background_wrapper(command_id: &str, command: &str) -> String {
     format!(
         r#"$__novaCommandId = '{command_id}'
 $__novaCwd = (Get-Location).Path
+[System.Environment]::CurrentDirectory = $__novaCwd
 $__nova = Start-Process -FilePath '{pwsh}' -ArgumentList @('-NoLogo','-NoProfile','-NonInteractive','-EncodedCommand','{encoded}') -WorkingDirectory $__novaCwd -WindowStyle Hidden -RedirectStandardOutput 'NUL' -RedirectStandardError 'NUL' -PassThru
 [pscustomobject]@{{
     ok = $true
@@ -399,7 +405,7 @@ async fn spawn_session(initial_cwd: Option<&str>) -> Result<ShellSession, String
         #[cfg(target_os = "windows")]
         {
             bootstrap.push_str(&format!(
-                "$__novaRestoreCwd = [System.Text.Encoding]::UTF8.GetString([System.Convert]::FromBase64String('{}'))\nSet-Location -LiteralPath $__novaRestoreCwd -ErrorAction SilentlyContinue\n",
+                "$__novaRestoreCwd = [System.Text.Encoding]::UTF8.GetString([System.Convert]::FromBase64String('{}'))\nSet-Location -LiteralPath $__novaRestoreCwd -ErrorAction SilentlyContinue\n[System.Environment]::CurrentDirectory = (Get-Location).Path\n",
                 encode_utf8_base64(cwd)
             ));
         }

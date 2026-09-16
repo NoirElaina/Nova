@@ -88,12 +88,22 @@ async fn execute_with_app(
                     .await;
 
             match result {
-                Ok(results) => Ok(ToolOutcome::json(json!({
-                    "ok": true,
-                    "action": "search",
-                    "query": query,
-                    "results": results
-                }))),
+                Ok(results) => {
+                    let mut payload = json!({
+                        "ok": true,
+                        "action": "search",
+                        "query": query,
+                        "results": results
+                    });
+                    if results.is_empty() {
+                        if let Ok(stats) = crate::command::rag::rag_get_stats(app.clone()).await {
+                            if stats.document_count == 0 {
+                                payload["note"] = json!("知识库当前为空（documentCount: 0），未检索到任何内容。");
+                            }
+                        }
+                    }
+                    Ok(ToolOutcome::json(payload))
+                }
                 Err(e) => Err(ToolFailure::new(e)),
             }
         }

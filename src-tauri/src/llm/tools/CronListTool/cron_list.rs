@@ -1,6 +1,7 @@
 use crate::llm::tools::shared::cron_store::list_jobs;
 use crate::llm::tools::{app_tool, AppExecuteFuture, ToolDisclosure, ToolFailure, ToolOutcome, ToolRegistration};
 use crate::llm::types::Tool;
+use chrono::Local;
 use serde_json::{json, Value};
 use tauri::AppHandle;
 
@@ -36,14 +37,24 @@ pub fn tool() -> Tool {
 async fn execute_with_app(app: &AppHandle, _input: Value) -> Result<ToolOutcome, ToolFailure> {
     match list_jobs(app) {
         Ok(jobs) => {
-            // list: 返回给模型的轻量序列化结果，只保留工具协议需要的字段。
+            let now = Local::now();
+            // list: 返回给模型的轻量序列化结果，包含可读排期与下次触发时间。
             let list = jobs
                 .into_iter()
                 .map(|job| {
+                    let schedule_info =
+                        crate::llm::services::cron_schedule::schedule_info(&job.cron, &now).ok();
+                    let human_schedule = schedule_info
+                        .as_ref()
+                        .map(|s| s.human_schedule.clone())
+                        .unwrap_or_else(|| job.cron.clone());
+                    let next_run_at = schedule_info.map(|s| s.next_run_at);
+
                     json!({
                         "id": job.id,
                         "cron": job.cron,
-                        "humanSchedule": job.cron,
+                        "humanSchedule": human_schedule,
+                        "nextRunAt": next_run_at,
                         "prompt": job.prompt,
                         "conversationId": job.conversation_id,
                         "recurring": job.recurring,

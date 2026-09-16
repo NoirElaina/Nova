@@ -51,7 +51,7 @@ pub fn tool() -> Tool {
 }
 
 // 把 skills 列表转成模型更容易消费的 JSON 数组。
-fn list_skills(skills: &[SkillEntry]) -> ToolOutcome {
+fn list_skills(app: &AppHandle, skills: &[SkillEntry]) -> ToolOutcome {
     let items = skills
         .iter()
         .map(|s| {
@@ -63,10 +63,23 @@ fn list_skills(skills: &[SkillEntry]) -> ToolOutcome {
         })
         .collect::<Vec<_>>();
 
-    ToolOutcome::json(json!({
+    let mut result = json!({
         "ok": true,
         "skills": items
-    }))
+    });
+
+    if skills.is_empty() {
+        if let Ok(all) = crate::llm::services::skills::list_skill_summaries_with_app(app) {
+            if !all.is_empty() {
+                result["note"] = json!(format!(
+                    "当前共有 {} 个技能已安装但全部处于禁用状态。用户可在设置中启用相应技能。",
+                    all.len()
+                ));
+            }
+        }
+    }
+
+    ToolOutcome::json(result)
 }
 
 // 按名字挑出一个 skill，并把正文和附属文件说明打包成返回文本。
@@ -157,7 +170,7 @@ async fn execute_with_app(
     };
 
     if action == "list" {
-        return Ok(list_skills(&skills));
+        return Ok(list_skills(app, &skills));
     }
 
     let skill = match input.get("skill").and_then(|v| v.as_str()) {

@@ -1,7 +1,8 @@
 use std::collections::{HashMap, HashSet};
 use std::process::Stdio;
-use std::sync::{Arc, Mutex, OnceLock};
-use std::time::Duration;
+use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::{Arc, LazyLock, Mutex, OnceLock};
+use std::time::{Duration, Instant};
 
 use base64::engine::general_purpose::STANDARD as BASE64;
 use base64::Engine as _;
@@ -220,13 +221,17 @@ $env:NO_COLOR = '1'
 if ($PSStyle) {{ $PSStyle.OutputRendering = 'PlainText' }}
 $global:LASTEXITCODE = 0
 [System.Environment]::CurrentDirectory = (Get-Location).Path
-$__novaErrCountBefore = $Error.Count
+$__novaErrHeadBefore = if ($Error.Count -gt 0) {{ [object]$Error[0] }} else {{ $null }}
 try {{
     & {{
         Invoke-Expression $__novaCommand
         $global:__novaCmdSuccess = $?
     }} | Out-Default
-    $__novaCommandSucceeded = $global:__novaCmdSuccess -and ($Error.Count -eq $__novaErrCountBefore)
+    # $Error 受 $MaximumErrorCount 限制，饱和后 Count 不再增长，
+    # 用 Count 做增量比较会永久失效（失败命令被静默判成成功）。
+    # 改为比较栈顶对象引用，饱和后依然有效。
+    $__novaNewError = if ($null -eq $__novaErrHeadBefore) {{ $Error.Count -gt 0 }} else {{ -not ([object]::ReferenceEquals($Error[0], $__novaErrHeadBefore)) }}
+    $__novaCommandSucceeded = $global:__novaCmdSuccess -and -not $__novaNewError
     $__novaExitCode = if ($LASTEXITCODE -is [int] -and $LASTEXITCODE -ne 0) {{
         [int]$LASTEXITCODE
     }} elseif ($__novaCommandSucceeded) {{
@@ -254,35 +259,6 @@ $__novaMarker = "{prefix}$__novaCommandId|$__novaExitCode|$__novaCwdB64|0"
     )
 }
 
-#[cfg(target_os = "windows")]
-fn build_background_wrapper(command_id: &str, command: &str) -> String {
-    let encoded = encode_pwsh_command(command);
-    format!(
-        r#"$__novaCommandId = '{command_id}'
-$__novaCwd = (Get-Location).Path
-[System.Environment]::CurrentDirectory = $__novaCwd
-$__nova = Start-Process -FilePath '{pwsh}' -ArgumentList @('-NoLogo','-NoProfile','-NonInteractive','-EncodedCommand','{encoded}') -WorkingDirectory $__novaCwd -WindowStyle Hidden -PassThru
-[pscustomobject]@{{
-    ok = $true
-    background = $true
-    pid = $__nova.Id
-    cwd = $__novaCwd
-}} | ConvertTo-Json -Compress | Out-Default
-[Console]::Out.Flush()
-$__novaCwdB64 = [Convert]::ToBase64String([System.Text.Encoding]::UTF8.GetBytes($__novaCwd))
-$__novaMarker = "{prefix}$__novaCommandId|0|$__novaCwdB64|0"
-[Console]::Out.WriteLine($__novaMarker)
-[Console]::Out.Flush()
-[Console]::Error.WriteLine($__novaMarker)
-[Console]::Error.Flush()
-"#,
-        pwsh = PWSH_PATH,
-        prefix = MARKER_PREFIX,
-        command_id = command_id,
-        encoded = encoded,
-    )
-}
-
 #[cfg(not(target_os = "windows"))]
 fn build_bootstrap_init_script() -> String {
     String::new()
@@ -305,24 +281,6 @@ fn build_foreground_wrapper(command_id: &str, command: &str) -> String {
     format!(
         "NOVA_CMD_ID='{command_id}'\nNOVA_CMD=$(printf '%s' '{encoded}' | base64 -d 2>/dev/null || printf '%s' '{encoded}' | base64 -D)\neval \"$NOVA_CMD\"\nNOVA_EXIT=$?\nNOVA_CWD_B64=$(pwd | base64 | tr -d '\\n')\nNOVA_MARKER='{prefix}'\"$NOVA_CMD_ID|$NOVA_EXIT|$NOVA_CWD_B64|0\"\nprintf '%s\\n' \"$NOVA_MARKER\"\nprintf '%s\\n' \"$NOVA_MARKER\" >&2\n",
         prefix = MARKER_PREFIX
-    )
-}
-
-#[cfg(not(target_os = "windows"))]
-fn build_background_wrapper(command_id: &str, command: &str) -> String {
-    let escaped = command.replace('\'', "'\"'\"'");
-    // 后台命令必须输出 marker，否则 execute_wrapped_command 会等到 timeout。
-    // marker 的 exit_code 固定为 0（后台进程已成功启动），cwd 为当前目录的 base64。
-    //
-    // 使用 setsid 启动后台进程，使其成为新会话 leader + 新进程组 leader。
-    // 这样后台进程的 pid == pgid，kill_pid 可以用 libc::kill(-pid, SIGTERM)
-    // 杀掉整个进程组（含所有子进程），避免孤儿进程。
-    // setsid 是 util-linux/coreutils 标准命令，几乎所有 Unix 系统自带。
-    format!(
-        "setsid sh -lc '{}' >/dev/null 2>&1 &\nNOVA_BG_PID=$!\nNOVA_BG_CWD_B64=$(pwd | base64 | tr -d '\\n')\nprintf '{{\"ok\":true,\"background\":true,\"pid\":%s,\"cwd\":\"%s\"}}\\n' \"$NOVA_BG_PID\" \"$PWD\"\nprintf '{prefix}{command_id}|0|%s|0\\n' \"$NOVA_BG_CWD_B64\"\nprintf '{prefix}{command_id}|0|%s|0\\n' \"$NOVA_BG_CWD_B64\" >&2\n",
-        escaped,
-        prefix = MARKER_PREFIX,
-        command_id = command_id,
     )
 }
 
@@ -819,16 +777,371 @@ fn kill_pid(pid: u32) {
     }
 }
 
-fn background_result_json(pid: u32, cwd: &str) -> String {
+// ---------- 后台作业注册表 ----------
+//
+// run_in_background 启动的进程此前没有任何取回通路：输出被丢弃、无法查询状态、
+// 也无法单独终止（只在会话关闭时被统一清理）。
+//
+// 后台进程由 Rust 直接 spawn（不再经 pwsh 会话中转），这样能拿到它的 stdout/stderr
+// 管道句柄：输出泵进内存环形缓冲，退出状态由 wait 取回。不落任何磁盘文件，
+// 进程/记录释放后缓冲随之回收。
+
+#[derive(Debug, Clone)]
+pub struct BackgroundJob {
+    pub id: String,
+    pub pid: u32,
+    pub command: String,
+    pub scope: String,
+    pub cwd: Option<String>,
+    pub started_at: Instant,
+    pub ttl: Duration,
+    pub killed: bool,
+    pub timed_out: bool,
+    pub stdout: Arc<Mutex<Vec<u8>>>,
+    pub stderr: Arc<Mutex<Vec<u8>>>,
+    pub state: Arc<Mutex<BackgroundState>>,
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+pub struct BackgroundState {
+    pub finished: bool,
+    pub exit_code: Option<i32>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BackgroundOutput {
+    pub id: String,
+    pub pid: u32,
+    pub command: String,
+    pub cwd: Option<String>,
+    pub running: bool,
+    pub finished: bool,
+    pub exit_code: Option<i32>,
+    pub killed: bool,
+    pub timed_out: bool,
+    pub stdout: String,
+    pub stderr: String,
+    pub truncated: bool,
+    pub elapsed_ms: u64,
+    pub ttl_ms: u64,
+    pub remaining_ms: u64,
+}
+
+static BACKGROUND_JOBS: LazyLock<Mutex<HashMap<String, BackgroundJob>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
+static BACKGROUND_SEQ: AtomicU32 = AtomicU32::new(0);
+
+// 每流保留的最后字节数。dev server / watch 的输出会无限增长，
+// 环形缓冲兜住上限，超出部分丢弃最老的。
+const BG_BUFFER_LIMIT: usize = 512 * 1024;
+// 单次读取的尾部行数 / 字符上限。
+const BG_TAIL_LINES: usize = 200;
+const BG_MAX_CHARS: usize = 12_000;
+// 最大存活时间：默认 30 分钟，上限 24 小时。
+// 没有上限的话，被遗忘的后台进程会一直挂在系统里。
+const DEFAULT_BG_TTL_MS: u64 = 30 * 60 * 1000;
+const MAX_BG_TTL_MS: u64 = 24 * 60 * 60 * 1000;
+const BG_REAP_INTERVAL_SECS: u64 = 30;
+
+fn next_background_id() -> String {
+    format!("bg-{}", BACKGROUND_SEQ.fetch_add(1, Ordering::Relaxed) + 1)
+}
+
+fn background_jobs() -> std::sync::MutexGuard<'static, HashMap<String, BackgroundJob>> {
+    BACKGROUND_JOBS
+        .lock()
+        .unwrap_or_else(|error| error.into_inner())
+}
+
+fn register_background_job(job: BackgroundJob) {
+    background_jobs().insert(job.id.clone(), job);
+}
+
+pub fn find_background_job(id: &str) -> Option<BackgroundJob> {
+    background_jobs().get(id.trim()).cloned()
+}
+
+fn known_background_ids(scope: Option<&str>) -> String {
+    let ids: Vec<String> = list_background_jobs(scope)
+        .into_iter()
+        .map(|job| job.id)
+        .collect();
+    if ids.is_empty() {
+        "(none — start one with Bash(run_in_background: true))".to_string()
+    } else {
+        ids.join(", ")
+    }
+}
+
+/// 追加到缓冲，超出上限时丢弃最老的部分（只留尾部）。
+fn append_capped(buffer: &Mutex<Vec<u8>>, chunk: &[u8]) {
+    let mut guard = buffer.lock().unwrap_or_else(|error| error.into_inner());
+    guard.extend_from_slice(chunk);
+    if guard.len() > BG_BUFFER_LIMIT {
+        let drop = guard.len() - BG_BUFFER_LIMIT;
+        guard.drain(..drop);
+    }
+}
+
+/// 把子进程的一个输出流泵进内存缓冲。
+///
+/// 必须持续读取：管道缓冲区写满后子进程会阻塞在 write 上，
+/// 表现为"后台命令莫名卡住不动"。
+async fn pump_stream<R>(mut reader: R, sink: Arc<Mutex<Vec<u8>>>)
+where
+    R: tokio::io::AsyncRead + Unpin,
+{
+    use tokio::io::AsyncReadExt;
+    let mut buf = [0u8; 8192];
+    loop {
+        match reader.read(&mut buf).await {
+            Ok(0) => break,
+            Ok(n) => append_capped(&sink, &buf[..n]),
+            Err(_) => break,
+        }
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn background_command(command: &str, cwd: Option<&str>) -> tokio::process::Command {
+    let encoded = encode_pwsh_command(command);
+    let mut cmd = tokio::process::Command::new(PWSH_PATH);
+    cmd.args(["-NoLogo", "-NoProfile", "-NonInteractive", "-EncodedCommand", &encoded])
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .env("NO_COLOR", "1")
+        .creation_flags(CREATE_NO_WINDOW);
+    if let Some(cwd) = cwd {
+        cmd.current_dir(cwd);
+    }
+    cmd
+}
+
+#[cfg(not(target_os = "windows"))]
+fn background_command(command: &str, cwd: Option<&str>) -> tokio::process::Command {
+    use std::os::unix::process::CommandExt;
+    let mut cmd = tokio::process::Command::new("sh");
+    cmd.arg("-lc")
+        .arg(command)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .env("NO_COLOR", "1");
+    // setsid：后台进程成为新会话/进程组 leader，pid == pgid，
+    // kill_pid 才能用 kill(-pgid) 收掉整棵进程树。
+    unsafe {
+        cmd.pre_exec(|| {
+            libc::setsid();
+            Ok(())
+        });
+    }
+    if let Some(cwd) = cwd {
+        cmd.current_dir(cwd);
+    }
+    cmd
+}
+
+#[cfg(target_os = "windows")]
+fn is_pid_alive(pid: u32) -> bool {
+    let output = std::process::Command::new("tasklist")
+        .args(["/FI", &format!("PID eq {pid}"), "/NH"])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .creation_flags(CREATE_NO_WINDOW)
+        .output();
+    match output {
+        Ok(out) => String::from_utf8_lossy(&out.stdout)
+            .lines()
+            .any(|line| line.contains(&pid.to_string())),
+        Err(_) => false,
+    }
+}
+
+#[cfg(not(target_os = "windows"))]
+fn is_pid_alive(pid: u32) -> bool {
+    // signal 0 只做存在性检查，不发送任何信号。
+    unsafe { libc::kill(pid as i32, 0) == 0 }
+}
+
+/// 取尾部若干行，并按字符上限保尾截断。
+fn tail_text(text: &str, max_lines: usize, max_chars: usize) -> (String, bool) {
+    let lines: Vec<&str> = text.lines().collect();
+    let start = lines.len().saturating_sub(max_lines);
+    let mut out = lines[start..].join("\n");
+    if out.chars().count() <= max_chars {
+        return (out, false);
+    }
+    // 保尾：运行报错几乎总在最后，只保头部会让模型看不见失败原因。
+    out = out
+        .chars()
+        .rev()
+        .take(max_chars)
+        .collect::<String>()
+        .chars()
+        .rev()
+        .collect();
+    (out, true)
+}
+
+fn snapshot(job: &BackgroundJob, include_output: bool, tail_lines: usize) -> BackgroundOutput {
+    let state = *job.state.lock().unwrap_or_else(|error| error.into_inner());
+    let elapsed = job.started_at.elapsed();
+    let ttl_ms = job.ttl.as_millis() as u64;
+    let elapsed_ms = elapsed.as_millis() as u64;
+
+    let mut stdout = String::new();
+    let mut stderr = String::new();
+    let mut truncated = false;
+    if include_output {
+        let out_bytes = job.stdout.lock().unwrap_or_else(|e| e.into_inner()).clone();
+        let err_bytes = job.stderr.lock().unwrap_or_else(|e| e.into_inner()).clone();
+        let (o, o_trunc) = tail_text(&String::from_utf8_lossy(&out_bytes), tail_lines, BG_MAX_CHARS);
+        let (e, e_trunc) = tail_text(&String::from_utf8_lossy(&err_bytes), tail_lines, BG_MAX_CHARS);
+        stdout = o;
+        stderr = e;
+        truncated = o_trunc || e_trunc;
+    }
+
+    BackgroundOutput {
+        id: job.id.clone(),
+        pid: job.pid,
+        command: job.command.clone(),
+        cwd: job.cwd.clone(),
+        running: !job.killed && !state.finished && is_pid_alive(job.pid),
+        finished: state.finished,
+        exit_code: state.exit_code,
+        killed: job.killed,
+        timed_out: job.timed_out,
+        stdout,
+        stderr,
+        truncated,
+        elapsed_ms,
+        ttl_ms,
+        remaining_ms: ttl_ms.saturating_sub(elapsed_ms),
+    }
+}
+
+/// 读取后台作业的输出与状态。
+pub fn read_background_output(
+    id: &str,
+    scope: Option<&str>,
+    tail_lines: Option<usize>,
+) -> Result<BackgroundOutput, String> {
+    let job = find_background_job(id).ok_or_else(|| {
+        format!(
+            "No background job with id '{}'. Known ids: {}",
+            id,
+            known_background_ids(scope)
+        )
+    })?;
+    let lines = tail_lines.unwrap_or(BG_TAIL_LINES).clamp(1, 5_000);
+    Ok(snapshot(&job, true, lines))
+}
+
+/// 列出后台作业（不含输出内容）。
+pub fn list_background_jobs(scope: Option<&str>) -> Vec<BackgroundOutput> {
+    let jobs: Vec<BackgroundJob> = background_jobs().values().cloned().collect();
+    let mut out: Vec<BackgroundOutput> = jobs
+        .into_iter()
+        .filter(|job| match scope {
+            Some(scope) => job.scope == scope,
+            None => true,
+        })
+        .map(|job| snapshot(&job, false, 0))
+        .collect();
+    out.sort_by(|a, b| a.id.cmp(&b.id));
+    out
+}
+
+/// 列出某个会话启动的后台作业。
+pub fn list_background_jobs_for_conversation(
+    conversation_id: Option<&str>,
+) -> Vec<BackgroundOutput> {
+    list_background_jobs(Some(&scope_key(conversation_id)))
+}
+
+/// 终止后台作业，并返回终止前读到的输出。
+pub fn kill_background_job(id: &str) -> Result<BackgroundOutput, String> {
+    let job = find_background_job(id).ok_or_else(|| {
+        format!(
+            "No background job with id '{id}'. Known ids: {}",
+            known_background_ids(None)
+        )
+    })?;
+
+    kill_pid(job.pid);
+    {
+        let mut jobs = background_jobs();
+        if let Some(entry) = jobs.get_mut(&job.id) {
+            entry.killed = true;
+        }
+    }
+    read_background_output(&job.id, None, None)
+}
+
+/// 回收超过最大存活时间的作业。
+fn reap_expired_background_jobs() {
+    let expired: Vec<BackgroundJob> = background_jobs()
+        .values()
+        .filter(|job| !job.killed && !job.timed_out && job.started_at.elapsed() >= job.ttl)
+        .cloned()
+        .collect();
+    for job in expired {
+        kill_pid(job.pid);
+        let mut jobs = background_jobs();
+        if let Some(entry) = jobs.get_mut(&job.id) {
+            entry.killed = true;
+            entry.timed_out = true;
+        }
+    }
+}
+
+/// 启动一次性 TTL 巡检任务。惰性检查只在有人查询时才生效，
+/// 被遗忘的作业不会自己消失，所以需要巡检兜底。
+fn ensure_background_reaper() {
+    static REAPER: OnceLock<()> = OnceLock::new();
+    REAPER.get_or_init(|| {
+        tokio::spawn(async {
+            loop {
+                tokio::time::sleep(Duration::from_secs(BG_REAP_INTERVAL_SECS)).await;
+                reap_expired_background_jobs();
+            }
+        });
+    });
+}
+
+/// 会话关闭时清理该会话的后台作业记录（缓冲随记录一起释放）。
+fn clear_background_jobs_for_scope(scope: &str) {
+    let ids: Vec<String> = {
+        let jobs = background_jobs();
+        jobs.values()
+            .filter(|job| job.scope == scope)
+            .map(|job| job.id.clone())
+            .collect()
+    };
+    let mut jobs = background_jobs();
+    for id in ids {
+        jobs.remove(&id);
+    }
+}
+
+fn background_result_json(id: &str, pid: u32, cwd: &str, ttl: Duration) -> String {
     serde_json::json!({
         "ok": true,
         "background": true,
+        // id 是后续 BashOutput / BashKill 取回这个作业的唯一句柄。
+        // 只返回 pid 的话，作业一旦启动就没有任何取回通路。
+        "id": id,
         "pid": pid,
         "cwd": cwd,
+        "ttlMs": ttl.as_millis() as u64,
     })
     .to_string()
 }
 
+/// 启动后台作业：Rust 直接 spawn 进程，输出泵进内存缓冲。
 pub async fn run_foreground(
     conversation_id: Option<&str>,
     command: &str,
@@ -848,42 +1161,73 @@ pub async fn run_background(
     conversation_id: Option<&str>,
     command: &str,
     initial_cwd: Option<&str>,
+    ttl_ms: Option<u64>,
 ) -> Result<ShellExecutionResult, String> {
-    let cancel_token = crate::llm::cancellation::get_token(conversation_id);
-    let handle = get_or_create_handle(conversation_id, initial_cwd).await?;
-    let mut session = handle.inner.lock().await;
-    let command_id = "{command_id}";
-    let script = build_background_wrapper(command_id, command);
-    let mut result =
-        execute_wrapped_command(&mut session, &script, normalized_timeout_ms(Some(30_000)), cancel_token)
-            .await?;
+    let ttl = Duration::from_millis(
+        ttl_ms
+            .unwrap_or(DEFAULT_BG_TTL_MS)
+            .clamp(1_000, MAX_BG_TTL_MS),
+    );
+    let cwd = initial_cwd.map(|value| value.to_string());
 
-    let payload: serde_json::Value = serde_json::from_str(result.stdout.trim())
-        .map_err(|error| format!("Invalid background shell response: {}", error))?;
-    let pid = payload
-        .get("pid")
-        .and_then(|value| value.as_u64())
-        .and_then(|value| u32::try_from(value).ok())
-        .ok_or_else(|| "Background shell response missing pid".to_string())?;
-    let cwd = payload
-        .get("cwd")
-        .and_then(|value| value.as_str())
-        .unwrap_or_default()
-        .to_string();
-    let cwd = crate::command::workspace::display_path_text(&cwd);
-    if !cwd.trim().is_empty() {
-        session.last_known_cwd = Some(cwd.clone());
-    }
-    session.background_pids.insert(pid);
-    result.stdout = background_result_json(pid, &cwd);
-    result.background = true;
-    result.pid = Some(pid);
-    // 后台命令成功启动后，marker 已正常返回（exit_code=0），不应再标记为 timeout。
-    // 此前由于 background wrapper 未输出 marker 导致 30s 超时，result.timed_out 被置为 true，
-    // BashTool 据此返回 "command timed out" 错误。现在 wrapper 已补 marker，但仍需在此
-    // 显式重置，防止 marker 解析路径与 timeout 路径的边缘竞态。
-    result.timed_out = false;
-    Ok(result)
+    let mut child = background_command(command, initial_cwd)
+        .spawn()
+        .map_err(|error| format!("Failed to start background process: {error}"))?;
+    let pid = child
+        .id()
+        .ok_or_else(|| "Background process has no pid".to_string())?;
+    let stdout = child.stdout.take();
+    let stderr = child.stderr.take();
+
+    let id = next_background_id();
+    let job = BackgroundJob {
+        id: id.clone(),
+        pid,
+        command: command.to_string(),
+        scope: scope_key(conversation_id),
+        cwd: cwd.clone(),
+        started_at: Instant::now(),
+        ttl,
+        killed: false,
+        timed_out: false,
+        stdout: Arc::new(Mutex::new(Vec::new())),
+        stderr: Arc::new(Mutex::new(Vec::new())),
+        state: Arc::new(Mutex::new(BackgroundState::default())),
+    };
+    let out_sink = Arc::clone(&job.stdout);
+    let err_sink = Arc::clone(&job.stderr);
+    let state = Arc::clone(&job.state);
+    register_background_job(job);
+    ensure_background_reaper();
+
+    tokio::spawn(async move {
+        // pump 必须 detach：孙进程可能继承管道并长期持有，
+        // 等它 EOF 会让 wait 之后的收尾永远不执行。
+        if let Some(out) = stdout {
+            tokio::spawn(pump_stream(out, out_sink));
+        }
+        if let Some(err) = stderr {
+            tokio::spawn(pump_stream(err, err_sink));
+        }
+        let code = match child.wait().await {
+            Ok(status) => status.code(),
+            Err(_) => None,
+        };
+        let mut guard = state.lock().unwrap_or_else(|error| error.into_inner());
+        guard.finished = true;
+        guard.exit_code = code;
+    });
+
+    Ok(ShellExecutionResult {
+        stdout: background_result_json(&id, pid, cwd.as_deref().unwrap_or_default(), ttl),
+        stderr: String::new(),
+        exit_code: Some(0),
+        cwd,
+        timed_out: false,
+        cancelled: false,
+        background: true,
+        pid: Some(pid),
+    })
 }
 
 pub async fn reset_session(
@@ -941,6 +1285,7 @@ pub async fn session_status(conversation_id: Option<&str>) -> ShellSessionStatus
 
 pub async fn close_session(conversation_id: Option<&str>) {
     let key = scope_key(conversation_id);
+    clear_background_jobs_for_scope(&key);
     let handle = session_registry()
         .lock()
         .unwrap_or_else(|error| error.into_inner())
@@ -957,6 +1302,10 @@ pub async fn close_session(conversation_id: Option<&str>) {
 }
 
 pub async fn close_all_sessions() {
+    {
+        // 缓冲随记录一起释放，无需清理磁盘文件。
+        background_jobs().clear();
+    }
     let handles: Vec<(String, Arc<SessionHandle>)> = {
         let mut registry = session_registry()
             .lock()

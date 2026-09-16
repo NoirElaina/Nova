@@ -555,7 +555,10 @@ fn execute_blocking(action: String, input: Value) -> Result<Value, String> {
                 "x": actual_x,
                 "y": actual_y,
                 "dx": dx,
-                "dy": dy
+                "dy": dy,
+                // 操作系统不回传实际滚动像素，dx/dy 是请求量而非生效量。
+                // 不说明的话模型会把"已请求"当成"已滚动"，跳过验证直接下一步。
+                "note": "dx/dy are the requested amounts, not the amounts actually applied. Take a screenshot to confirm the scroll took effect."
             }))
         }
         "type_text" => {

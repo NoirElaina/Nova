@@ -67,8 +67,13 @@ pub async fn execute_shell_command_for_conversation(
     }
 
     let result = if background.unwrap_or(false) {
-        shell_sessions::run_background(conversation_id.as_deref(), command, Some(&workspace_root))
-            .await
+        shell_sessions::run_background(
+            conversation_id.as_deref(),
+            command,
+            Some(&workspace_root),
+            None,
+        )
+        .await
     } else {
         shell_sessions::run_foreground(
             conversation_id.as_deref(),

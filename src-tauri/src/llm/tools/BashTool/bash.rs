@@ -35,7 +35,7 @@ pub fn tool() -> Tool {
 - `command` (required): the command to execute. Prefer focused single commands; chain only trivial sequences.
 - `description`: a short (3-5 word) active-voice summary shown to the user.
 - `timeout`: milliseconds, default 120000 (2 min), max 1800000 (30 min). Long builds and test suites need an explicit larger timeout.
-- `run_in_background`: keep the session usable while the command runs — use for dev servers and file watchers.
+- `run_in_background`: keep the session usable while the command runs — use for dev servers and file watchers. The result contains an `id` (e.g. `bg-1`): use `BashOutput(id)` to read its output and check whether it is still running, and `BashKill(id)` to stop it. Output is buffered in memory (no log files) and the job is killed automatically when `max_runtime_ms` (default 30 min) elapses.
 
 ## Output and failure semantics
 - The result includes exit code, stdout, stderr, and the final working directory. A non-zero exit is a failure — read stderr before retrying; do not blindly re-run the same command.
@@ -67,6 +67,10 @@ pub fn tool() -> Tool {
                 "run_in_background": {
                     "type": "boolean",
                     "description": "Set to true to run this command in the background."
+                },
+                "max_runtime_ms": {
+                    "type": "integer",
+                    "description": "Maximum lifetime for a background command, in milliseconds. Default 1800000 (30 min), max 86400000 (24 h). The job is killed automatically when it expires. Ignored unless run_in_background is true."
                 }
             },
             "required": ["command"]
@@ -98,6 +102,8 @@ async fn execute_async(
         .get("run_in_background")
         .and_then(|value| value.as_bool())
         .unwrap_or(false);
+    // 后台作业的最大存活时间，到期由巡检任务自动回收。
+    let ttl_ms = input.get("max_runtime_ms").and_then(|value| value.as_u64());
 
     let workspace_root =
         match crate::command::workspace::workspace_root_string_for_conversation(app, conversation_id)
@@ -116,6 +122,7 @@ async fn execute_async(
             conversation_id,
             &cmd,
             Some(&workspace_root),
+            ttl_ms,
         )
         .await
     } else {

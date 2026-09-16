@@ -5,7 +5,7 @@ use crate::llm::tools::{
 use crate::llm::types::Tool;
 use crate::llm::utils::permissions::protected_path_violation;
 use serde_json::{json, Value};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 use tauri::AppHandle;
 
@@ -40,7 +40,9 @@ pub fn tool() -> Tool {
 - `pattern`: the glob pattern to match files against.
 - `path`: the directory to search in. Defaults to the current workspace directory if not specified.
 
-Returns matching file paths sorted by modification time (most recent first)."#
+Returns matching file paths sorted by modification time (most recent first).
+
+Only files are returned, never directories, and version-control directories (`.git`, `.svn`) are always skipped. At most 1000 matches are returned; narrow the pattern if results are truncated."#
             .into(),
         input_schema: json!({
             "type": "object",
@@ -96,30 +98,74 @@ async fn execute_async(
     };
 
     let mut results: Vec<(PathBuf, SystemTime)> = Vec::new();
+    let mut scanned = 0usize;
 
     for entry in entries.flatten() {
-        if entry.is_file() {
-            let mtime = std::fs::metadata(&entry)
-                .and_then(|m| m.modified())
-                .unwrap_or(SystemTime::UNIX_EPOCH);
-            results.push((entry, mtime));
+        // SCAN_HARD_CAP 保护内存：`**/*` 这类模式在 node_modules / .git 下会命中海量条目。
+        if scanned >= SCAN_HARD_CAP {
+            break;
         }
+        scanned += 1;
+
+        if !entry.is_file() {
+            continue;
+        }
+        // 跳过版本控制目录内部文件。Glob 只返回文件，所以 `pattern="*"` 匹配到的 `.git`
+        // 是目录、本来就会被过滤；但 `**/*` 会把 .git 内部成百上千个对象文件全部列出，
+        // 既无信息量又爆上下文。这里统一排除。
+        if has_ignored_component(&entry) {
+            continue;
+        }
+
+        let mtime = std::fs::metadata(&entry)
+            .and_then(|m| m.modified())
+            .unwrap_or(SystemTime::UNIX_EPOCH);
+        results.push((entry, mtime));
     }
 
     results.sort_by(|a, b| b.1.cmp(&a.1));
 
     if results.is_empty() {
-        Ok(ToolOutcome::text(format!(
+        return Ok(ToolOutcome::text(format!(
             "No files matched pattern: {}",
             raw_pattern
-        )))
-    } else {
-        let paths: Vec<String> = results
-            .into_iter()
-            .map(|(path, _)| path.display().to_string())
-            .collect();
-        Ok(ToolOutcome::text(paths.join("\n")))
+        )));
     }
+
+    // 按 mtime 排序后只保留最近的 MAX_RESULTS 条（结果已按最近修改优先）。
+    let truncated = results.len() > MAX_RESULTS;
+    results.truncate(MAX_RESULTS);
+
+    let paths: Vec<String> = results
+        .into_iter()
+        // 归一化 Windows verbatim 前缀（\\?\C:\...），否则同一目录会随参数形式不同
+        // 返回两种路径格式，模型据此拼出的路径在后续工具里不可用。
+        .map(|(path, _)| crate::command::workspace::display_path_string(&path))
+        .collect();
+
+    let mut output = paths.join("\n");
+    if truncated {
+        output.push_str(&format!(
+            "\n\n[truncated: showing {} of {} matches, most recently modified first]",
+            MAX_RESULTS, scanned
+        ));
+    }
+    Ok(ToolOutcome::text(output))
+}
+
+/// Glob 扫描与返回的条目上限。
+const MAX_RESULTS: usize = 1_000;
+const SCAN_HARD_CAP: usize = 50_000;
+
+/// 路径中是否含有需要排除的目录组件（版本控制目录）。
+fn has_ignored_component(path: &Path) -> bool {
+    const IGNORED: [&str; 2] = [".git", ".svn"];
+    path.components().any(|component| {
+        component
+            .as_os_str()
+            .to_str()
+            .is_some_and(|name| IGNORED.contains(&name))
+    })
 }
 
 fn execute_with_app_boxed(

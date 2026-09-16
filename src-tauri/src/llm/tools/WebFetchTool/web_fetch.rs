@@ -45,12 +45,49 @@ const CACHE_TTL_SECS: u64 = 900;
 // 缓存条目上限：超过时淘汰最旧条目，避免长会话无界增长导致 OOM。
 // 64 条 × 512KB 上限 ≈ 32MB 内存占用上限。
 const CACHE_MAX_ENTRIES: usize = 64;
+// 瞬时网络错误（连接失败 / 超时 / 请求未发出）重试次数与退避基数。
+// 单次网络抖动就让整次抓取失败、且模型会据此误判"页面不存在"，代价过高。
+const MAX_ATTEMPTS: usize = 3;
+const RETRY_BASE_MS: u64 = 250;
 
 struct CacheEntry {
     content: String,
     content_type: String,
     final_url: String,
+    warning: Option<String>,
     fetched_at: Instant,
+}
+
+/// 发送 GET 请求，对瞬时错误做指数退避重试。
+///
+/// 只重试 connect / timeout / request 类错误——这些是网络抖动，重试有意义。
+/// 状态码错误、请求构造错误、重定向错误不重试，重试也不会变好。
+async fn send_with_retry(
+    client: &reqwest::Client,
+    url: &Url,
+) -> Result<reqwest::Response, String> {
+    let mut last_error = String::new();
+
+    for attempt in 0..MAX_ATTEMPTS {
+        match client.get(url.clone()).send().await {
+            Ok(response) => return Ok(response),
+            Err(error) => {
+                last_error = format!("{error}");
+                let transient =
+                    error.is_connect() || error.is_timeout() || error.is_request();
+                if !transient || attempt + 1 >= MAX_ATTEMPTS {
+                    break;
+                }
+                let delay = RETRY_BASE_MS * 2u64.pow(attempt as u32);
+                tokio::time::sleep(Duration::from_millis(delay)).await;
+            }
+        }
+    }
+
+    Err(format!(
+        "Failed to fetch URL after {} attempt(s): {}",
+        MAX_ATTEMPTS, last_error
+    ))
 }
 
 static FETCH_CACHE: std::sync::LazyLock<Mutex<HashMap<String, CacheEntry>>> =
@@ -86,7 +123,14 @@ async fn execute_async(input: Value) -> Result<ToolOutcome, ToolFailure> {
         let cache = FETCH_CACHE.lock().unwrap();
         if let Some(entry) = cache.get(url.as_str()) {
             if entry.fetched_at.elapsed() < Duration::from_secs(CACHE_TTL_SECS) {
-                return format_fetch_result(url.as_str(), &entry.final_url, &entry.content_type, &entry.content, input.get("prompt").and_then(Value::as_str));
+                return format_fetch_result(
+                    url.as_str(),
+                    &entry.final_url,
+                    &entry.content_type,
+                    &entry.content,
+                    input.get("prompt").and_then(Value::as_str),
+                    entry.warning.as_deref(),
+                );
             }
         }
     }
@@ -108,12 +152,12 @@ async fn execute_async(input: Value) -> Result<ToolOutcome, ToolFailure> {
         .build()
         .map_err(|e| ToolFailure::new(format!("Failed to create HTTP client: {e}")))?;
 
-    let response = client.get(url.clone()).send().await.map_err(|e| {
-        // Check if we got a redirect response that was stopped.
-        ToolFailure::new(format!("Failed to fetch URL: {e}"))
-    })?;
+    let response = send_with_retry(&client, &url)
+        .await
+        .map_err(ToolFailure::new)?;
 
     let final_url = response.url().to_string();
+    let status = response.status();
     let content_type = response
         .headers()
         .get(reqwest::header::CONTENT_TYPE)
@@ -139,6 +183,25 @@ async fn execute_async(input: Value) -> Result<ToolOutcome, ToolFailure> {
 
     let content = html_to_markdown(&body);
 
+    // 抓取成功的判定必须同时看 HTTP 状态码和正文是否为空。
+    // 404/500 的错误页、反爬拦截页同样会被 html_to_markdown 转成文本返回，
+    // 不显式标注的话模型会把错误页当成真实内容作答（此前是完全静默的）。
+    let warning = if !status.is_success() {
+        Some(format!(
+            "Warning: server returned HTTP {} {}. The text below is the error page, not the page you asked for.",
+            status.as_u16(),
+            status.canonical_reason().unwrap_or("")
+        ))
+    } else if content.trim().is_empty() {
+        Some(
+            "Warning: the page returned no extractable text. This may be an empty page, a JS-rendered SPA, \
+             or a bot-protection interstitial. Do not infer content from it — use WebSearch or NovaBrowser instead."
+                .to_string(),
+        )
+    } else {
+        None
+    };
+
     // Update cache.
     {
         let mut cache = FETCH_CACHE.lock().unwrap();
@@ -158,12 +221,20 @@ async fn execute_async(input: Value) -> Result<ToolOutcome, ToolFailure> {
                 content: content.clone(),
                 content_type: content_type.clone(),
                 final_url: final_url.clone(),
+                warning: warning.clone(),
                 fetched_at: Instant::now(),
             },
         );
     }
 
-    format_fetch_result(url.as_str(), &final_url, &content_type, &content, input.get("prompt").and_then(Value::as_str))
+    format_fetch_result(
+        url.as_str(),
+        &final_url,
+        &content_type,
+        &content,
+        input.get("prompt").and_then(Value::as_str),
+        warning.as_deref(),
+    )
 }
 
 fn format_fetch_result(
@@ -172,8 +243,13 @@ fn format_fetch_result(
     _content_type: &str,
     content: &str,
     prompt: Option<&str>,
+    warning: Option<&str>,
 ) -> Result<ToolOutcome, ToolFailure> {
     let mut output = String::new();
+
+    if let Some(w) = warning {
+        output.push_str(&format!("{}\n\n", w));
+    }
 
     if final_url != original_url {
         output.push_str(&format!("Fetched URL: {}\nRedirected to: {}\n\n", original_url, final_url));

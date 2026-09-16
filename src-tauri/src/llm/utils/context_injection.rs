@@ -160,12 +160,12 @@ fn build_phase_block(conversation_id: Option<&str>, history: &[Message]) -> Opti
     let (phase, hint) = if todos.is_empty() {
         (
             "Explore",
-            "Collect context with Read/Grep/Glob/GitDiff. For tasks with 3+ steps, use TodoWrite to create a task list before making changes. For trivial 1-2 step tasks, proceed directly.",
+            "Collect context with Read/Grep/Glob. For tasks with 3+ steps, use TodoWrite to create a task list before making changes. For trivial 1-2 step tasks, proceed directly.",
         )
     } else if todos.iter().all(|t| t.status == "completed") {
         (
             "Verify",
-            "All todos completed. Run the project's test/lint/typecheck commands to verify changes. Use GitDiff to review all uncommitted changes for completeness. Report a one-line summary of what changed and whether verification passed.",
+            "All todos completed. Run the project's test/lint/typecheck commands to verify changes. Review all uncommitted changes (e.g. `git status` and `git diff` via Bash) for completeness. Report a one-line summary of what changed and whether verification passed.",
         )
     } else {
         (

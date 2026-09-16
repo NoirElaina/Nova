@@ -20,7 +20,7 @@ pub fn tool() -> Tool {
 - Investigations that require reading many files: "where is X implemented", "which modules depend on Y", "summarize how Z works".
 - Answering questions whose supporting evidence would flood this context (dozens of search hits / large files).
 - Independent research subtasks you can delegate while you keep working on the main task.
-- NOT for: single quick lookups (do those yourself with Grep/Read), or anything requiring writes (the subagent is strictly read-only: Read/Grep/Glob/GitDiff/WebSearch/WebFetch only — no shell, no editing, no MCP, no plugins).
+- NOT for: single quick lookups (do those yourself with Grep/Read), or anything requiring writes (the subagent is strictly read-only: Read/Grep/Glob/WebSearch/WebFetch only — no shell, no editing, no MCP, no plugins).
 
 ## How to use it
 - `task` must be fully self-contained: the subagent sees ONLY this text (plus the workspace path). Include the goal, what to investigate, relevant paths/symbols you already know, and what the report should contain.

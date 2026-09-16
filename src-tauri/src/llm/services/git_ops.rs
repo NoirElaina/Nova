@@ -425,7 +425,7 @@ pub fn init_conversation_repo(
 
 /// 紧凑版 git 环境摘要：分支 + dirty 文件名（截断），每轮注入用。
 /// 目标是让模型开局即有场景感知（哪些文件已被改动），
-/// 控制在一行左右，细节让模型按需用 GitDiff 查。
+/// 控制在一行左右，细节让模型按需用 Bash 跑 git diff 查。
 /// 仓库未初始化时返回 None。
 pub fn compact_git_summary(root: &Path) -> Option<String> {
     if !is_repo_initialized(root) {

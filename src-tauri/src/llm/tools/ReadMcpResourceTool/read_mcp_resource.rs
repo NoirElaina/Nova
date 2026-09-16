@@ -6,10 +6,10 @@ use tauri::AppHandle;
 // 把读取 MCP 资源内容的 async 逻辑包装成统一 future。
 fn execute_with_app_boxed(
     app: AppHandle,
-    _conversation_id: Option<String>,
+    conversation_id: Option<String>,
     input: Value,
 ) -> AppExecuteFuture {
-    Box::pin(async move { execute_with_app(&app, input).await })
+    Box::pin(async move { execute_with_app(&app, conversation_id.as_deref(), input).await })
 }
 
 // 返回 read_mcp_resource 的注册信息。
@@ -37,7 +37,11 @@ pub fn tool() -> Tool {
 
 // 从指定 MCP server 读取一个资源。
 // `server_name` 标识服务器，`uri` 标识资源地址，二者都会先去掉首尾空白。
-async fn execute_with_app(app: &AppHandle, input: Value) -> Result<ToolOutcome, ToolFailure> {
+async fn execute_with_app(
+    app: &AppHandle,
+    conversation_id: Option<&str>,
+    input: Value,
+) -> Result<ToolOutcome, ToolFailure> {
     let server_name = input
         .get("server")
         .and_then(|v| v.as_str())
@@ -56,6 +60,14 @@ async fn execute_with_app(app: &AppHandle, input: Value) -> Result<ToolOutcome, 
             "read_mcp_resource requires non-empty 'server' and 'uri'",
         ));
     }
+
+    // 与 mcp_auth 同一套可见性判定：智能体禁用的 server 不能从这里绕过。
+    crate::llm::tools::shared::mcp_visibility::ensure_server_visible(
+        app,
+        conversation_id,
+        &server_name,
+    )
+    .await?;
 
     match crate::command::mcp::read_mcp_resource(app.clone(), server_name, uri).await {
         Ok(v) => Ok(ToolOutcome::json(v)),

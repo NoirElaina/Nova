@@ -41,33 +41,19 @@ pub fn tool() -> Tool {
     }
 }
 
-// 校验 server 对当前会话可见：挂载智能体时按其 enabled_mcp_servers 引用清单过滤，
-// 默认 Nova 可见全部。
+// 可见性校验统一走 shared::mcp_visibility::ensure_server_visible：
+// 三个 MCP 工具共用同一套判定与措辞，避免同一个问题两种说法。
 async fn ensure_server_visible(
     app: &AppHandle,
     conversation_id: Option<&str>,
     server_name: &str,
 ) -> Result<(), ToolFailure> {
-    let statuses = crate::command::mcp::get_mcp_server_statuses(app.clone())
-        .await
-        .map_err(ToolFailure::mcp)?;
-    let bundle = crate::llm::services::agent_bundles::active_bundle(app, conversation_id);
-    let visible = statuses
-        .into_iter()
-        .find(|s| s.name == server_name)
-        .map(|s| match &bundle {
-            Some(b) => b.is_mcp_server_enabled(&s.name),
-            None => true,
-        })
-        .unwrap_or(false);
-    if visible {
-        Ok(())
-    } else {
-        Err(ToolFailure::mcp(format!(
-            "MCP server '{}' is not available in this conversation",
-            server_name
-        )))
-    }
+    crate::llm::tools::shared::mcp_visibility::ensure_server_visible(
+        app,
+        conversation_id,
+        server_name,
+    )
+    .await
 }
 
 // 按 bundle 可见性过滤 server 状态列表（status/reload_all 输出用）。

@@ -3,7 +3,7 @@
 // 设计要点：
 // - 会话 ID 采用 `{parent}:sub:{uuid}` 派生格式，全链路（流事件路由 / 工具列表过滤 /
 //   系统提示词分支 / 权限拦截）通过 is_subagent_conversation 识别；
-// - 工具白名单（只读）：Read / Grep / Glob / GitDiff / WebSearch / WebFetch。
+// - 工具白名单（只读）：Read / Grep / Glob / WebSearch / WebFetch。
 //   请求构建时过滤工具列表 + 执行时拦截非白名单调用，双层强制，
 //   天然排除插件、MCP、写工具、Task 自身（防递归）和 ask_user_question；
 // - 用量归并父会话记账（runner 在此直接以父 ID 调 log_token_usage）；
@@ -34,7 +34,6 @@ pub const SUBAGENT_ALLOWED_TOOLS: &[&str] = &[
     "Read",
     "Grep",
     "Glob",
-    "GitDiff",
     "WebSearch",
     "WebFetch",
 ];
@@ -73,7 +72,7 @@ fn derive_sub_id(parent_conversation_id: &str) -> String {
 /// 与主提示词完全独立——不含 TodoWrite/Memory/Skills 段（对应工具不可用）。
 /// 所有子代理共享同一份前缀 → Anthropic prompt cache 自动命中。
 fn subagent_system_prompt() -> String {
-    r#"You are a read-only research subagent. Complete the assigned task autonomously using only the available tools (Read / Grep / Glob / GitDiff / WebSearch / WebFetch).
+    r#"You are a read-only research subagent. Complete the assigned task autonomously using only the available tools (Read / Grep / Glob / WebSearch / WebFetch).
 
 ## Rules
 - Workspace root is provided in the first message. Search broadly first, then read the files that matter. Never guess content — verify with tools.

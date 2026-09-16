@@ -8,6 +8,7 @@ import WelcomeScreen from "./components/chat/WelcomeScreen.vue";
 import ChatScreen from "./components/chat/ChatScreen.vue";
 import WorkspaceDrawer from "./components/chat/WorkspaceDrawer.vue";
 import PlanPanel from "./components/chat/PlanPanel.vue";
+import BackgroundJobsPanel from "./components/chat/BackgroundJobsPanel.vue";
 import HooksConfigScreen from "./components/hooks/HooksConfigScreen.vue";
 import AgentConfigScreen from "./components/agent/AgentConfigScreen.vue";
 import PluginMarketScreen from "./components/plugins/PluginMarketScreen.vue";
@@ -188,6 +189,8 @@ const isDrawerOpen = ref(false);
 const activeWorkspaceTab = ref<WorkspaceTabId>("files");
 /** 计划侧边面板：AI 产出计划后自动弹出，也可从输入框上方小框打开。 */
 const isPlanPanelOpen = ref(false);
+/** 后台任务侧边面板：只读查看后台作业状态与输出。 */
+const isBgJobsPanelOpen = ref(false);
 const browserOpenRequestKey = ref(0);
 
 // 侧边栏宽度：拖动时实时更新，松手后持久化到 localStorage。
@@ -535,6 +538,7 @@ onBeforeUnmount(() => {
             :conversationId="activeConversationId"
             :drawerOpen="isDrawerOpen"
             @open-plan="isPlanPanelOpen = true"
+            @open-background-jobs="isBgJobsPanelOpen = true"
             @remove-agent="removeConversationAgent"
             @send="handleSendMessage"
             @save-user-edit="handleEditMessage($event)"
@@ -570,6 +574,13 @@ onBeforeUnmount(() => {
         :open="isPlanPanelOpen"
         :conversationId="activeConversationId || null"
         @close="isPlanPanelOpen = false"
+      />
+
+      <BackgroundJobsPanel
+        v-if="mainView === 'chat'"
+        :open="isBgJobsPanelOpen"
+        :conversationId="activeConversationId || null"
+        @close="isBgJobsPanelOpen = false"
       />
 
       <WorkspaceDrawer

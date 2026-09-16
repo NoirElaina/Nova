@@ -17,6 +17,7 @@ import InputArea from '../layout/InputArea.vue';
 import AskUserInputDialog from './AskUserInputDialog.vue';
 import PlanChip from './PlanChip.vue';
 import TodoChip from './TodoChip.vue';
+import BackgroundJobsChip from './BackgroundJobsChip.vue';
 import AssistantMessageBubble from './messages/AssistantMessageBubble.vue';
 import AssistantTranscript from './messages/AssistantTranscript.vue';
 import BranchSidebar from './branch/BranchSidebar.vue';
@@ -71,6 +72,7 @@ const emit = defineEmits<{
   (e: 'compact'): void;
   (e: 'dismiss-error'): void;
   (e: 'open-plan'): void;
+  (e: 'open-background-jobs'): void;
 }>();
 
 const chatAreaRef = ref<HTMLElement | null>(null);
@@ -934,6 +936,7 @@ defineExpose({
         <div class="mb-1.5 flex flex-wrap items-center gap-1.5">
           <PlanChip :conversationId="conversationId" @open="emit('open-plan')" />
           <TodoChip :conversationId="conversationId" />
+          <BackgroundJobsChip :conversationId="conversationId" @open="emit('open-background-jobs')" />
         </div>
         <AskUserInputDialog
           v-if="pendingQuestion"

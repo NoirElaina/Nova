@@ -144,6 +144,8 @@ pub fn run() {
             command::session_files::read_session_file,
             command::shell::get_shell_session_status,
             command::shell::execute_shell_command_for_conversation,
+            command::shell::list_background_jobs,
+            command::shell::read_background_job_output,
             command::user_terminal::user_terminal_start,
             command::user_terminal::user_terminal_write,
             command::user_terminal::user_terminal_resize,

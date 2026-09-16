@@ -83,6 +83,16 @@ async fn execute_async(
         .ok_or_else(|| ToolFailure::invalid_input("Missing required parameter: content"))?;
 
     let target = resolve_path(file_path).map_err(ToolFailure::invalid_input)?;
+
+    // 与 Read / Edit 同款文案：目标是目录时明确说"是目录"，
+    // 而不是让写入失败冒泡成 "拒绝访问 (os error 5)"。
+    if target.is_dir() {
+        return Err(ToolFailure::new(format!(
+            "Path is a directory, not a file: {}",
+            file_path
+        )));
+    }
+
     let existed = target.exists();
 
     // 行尾策略：模型在 content 里写的就是它要的行尾，写什么落什么，不还原旧文件行尾。

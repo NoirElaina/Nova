@@ -741,19 +741,56 @@ pub fn closest_block_hint(content: &str, old_string: &str) -> Option<(usize, Str
     }
 }
 
-/// 执行替换。返回 (新内容, 替换次数)。
-/// 调用方需先调用 find_match 确认能匹配。
+/// 首行前导空白的字符数，用于判断模糊匹配是否改变了缩进。
+fn leading_whitespace_len(text: &str) -> usize {
+    text.lines()
+        .next()
+        .unwrap_or("")
+        .chars()
+        .take_while(|c| c.is_whitespace())
+        .count()
+}
+
+/// 描述一次非精确匹配。
+///
+/// 模糊匹配（缩进无关 / 空白归一化 / 反转义）确实提升了容错，但它是**静默**的：
+/// 模型看到 `occurrences_replaced: 1` 会以为 old_string 与文件逐字节一致。
+/// 实际上被替换掉的是 matched_text（原文整块），new_string 原样写入——
+/// 于是 old_string 少写的缩进会被"吃掉"，改成 new_string 的缩进。
+/// 这里把这件事显式说出来，让模型知道要去复核。
+fn describe_fuzzy_match(old_string: &str, matched_text: &str) -> Option<String> {
+    if old_string == matched_text {
+        return None;
+    }
+
+    let old_indent = leading_whitespace_len(old_string);
+    let matched_indent = leading_whitespace_len(matched_text);
+    if old_indent != matched_indent {
+        return Some(format!(
+            "Note: old_string did not match byte-for-byte. A fuzzy (indentation-insensitive) strategy matched a block with {} leading whitespace char(s) instead of your {}. The matched block was replaced verbatim with new_string, so indentation now follows new_string. Re-read the file to confirm.",
+            matched_indent, old_indent
+        ));
+    }
+
+    Some(format!(
+        "Note: old_string did not match byte-for-byte. A fuzzy strategy (whitespace/escape normalization) matched the block instead, and it was replaced verbatim with new_string. Re-read the file to confirm the result."
+    ))
+}
+
+/// 执行替换。返回 (新内容, 替换次数, 非精确匹配提示)。
+/// 提示仅在 old_string 与文件实际内容不一致时存在，精确匹配为 None。
 pub fn apply_replace(
     content: &str,
     old_string: &str,
     new_string: &str,
     replace_all: bool,
-) -> Result<(String, usize), String> {
+) -> Result<(String, usize, Option<String>), String> {
     match find_match(content, old_string, replace_all) {
         FindResult::Unique { matched_text, start } => {
+            let note = describe_fuzzy_match(old_string, &matched_text);
             if replace_all {
                 let count = content.matches(&matched_text).count();
-                Ok((content.replace(&matched_text, new_string), count))
+                Ok((content.replace(&matched_text, new_string), count, note))
             } else {
                 // 用 find_match 返回的精确字节位置替换，避免 replacen 从文件开头
                 // 重新查找命中到更靠前的同名字面文本（fuzzy 匹配判定的"唯一"是
@@ -764,7 +801,7 @@ pub fn apply_replace(
                 replaced.push_str(&content[..start]);
                 replaced.push_str(new_string);
                 replaced.push_str(&content[end..]);
-                Ok((replaced, 1))
+                Ok((replaced, 1, note))
             }
         }
         FindResult::Multiple(n) => Err(format!(

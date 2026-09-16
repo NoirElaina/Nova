@@ -118,6 +118,16 @@ async fn execute_async(
         )));
     }
 
+    // 目录也会通过 exists() 检查，必须单独拦：否则会落到 read_file_meta，
+    // 报 "Error reading <dir>: 拒绝访问 (os error 5)" —— 与 Read 的
+    // "Path is a directory, not a file" 说法不一致，且把排查方向误导到权限上。
+    if target.is_dir() {
+        return Err(ToolFailure::new(format!(
+            "Path is a directory, not a file: {}",
+            file_path
+        )));
+    }
+
     // read_file_meta 解码为 UTF-8、剥离 BOM、CRLF→LF，并返回原始编码与行尾元信息。
     // original 是模型应看到的归一化内容（纯 LF、无 BOM）；meta 用于写回时还原。
     let (original, meta) = read_file_meta(&target)
@@ -129,7 +139,7 @@ async fn execute_async(
 
     // 使用 fuzzy matcher 链：精确匹配 → 行 trim → 锚点 → 空白归一化 → ...
     // 这避免了 AI 因一两个空格差异就失败重试。
-    let (modified, replaced_count) =
+    let (modified, replaced_count, fuzzy_note) =
         apply_replace(&original, old_string, &new_string_lf, replace_all)
             .map_err(ToolFailure::new)?;
 
@@ -140,11 +150,15 @@ async fn execute_async(
     // 刷新读取状态，使同一轮内的后续编辑可继续。
     read_state::record(conversation_id, &target, &modified);
 
-    Ok(ToolOutcome::json(json!({
+    let mut result = json!({
         "ok": true,
         "file_path": file_path,
         "occurrences_replaced": replaced_count
-    })))
+    });
+    if let Some(note) = fuzzy_note {
+        result["note"] = json!(note);
+    }
+    Ok(ToolOutcome::json(result))
 }
 
 fn execute_with_app_boxed(

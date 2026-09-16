@@ -164,10 +164,44 @@ fn resolve_base_path(
     }
 }
 
+/// 归一化 rg 的 stderr。
+///
+/// 原始 stderr 形如：
+/// `rg: C:\x\y: IO error for operation on C:\x\y: 系统找不到指定的文件。 (os error 2)`
+/// ——路径重复、还混着本地化的中文。直接回传给模型既难读又误导排查方向
+/// （真正含义只是"搜索路径不存在"）。统一成其它工具同款的 `Path not found: <path>`。
+fn normalize_rg_error(stderr: &str) -> String {
+    let raw = stderr.trim();
+    // 去掉可能出现的 "rg: " 前缀（rg 有时会重复输出两次）
+    let body = raw.strip_prefix("rg: ").unwrap_or(raw).trim();
+    let path = body
+        .split_once(": ")
+        .map(|(head, _)| head.trim())
+        .unwrap_or(body);
+
+    let lower = raw.to_ascii_lowercase();
+    if lower.contains("io error")
+        || lower.contains("no such file")
+        || lower.contains("not a directory")
+        || lower.contains("cannot find the path")
+        || lower.contains("系统找不到")
+    {
+        return format!("Path not found: {}", path);
+    }
+    if lower.contains("permission denied") || lower.contains("拒绝访问") {
+        return format!("Permission denied: {}", path);
+    }
+    if lower.contains("invalid") || lower.contains("unclosed") {
+        return format!("Invalid regex pattern: {}", raw);
+    }
+
+    format!("Search failed: {}", raw)
+}
+
 async fn execute_async(
     app: &AppHandle,
     conversation_id: Option<&str>,
-    input: Value,
+ input: Value,
 ) -> Result<ToolOutcome, ToolFailure> {
     let pattern = input
         .get("pattern")
@@ -287,11 +321,9 @@ async fn execute_async(
     let stdout = String::from_utf8_lossy(&output.stdout);
     let stderr = String::from_utf8_lossy(&output.stderr);
 
+
     if output.status.code() == Some(2) {
-        return Err(ToolFailure::new(format!(
-            "rg error: {}",
-            stderr.trim()
-        )));
+        return Err(ToolFailure::new(normalize_rg_error(&stderr)));
     }
 
     if stdout.trim().is_empty() {

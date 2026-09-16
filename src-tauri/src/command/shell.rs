@@ -1,4 +1,4 @@
-use crate::llm::services::shell_sessions::{self, ShellExecutionResult, ShellSessionStatus};
+use crate::llm::services::shell_sessions::{self, BackgroundOutput, ShellExecutionResult, ShellSessionStatus};
 use crate::llm::utils::error_event::report_backend_result;
 use tauri::AppHandle;
 
@@ -90,4 +90,25 @@ pub async fn execute_shell_command_for_conversation(
         result,
         Some("execute_shell_command_for_conversation"),
     )
+}
+
+/// 列出会话的后台作业（不含输出内容），供输入框上方的"后台任务"小框与右侧面板使用。
+#[tauri::command]
+pub async fn list_background_jobs(
+    conversation_id: Option<String>,
+) -> Result<Vec<BackgroundOutput>, String> {
+    Ok(shell_sessions::list_background_jobs_for_conversation(
+        conversation_id.as_deref(),
+    ))
+}
+
+/// 读取单个后台作业的状态与最近输出。id 全局唯一；conversation_id 只用于错误提示。
+#[tauri::command]
+pub async fn read_background_job_output(
+    conversation_id: Option<String>,
+    id: String,
+    tail_lines: Option<usize>,
+) -> Result<BackgroundOutput, String> {
+    let _ = &conversation_id;
+    shell_sessions::read_background_output(id.trim(), None, tail_lines)
 }

@@ -173,9 +173,10 @@ async fn execute_async(
     // 顺序应用所有 edit。任一失败则整批回滚（不写入）。
     // 每个 new_string 归一化为 LF，避免模型输出的 \r\n 在 CRLF 文件还原时产生 \r\r\n 损坏。
     let mut applied_count = 0usize;
+    let mut fuzzy_notes: Vec<String> = Vec::new();
     for (idx, edit) in edits.iter().enumerate() {
         let new_string_lf = edit.new_string.replace("\r\n", "\n");
-        let (new_content, replaced) =
+        let (new_content, replaced, note) =
             apply_replace(&content, &edit.old_string, &new_string_lf, edit.replace_all)
                 .map_err(|e| {
                     ToolFailure::new(format!(
@@ -185,6 +186,9 @@ async fn execute_async(
                 })?;
         content = new_content;
         applied_count += replaced;
+        if let Some(note) = note {
+            fuzzy_notes.push(format!("edits[{}]: {}", idx, note));
+        }
     }
 
     // 全部成功后写回——按原始编码与行尾还原。
@@ -194,12 +198,16 @@ async fn execute_async(
     // 刷新读取状态，使同一轮内的后续编辑可继续。
     read_state::record(conversation_id, &target, &content);
 
-    Ok(ToolOutcome::json(json!({
+    let mut result = json!({
         "ok": true,
         "file_path": file_path,
         "edits_applied": edits.len(),
         "occurrences_replaced": applied_count
-    })))
+    });
+    if !fuzzy_notes.is_empty() {
+        result["notes"] = json!(fuzzy_notes);
+    }
+    Ok(ToolOutcome::json(result))
 }
 
 fn execute_with_app_boxed(

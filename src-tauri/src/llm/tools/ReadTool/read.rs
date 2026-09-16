@@ -150,8 +150,9 @@ fn read_image(path: &std::path::Path) -> Result<(String, String), String> {
         .map_err(|e| format!("Error reading image {}: {}", path.display(), e))?;
 
     // 真解码校验（用 image crate decode 一次），识别文件损坏（如 zlib 校验失败、残缺数据流等）
+    // 错误文案保持英文：所有工具返回给模型的错误统一英文，中英混排会让模型难以模式匹配。
     image::load_from_memory(&bytes)
-        .map_err(|e| format!("图片已损坏：{}", e))?;
+        .map_err(|e| format!("Corrupted image ({}): {}", path.display(), e))?;
 
     let media_type = match ext_lower(path).as_str() {
         "jpg" | "jpeg" => "image/jpeg",
@@ -281,7 +282,17 @@ fn read_pdf(path: &std::path::Path, pages: Option<&str>) -> Result<String, Strin
     let doc = lopdf::Document::load_mem(&bytes)
         .map_err(|e| format!("Failed to parse PDF: {}", e))?;
 
-    let total_pages = doc.max_id as u32;
+    // 页数必须走 page tree：get_pages() 返回 页码 -> 页对象 id 的映射，其长度才是真实页数。
+    // 此前用 doc.max_id（文档里最大的间接对象编号）当页数，会系统性高估
+    // —— 一个 60 页的 PDF 有 133 个间接对象，于是页码越界校验失效、
+    // 且 "pages 1-N of X" 提示里的 X 全是错的。
+    let total_pages = doc.get_pages().len() as u32;
+    if total_pages == 0 {
+        return Err(
+            "Failed to determine the PDF page count: the page tree is empty or unreadable."
+                .to_string(),
+        );
+    }
 
     let (start, end) = if let Some(pages_str) = pages {
         parse_page_range(pages_str)?
@@ -362,15 +373,39 @@ async fn execute_async(
         .and_then(Value::as_str)
         .ok_or_else(|| ToolFailure::invalid_input("Missing required parameter: file_path"))?;
 
-    let offset = input
-        .get("offset")
-        .and_then(|v| v.as_u64())
-        .map(|v| v as usize);
+    // offset/limit 必须显式校验：serde 的 as_u64 对负数返回 None，
+    // 静默退化成"未传"会让 offset=-5 悄悄从头开始读，模型完全不知情。
+    let offset = match input.get("offset") {
+        None => None,
+        Some(value) => {
+            let parsed = value
+                .as_i64()
+                .ok_or_else(|| ToolFailure::invalid_input("offset must be an integer"))?;
+            if parsed < 1 {
+                return Err(ToolFailure::invalid_input(format!(
+                    "offset must be >= 1 (1-based line number), got {}",
+                    parsed
+                )));
+            }
+            Some(parsed as usize)
+        }
+    };
 
-    let limit = input
-        .get("limit")
-        .and_then(|v| v.as_u64())
-        .map(|v| v as usize);
+    let limit = match input.get("limit") {
+        None => None,
+        Some(value) => {
+            let parsed = value
+                .as_i64()
+                .ok_or_else(|| ToolFailure::invalid_input("limit must be an integer"))?;
+            if parsed < 1 {
+                return Err(ToolFailure::invalid_input(format!(
+                    "limit must be >= 1, got {}",
+                    parsed
+                )));
+            }
+            Some(parsed as usize)
+        }
+    };
 
     let pages = input
         .get("pages")

@@ -101,6 +101,7 @@ const updateBrowserSessionUrl = async () => {
 
 const looksLikeUrl = (value: string) =>
   /^https?:\/\//i.test(value) ||
+  /^(data|file|about|blob):/i.test(value) ||
   /^localhost(:\d+)?(\/.*)?$/i.test(value) ||
   /^\d{1,3}(\.\d{1,3}){3}(:\d+)?(\/.*)?$/.test(value) ||
   /^[^\s]+\.[^\s]+/.test(value);
@@ -108,7 +109,7 @@ const looksLikeUrl = (value: string) =>
 const normalizeAddress = (raw: string) => {
   const value = raw.trim();
   if (!value) return '';
-  if (/^https?:\/\//i.test(value)) return value;
+  if (/^(https?|data|file|about|blob):/i.test(value)) return value;
   if (looksLikeUrl(value)) return `https://${value}`;
   return `https://www.google.com/search?q=${encodeURIComponent(value)}`;
 };
@@ -122,6 +123,7 @@ const {
   focusPageWebview,
   closePageWebview,
   evalBrowserScript,
+  evalBrowserScriptResult,
   reloadPageWebview,
   clearBrowsingData,
   applyZoom,
@@ -530,6 +532,7 @@ const {
   visit,
   ensureBrowserWindowReady: focusPageWebview,
   evalBrowserScript,
+  evalBrowserScriptResult,
   closeNativeBrowserWindow: closePageWebview,
   clearBrowsingData,
   updateBrowserSessionUrl,

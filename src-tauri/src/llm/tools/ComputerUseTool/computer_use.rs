@@ -319,6 +319,31 @@ fn new_enigo() -> Result<Enigo, String> {
         .map_err(|e| format!("Failed to initialize desktop input backend: {}", e))
 }
 
+fn validate_screen_coordinates(x: i32, y: i32) -> Result<(), String> {
+    if Screen::from_point(x, y).is_ok() {
+        return Ok(());
+    }
+    let screens = Screen::all().map_err(|e| format!("Failed to query displays: {}", e))?;
+    let bounds_summary = screens
+        .iter()
+        .map(|s| {
+            let d = &s.display_info;
+            format!(
+                "display {}: [x: {}..{}, y: {}..{}]",
+                d.id,
+                d.x,
+                d.x + d.width as i32,
+                d.y,
+                d.y + d.height as i32
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("; ");
+    Err(format!(
+        "Coordinates ({x}, {y}) are outside the bounds of all available displays ({bounds_summary})"
+    ))
+}
+
 // 在绝对坐标 x/y 处执行 count 次鼠标点击，并返回结构化点击结果。
 fn perform_click(mut enigo: Enigo, x: i32, y: i32, button: Button, count: u64) -> Result<Value, String> {
     enigo
@@ -329,10 +354,11 @@ fn perform_click(mut enigo: Enigo, x: i32, y: i32, button: Button, count: u64) -
             .button(button, Direction::Click)
             .map_err(|e| format!("Failed to click mouse: {}", e))?;
     }
+    let (actual_x, actual_y) = enigo.location().unwrap_or((x, y));
     Ok(json!({
         "ok": true,
-        "x": x,
-        "y": y,
+        "x": actual_x,
+        "y": actual_y,
         "button": button_name(&button),
         "count": count
     }))
@@ -441,20 +467,23 @@ fn execute_blocking(action: String, input: Value) -> Result<Value, String> {
         "move_mouse" => {
             let x = parse_i32_field(&input, "x")?;
             let y = parse_i32_field(&input, "y")?;
+            validate_screen_coordinates(x, y)?;
             let mut enigo = new_enigo()?;
             enigo
                 .move_mouse(x, y, Coordinate::Abs)
                 .map_err(|e| format!("Failed to move mouse: {}", e))?;
+            let (actual_x, actual_y) = enigo.location().unwrap_or((x, y));
             Ok(json!({
                 "ok": true,
                 "action": "move_mouse",
-                "x": x,
-                "y": y
+                "x": actual_x,
+                "y": actual_y
             }))
         }
         "click" => {
             let x = parse_i32_field(&input, "x")?;
             let y = parse_i32_field(&input, "y")?;
+            validate_screen_coordinates(x, y)?;
             let count = input.get("count").and_then(|v| v.as_u64()).unwrap_or(1).clamp(1, 3);
             let button = parse_button(&input)?;
             let enigo = new_enigo()?;
@@ -465,6 +494,7 @@ fn execute_blocking(action: String, input: Value) -> Result<Value, String> {
         "double_click" => {
             let x = parse_i32_field(&input, "x")?;
             let y = parse_i32_field(&input, "y")?;
+            validate_screen_coordinates(x, y)?;
             let button = parse_button(&input)?;
             let enigo = new_enigo()?;
             let mut out = perform_click(enigo, x, y, button, 2)?;
@@ -476,6 +506,8 @@ fn execute_blocking(action: String, input: Value) -> Result<Value, String> {
             let from_y = parse_i32_field(&input, "from_y")?;
             let to_x = parse_i32_field(&input, "to_x")?;
             let to_y = parse_i32_field(&input, "to_y")?;
+            validate_screen_coordinates(from_x, from_y)?;
+            validate_screen_coordinates(to_x, to_y)?;
             let mut enigo = new_enigo()?;
             enigo
                 .move_mouse(from_x, from_y, Coordinate::Abs)
@@ -488,16 +520,18 @@ fn execute_blocking(action: String, input: Value) -> Result<Value, String> {
             let release_result = enigo.button(Button::Left, Direction::Release);
             move_result.map_err(|e| format!("Failed to drag mouse: {}", e))?;
             release_result.map_err(|e| format!("Failed to release mouse after drag: {}", e))?;
+            let (actual_to_x, actual_to_y) = enigo.location().unwrap_or((to_x, to_y));
             Ok(json!({
                 "ok": true,
                 "action": "drag",
                 "from": { "x": from_x, "y": from_y },
-                "to": { "x": to_x, "y": to_y }
+                "to": { "x": actual_to_x, "y": actual_to_y }
             }))
         }
         "scroll" => {
             let x = parse_i32_field(&input, "x")?;
             let y = parse_i32_field(&input, "y")?;
+            validate_screen_coordinates(x, y)?;
             let dx = input.get("dx").and_then(|v| v.as_i64()).unwrap_or(0);
             let dy = input.get("dy").and_then(|v| v.as_i64()).unwrap_or(0);
             let mut enigo = new_enigo()?;
@@ -514,11 +548,12 @@ fn execute_blocking(action: String, input: Value) -> Result<Value, String> {
                     .scroll(i32::try_from(dx).map_err(|_| "dx is out of range".to_string())?, Axis::Horizontal)
                     .map_err(|e| format!("Failed to scroll horizontally: {}", e))?;
             }
+            let (actual_x, actual_y) = enigo.location().unwrap_or((x, y));
             Ok(json!({
                 "ok": true,
                 "action": "scroll",
-                "x": x,
-                "y": y,
+                "x": actual_x,
+                "y": actual_y,
                 "dx": dx,
                 "dy": dy
             }))

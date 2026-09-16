@@ -236,14 +236,25 @@ fn html_to_markdown(html: &str) -> String {
 
     // Basic HTML-to-text conversion.
     let text = cleaned
+        .replace("</title>", "\n\n")
+        .replace("<p>", "\n\n")
         .replace("</p>", "\n\n")
         .replace("<br>", "\n")
         .replace("<br/>", "\n")
         .replace("<br />", "\n")
-        .replace("</h1>", "\n\n# ")
-        .replace("</h2>", "\n\n## ")
-        .replace("</h3>", "\n\n### ")
-        .replace("</h4>", "\n\n#### ")
+        .replace("<h1", "\n\n# <h1")
+        .replace("</h1>", "\n\n")
+        .replace("<h2", "\n\n## <h2")
+        .replace("</h2>", "\n\n")
+        .replace("<h3", "\n\n### <h3")
+        .replace("</h3>", "\n\n")
+        .replace("<h4", "\n\n#### <h4")
+        .replace("</h4>", "\n\n")
+        .replace("<h5", "\n\n##### <h5")
+        .replace("</h5>", "\n\n")
+        .replace("<h6", "\n\n###### <h6")
+        .replace("</h6>", "\n\n")
+        .replace("<li>", "\n- ")
         .replace("</li>", "\n")
         .replace("</tr>", "\n")
         .replace("</div>", "\n");
@@ -285,4 +296,24 @@ fn html_to_markdown(html: &str) -> String {
     }
 
     clean.trim().to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_html_to_markdown_headings_and_title() {
+        let html = "<html><head><title>Example Domain</title></head><body><h1>Example Domain</h1><p>This domain is for use in illustrative examples in documents.</p></body></html>";
+        let md = html_to_markdown(html);
+        assert!(md.contains("Example Domain\n\n# Example Domain"));
+        assert!(!md.contains("Example DomainExample Domain"));
+    }
+
+    #[test]
+    fn test_html_to_markdown_strips_scripts_and_styles() {
+        let html = "<div><style>body { color: red; }</style><p>Hello</p><script>alert(1);</script></div>";
+        let md = html_to_markdown(html);
+        assert_eq!(md, "Hello");
+    }
 }

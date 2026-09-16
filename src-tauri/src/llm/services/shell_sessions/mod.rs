@@ -220,9 +220,13 @@ $env:NO_COLOR = '1'
 if ($PSStyle) {{ $PSStyle.OutputRendering = 'PlainText' }}
 $global:LASTEXITCODE = 0
 [System.Environment]::CurrentDirectory = (Get-Location).Path
+$__novaErrCountBefore = $Error.Count
 try {{
-    & {{ Invoke-Expression $__novaCommand }} | Out-Default
-    $__novaCommandSucceeded = $?
+    & {{
+        Invoke-Expression $__novaCommand
+        $global:__novaCmdSuccess = $?
+    }} | Out-Default
+    $__novaCommandSucceeded = $global:__novaCmdSuccess -and ($Error.Count -eq $__novaErrCountBefore)
     $__novaExitCode = if ($LASTEXITCODE -is [int] -and $LASTEXITCODE -ne 0) {{
         [int]$LASTEXITCODE
     }} elseif ($__novaCommandSucceeded) {{
@@ -257,13 +261,14 @@ fn build_background_wrapper(command_id: &str, command: &str) -> String {
         r#"$__novaCommandId = '{command_id}'
 $__novaCwd = (Get-Location).Path
 [System.Environment]::CurrentDirectory = $__novaCwd
-$__nova = Start-Process -FilePath '{pwsh}' -ArgumentList @('-NoLogo','-NoProfile','-NonInteractive','-EncodedCommand','{encoded}') -WorkingDirectory $__novaCwd -WindowStyle Hidden -RedirectStandardOutput 'NUL' -RedirectStandardError 'NUL' -PassThru
+$__nova = Start-Process -FilePath '{pwsh}' -ArgumentList @('-NoLogo','-NoProfile','-NonInteractive','-EncodedCommand','{encoded}') -WorkingDirectory $__novaCwd -WindowStyle Hidden -PassThru
 [pscustomobject]@{{
     ok = $true
     background = $true
     pid = $__nova.Id
     cwd = $__novaCwd
-}} | ConvertTo-Json -Compress
+}} | ConvertTo-Json -Compress | Out-Default
+[Console]::Out.Flush()
 $__novaCwdB64 = [Convert]::ToBase64String([System.Text.Encoding]::UTF8.GetBytes($__novaCwd))
 $__novaMarker = "{prefix}$__novaCommandId|0|$__novaCwdB64|0"
 [Console]::Out.WriteLine($__novaMarker)
@@ -679,10 +684,25 @@ async fn execute_wrapped_command(
         let event = match maybe_event {
             Ok(Some(event)) => event,
             Ok(None) => {
-                warn!("shell session stream closed unexpectedly; restarting");
-                restart_session(session, None).await?;
-                session.last_known_cwd = cwd_before;
-                return Err("Shell session closed unexpectedly".to_string());
+                // 会话进程退出（例如用户脚本显式调用了 exit N 或 exit 0）。
+                // 等待子进程退出以获取真实的进程退出码，保留已收集的 stdout/stderr。
+                let exit_code = match session.child.wait().await {
+                    Ok(status) => status.code(),
+                    Err(_) => None,
+                };
+                let pid = session.child.id();
+                // 重启新会话供后续命令使用，保留退出前的 cwd
+                let _ = restart_session(session, cwd_before.as_deref()).await;
+                return Ok(ShellExecutionResult {
+                    stdout: trim_trailing_newline(stdout),
+                    stderr: trim_trailing_newline(stderr),
+                    exit_code,
+                    cwd: display_cwd_opt(cwd_before),
+                    timed_out: false,
+                    cancelled: false,
+                    background: false,
+                    pid,
+                });
             }
             Err(_) => {
                 // 宽限期到：若已有 marker 则结束；否则继续等命令本身
@@ -741,7 +761,7 @@ async fn execute_wrapped_command(
         timed_out: marker.timed_out,
         cancelled: false,
         background: false,
-        pid: None,
+        pid: session.child.id(),
     })
 }
 

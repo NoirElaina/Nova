@@ -151,6 +151,21 @@ export function useBrowserPageWebview(options: UseBrowserPageWebviewOptions) {
     });
   };
 
+  const evalBrowserScriptResult = async (script: string): Promise<any> => {
+    if (!pageWebview.value || !isPageWebviewReady.value) {
+      throw new Error('Browser window is not ready');
+    }
+    const raw = await invoke<string>('browser_eval_window_script_result', {
+      label: options.pageLabel,
+      script,
+    });
+    try {
+      return JSON.parse(raw);
+    } catch {
+      return raw;
+    }
+  };
+
   const reloadPageWebview = async () => {
     await invoke('browser_reload_window', { label: options.pageLabel });
   };
@@ -172,6 +187,7 @@ export function useBrowserPageWebview(options: UseBrowserPageWebviewOptions) {
     focusPageWebview,
     closePageWebview,
     evalBrowserScript,
+    evalBrowserScriptResult,
     reloadPageWebview,
     clearBrowsingData,
     applyZoom,

@@ -28,6 +28,7 @@ type UseBrowserAutomationCommandsOptions = {
   visit: (raw: string, pushHistory?: boolean) => void;
   ensureBrowserWindowReady: () => Promise<boolean>;
   evalBrowserScript: (script: string) => Promise<void>;
+  evalBrowserScriptResult?: (script: string) => Promise<any>;
   closeNativeBrowserWindow: () => Promise<void>;
   clearBrowsingData: () => Promise<void>;
   updateBrowserSessionUrl: () => Promise<void>;
@@ -91,15 +92,15 @@ export function useBrowserAutomationCommands(options: UseBrowserAutomationComman
       try {
         const page = await options.captureBrowserSnapshot();
         const realUrl = (typeof page.url === 'string' && page.url) ? page.url : null;
-        if (realUrl && realUrl !== options.currentUrl.value) {
+        if (realUrl) {
           options.currentUrl.value = realUrl;
           options.addressInput.value = realUrl;
           const nextHistory = options.history.value.slice(0, options.historyIndex.value + 1);
           if (nextHistory[nextHistory.length - 1] !== realUrl) {
             nextHistory.push(realUrl);
+            options.history.value = nextHistory;
+            options.historyIndex.value = nextHistory.length - 1;
           }
-          options.history.value = nextHistory;
-          options.historyIndex.value = nextHistory.length - 1;
           void options.updateBrowserSessionUrl();
         }
         return browserStatePayload({
@@ -109,7 +110,6 @@ export function useBrowserAutomationCommands(options: UseBrowserAutomationComman
           elements: page.elements ?? [],
           headings: page.headings ?? [],
           frames: page.frames ?? [],
-          page,
           note:
             'Snapshot includes DOM text and visible interactive elements from the current Nova Browser window, including reachable iframes.',
         });
@@ -152,6 +152,11 @@ export function useBrowserAutomationCommands(options: UseBrowserAutomationComman
       }
       if (hasRef) {
         await options.clickSnapshotRef(ref);
+      } else if (options.evalBrowserScriptResult) {
+        const res = await options.evalBrowserScriptResult(clickScript(input));
+        if (res && typeof res === 'object' && res.ok === false) {
+          throw new Error(res.error || 'No browser element matched the click target.');
+        }
       } else {
         await options.evalBrowserScript(clickScript(input));
       }
@@ -176,6 +181,11 @@ export function useBrowserAutomationCommands(options: UseBrowserAutomationComman
       const ref = typeof input.ref === 'string' ? input.ref.trim() : '';
       if (ref) {
         await options.typeSnapshotRef(ref, input);
+      } else if (options.evalBrowserScriptResult) {
+        const res = await options.evalBrowserScriptResult(typeScript(input));
+        if (res && typeof res === 'object' && res.ok === false) {
+          throw new Error(res.error || 'No editable browser element matched the typing target.');
+        }
       } else {
         await options.evalBrowserScript(typeScript(input));
       }

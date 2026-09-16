@@ -137,7 +137,7 @@ async fn execute_async(
             "command timed out",
             &result,
         ))),
-        Ok(result) => Ok(ToolOutcome::json(shell_result_json(result))),
+        Ok(result) => Ok(ToolOutcome::json(shell_result_json(&result))),
         Err(error) => Err(ToolFailure::new(format!(
             "Failed to execute command: {}",
             error
@@ -145,30 +145,26 @@ async fn execute_async(
     }
 }
 
-fn shell_result_json(result: ShellExecutionResult) -> Value {
+fn shell_result_json(result: &ShellExecutionResult) -> Value {
     json!({
-        "ok": result.exit_code.unwrap_or(1) == 0,
+        "ok": result.exit_code.unwrap_or(1) == 0 && !result.timed_out && !result.cancelled,
         "stdout": truncate_output(&result.stdout),
         "stderr": truncate_output(&result.stderr),
         "exitCode": result.exit_code,
         "cwd": result.cwd,
         "timedOut": result.timed_out,
+        "cancelled": result.cancelled,
         "background": result.background,
         "pid": result.pid
     })
 }
 
 fn shell_failure_text(reason: &str, result: &ShellExecutionResult) -> String {
-    format!(
-        "{reason}\nexitCode: {:?}\ncwd: {}\ntimedOut: {}\nbackground: {}\npid: {:?}\nstdout:\n{}\nstderr:\n{}",
-        result.exit_code,
-        result.cwd.as_deref().unwrap_or(""),
-        result.timed_out,
-        result.background,
-        result.pid,
-        truncate_output(&result.stdout),
-        truncate_output(&result.stderr)
-    )
+    let mut val = shell_result_json(result);
+    if let Value::Object(ref mut map) = val {
+        map.insert("error".to_string(), Value::String(reason.to_string()));
+    }
+    serde_json::to_string(&val).unwrap_or_else(|_| reason.to_string())
 }
 
 // 单段输出的字符上限。

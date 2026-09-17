@@ -1,5 +1,5 @@
 use crate::llm::services::cron_schedule;
-use crate::llm::tools::shared::cron_store::{add_job, list_jobs, remove_job, CronJob};
+use crate::llm::tools::shared::cron_store::{add_job, list_jobs, remove_job, remove_job_with_cleanup, CronJob};
 use crate::llm::types::{AgentMode, Content, Message, Role};
 use chrono::{Local, Utc};
 use serde::Serialize;
@@ -283,14 +283,16 @@ pub async fn create_scheduled_task(
 }
 
 #[tauri::command]
-pub fn delete_scheduled_task(app: AppHandle, id: String) -> Result<bool, String> {
-    let result = (|| {
+pub async fn delete_scheduled_task(app: AppHandle, id: String) -> Result<bool, String> {
+    let result = async {
         let task_id = id.trim();
         if task_id.is_empty() {
             return Err("id is required".to_string());
         }
 
-        remove_job(&app, task_id)
-    })();
+        // 删除任务并同步清理其绑定会话（避免 "Scheduled [...]" 孤儿会话堆积）。
+        remove_job_with_cleanup(&app, task_id).await
+    }
+    .await;
     report_backend_result(&app, "command.cron.delete_scheduled_task", result, None)
 }

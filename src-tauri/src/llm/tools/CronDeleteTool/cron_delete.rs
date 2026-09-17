@@ -1,4 +1,4 @@
-use crate::llm::tools::shared::cron_store::remove_job;
+use crate::llm::tools::shared::cron_store::remove_job_with_cleanup;
 use crate::llm::tools::{app_tool, AppExecuteFuture, ToolDisclosure, ToolFailure, ToolOutcome, ToolRegistration};
 use crate::llm::types::Tool;
 use serde_json::{json, Value};
@@ -42,7 +42,8 @@ async fn execute_with_app(app: &AppHandle, input: Value) -> Result<ToolOutcome, 
         _ => return Err(ToolFailure::invalid_input("CronDelete requires non-empty 'id'")),
     };
 
-    match remove_job(app, id) {
+    // 删除任务并同步清理其绑定会话（避免 "Scheduled [...]" 孤儿会话堆积）。
+    match remove_job_with_cleanup(app, id).await {
         Ok(true) => Ok(ToolOutcome::json(json!({ "ok": true, "id": id }))),
         Ok(false) => Err(ToolFailure::new(format!(
             "No scheduled job with id '{}'",

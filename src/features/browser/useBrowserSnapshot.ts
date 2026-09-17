@@ -448,7 +448,8 @@ export function useBrowserSnapshot(browserLabel: string, currentUrl: Ref<string>
       ? topPage.url
       : (capturedFrames[0]?.frame?.url || frames[0]?.url || currentUrl.value || '');
 
-    if (topUrl && topUrl !== currentUrl.value) {
+    // chrome-error:// 是导航失败的错误页地址，不应回写进地址栏/会话状态。
+    if (topUrl && !topUrl.startsWith('chrome-error://') && topUrl !== currentUrl.value) {
       currentUrl.value = topUrl;
     }
 

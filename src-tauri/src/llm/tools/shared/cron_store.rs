@@ -107,3 +107,38 @@ pub fn remove_job(app: &AppHandle, id: &str) -> Result<bool, String> {
 
     Ok(removed_session || removed_durable)
 }
+
+/// 删除任务并同步清理其绑定会话。
+///
+/// CronCreate 会为每个任务创建一个 "Scheduled [...]" 会话；删除任务时若不清理，
+/// 这些会话会变成孤儿堆积在历史里（与创建失败分支的清理不对称）。
+/// `delete_scheduled_task` 命令和 CronDelete 工具都必须走这里。
+pub async fn remove_job_with_cleanup(app: &AppHandle, id: &str) -> Result<bool, String> {
+    // 先取出绑定会话（remove_job 之后任务记录就没了，无从查起）。
+    let bound_conversation = list_jobs(app).ok().and_then(|jobs| {
+        jobs.iter()
+            .find(|job| job.id == id)
+            .and_then(|job| job.conversation_id.clone())
+    });
+
+    let removed = remove_job(app, id)?;
+
+    if removed {
+        if let Some(conversation_id) = bound_conversation
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+        {
+            if let Err(cleanup_error) = crate::llm::history::delete_conversation(app, conversation_id).await {
+                tracing::error!(
+                    operation = "cron_store.remove_job_with_cleanup",
+                    conversation_id = %conversation_id,
+                    error = %cleanup_error,
+                    "failed to cleanup bound conversation after task deletion"
+                );
+            }
+        }
+    }
+
+    Ok(removed)
+}

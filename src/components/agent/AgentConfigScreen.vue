@@ -248,13 +248,34 @@ async function loadAgentResources(bundleId: string) {
   }
 }
 
-async function deletePrivateSkill(skill: SkillItem) {
-  if (!selectedId.value || !confirm(`确定删除私有技能「${skill.name}」？此操作不可恢复。`)) return;
+/** 私有技能删除确认：window.confirm 在 WebView2 里不阻塞，改用应用内 ConfirmDialog。 */
+const pendingDeletePrivateSkill = ref<SkillItem | null>(null);
+const deletingPrivateSkill = ref(false);
+const deletePrivateSkillOpen = computed({
+  get: () => pendingDeletePrivateSkill.value !== null,
+  set: (value: boolean) => {
+    if (!value && !deletingPrivateSkill.value) pendingDeletePrivateSkill.value = null;
+  },
+});
+
+function requestDeletePrivateSkill(skill: SkillItem) {
+  if (deletingPrivateSkill.value) return;
+  pendingDeletePrivateSkill.value = skill;
+}
+
+async function confirmDeletePrivateSkill() {
+  const skill = pendingDeletePrivateSkill.value;
+  if (!skill || !selectedId.value || deletingPrivateSkill.value) return;
+  deletingPrivateSkill.value = true;
   try {
     await invoke("delete_skill", { path: skill.path });
     await loadAgentResources(selectedId.value);
   } catch (err) {
     console.error("Failed to delete agent private skill:", err);
+    emitToast({ variant: "error", source: "agent-config", message: `删除私有技能失败：${err}` });
+  } finally {
+    deletingPrivateSkill.value = false;
+    pendingDeletePrivateSkill.value = null;
   }
 }
 
@@ -272,13 +293,34 @@ async function importAgentFile() {
   }
 }
 
-async function deleteAgentFile(name: string) {
-  if (!selectedId.value || !confirm(`确定删除资料「${name}」？`)) return;
+/** 资料文件删除确认：同上，用应用内 ConfirmDialog。 */
+const pendingDeleteFileName = ref<string | null>(null);
+const deletingAgentFile = ref(false);
+const deleteAgentFileOpen = computed({
+  get: () => pendingDeleteFileName.value !== null,
+  set: (value: boolean) => {
+    if (!value && !deletingAgentFile.value) pendingDeleteFileName.value = null;
+  },
+});
+
+function requestDeleteAgentFile(name: string) {
+  if (deletingAgentFile.value) return;
+  pendingDeleteFileName.value = name;
+}
+
+async function confirmDeleteAgentFile() {
+  const name = pendingDeleteFileName.value;
+  if (!name || !selectedId.value || deletingAgentFile.value) return;
+  deletingAgentFile.value = true;
   try {
     await invoke("delete_agent_file", { bundleId: selectedId.value, name });
     await loadAgentResources(selectedId.value);
   } catch (err) {
     console.error("Failed to delete agent file:", err);
+    emitToast({ variant: "error", source: "agent-config", message: `删除资料失败：${err}` });
+  } finally {
+    deletingAgentFile.value = false;
+    pendingDeleteFileName.value = null;
   }
 }
 
@@ -652,6 +694,30 @@ onMounted(async () => {
       @confirm="deleteBundle"
     />
 
+    <!-- 私有技能删除确认弹窗 -->
+    <ConfirmDialog
+      v-model="deletePrivateSkillOpen"
+      title="删除私有技能"
+      :description="`确定删除私有技能「${pendingDeletePrivateSkill?.name ?? ''}」？此操作不可恢复。`"
+      confirm-text="删除"
+      cancel-text="取消"
+      :busy="deletingPrivateSkill"
+      destructive
+      @confirm="confirmDeletePrivateSkill"
+    />
+
+    <!-- 资料文件删除确认弹窗 -->
+    <ConfirmDialog
+      v-model="deleteAgentFileOpen"
+      title="删除资料"
+      :description="`确定删除资料「${pendingDeleteFileName ?? ''}」？此操作不可恢复。`"
+      confirm-text="删除"
+      cancel-text="取消"
+      :busy="deletingAgentFile"
+      destructive
+      @confirm="confirmDeleteAgentFile"
+    />
+
     <!-- 添加全局 MCP 弹窗：写入全局注册表 + 标注来源 + 自动引用给当前智能体 -->
     <ConfirmDialog
       v-model="showMcpForm"
@@ -911,7 +977,7 @@ onMounted(async () => {
             <button
               type="button"
               class="shrink-0 text-[11px] text-[#dc2626] hover:underline dark:text-[#fca5a5]"
-              @click="deletePrivateSkill(skill)"
+              @click="requestDeletePrivateSkill(skill)"
             >删除</button>
           </div>
           <div v-if="privateSkills.length === 0" class="px-1 text-[11px] text-[#64748b] dark:text-[#a3a3a3]">
@@ -947,7 +1013,7 @@ onMounted(async () => {
             <button
               type="button"
               class="shrink-0 text-[11px] text-[#dc2626] hover:underline dark:text-[#fca5a5]"
-              @click="deleteAgentFile(file.name)"
+              @click="requestDeleteAgentFile(file.name)"
             >删除</button>
           </div>
           <div v-if="agentFiles.length === 0" class="px-1 text-[11px] text-[#64748b] dark:text-[#a3a3a3]">

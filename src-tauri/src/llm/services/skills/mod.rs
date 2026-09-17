@@ -74,7 +74,7 @@ fn parse_frontmatter_value(raw: &str, key: &str) -> Option<String> {
 }
 
 // 决定一个 skill 最终显示给模型/前端的名字。
-fn pick_skill_name(path: &Path, raw: &str) -> String {
+pub(crate) fn pick_skill_name(path: &Path, raw: &str) -> String {
     parse_frontmatter_value(raw, "name")
         .filter(|v| !v.trim().is_empty())
         .or_else(|| {

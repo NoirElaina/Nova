@@ -22,7 +22,7 @@ fn permission(input: &Value) -> Option<ToolPermissionDescriptor> {
 pub fn tool() -> Tool {
     Tool {
         name: "Bash".into(),
-        description: r#"Executes a shell command in a conversation-scoped persistent shell session. The working directory and environment persist between calls, so `cd` and exported variables carry over.
+        description: r#"Executes a shell command in a conversation-scoped persistent shell session. For foreground commands, the working directory and environment persist between calls, so `cd` and exported variables carry over. Background commands (run_in_background) are the exception — see below.
 
 **Platform**: PowerShell 7 (pwsh) on Windows; sh on Linux/macOS. Write commands for the current platform — do not assume bash syntax on Windows.
 
@@ -35,7 +35,7 @@ pub fn tool() -> Tool {
 - `command` (required): the command to execute. Prefer focused single commands; chain only trivial sequences.
 - `description`: a short (3-5 word) active-voice summary shown to the user.
 - `timeout`: milliseconds, default 120000 (2 min), max 1800000 (30 min). Long builds and test suites need an explicit larger timeout.
-- `run_in_background`: keep the session usable while the command runs — use for dev servers and file watchers. The result contains an `id` (e.g. `bg-1`): use `BashOutput(id)` to read its output and check whether it is still running, and `BashKill(id)` to stop it. Output is buffered in memory (no log files) and the job is killed automatically when `max_runtime_ms` (default 30 min) elapses.
+- `run_in_background`: keep the session usable while the command runs — use for dev servers and file watchers. The result contains an `id` (e.g. `bg-1`): use `BashOutput(id)` to read its output and check whether it is still running, and `BashKill(id)` to stop it. Output is buffered in memory (no log files) and the job is killed automatically when `max_runtime_ms` (default 30 min) elapses. **Background commands run in a fresh shell process at the workspace root: they do NOT inherit the session's current directory or environment variables.** Always write them self-contained in one shot — e.g. `Set-Location <dir>; $env:VAR='<value>'; npm run dev` on Windows / `cd <dir> && VAR=<value> npm run dev` on Unix.
 
 ## Output and failure semantics
 - The result includes exit code, stdout, stderr, and the final working directory. A non-zero exit is a failure — read stderr before retrying; do not blindly re-run the same command.

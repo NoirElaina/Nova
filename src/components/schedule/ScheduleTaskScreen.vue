@@ -2,6 +2,7 @@
 import { computed, onMounted, ref } from "vue";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
+import { ConfirmDialog } from "@/components/ui/confirm-dialog";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
@@ -314,12 +315,27 @@ async function handleDeleteTask() {
   }
 }
 
-/** 卡片上的删除：设置目标任务后复用 handleDeleteTask（与详情页删除同路径）。 */
-async function deleteTaskFromCard(task: ScheduledTask) {
+/** 卡片上的删除：先弹应用内确认框（window.confirm 在 WebView2 里不阻塞，
+ *  原生弹窗形同虚设），确认后复用 handleDeleteTask（与详情页删除同路径）。 */
+const pendingDeleteTaskId = ref<string | null>(null);
+const deleteTaskDialogOpen = computed({
+  get: () => pendingDeleteTaskId.value !== null,
+  set: (value: boolean) => {
+    if (!value && !deleting.value) pendingDeleteTaskId.value = null;
+  },
+});
+
+function requestDeleteTask(task: ScheduledTask) {
   if (deleting.value) return;
-  if (!confirm(`确定删除任务 ${task.id}？`)) return;
-  selectedTaskId.value = task.id;
+  pendingDeleteTaskId.value = task.id;
+}
+
+async function confirmDeleteTask() {
+  const id = pendingDeleteTaskId.value;
+  if (!id || deleting.value) return;
+  selectedTaskId.value = id;
   await handleDeleteTask();
+  pendingDeleteTaskId.value = null;
 }
 
 function handleOpenTaskConversation(task: ScheduledTask) {
@@ -343,6 +359,17 @@ onMounted(() => {
 
 <template>
   <div :class="pageClass">
+    <ConfirmDialog
+      v-model="deleteTaskDialogOpen"
+      title="删除定时任务"
+      :description="`确定删除任务 ${pendingDeleteTaskId ?? ''} 吗？此操作不可恢复。`"
+      confirm-text="删除"
+      cancel-text="取消"
+      :busy="deleting"
+      destructive
+      @confirm="confirmDeleteTask"
+    />
+
     <header v-if="view === 'grid'" class="flex flex-wrap items-start justify-between gap-3">
       <div class="space-y-1">
         <h2 class="text-base font-semibold text-[#111827] dark:text-[#f3f4f6]">定时任务</h2>
@@ -413,7 +440,7 @@ onMounted(() => {
               class="rounded-md border border-[#fecaca] bg-white px-2 py-0.5 text-[11.5px] text-[#dc2626] transition-colors hover:bg-[#fef2f2] disabled:cursor-not-allowed disabled:opacity-40 dark:border-[#513030] dark:bg-[#242424] dark:text-[#fca5a5] dark:hover:bg-[#3a1f1f]"
               :disabled="deleting"
               title="删除该任务"
-              @click.stop="deleteTaskFromCard(task)"
+              @click.stop="requestDeleteTask(task)"
             >删除</button>
           </span>
         </div>

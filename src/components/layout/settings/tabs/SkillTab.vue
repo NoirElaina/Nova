@@ -1,11 +1,25 @@
 <script setup lang="ts">
-import { onBeforeUnmount, onMounted, ref } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import { invoke } from '@tauri-apps/api/core'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
+import { ConfirmDialog } from '@/components/ui/confirm-dialog'
 
 const deletingPath = ref<string | null>(null)
 const deleteError = ref('')
+const pendingDeleteSkill = ref<SkillItem | null>(null)
+
+const deleteDialogOpen = computed({
+  get: () => pendingDeleteSkill.value !== null,
+  set: (value: boolean) => {
+    if (!value && !deletingPath.value) pendingDeleteSkill.value = null
+  },
+})
+const deleteDialogDescription = computed(() =>
+  pendingDeleteSkill.value
+    ? `确定要删除技能「${pendingDeleteSkill.value.name}」吗？此操作将永久删除该技能目录，无法恢复。`
+    : '',
+)
 
 type SkillItem = {
   name: string
@@ -58,22 +72,19 @@ const toggleSkill = (skill: SkillItem) => {
   schedulePersist()
 }
 
-/** 立即持久化当前停用列表：以最新设置为基底合并，避免回滚其他字段 */
+/** 立即持久化当前停用列表：以最新设置为基底合并，避免回滚其他字段。
+ *  停用名单只记录当前列表中真实存在且被停用的技能——已删除/不存在技能的
+ *  残留条目在下次保存时自动清掉，避免 settings.json 里堆积无效名字。 */
 const persistDisabledSkills = async () => {
   saving.value = true
   error.value = ''
   try {
-    const listed = new Set(skills.value.map((s) => normalize(s.name)))
-    const latest: any = (await invoke('get_settings')) || {}
-    const existingDisabled = (Array.isArray(latest.disabledSkills) ? latest.disabledSkills : [])
-      .filter((v: unknown) => typeof v === 'string')
-
-    const preservedDisabled = existingDisabled.filter((name: string) => !listed.has(normalize(name)))
     const currentDisabled = skills.value.filter((s) => !s.enabled).map((s) => s.name)
 
+    const latest: any = (await invoke('get_settings')) || {}
     const settings = {
       ...latest,
-      disabledSkills: [...preservedDisabled, ...currentDisabled],
+      disabledSkills: currentDisabled,
     }
 
     await invoke('save_settings', { settings })
@@ -109,23 +120,45 @@ onBeforeUnmount(() => {
   }
 })
 
-const deleteSkill = async (skill: SkillItem) => {
-  if (!confirm(`确定要删除技能「${skill.name}」吗？此操作将永久删除该技能目录，无法恢复。`)) return
+/** 点击删除：先弹应用内确认框（window.confirm 在 WebView2 里不会阻塞等待
+ *  用户点击，JS 会继续执行，原生弹窗形同虚设），确认后才真正删除。 */
+const requestDeleteSkill = (skill: SkillItem) => {
+  if (deletingPath.value) return
+  deleteError.value = ''
+  pendingDeleteSkill.value = skill
+}
+
+const confirmDeleteSkill = async () => {
+  const skill = pendingDeleteSkill.value
+  if (!skill || deletingPath.value) return
   deletingPath.value = skill.path
   deleteError.value = ''
   try {
     await invoke('delete_skill', { path: skill.path })
     await refresh()
   } catch (e) {
+    deleteError.value = `删除技能失败：${e}`
     console.error(`Failed to delete skill (${skill.path}):`, e)
   } finally {
     deletingPath.value = null
+    pendingDeleteSkill.value = null
   }
 }
 </script>
 
 <template>
   <div class="px-6 py-4 flex flex-col h-full overflow-y-auto">
+    <ConfirmDialog
+      v-model="deleteDialogOpen"
+      title="删除技能"
+      :description="deleteDialogDescription"
+      confirm-text="删除"
+      cancel-text="取消"
+      :busy="deletingPath !== null"
+      destructive
+      @confirm="confirmDeleteSkill"
+    />
+
     <div class="mb-4 flex items-center justify-between">
       <span class="text-[12.5px] text-[#64748b] dark:text-[#a3a3a3]">{{ skills.length }} 个技能</span>
       <div class="flex items-center gap-2">
@@ -198,7 +231,7 @@ const deleteSkill = async (skill: SkillItem) => {
                 size="sm"
                 class="h-7 px-2 text-[12px] border-red-200 text-red-600 hover:bg-red-50 dark:border-red-900/50 dark:text-red-400 dark:hover:bg-red-950/30"
                 :disabled="deletingPath === skill.path"
-                @click="deleteSkill(skill)"
+                @click="requestDeleteSkill(skill)"
               >
                 <svg v-if="deletingPath !== skill.path" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/><path d="M10 11v6"/><path d="M14 11v6"/><path d="M9 6V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2"/></svg>
                 <span v-else>...</span>

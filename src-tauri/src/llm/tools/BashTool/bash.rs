@@ -47,6 +47,7 @@ pub fn tool() -> Tool {
 - Writing files via shell redirects (Out-File, Set-Content, echo >, here-strings) — they introduce BOM/CRLF encoding problems; use Write/Edit instead.
 - Long-running foreground commands without a raised timeout.
 - Assuming Unix syntax on Windows (pwsh uses `$env:VAR`, `Get-Content`, backtick escapes).
+- Chaining a failing native command with `;` followed by cmdlets: PowerShell never resets `$LASTEXITCODE` when cmdlets run, so the call still exits with the earlier failure code even though the trailing output looks successful. Chain with `&&` instead, or end with an explicit `exit 0` when the failure is expected and handled.
 - Reading files with cat/Get-Content instead of the Read tool."#
             .into(),
         input_schema: json!({

@@ -398,6 +398,9 @@ pub fn get_repo_status_by_path(workspace_path: &str) -> Result<GitRepoStatus, St
     if !root.is_dir() {
         return Err("工作区路径不是目录".to_string());
     }
+    // 剥掉 canonicalize 引入的 \\?\ 前缀，与会话工作区根目录的返回形式保持一致。
+    let root = crate::command::workspace::display_path_string(&root);
+    let root = std::path::PathBuf::from(root);
     Ok(repo_status_for_root(&root))
 }
 

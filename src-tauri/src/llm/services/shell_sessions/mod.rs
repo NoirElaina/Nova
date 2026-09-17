@@ -1062,14 +1062,31 @@ pub fn list_background_jobs_for_conversation(
     list_background_jobs(Some(&scope_key(conversation_id)))
 }
 
+// kill 后等待 wait() 收尾的时间上限与步长：taskkill /F 后 wait 通常毫秒级返回，
+// 超时只作兜底，避免异常挂起卡住整个工具调用。
+const KILL_SETTLE_TIMEOUT_MS: u64 = 2_000;
+const KILL_SETTLE_STEP_MS: u64 = 20;
+
 /// 终止后台作业，并返回终止前读到的输出。
-pub fn kill_background_job(id: &str) -> Result<BackgroundOutput, String> {
+pub async fn kill_background_job(id: &str) -> Result<BackgroundOutput, String> {
     let job = find_background_job(id).ok_or_else(|| {
         format!(
             "No background job with id '{id}'. Known ids: {}",
             known_background_ids(None)
         )
     })?;
+
+    // 已自然结束的作业：kill 是 no-op。不再 kill_pid——PID 可能已被系统回收复用，
+    // 强杀会误伤无辜进程；也不标 killed——保留真实退出码，避免
+    // "killed:true + 自然结束的 exitCode" 这种自相矛盾的状态。
+    if job
+        .state
+        .lock()
+        .unwrap_or_else(|error| error.into_inner())
+        .finished
+    {
+        return read_background_output(&job.id, None, None);
+    }
 
     kill_pid(job.pid);
     {
@@ -1078,6 +1095,22 @@ pub fn kill_background_job(id: &str) -> Result<BackgroundOutput, String> {
             entry.killed = true;
         }
     }
+
+    // 等 wait() 收尾再返回，保证本次响应的 finished/exitCode 与后续列表查询一致
+    // （否则响应说 finished:false、稍后列表又说 finished:true，Agent 无法判断）。
+    let deadline = tokio::time::Instant::now() + Duration::from_millis(KILL_SETTLE_TIMEOUT_MS);
+    loop {
+        let finished = job
+            .state
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .finished;
+        if finished || tokio::time::Instant::now() >= deadline {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(KILL_SETTLE_STEP_MS)).await;
+    }
+
     read_background_output(&job.id, None, None)
 }
 

@@ -93,8 +93,13 @@ pub fn default_workspace_root(app: &AppHandle) -> Result<PathBuf, String> {
         .map_err(|error| format!("无法读取默认工作区目录: {}", error))?;
 
     std::fs::create_dir_all(&root).map_err(|error| format!("创建默认工作区失败: {}", error))?;
-    root.canonicalize()
-        .map_err(|error| format!("无法解析默认工作区目录: {}", error))
+    let canonical = root
+        .canonicalize()
+        .map_err(|error| format!("无法解析默认工作区目录: {}", error))?;
+    // Windows 上 canonicalize 返回 \\?\ verbatim 形式；剥掉前缀再返回，
+    // 该 root 会进入工具输出（Grep 默认基准）与系统提示词（{{NOVA_WORKSPACE}}），
+    // 普通形式对文件系统操作同样有效。
+    Ok(PathBuf::from(display_path_string(&canonical)))
 }
 
 // 解析会话的工作区根目录（同步，读缓存）。缓存未命中时回退到内置默认工作区。
@@ -122,7 +127,9 @@ pub fn workspace_root_for_conversation(
         return Err("会话工作区必须是目录".to_string());
     }
 
-    Ok(canonical)
+    // 剥掉 canonicalize 引入的 \\?\ verbatim 前缀：该 root 会回显进
+    // 工具输出与系统提示词（{{NOVA_WORKSPACE}}），普通形式对文件系统操作同样有效。
+    Ok(PathBuf::from(display_path_string(&canonical)))
 }
 
 pub fn workspace_root_string_for_conversation(
@@ -188,7 +195,12 @@ fn resolve_workspace_path(root: &Path, path: Option<String>) -> Result<(PathBuf,
     let canonical = target
         .canonicalize()
         .map_err(|error| format!("无法读取工作区路径: {}", error))?;
-    if !canonical.starts_with(root) {
+    // root 可能是剥掉 \\?\ 前缀的普通形式，而 canonicalize 必然返回 verbatim 形式；
+    // 统一成 verbatim 再做包含检查，否则 starts_with 永远不成立。
+    let canonical_root = root
+        .canonicalize()
+        .unwrap_or_else(|_| root.to_path_buf());
+    if !canonical.starts_with(&canonical_root) {
         return Err("拒绝访问工作区之外的路径".to_string());
     }
 

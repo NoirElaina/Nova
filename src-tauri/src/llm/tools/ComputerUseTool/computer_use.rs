@@ -99,14 +99,38 @@ pub fn tool() -> Tool {
                     },
                     "required": ["x", "y", "width", "height"]
                 },
-                "x": { "type": "integer" },
-                "y": { "type": "integer" },
-                "from_x": { "type": "integer" },
-                "from_y": { "type": "integer" },
-                "to_x": { "type": "integer" },
-                "to_y": { "type": "integer" },
-                "dx": { "type": "integer" },
-                "dy": { "type": "integer" },
+                "x": {
+                    "type": "integer",
+                    "description": "Target X coordinate. Required for move_mouse, click, double_click, and scroll."
+                },
+                "y": {
+                    "type": "integer",
+                    "description": "Target Y coordinate. Required for move_mouse, click, double_click, and scroll."
+                },
+                "from_x": {
+                    "type": "integer",
+                    "description": "Drag start X coordinate. Required for drag."
+                },
+                "from_y": {
+                    "type": "integer",
+                    "description": "Drag start Y coordinate. Required for drag."
+                },
+                "to_x": {
+                    "type": "integer",
+                    "description": "Drag end X coordinate. Required for drag."
+                },
+                "to_y": {
+                    "type": "integer",
+                    "description": "Drag end Y coordinate. Required for drag."
+                },
+                "dx": {
+                    "type": "integer",
+                    "description": "Horizontal scroll amount (scroll). The cursor is first moved to x/y, so x/y are required."
+                },
+                "dy": {
+                    "type": "integer",
+                    "description": "Vertical scroll amount (scroll). The cursor is first moved to x/y, so x/y are required."
+                },
                 "button": {
                     "type": "string",
                     "enum": ["left", "middle", "right"]
@@ -126,12 +150,14 @@ pub fn tool() -> Tool {
 }
 
 // 从 input 里读取 key 对应的整数，并转成 i32，供鼠标坐标等参数使用。
-fn parse_i32_field(input: &Value, key: &str) -> Result<i32, String> {
+// 报错带 action 名，让模型知道是哪个动作缺了哪个参数（此前统一报
+// "computer_use requires integer 'x'"，scroll/drag/move_mouse 缺参时无法区分）。
+fn parse_i32_field(input: &Value, action: &str, key: &str) -> Result<i32, String> {
     input
         .get(key)
         .and_then(|v| v.as_i64())
         .and_then(|v| i32::try_from(v).ok())
-        .ok_or_else(|| format!("computer_use requires integer '{}'", key))
+        .ok_or_else(|| format!("computer_use.{action} requires integer '{key}'"))
 }
 
 // 从 input 里读取可选的 u64 字段，供等待时间、点击次数等参数使用。
@@ -465,8 +491,8 @@ fn execute_blocking(action: String, input: Value) -> Result<Value, String> {
             }))
         }
         "move_mouse" => {
-            let x = parse_i32_field(&input, "x")?;
-            let y = parse_i32_field(&input, "y")?;
+            let x = parse_i32_field(&input, "move_mouse", "x")?;
+            let y = parse_i32_field(&input, "move_mouse", "y")?;
             validate_screen_coordinates(x, y)?;
             let mut enigo = new_enigo()?;
             enigo
@@ -481,8 +507,8 @@ fn execute_blocking(action: String, input: Value) -> Result<Value, String> {
             }))
         }
         "click" => {
-            let x = parse_i32_field(&input, "x")?;
-            let y = parse_i32_field(&input, "y")?;
+            let x = parse_i32_field(&input, "click", "x")?;
+            let y = parse_i32_field(&input, "click", "y")?;
             validate_screen_coordinates(x, y)?;
             let count = input.get("count").and_then(|v| v.as_u64()).unwrap_or(1).clamp(1, 3);
             let button = parse_button(&input)?;
@@ -492,8 +518,8 @@ fn execute_blocking(action: String, input: Value) -> Result<Value, String> {
             Ok(out)
         }
         "double_click" => {
-            let x = parse_i32_field(&input, "x")?;
-            let y = parse_i32_field(&input, "y")?;
+            let x = parse_i32_field(&input, "double_click", "x")?;
+            let y = parse_i32_field(&input, "double_click", "y")?;
             validate_screen_coordinates(x, y)?;
             let button = parse_button(&input)?;
             let enigo = new_enigo()?;
@@ -502,10 +528,10 @@ fn execute_blocking(action: String, input: Value) -> Result<Value, String> {
             Ok(out)
         }
         "drag" => {
-            let from_x = parse_i32_field(&input, "from_x")?;
-            let from_y = parse_i32_field(&input, "from_y")?;
-            let to_x = parse_i32_field(&input, "to_x")?;
-            let to_y = parse_i32_field(&input, "to_y")?;
+            let from_x = parse_i32_field(&input, "drag", "from_x")?;
+            let from_y = parse_i32_field(&input, "drag", "from_y")?;
+            let to_x = parse_i32_field(&input, "drag", "to_x")?;
+            let to_y = parse_i32_field(&input, "drag", "to_y")?;
             validate_screen_coordinates(from_x, from_y)?;
             validate_screen_coordinates(to_x, to_y)?;
             let mut enigo = new_enigo()?;
@@ -529,8 +555,9 @@ fn execute_blocking(action: String, input: Value) -> Result<Value, String> {
             }))
         }
         "scroll" => {
-            let x = parse_i32_field(&input, "x")?;
-            let y = parse_i32_field(&input, "y")?;
+            // 光标先移到 x/y 再滚动：坐标是必需参数（与 move_mouse 一致）。
+            let x = parse_i32_field(&input, "scroll", "x")?;
+            let y = parse_i32_field(&input, "scroll", "y")?;
             validate_screen_coordinates(x, y)?;
             let dx = input.get("dx").and_then(|v| v.as_i64()).unwrap_or(0);
             let dy = input.get("dy").and_then(|v| v.as_i64()).unwrap_or(0);

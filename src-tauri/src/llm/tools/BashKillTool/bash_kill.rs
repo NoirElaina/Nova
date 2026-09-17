@@ -65,7 +65,7 @@ async fn execute_async(
         .filter(|value| !value.is_empty())
         .ok_or_else(|| ToolFailure::invalid_input("Missing 'id'. Call BashOutput with no id to list background jobs."))?;
 
-    match crate::llm::services::shell_sessions::kill_background_job(id) {
+    match crate::llm::services::shell_sessions::kill_background_job(id).await {
         Ok(output) => Ok(ToolOutcome::json(
             serde_json::to_value(output).unwrap_or_else(|_| json!({})),
         )),

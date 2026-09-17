@@ -143,7 +143,9 @@ pub(crate) fn find_rg_path(app: &AppHandle) -> String {
             },
         );
         if bundled.exists() {
-            return bundled.display().to_string();
+            // resource_dir 在 Windows 下是 \\?\ verbatim 形式，剥掉前缀：
+            // 该路径会注入系统提示词（{{RG_PATH}}），普通形式对进程启动同样有效。
+            return crate::command::workspace::display_path_string(&bundled);
         }
     }
     "rg".to_string()

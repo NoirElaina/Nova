@@ -107,16 +107,31 @@ async fn execute_async(input: Value) -> Result<ToolOutcome, ToolFailure> {
         .and_then(Value::as_str)
         .ok_or_else(|| ToolFailure::invalid_input("Missing 'url' argument"))?;
 
-    let url_str = if raw_url.starts_with("http://") {
-        format!("https://{}", &raw_url[7..])
-    } else if !raw_url.starts_with("https://") {
-        format!("https://{}", raw_url)
-    } else {
-        raw_url.to_string()
+    // 先解析原始 URL 再决定处理方式：显式拒绝非 http(s) 协议。
+    // 此前"一律拼 https:// 前缀"会把 file:///C:/x 静默改写成 https://file///C:/x，
+    // 再因连接失败重试 3 次，模型只会看到一个莫名其妙的 DNS 错误。
+    let url = match Url::parse(raw_url) {
+        Ok(parsed) => match parsed.scheme() {
+            "https" => parsed,
+            "http" => {
+                // 保留原有 HTTP → HTTPS 升级行为。
+                let mut upgraded = parsed;
+                let _ = upgraded.set_scheme("https");
+                upgraded
+            }
+            other => {
+                return Err(ToolFailure::invalid_input(format!(
+                    "Unsupported URL scheme '{other}://': WebFetch only supports http/https. Use the Read tool for local files."
+                )));
+            }
+        },
+        Err(_) => {
+            // 无 scheme 的裸地址（如 example.com/path）：按原行为补 https:// 前缀。
+            let candidate = format!("https://{raw_url}");
+            Url::parse(&candidate)
+                .map_err(|e| ToolFailure::invalid_input(format!("Invalid URL: {e}")))?
+        }
     };
-
-    let url = Url::parse(&url_str)
-        .map_err(|e| ToolFailure::invalid_input(format!("Invalid URL: {e}")))?;
 
     // Check cache.
     {

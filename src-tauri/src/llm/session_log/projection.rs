@@ -71,7 +71,7 @@ pub fn render_ui_history(events: &[StoredEvent]) -> Vec<HistoryMessage> {
                 // 旧数据兼容：早期版本把中断标记以用户消息落日志，
                 // UI 不再展示这类状态消息（新数据已改以 ContextMessage 落日志）。
                 let content = extract_text(message);
-                if content.starts_with("[Request interrupted by user]") {
+                if content.starts_with("[Request interrupted by") {
                     continue;
                 }
                 // 旧数据兼容：工具 side-channel 注入的图片消息（ReadTool/ComputerUse）
@@ -135,7 +135,7 @@ pub fn render_ui_history(events: &[StoredEvent]) -> Vec<HistoryMessage> {
                     if cost.is_some() {
                         last.cost = cost.clone();
                     }
-                } else {
+                } else if !content.trim().is_empty() || reasoning.is_some() {
                     out.push(HistoryMessage {
                         id: Some(stored.seq),
                         role: "assistant".to_string(),

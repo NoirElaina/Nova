@@ -36,6 +36,7 @@ import {
   stashRuntimeState,
 } from "./chat-runtime-state";
 import { buildAssistantTranscriptSegments } from "../utils/assistant-transcript";
+import { sanitizeConsecutiveAssistantMessages } from "./chat-message-helpers";
 import { clearAllSubagents, clearSubagents } from "../services/subagents";
 
 type ConversationOpsDeps = {
@@ -143,14 +144,8 @@ export function createConversationOperations(deps: ConversationOpsDeps) {
       }
       const existingContent = (candidate.content ?? "").trim();
       const existingReasoning = (candidate.reasoning ?? "").trim();
-      const contentOverlaps = overlaps(existingContent, normalizedContent);
-      const reasoningOverlaps = overlaps(existingReasoning, normalizedReasoning);
-      const nonOverlapping =
-        (normalizedContent && !contentOverlaps) ||
-        (normalizedReasoning && !reasoningOverlaps);
-      if (!nonOverlapping && (contentOverlaps || reasoningOverlaps)) {
-        return true;
-      }
+      if (existingContent === normalizedContent || overlaps(existingContent, normalizedContent)) return true;
+      if (normalizedReasoning && existingReasoning && (existingReasoning === normalizedReasoning || overlaps(existingReasoning, normalizedReasoning))) return true;
     }
     return false;
   }
@@ -177,6 +172,10 @@ export function createConversationOperations(deps: ConversationOpsDeps) {
       });
       assistantTokenUsage.value = undefined;
       assistantTurnCost.value = undefined;
+      const lastUserIdx = messages.value.map((m) => m.role).lastIndexOf("user");
+      if (lastUserIdx >= 0 && lastUserIdx < messages.value.length - 1) {
+        messages.value = messages.value.slice(0, lastUserIdx + 1);
+      }
       return;
     }
 
@@ -190,7 +189,12 @@ export function createConversationOperations(deps: ConversationOpsDeps) {
             : "已取消当前轮。"
           : finalText || "（本轮没有返回可显示的文本内容）";
 
-      if (!isDuplicateAssistantMessage(content, finalReasoning)) {
+      const lastUserIdx = messages.value.map((m) => m.role).lastIndexOf("user");
+      const hasAssistantAfterLastUser =
+        lastUserIdx >= 0 &&
+        messages.value.slice(lastUserIdx + 1).some((m) => m.role === "assistant");
+
+      if (!hasAssistantAfterLastUser && !isDuplicateAssistantMessage(content, finalReasoning)) {
         const assistantMessage: ChatMessage = {
           id: `assistant-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
           role: "assistant",
@@ -283,7 +287,7 @@ export function createConversationOperations(deps: ConversationOpsDeps) {
       if (isStaleLoad()) return;
       const savedToolLogs = await loadConversationToolLogs(targetConversationId);
       if (isStaleLoad()) return;
-      messages.value = (saved || [])
+      messages.value = sanitizeConsecutiveAssistantMessages((saved || [])
         .filter(
           (message) =>
             (message.role === "user" || message.role === "assistant") &&
@@ -301,7 +305,7 @@ export function createConversationOperations(deps: ConversationOpsDeps) {
           tokenUsage: message.tokenUsage,
           cost: message.cost,
           transcriptSegments: message.cost?.transcriptSegments,
-        }));
+        })));
 
       const restored = restoreRuntimeState(
         runtimeStateByConversation,

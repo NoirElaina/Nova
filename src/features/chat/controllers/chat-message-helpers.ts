@@ -221,3 +221,54 @@ export function buildModelMessage(
     content: blocks,
   };
 }
+
+export function commitAssistantMessageToTurn(
+  currentMessages: ChatMessage[],
+  assistantMessage: ChatMessage,
+): ChatMessage[] {
+  let lastUserIndex = -1;
+  for (let i = currentMessages.length - 1; i >= 0; i -= 1) {
+    if (currentMessages[i]?.role === "user") {
+      lastUserIndex = i;
+      break;
+    }
+  }
+  if (lastUserIndex >= 0) {
+    return [...currentMessages.slice(0, lastUserIndex + 1), assistantMessage];
+  }
+  const lastMsg = currentMessages[currentMessages.length - 1];
+  if (lastMsg?.role === "assistant") {
+    return [...currentMessages.slice(0, -1), assistantMessage];
+  }
+  return [...currentMessages, assistantMessage];
+}
+
+export function sanitizeConsecutiveAssistantMessages(rawMessages: ChatMessage[]): ChatMessage[] {
+  const result: ChatMessage[] = [];
+  for (const msg of rawMessages) {
+    const prev = result[result.length - 1];
+    if (msg.role === "assistant" && prev && prev.role === "assistant") {
+      const parts = [prev.content, msg.content].filter((c) => c && c.trim());
+      prev.content = parts.join("\n\n");
+      const reasoningParts = [prev.reasoning, msg.reasoning].filter((r) => r && r.trim());
+      if (reasoningParts.length > 0) {
+        prev.reasoning = reasoningParts.join("\n\n");
+      }
+      if (msg.tokenUsage) {
+        prev.tokenUsage = (prev.tokenUsage ?? 0) + msg.tokenUsage;
+      }
+      if (msg.cost) {
+        prev.cost = { ...prev.cost, ...msg.cost };
+      }
+      if (msg.transcriptSegments) {
+        prev.transcriptSegments = [
+          ...(prev.transcriptSegments ?? []),
+          ...msg.transcriptSegments,
+        ];
+      }
+    } else {
+      result.push({ ...msg });
+    }
+  }
+  return result;
+}

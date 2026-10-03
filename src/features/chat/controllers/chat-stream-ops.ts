@@ -42,6 +42,7 @@ import {
 import {
   buildAssistantCost,
   buildAssistantCostForState,
+  commitAssistantMessageToTurn,
   shouldPreservePendingPromptOnStop,
 } from "./chat-message-helpers";
 import { ackChatTurnStatus, estimateTextTokens } from "../services/chat-api";
@@ -388,7 +389,7 @@ export function createChatStreamOperations(deps: StreamOpsDeps) {
     };
     const conversationId = activeConversationId.value || null;
     // shallowRef：必须替换数组引用才能触发视图更新
-    messages.value = [...messages.value, assistantMessage];
+    messages.value = commitAssistantMessageToTurn(messages.value, assistantMessage);
     // 先 ack 再异步持久化：避免崩溃后 live_turn 永久卡住无法发新消息
     void ackChatTurnStatus(conversationId);
     void persistMessage(assistantMessage, conversationId ?? undefined);
@@ -459,7 +460,7 @@ export function createChatStreamOperations(deps: StreamOpsDeps) {
       createdAt: Date.now(),
     };
     const conversationId = activeConversationId.value || null;
-    messages.value = [...messages.value, assistantMessage];
+    messages.value = commitAssistantMessageToTurn(messages.value, assistantMessage);
     void ackChatTurnStatus(conversationId);
     void persistMessage(assistantMessage, conversationId ?? undefined);
     activeRuntimeRefs.assistantResponse.value = "";

@@ -646,6 +646,13 @@ async fn process_delta(
             if !crate::llm::services::subagent::is_subagent_conversation(conversation_id) {
                 crate::llm::services::live_turns::append_text(conversation_id, &text);
             }
+            let _ = app.emit(
+                "agent-event",
+                crate::agent::events::AgentDomainEvent::TextDelta {
+                    turn_id: conversation_id.unwrap_or_default().to_string(),
+                    delta: text.clone(),
+                },
+            );
             emit_stream_event(
                 app,
                 conversation_id,
@@ -670,6 +677,13 @@ async fn process_delta(
             if !crate::llm::services::subagent::is_subagent_conversation(conversation_id) {
                 crate::llm::services::live_turns::append_reasoning(conversation_id, &text);
             }
+            let _ = app.emit(
+                "agent-event",
+                crate::agent::events::AgentDomainEvent::ThinkingDelta {
+                    turn_id: conversation_id.unwrap_or_default().to_string(),
+                    delta: text.clone(),
+                },
+            );
             emit_stream_event(
                 app,
                 conversation_id,
@@ -741,6 +755,15 @@ async fn process_delta(
                     call.name.clone(),
                     call.input.clone(),
                 );
+                let _ = app.emit(
+                    "agent-event",
+                    crate::agent::events::AgentDomainEvent::ToolCallRequested {
+                        turn_id: conversation_id.unwrap_or_default().to_string(),
+                        call_id: call.id.clone(),
+                        tool_name: call.name.clone(),
+                        arguments: call.input.clone(),
+                    },
+                );
                 emit_stream_event(
                     app,
                     conversation_id,
@@ -772,6 +795,18 @@ async fn process_delta(
             for executed in executed_calls {
                 let serialized_input = serde_json::to_string_pretty(&executed.input)
                     .unwrap_or_else(|_| executed.input.to_string());
+
+                let _ = app.emit(
+                    "agent-event",
+                    crate::agent::events::AgentDomainEvent::ToolCallCompleted {
+                        turn_id: conversation_id.unwrap_or_default().to_string(),
+                        call_id: executed.id.clone(),
+                        tool_name: executed.name.clone(),
+                        is_error: executed.is_error,
+                        output: executed.output.clone(),
+                        duration_ms: 0,
+                    },
+                );
 
                 emit_stream_event(
                     app,

@@ -2,16 +2,13 @@ import { computed, onMounted, onUnmounted, ref, shallowRef } from "vue";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { emitToast, NOVA_CHAT_ERROR_EVENT, type ChatErrorPayload } from "../../../lib/toast";
 import {
-  cancelChatMessage,
   getConversationUsage,
-  submitPermissionDecision,
   type SessionFileMeta,
 } from "../services/chat-api";
 import type {
   AgentMode,
   AssistantTranscriptSegment,
   ChatMessage,
-  ChatMessageEvent,
   ContextCompactSummary,
   ConversationMeta,
   ConversationUsageSummary,
@@ -29,14 +26,9 @@ import {
   type ScheduledTaskTriggerEvent,
 } from "./chat-controller-types";
 import {
-  bindActiveRuntimeState,
   resetPendingPromptState,
 } from "./chat-runtime-state";
 import { createConversationOperations } from "./chat-conversation-ops";
-import {
-  createChatStreamOperations,
-  ERROR_INTERRUPTION_SUFFIX,
-} from "./chat-stream-ops";
 import { createSendOperations } from "./chat-send-ops";
 import { setupAgentEventListener } from "../../agent/agent-listener";
 
@@ -107,7 +99,6 @@ export function useChatController() {
     toolInputById,
     toolNameById,
   };
-  const activeRuntimeState = bindActiveRuntimeState(activeRuntimeRefs, () => agentMode.value);
   const currentTurnToolExecutionLogs = computed(() => {
     const ids = new Set(currentTurnToolIds.value);
     return toolExecutionLogs.value.filter((entry) => ids.has(entry.id));
@@ -140,13 +131,8 @@ export function useChatController() {
     return latestPersistedPromptTokens.value;
   });
 
-  let unlistenChatStream: UnlistenFn | null = null;
   let unlistenScheduledTaskTrigger: UnlistenFn | null = null;
   let unlistenAgentEvent: UnlistenFn | null = null;
-
-  function persistToolExecutionLog(_entry: ToolExecutionEntry, _conversationId = activeConversationId.value) {
-    // 工具日志已收归后端会话事件日志（ToolCall/ToolResult 事件），前端不再直写。
-  }
 
   function hasConversationContent(): boolean {
     return messages.value.some(
@@ -213,17 +199,34 @@ export function useChatController() {
     hasConversationContent,
   });
 
-  const streamOps = createChatStreamOperations({
-    activeRuntimeRefs,
-    activeRuntimeState,
-    activeConversationId,
-    messages,
-    runtimeStateByConversation,
-    persistMessage: conversationOps.persistMessage,
-    persistToolExecutionLog,
-    cancelActiveConversation: () => cancelChatMessage(activeConversationId.value || null),
-    submitPermissionDecision,
-  });
+  function resetBackgroundRuntimeState(
+    _conversationId: string,
+    state: ConversationTurnRuntimeState,
+    _preservePendingPrompt?: boolean,
+  ) {
+    state.isGenerating = false;
+    state.currentStage = "processing";
+    state.assistantResponse = "";
+    state.assistantReasoning = "";
+    state.assistantSegments = [];
+    state.toolExecutionLogs = [];
+  }
+
+  async function finalizeActiveTurnOnError() {
+    const content = assistantResponse.value.trim();
+    if (content && activeConversationId.value) {
+      await conversationOps.persistMessage(
+        {
+          id: `msg-${Date.now()}`,
+          role: "assistant",
+          content: `${content}\n\n（本轮因错误中断）`,
+          reasoning: assistantReasoning.value.trim() || undefined,
+          createdAt: Date.now(),
+        },
+        activeConversationId.value,
+      );
+    }
+  }
 
   const sendOps = createSendOperations({
     activeConversationId,
@@ -257,9 +260,8 @@ export function useChatController() {
     createNewConversation: conversationOps.createNewConversation,
     persistMessage: conversationOps.persistMessage,
     refreshConversationFiles: conversationOps.refreshConversationFiles,
-    resetBackgroundRuntimeState: streamOps.resetBackgroundRuntimeState,
-    finalizeActiveTurnOnError: () =>
-      streamOps.finalizeOrStopTurn(undefined, ERROR_INTERRUPTION_SUFFIX),
+    resetBackgroundRuntimeState,
+    finalizeActiveTurnOnError,
   });
 
   async function handleNewChat() {
@@ -324,64 +326,11 @@ export function useChatController() {
     mainView.value = view;
   }
 
-  function routeChatStreamEvent(payload: ChatMessageEvent) {
-    const payloadConversationId = (payload.conversation_id ?? "").trim();
-    const targetConversationId = payloadConversationId || activeConversationId.value;
-    if (!targetConversationId) {
-      return;
-    }
-
-    if (targetConversationId !== activeConversationId.value) {
-      void streamOps.handleChatStreamEvent(targetConversationId, payload, "background");
-      return;
-    }
-    // 本轮结束（无论正常/取消/出错）后刷新会话累计用量；后台会话切回时由
-    // loadConversation 重新加载，这里不覆盖当前显示值。
-    if (payload.type === "stop") {
-      void getConversationUsage(targetConversationId)
-        .then((usage) => {
-          if (activeConversationId.value === targetConversationId) {
-            conversationUsage.value = usage;
-          }
-        })
-        .catch((err) => console.error("Failed to refresh conversation usage:", err));
-    }
-    void streamOps.handleChatStreamEvent(targetConversationId, payload, "active");
-  }
-
   onMounted(async () => {
-    // 先确定启动时要恢复的会话，再注册流事件监听。
-    // 刷新页面时后端轮次仍在运行：若在 loadConversation 完成前处理该会话的
-    // 流事件，事件会因 activeConversationId 为空而被当成"后台会话"，用空白
-    // 状态只累积到尾部增量，finalizeBackgroundTurn 会把残缺尾部落盘并 ack 掉
-    // 后端完整快照，恢复机制随之失效（历史中出现被截断的消息）。
     await conversationOps.refreshConversations();
     const startupConversationId = conversations.value[0]?.id ?? "";
-    // 恢复完成前丢弃目标会话的流事件：后端 live_turns 快照包含全部增量，
-    // 恢复以快照为准，这些事件是冗余的，处理反而会产生残缺/重复内容。
-    let startupRestorePending = startupConversationId.length > 0;
-
-    try {
-      unlistenChatStream = await listen<ChatMessageEvent>("chat-stream", (event) => {
-        const payload = event.payload;
-        if (
-          startupRestorePending &&
-          (payload.conversation_id ?? "").trim() === startupConversationId
-        ) {
-          return;
-        }
-        routeChatStreamEvent(payload);
-      });
-    } catch (err) {
-      console.error("Failed to setup listener:", err);
-    }
-
     if (startupConversationId) {
       await conversationOps.loadConversation(startupConversationId);
-      startupRestorePending = false;
-      // loadConversation 期间后端可能又推进了若干增量，以最新快照再恢复一次，
-      // 避免正文在恢复窗口内出现缺口；若轮次已在窗口内结束，则落盘完整内容。
-      await conversationOps.restoreActiveLiveTurn();
     }
 
     try {
@@ -462,6 +411,13 @@ export function useChatController() {
           isGenerating.value = false;
           if (activeConversationId.value) {
             await conversationOps.loadConversation(activeConversationId.value);
+            void getConversationUsage(activeConversationId.value)
+              .then((usage) => {
+                if (activeConversationId.value) {
+                  conversationUsage.value = usage;
+                }
+              })
+              .catch(() => {});
           }
         },
         onError: (error) => {
@@ -482,12 +438,12 @@ export function useChatController() {
   });
 
   onUnmounted(() => {
-    if (unlistenChatStream) unlistenChatStream();
     if (unlistenScheduledTaskTrigger) unlistenScheduledTaskTrigger();
     if (unlistenAgentEvent) unlistenAgentEvent();
     window.removeEventListener("history-cleared", conversationOps.handleHistoryCleared as EventListener);
     window.removeEventListener(NOVA_CHAT_ERROR_EVENT, onChatErrorEvent as EventListener);
   });
+
 
   return {
     messages,

@@ -137,16 +137,7 @@ fn extract_report_text(messages: &[Message]) -> String {
     text.trim().to_string()
 }
 
-/// 消息里是否包含 tool_result 块（判定回合是否还要继续喂给模型）。
-fn has_tool_result(messages: &[Message]) -> bool {
-    messages.iter().any(|m| {
-        matches!(
-            &m.content,
-            Content::Blocks(blocks)
-                if blocks.iter().any(|b| matches!(b, ContentBlock::ToolResult { .. }))
-        )
-    })
-}
+
 
 /// 截断报告，保护父对话上下文。
 fn truncate_report(report: String) -> String {
@@ -423,14 +414,36 @@ async fn run_loop(
             return Err("subagent provider returned no messages".to_string());
         }
 
-        let has_tools = has_tool_result(&returned);
         let report = extract_report_text(&returned);
         messages.extend(returned);
 
-        if !has_tools {
+        if provider_result.tool_calls.is_empty() {
             // 无工具调用 = 子代理交付报告，正常结束。
             return Ok(report);
         }
+
+        let executed_calls = crate::llm::tools::execute_tool_calls_with_app(
+            app,
+            Some(sub_id),
+            provider_result.tool_calls,
+        )
+        .await;
+
+        let tool_result_blocks: Vec<ContentBlock> = executed_calls
+            .into_iter()
+            .map(|executed| ContentBlock::ToolResult {
+                tool_use_id: executed.id,
+                is_error: executed.is_error,
+                content: vec![ContentBlock::Text {
+                    text: executed.output,
+                }],
+            })
+            .collect();
+
+        messages.push(Message {
+            role: Role::User,
+            content: Content::Blocks(tool_result_blocks),
+        });
     }
 
     // 轮次耗尽：返回已积累的部分结论。

@@ -9,6 +9,7 @@ use crate::llm::utils::pricing::TurnCostBreakdown;
 #[derive(Debug, Clone)]
 pub struct ProviderTurnResult {
     pub messages: Vec<Message>,
+    pub tool_calls: Vec<crate::llm::tools::ToolCallRequest>,
     pub stop_reason: Option<String>,
     pub input_tokens: Option<u32>,
     pub output_tokens: Option<u32>,

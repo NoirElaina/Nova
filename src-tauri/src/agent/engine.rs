@@ -164,7 +164,7 @@ impl AgentEngine {
                 },
             );
 
-            // 将本轮模型生成的消息与工具执行结果记入单事实源事件日志
+            // 将本轮模型生成的 Assistant 消息记入单事实源事件日志并加入上下文
             for msg in &provider_result.messages {
                 let mut event = SessionEvent::from_model_message(msg.clone());
                 if let SessionEvent::AssistantMessage {
@@ -182,20 +182,88 @@ impl AgentEngine {
                 )
                 .await;
             }
-
-            // 检查是否有工具执行结果
-            let has_tool_results = provider_result.messages.iter().any(|m| {
-                matches!(
-                    &m.content,
-                    Content::Blocks(blocks) if blocks.iter().any(|b| matches!(b, ContentBlock::ToolResult { .. }))
-                )
-            });
-
-            // 将新消息并入工作上下文，供后续步骤参考
             current_messages.extend(provider_result.messages);
 
-            // 若无工具调用结果或模型/钩子要求终止轮次，结束认知循环
-            if !has_tool_results || provider_result.prevent_continuation {
+            // 检查模型是否发起了工具调用
+            let tool_calls = provider_result.tool_calls;
+            if tool_calls.is_empty() || provider_result.prevent_continuation {
+                break;
+            }
+
+            // 发射工具调用请求领域事件
+            for call in &tool_calls {
+                let _ = self.app.emit(
+                    "agent-event",
+                    AgentDomainEvent::ToolCallRequested {
+                        turn_id: turn_id.clone(),
+                        call_id: call.id.clone(),
+                        tool_name: call.name.clone(),
+                        arguments: call.input.clone(),
+                    },
+                );
+            }
+
+            // 在 ReAct 决策循环外层执行工具（沙盒、权限、自愈 AST 语法树检查）
+            let exec_start = std::time::Instant::now();
+            let executed_calls = crate::llm::tools::execute_tool_calls_with_app(
+                &self.app,
+                Some(conversation_id),
+                tool_calls,
+            )
+            .await;
+            let duration_ms = exec_start.elapsed().as_millis() as u64;
+
+            let mut tool_result_blocks = Vec::new();
+            let mut stop_for_user_interaction = false;
+
+            for executed in executed_calls {
+                let _ = self.app.emit(
+                    "agent-event",
+                    AgentDomainEvent::ToolCallCompleted {
+                        turn_id: turn_id.clone(),
+                        call_id: executed.id.clone(),
+                        tool_name: executed.name.clone(),
+                        is_error: executed.is_error,
+                        output: executed.output.clone(),
+                        duration_ms,
+                    },
+                );
+
+                if crate::llm::providers::stream_runner::is_needs_user_input_payload(&executed.output)
+                    || executed.prevent_continuation
+                {
+                    stop_for_user_interaction = true;
+                }
+
+                tool_result_blocks.push(ContentBlock::ToolResult {
+                    tool_use_id: executed.id,
+                    is_error: executed.is_error,
+                    content: vec![ContentBlock::Text {
+                        text: executed.output,
+                    }],
+                });
+
+                if !executed.additional_messages.is_empty() {
+                    current_messages.extend(executed.additional_messages);
+                }
+            }
+
+            // 封装 ToolResult 消息并记入事件日志事实源与当前工作上下文
+            let tool_msg = Message {
+                role: Role::User,
+                content: Content::Blocks(tool_result_blocks),
+            };
+            let tool_event = SessionEvent::from_model_message(tool_msg.clone());
+            let _ = crate::llm::session_log::append_event(
+                &self.app,
+                conversation_id,
+                Some(&turn_id),
+                &tool_event,
+            )
+            .await;
+            current_messages.push(tool_msg);
+
+            if stop_for_user_interaction {
                 break;
             }
         }

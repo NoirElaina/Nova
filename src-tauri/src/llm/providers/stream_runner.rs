@@ -207,14 +207,7 @@ pub async fn run_streaming<P: StreamParser>(
 
     // assistant 输出块构建器：统一维护 Text / ToolUse / Thinking 的流式顺序。
     let mut assistant_output = AssistantOutputBuilder::default();
-    // 工具结果块（下一轮作为 user 消息回灌）。
-    let mut tool_result_blocks: Vec<ContentBlock> = Vec::new();
-    // hooks 注入的附加上下文消息。
-    let mut additional_context_messages: Vec<Message> = Vec::new();
-    // hooks 是否阻断续跑。
-    let mut prevent_continuation = false;
-    // hooks 给出的停止原因。
-    let mut hook_stop_reason: Option<String> = None;
+    let mut accumulated_tool_calls: Vec<tools::ToolCallRequest> = Vec::new();
     // 是否已经向前端发过 stop 事件。
     let mut emitted_stop = false;
     // 流内最近一次 stop_reason。
@@ -237,11 +230,10 @@ pub async fn run_streaming<P: StreamParser>(
                 let partial_messages = build_partial_with_parser_flush(
                     parser,
                     &mut assistant_output,
-                    &mut tool_result_blocks,
-                    &mut additional_context_messages,
                 );
                 return Ok(ProviderTurnResult {
                     messages: partial_messages,
+                    tool_calls: accumulated_tool_calls,
                     stop_reason: Some("cancelled".into()),
                     input_tokens: current_input_tokens,
                     output_tokens: current_output_tokens,
@@ -281,8 +273,6 @@ pub async fn run_streaming<P: StreamParser>(
                     build_partial_with_parser_flush(
                         parser,
                         &mut assistant_output,
-                        &mut tool_result_blocks,
-                        &mut additional_context_messages,
                     ),
                 ));
             }
@@ -315,8 +305,6 @@ pub async fn run_streaming<P: StreamParser>(
                         build_partial_with_parser_flush(
                             parser,
                             &mut assistant_output,
-                            &mut tool_result_blocks,
-                            &mut additional_context_messages,
                         ),
                     ));
                 }
@@ -342,8 +330,6 @@ pub async fn run_streaming<P: StreamParser>(
                         build_partial_with_parser_flush(
                             parser,
                             &mut assistant_output,
-                            &mut tool_result_blocks,
-                            &mut additional_context_messages,
                         ),
                     ));
                 }
@@ -357,10 +343,7 @@ pub async fn run_streaming<P: StreamParser>(
                     conversation_id,
                     provider,
                     &mut assistant_output,
-                    &mut tool_result_blocks,
-                    &mut additional_context_messages,
-                    &mut prevent_continuation,
-                    &mut hook_stop_reason,
+                    &mut accumulated_tool_calls,
                     &mut emitted_stop,
                     &mut last_stop_reason,
                     &mut current_input_tokens,
@@ -375,8 +358,6 @@ pub async fn run_streaming<P: StreamParser>(
                         build_partial_with_parser_flush(
                             parser,
                             &mut assistant_output,
-                            &mut tool_result_blocks,
-                            &mut additional_context_messages,
                         ),
                     ));
                 }
@@ -393,10 +374,7 @@ pub async fn run_streaming<P: StreamParser>(
             conversation_id,
             provider,
             &mut assistant_output,
-            &mut tool_result_blocks,
-            &mut additional_context_messages,
-            &mut prevent_continuation,
-            &mut hook_stop_reason,
+            &mut accumulated_tool_calls,
             &mut emitted_stop,
             &mut last_stop_reason,
             &mut current_input_tokens,
@@ -410,8 +388,6 @@ pub async fn run_streaming<P: StreamParser>(
                 e,
                 build_partial_cancelled_messages(
                     &mut assistant_output,
-                    &mut tool_result_blocks,
-                    &mut additional_context_messages,
                 ),
             ));
         }
@@ -437,8 +413,6 @@ pub async fn run_streaming<P: StreamParser>(
             build_partial_with_parser_flush(
                 parser,
                 &mut assistant_output,
-                &mut tool_result_blocks,
-                &mut additional_context_messages,
             ),
         ));
     }
@@ -469,35 +443,14 @@ pub async fn run_streaming<P: StreamParser>(
     }
 
     let output_blocks_empty = output_blocks.is_empty();
-    let tool_result_blocks_empty = tool_result_blocks.is_empty();
 
     // 组装 assistant 消息。
-    let mut result_messages = vec![Message {
+    let result_messages = vec![Message {
         role: Role::Assistant,
         content: crate::llm::types::Content::Blocks(output_blocks),
     }];
 
-    // 有工具结果时追加 user/tool_result 消息。
-    if !tool_result_blocks.is_empty() {
-        result_messages.push(Message {
-            role: Role::User,
-            content: crate::llm::types::Content::Blocks(tool_result_blocks),
-        });
-    }
-
-    // 追加 hooks 附加上下文消息。
-    if !additional_context_messages.is_empty() {
-        result_messages.extend(additional_context_messages);
-    }
-
-    // 统一 stop_reason：hook 优先，其次流内 finish_reason，兜底 "hook_stopped_continuation"。
-    let final_stop_reason = if prevent_continuation {
-        hook_stop_reason
-            .or(last_stop_reason)
-            .or_else(|| Some("hook_stopped_continuation".to_string()))
-    } else {
-        last_stop_reason
-    };
+    let final_stop_reason = last_stop_reason;
 
     // wire 级响应写入会话事件日志：完整响应 JSON（内容块/文本/stop_reason/用量，流结束后写一次）。
     if !output_blocks_empty {
@@ -519,7 +472,7 @@ pub async fn run_streaming<P: StreamParser>(
         }
     }
 
-    if output_blocks_empty && tool_result_blocks_empty {
+    if output_blocks_empty && accumulated_tool_calls.is_empty() {
         let msg = format!(
             "{} provider returned empty assistant message. stop_reason={:?}, input_tokens={:?}, output_tokens={:?}",
             provider, final_stop_reason, current_input_tokens, current_output_tokens
@@ -535,6 +488,7 @@ pub async fn run_streaming<P: StreamParser>(
 
     Ok(ProviderTurnResult {
         messages: result_messages,
+        tool_calls: accumulated_tool_calls,
         stop_reason: final_stop_reason,
         input_tokens: current_input_tokens,
         output_tokens: current_output_tokens,
@@ -548,7 +502,7 @@ pub async fn run_streaming<P: StreamParser>(
             current_cache_read_tokens,
             current_cache_creation_tokens,
         ),
-        prevent_continuation,
+        prevent_continuation: false,
     })
 }
 
@@ -558,48 +512,28 @@ pub async fn run_streaming<P: StreamParser>(
 
 /// 中断（取消或错误）时将已积累的流式输出打包成消息列表返回，
 /// 写入会话事件日志，使下轮重建的上下文与前端已见内容一致。
-/// - 若 output_blocks 含 ToolUse，必须同时携带 tool_result_blocks，
-///  否则写入事件日志后会处于"有 ToolUse 无 ToolResult"的非法状态。
-/// - 若工具产生了 side-channel 上下文（例如截图 image message），也必须一并携带，
-///   否则 ToolResult 会声称 attached_to_context=true，但真正的上下文消息已丢失。
-/// - 若尚无任何内容，返回空 Vec（query.rs 侧会补 [Request interrupted by user]）。
+/// 中断（取消或错误）时将已积累的流式输出打包成消息列表返回，
+/// 写入会话事件日志，使下轮重建的上下文与前端已见内容一致。
 fn build_partial_cancelled_messages(
     assistant_output: &mut AssistantOutputBuilder,
-    tool_result_blocks: &mut Vec<ContentBlock>,
-    additional_context_messages: &mut Vec<Message>,
 ) -> Vec<Message> {
     let output_blocks = assistant_output.take_blocks();
     if output_blocks.is_empty() {
         return Vec::new();
     }
-    let mut messages = vec![Message {
+    vec![Message {
         role: Role::Assistant,
         content: crate::llm::types::Content::Blocks(output_blocks),
-    }];
-    // 有 tool_result 时一并打包，保证 ToolUse/ToolResult 成对出现。
-    if !tool_result_blocks.is_empty() {
-        messages.push(Message {
-            role: Role::User,
-            content: crate::llm::types::Content::Blocks(std::mem::take(tool_result_blocks)),
-        });
-    }
-    // 与正常完成路径保持一致：工具 side-channel 消息也是模型上下文的一部分。
-    if !additional_context_messages.is_empty() {
-        messages.extend(std::mem::take(additional_context_messages));
-    }
-    messages
+    }]
 }
 
 /// 早退路径（取消/出错）组装 partial 消息的统一入口：
 /// 相比 build_partial_cancelled_messages，先 flush parser 的残余状态——
 /// 已流出但尚未收到收尾事件（如 content_block_stop）的 thinking/文本
 /// 会在这里被原样提交，确保用户已经看到的半截思考不丢。
-/// flush 可能产出非内容类 Delta（如 ToolsReady），早退路径只吸收内容块，不触发工具执行。
 fn build_partial_with_parser_flush<P: StreamParser>(
     parser: &mut P,
     assistant_output: &mut AssistantOutputBuilder,
-    tool_result_blocks: &mut Vec<ContentBlock>,
-    additional_context_messages: &mut Vec<Message>,
 ) -> Vec<Message> {
     for delta in parser.flush() {
         match delta {
@@ -610,18 +544,14 @@ fn build_partial_with_parser_flush<P: StreamParser>(
             _ => {}
         }
     }
-    build_partial_cancelled_messages(
-        assistant_output,
-        tool_result_blocks,
-        additional_context_messages,
-    )
+    build_partial_cancelled_messages(assistant_output)
 }
 
 // ─────────────────────────────────────────────
 // process_delta — 处理单个 Delta
 // ─────────────────────────────────────────────
 
-/// 处理一个 `Delta`：更新状态、emit 前端事件、执行工具调用。
+/// 处理一个 `Delta`：更新状态、emit 前端事件、收集待执行的工具调用。
 #[allow(clippy::too_many_arguments)]
 async fn process_delta(
     delta: Delta,
@@ -629,10 +559,7 @@ async fn process_delta(
     conversation_id: Option<&str>,
     provider: &str,
     assistant_output: &mut AssistantOutputBuilder,
-    tool_result_blocks: &mut Vec<ContentBlock>,
-    additional_context_messages: &mut Vec<Message>,
-    prevent_continuation: &mut bool,
-    hook_stop_reason: &mut Option<String>,
+    accumulated_tool_calls: &mut Vec<tools::ToolCallRequest>,
     emitted_stop: &mut bool,
     last_stop_reason: &mut Option<String>,
     current_input_tokens: &mut Option<u32>,
@@ -747,124 +674,17 @@ async fn process_delta(
         }
 
         Delta::ToolsReady(ready_calls) => {
-            // 先将所有工具写入 assistant blocks，再批量执行。
-            let mut call_requests: Vec<tools::ToolCallRequest> = Vec::new();
             for call in ready_calls {
                 assistant_output.push_tool_use(
                     call.id.clone(),
                     call.name.clone(),
                     call.input.clone(),
                 );
-                let _ = app.emit(
-                    "agent-event",
-                    crate::agent::events::AgentDomainEvent::ToolCallRequested {
-                        turn_id: conversation_id.unwrap_or_default().to_string(),
-                        call_id: call.id.clone(),
-                        tool_name: call.name.clone(),
-                        arguments: call.input.clone(),
-                    },
-                );
-                emit_stream_event(
-                    app,
-                    conversation_id,
-                    ChatMessageEvent {
-                        r#type: "tool-executing".into(),
-                        text: None,
-                        tool_use_id: Some(call.id.clone()),
-                        tool_use_name: Some(call.name.clone()),
-                        tool_use_input: None,
-                        tool_result: None,
-                        tool_is_error: None,
-                        token_usage: *current_output_tokens,
-                        stop_reason: None,
-                        turn_state: Some("tool_executing".into()),
-                        conversation_id: conversation_id.map(str::to_string),
-                    },
-                )
-                .ok();
-                call_requests.push(tools::ToolCallRequest {
+                accumulated_tool_calls.push(tools::ToolCallRequest {
                     id: call.id,
                     name: call.name,
                     input: call.input,
                 });
-            }
-
-            let executed_calls =
-                tools::execute_tool_calls_with_app(app, conversation_id, call_requests).await;
-
-            for executed in executed_calls {
-                let serialized_input = serde_json::to_string_pretty(&executed.input)
-                    .unwrap_or_else(|_| executed.input.to_string());
-
-                let _ = app.emit(
-                    "agent-event",
-                    crate::agent::events::AgentDomainEvent::ToolCallCompleted {
-                        turn_id: conversation_id.unwrap_or_default().to_string(),
-                        call_id: executed.id.clone(),
-                        tool_name: executed.name.clone(),
-                        is_error: executed.is_error,
-                        output: executed.output.clone(),
-                        duration_ms: 0,
-                    },
-                );
-
-                emit_stream_event(
-                    app,
-                    conversation_id,
-                    ChatMessageEvent {
-                        r#type: "tool-result".into(),
-                        text: None,
-                        tool_use_id: Some(executed.id.clone()),
-                        tool_use_name: Some(executed.name.clone()),
-                        tool_use_input: Some(serialized_input),
-                        tool_result: Some(executed.output.clone()),
-                        tool_is_error: Some(executed.is_error),
-                        token_usage: *current_output_tokens,
-                        stop_reason: None,
-                        turn_state: Some("tool_completed".into()),
-                        conversation_id: conversation_id.map(str::to_string),
-                    },
-                )
-                .ok();
-
-                // Anthropic 特有：工具结果为 needs_user_input 时补发 stop。
-                if is_needs_user_input_payload(&executed.output) {
-                    app.emit(
-                        "chat-stream",
-                        ChatMessageEvent {
-                            r#type: "stop".into(),
-                            text: None,
-                            tool_use_id: None,
-                            tool_use_name: None,
-                            tool_use_input: None,
-                            tool_result: None,
-                            tool_is_error: None,
-                            token_usage: *current_output_tokens,
-                            stop_reason: Some("needs_user_input".into()),
-                            turn_state: Some("awaiting_user_input".into()),
-                            conversation_id: conversation_id.map(str::to_string),
-                        },
-                    )
-                    .ok();
-                }
-
-                tool_result_blocks.push(ContentBlock::ToolResult {
-                    tool_use_id: executed.id,
-                    is_error: executed.is_error,
-                    content: vec![ContentBlock::Text {
-                        text: executed.output,
-                    }],
-                });
-
-                if !executed.additional_messages.is_empty() {
-                    additional_context_messages.extend(executed.additional_messages);
-                }
-                if executed.prevent_continuation {
-                    *prevent_continuation = true;
-                    if hook_stop_reason.is_none() {
-                        *hook_stop_reason = executed.stop_reason;
-                    }
-                }
             }
         }
 
@@ -967,7 +787,7 @@ fn current_turn_cost(
 }
 
 /// 工具结果是否表示需要用户输入（type == "needs_user_input"）。
-fn is_needs_user_input_payload(raw: &str) -> bool {
+pub fn is_needs_user_input_payload(raw: &str) -> bool {
     serde_json::from_str::<serde_json::Value>(raw)
         .ok()
         .and_then(|v| {

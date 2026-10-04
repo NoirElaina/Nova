@@ -149,6 +149,7 @@ impl LlmClient {
             _ = cancel_token.cancelled() => {
                 return Ok((ProviderTurnResult {
                     messages: Vec::new(),
+                    tool_calls: Vec::new(),
                     stop_reason: Some("cancelled".into()),
                     input_tokens: None,
                     output_tokens: None,

@@ -393,6 +393,17 @@ export async function sendChatMessage(
   });
 }
 
+/** 发送给全新现代化 Agent 引擎 (单一真实信源 + ReAct 自愈验证) */
+export async function sendModernAgentTurn(
+  conversationId: string,
+  prompt: string,
+): Promise<void> {
+  await invoke("send_modern_agent_turn", {
+    conversationId,
+    prompt,
+  });
+}
+
 /** 追加一条纯文本消息到会话事件日志（分支转存等场景）。 */
 export async function appendPlainChatMessage(
   conversationId: string,

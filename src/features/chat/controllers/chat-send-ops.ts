@@ -22,7 +22,7 @@ import {
   cancelChatMessage,
   getChatTurnStatus,
   replaceConversationHistory,
-  sendChatMessage,
+  sendModernAgentTurn,
   submitPermissionDecision,
   saveSessionFile,
 } from "../services/chat-api";
@@ -40,7 +40,6 @@ import {
   resetTurnRuntimeState,
 } from "./chat-runtime-state";
 import {
-  buildModelMessage,
   isDocumentUploadFile,
   isImageUploadFile,
   toAttachmentMeta,
@@ -160,20 +159,13 @@ export function createSendOperations(deps: SendOpsDeps) {
     turnRuntime.agentMode = agentMode.value;
     void chatScreenRef.value?.scrollLiveAssistantIntoView();
 
-    const rustMessages = nextMessages.map((message) => buildModelMessage(message));
-    // 本轮新增用户消息的附件元数据随发送传给后端，由事件日志落盘。
     const lastMessage = nextMessages[nextMessages.length - 1];
-    const turnAttachments =
-      lastMessage?.role === "user" && lastMessage.attachments?.length
-        ? (lastMessage.attachments as unknown as Record<string, unknown>[])
-        : undefined;
+    const userPrompt = lastMessage?.role === "user" ? lastMessage.content : "";
 
     try {
-      await sendChatMessage(
-        sendingConversationId || null,
-        rustMessages,
-        agentMode.value,
-        turnAttachments,
+      await sendModernAgentTurn(
+        sendingConversationId,
+        userPrompt,
       );
     } catch (err: unknown) {
       const isActiveFailedConversation = activeConversationId.value === sendingConversationId;

@@ -38,6 +38,7 @@ import {
   ERROR_INTERRUPTION_SUFFIX,
 } from "./chat-stream-ops";
 import { createSendOperations } from "./chat-send-ops";
+import { setupAgentEventListener } from "../../agent/agent-listener";
 
 export function useChatController() {
   const messages = shallowRef<ChatMessage[]>([]);
@@ -141,6 +142,7 @@ export function useChatController() {
 
   let unlistenChatStream: UnlistenFn | null = null;
   let unlistenScheduledTaskTrigger: UnlistenFn | null = null;
+  let unlistenAgentEvent: UnlistenFn | null = null;
 
   function persistToolExecutionLog(_entry: ToolExecutionEntry, _conversationId = activeConversationId.value) {
     // 工具日志已收归后端会话事件日志（ToolCall/ToolResult 事件），前端不再直写。
@@ -404,6 +406,77 @@ export function useChatController() {
       console.error("Failed to setup scheduled-task-trigger listener:", err);
     }
 
+    try {
+      unlistenAgentEvent = await setupAgentEventListener({
+        onTurnStarted: (_turnId, _convId) => {
+          isGenerating.value = true;
+          currentStage.value = "processing";
+          assistantResponse.value = "";
+          assistantReasoning.value = "";
+          assistantSegments.value = [];
+        },
+        onThinkingDelta: (delta) => {
+          assistantReasoning.value += delta;
+        },
+        onTextDelta: (delta) => {
+          assistantResponse.value += delta;
+        },
+        onToolRequested: (callId, toolName, args) => {
+          toolExecutionLogs.value.push({
+            id: callId,
+            toolName,
+            status: "running",
+            input: typeof args === "string" ? args : JSON.stringify(args, null, 2),
+            result: "",
+            startedAt: Date.now(),
+          });
+        },
+        onToolCompleted: (callId, _toolName, output, isError, _durationMs) => {
+          const entry = toolExecutionLogs.value.find((e) => e.id === callId);
+          if (entry) {
+            entry.status = isError ? "error" : "completed";
+            entry.result = output;
+            entry.finishedAt = Date.now();
+          }
+        },
+        onVerificationStarted: (target) => {
+          emitToast({
+            variant: "info",
+            source: "verifier",
+            message: `[即时自愈] 正在对 ${target} 进行静态语法树分析...`,
+          });
+        },
+        onVerificationCompleted: (target, passed, feedback) => {
+          if (!passed) {
+            emitToast({
+              variant: "warning",
+              source: "verifier",
+              message: `[自愈拦截] ${target} 发生语法错误，已阻断写入并回灌模型: ${feedback || ""}`,
+            });
+          }
+        },
+        onTokenUsage: (usage) => {
+          assistantTokenUsage.value = usage.input + usage.output;
+        },
+        onTurnFinished: async (_turnId, _stopReason) => {
+          isGenerating.value = false;
+          if (activeConversationId.value) {
+            await conversationOps.loadConversation(activeConversationId.value);
+          }
+        },
+        onError: (error) => {
+          isGenerating.value = false;
+          emitToast({
+            variant: "error",
+            source: "agent",
+            message: error,
+          });
+        },
+      });
+    } catch (err) {
+      console.error("Failed to setup modern agent event listener:", err);
+    }
+
     window.addEventListener("history-cleared", conversationOps.handleHistoryCleared as EventListener);
     window.addEventListener(NOVA_CHAT_ERROR_EVENT, onChatErrorEvent as EventListener);
   });
@@ -411,6 +484,7 @@ export function useChatController() {
   onUnmounted(() => {
     if (unlistenChatStream) unlistenChatStream();
     if (unlistenScheduledTaskTrigger) unlistenScheduledTaskTrigger();
+    if (unlistenAgentEvent) unlistenAgentEvent();
     window.removeEventListener("history-cleared", conversationOps.handleHistoryCleared as EventListener);
     window.removeEventListener(NOVA_CHAT_ERROR_EVENT, onChatErrorEvent as EventListener);
   });

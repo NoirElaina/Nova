@@ -1,3 +1,4 @@
+use crate::agent::tools::verifier::CodeVerifier;
 use crate::llm::tools::shared::read_state;
 use crate::llm::tools::{
     app_tool, AppExecuteFuture, ToolDisclosure, ToolFailure, ToolOutcome, ToolPermissionDescriptor, ToolRegistration,
@@ -108,6 +109,11 @@ async fn execute_async(
         // 新建文件：UTF-8 / 无 BOM。
         FileEncoding::Utf8
     };
+
+    // 静态自愈语法校验：写入磁盘前进行 AST 语法验证拦截
+    CodeVerifier::verify_file_content(&target, content)
+        .await
+        .map_err(ToolFailure::new)?;
 
     // 落盘走 atomic_write（tempfile + rename + 权限保留 + symlink 解析）。
     // 不还原行尾，模型 content 直接落盘。

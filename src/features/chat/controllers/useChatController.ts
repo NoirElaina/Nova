@@ -31,8 +31,13 @@ import {
 import { createConversationOperations } from "./chat-conversation-ops";
 import { createSendOperations } from "./chat-send-ops";
 import { setupAgentEventListener } from "../../agent/agent-listener";
+import { useConversationStore } from "@/stores/conversation";
+import { useAgentSessionStore } from "@/stores/agentSession";
 
 export function useChatController() {
+  const conversationStore = useConversationStore();
+  const agentSessionStore = useAgentSessionStore();
+  void conversationStore;
   const messages = shallowRef<ChatMessage[]>([]);
   const isGenerating = ref(false);
   const currentStage = ref<LiveTurnStage>("processing");
@@ -358,6 +363,7 @@ export function useChatController() {
     try {
       unlistenAgentEvent = await setupAgentEventListener({
         onTurnStarted: (_turnId, _convId) => {
+          agentSessionStore.handleTurnStarted(_turnId, _convId);
           isGenerating.value = true;
           currentStage.value = "processing";
           assistantResponse.value = "";
@@ -365,12 +371,15 @@ export function useChatController() {
           assistantSegments.value = [];
         },
         onThinkingDelta: (delta) => {
+          agentSessionStore.handleThinkingDelta(delta);
           assistantReasoning.value += delta;
         },
         onTextDelta: (delta) => {
+          agentSessionStore.handleTextDelta(delta);
           assistantResponse.value += delta;
         },
         onToolRequested: (callId, toolName, args) => {
+          agentSessionStore.handleToolRequested(callId, toolName, args);
           toolExecutionLogs.value.push({
             id: callId,
             toolName,
@@ -381,6 +390,7 @@ export function useChatController() {
           });
         },
         onToolCompleted: (callId, _toolName, output, isError, _durationMs) => {
+          agentSessionStore.handleToolCompleted(callId, _toolName, output, isError, _durationMs);
           const entry = toolExecutionLogs.value.find((e) => e.id === callId);
           if (entry) {
             entry.status = isError ? "error" : "completed";
@@ -405,9 +415,11 @@ export function useChatController() {
           }
         },
         onTokenUsage: (usage) => {
+          agentSessionStore.handleTokenUsage(usage);
           assistantTokenUsage.value = usage.input + usage.output;
         },
         onTurnFinished: async (_turnId, _stopReason) => {
+          await agentSessionStore.handleTurnFinished(_turnId, _stopReason);
           isGenerating.value = false;
           if (activeConversationId.value) {
             await conversationOps.loadConversation(activeConversationId.value);
@@ -421,6 +433,7 @@ export function useChatController() {
           }
         },
         onError: (error) => {
+          agentSessionStore.handleTurnError(error);
           isGenerating.value = false;
           emitToast({
             variant: "error",

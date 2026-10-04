@@ -1,10 +1,10 @@
-use crate::llm::tools::shared::edit_replacers::apply_replace;
+use crate::agent::tools::edit::{execute_exact_multi_edit, EditOperation};
 use crate::llm::tools::shared::read_state;
 use crate::llm::tools::{
     app_tool, AppExecuteFuture, ToolDisclosure, ToolFailure, ToolOutcome, ToolPermissionDescriptor, ToolRegistration,
 };
 use crate::llm::types::Tool;
-use crate::llm::utils::file_io::{read_file_meta, resolve_tool_path, write_file_with_meta};
+use crate::llm::utils::file_io::{read_file_meta, resolve_tool_path};
 use serde_json::{json, Value};
 use tauri::AppHandle;
 
@@ -88,13 +88,7 @@ fn permission(input: &Value) -> Option<ToolPermissionDescriptor> {
     )
 }
 
-struct ParsedEdit {
-    old_string: String,
-    new_string: String,
-    replace_all: bool,
-}
-
-fn parse_edit(value: &Value, idx: usize) -> Result<ParsedEdit, ToolFailure> {
+fn parse_edit(value: &Value, idx: usize) -> Result<EditOperation, ToolFailure> {
     let old_string = value
         .get("old_string")
         .and_then(Value::as_str)
@@ -125,7 +119,7 @@ fn parse_edit(value: &Value, idx: usize) -> Result<ParsedEdit, ToolFailure> {
         )));
     }
 
-    Ok(ParsedEdit {
+    Ok(EditOperation {
         old_string: old_string.to_string(),
         new_string: new_string.to_string(),
         replace_all,
@@ -151,63 +145,21 @@ async fn execute_async(
         return Err(ToolFailure::invalid_input("edits must not be empty"));
     }
 
-    let target = resolve_tool_path(file_path).map_err(ToolFailure::invalid_input)?;
-
-    if !target.exists() {
-        return Err(ToolFailure::new(format!(
-            "File does not exist: {}. Use Write to create a new file.",
-            file_path
-        )));
-    }
-
-    // 解析所有 edit
-    let mut edits: Vec<ParsedEdit> = Vec::with_capacity(edits_raw.len());
+    let mut edits: Vec<EditOperation> = Vec::with_capacity(edits_raw.len());
     for (idx, item) in edits_raw.iter().enumerate() {
         edits.push(parse_edit(item, idx)?);
     }
 
-    // 读取文件一次（解码 + 剥 BOM + CRLF→LF），记录原始编码与行尾。
-    let (mut content, meta) = read_file_meta(&target)
-        .map_err(|e| ToolFailure::new(format!("Error reading {}: {}", file_path, e)))?;
+    let res = execute_exact_multi_edit(file_path, &edits)
+        .await
+        .map_err(ToolFailure::new)?;
 
-    // 顺序应用所有 edit。任一失败则整批回滚（不写入）。
-    // 每个 new_string 归一化为 LF，避免模型输出的 \r\n 在 CRLF 文件还原时产生 \r\r\n 损坏。
-    let mut applied_count = 0usize;
-    let mut fuzzy_notes: Vec<String> = Vec::new();
-    for (idx, edit) in edits.iter().enumerate() {
-        let new_string_lf = edit.new_string.replace("\r\n", "\n");
-        let (new_content, replaced, note) =
-            apply_replace(&content, &edit.old_string, &new_string_lf, edit.replace_all)
-                .map_err(|e| {
-                    ToolFailure::new(format!(
-                        "edits[{}] failed (no changes written, file unchanged): {}",
-                        idx, e
-                    ))
-                })?;
-        content = new_content;
-        applied_count += replaced;
-        if let Some(note) = note {
-            fuzzy_notes.push(format!("edits[{}]: {}", idx, note));
-        }
+    let target = resolve_tool_path(file_path).map_err(ToolFailure::invalid_input)?;
+    if let Ok((content, _)) = read_file_meta(&target) {
+        read_state::record(conversation_id, &target, &content);
     }
 
-    // 全部成功后写回——按原始编码与行尾还原。
-    // 落盘走 atomic_write（tempfile + rename + 权限保留 + symlink 解析）。
-    write_file_with_meta(&target, &content, &meta).map_err(ToolFailure::new)?;
-
-    // 刷新读取状态，使同一轮内的后续编辑可继续。
-    read_state::record(conversation_id, &target, &content);
-
-    let mut result = json!({
-        "ok": true,
-        "file_path": file_path,
-        "edits_applied": edits.len(),
-        "occurrences_replaced": applied_count
-    });
-    if !fuzzy_notes.is_empty() {
-        result["notes"] = json!(fuzzy_notes);
-    }
-    Ok(ToolOutcome::json(result))
+    Ok(ToolOutcome::json(res))
 }
 
 fn execute_with_app_boxed(

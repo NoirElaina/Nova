@@ -81,8 +81,11 @@ export type AssistantTranscriptSegment =
       toolIds: string[];
     };
 
-// 对话执行模式：仅 agent（计划由 write_plan 工具直接写入，无独立计划模式）。
-export type AgentMode = "agent";
+// 对话执行模式：
+// - agent: 全自主编码模式
+// - plan: 架构规划模式（只读分析、编写计划，禁止修改代码）
+// - ask: 咨询问答模式（纯问答，不执行修改）
+export type AgentMode = "agent" | "plan" | "ask";
 
 export type AttachmentKind = "document" | "image";
 

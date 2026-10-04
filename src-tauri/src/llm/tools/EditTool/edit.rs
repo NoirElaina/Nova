@@ -1,10 +1,9 @@
-use crate::llm::tools::shared::edit_replacers::apply_replace;
 use crate::llm::tools::shared::read_state;
 use crate::llm::tools::{
     app_tool, AppExecuteFuture, ToolDisclosure, ToolFailure, ToolOutcome, ToolPermissionDescriptor, ToolRegistration,
 };
 use crate::llm::types::Tool;
-use crate::llm::utils::file_io::{read_file_meta, resolve_tool_path, write_file_with_meta};
+use crate::llm::utils::file_io::{read_file_meta, resolve_tool_path};
 use serde_json::{json, Value};
 use tauri::AppHandle;
 
@@ -99,66 +98,16 @@ async fn execute_async(
         .and_then(Value::as_bool)
         .unwrap_or(false);
 
-    if old_string == new_string {
-        return Err(ToolFailure::invalid_input(
-            "old_string and new_string must be different",
-        ));
-    }
-
-    if old_string.is_empty() {
-        return Err(ToolFailure::invalid_input("old_string must not be empty"));
-    }
+    let res = crate::agent::tools::edit::execute_exact_edit(file_path, old_string, new_string, replace_all)
+        .await
+        .map_err(ToolFailure::new)?;
 
     let target = resolve_tool_path(file_path).map_err(ToolFailure::invalid_input)?;
-
-    if !target.exists() {
-        return Err(ToolFailure::new(format!(
-            "File does not exist: {}. Use Write to create a new file.",
-            file_path
-        )));
+    if let Ok((content, _)) = read_file_meta(&target) {
+        read_state::record(conversation_id, &target, &content);
     }
 
-    // 目录也会通过 exists() 检查，必须单独拦：否则会落到 read_file_meta，
-    // 报 "Error reading <dir>: 拒绝访问 (os error 5)" —— 与 Read 的
-    // "Path is a directory, not a file" 说法不一致，且把排查方向误导到权限上。
-    if target.is_dir() {
-        return Err(ToolFailure::new(format!(
-            "Path is a directory, not a file: {}",
-            file_path
-        )));
-    }
-
-    // read_file_meta 解码为 UTF-8、剥离 BOM、CRLF→LF，并返回原始编码与行尾元信息。
-    // original 是模型应看到的归一化内容（纯 LF、无 BOM）；meta 用于写回时还原。
-    let (original, meta) = read_file_meta(&target)
-        .map_err(|e| ToolFailure::new(format!("Error reading {}: {}", file_path, e)))?;
-
-    // 归一化 new_string 为 LF，避免模型输出的 \r\n 在 CRLF 文件还原时产生 \r\r\n 损坏。
-    // 先把 \r\n 归一成 \n，再按原始行尾还原，避免 \r\r\n。
-    let new_string_lf = new_string.replace("\r\n", "\n");
-
-    // 使用 fuzzy matcher 链：精确匹配 → 行 trim → 锚点 → 空白归一化 → ...
-    // 这避免了 AI 因一两个空格差异就失败重试。
-    let (modified, replaced_count, fuzzy_note) =
-        apply_replace(&original, old_string, &new_string_lf, replace_all)
-            .map_err(ToolFailure::new)?;
-
-    // 写回时按原始编码与行尾还原——CRLF 文件保持 CRLF，带 BOM 的文件保持 BOM。
-    // 落盘走 atomic_write（tempfile + rename + 权限保留 + symlink 解析）。
-    write_file_with_meta(&target, &modified, &meta).map_err(ToolFailure::new)?;
-
-    // 刷新读取状态，使同一轮内的后续编辑可继续。
-    read_state::record(conversation_id, &target, &modified);
-
-    let mut result = json!({
-        "ok": true,
-        "file_path": file_path,
-        "occurrences_replaced": replaced_count
-    });
-    if let Some(note) = fuzzy_note {
-        result["note"] = json!(note);
-    }
-    Ok(ToolOutcome::json(result))
+    Ok(ToolOutcome::json(res))
 }
 
 fn execute_with_app_boxed(

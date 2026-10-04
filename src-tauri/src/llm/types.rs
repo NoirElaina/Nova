@@ -13,11 +13,16 @@ pub enum Role {
     Assistant,
 }
 
-// 对话执行模式：仅 Agent（计划由 write_plan 工具直接写入，无独立计划模式）。
+/// 对话执行模式：
+/// - Agent: 全功能自主编码与工具执行
+/// - Plan: 规划架构模式（只读分析、编写计划与技术方案，禁止直接修改代码）
+/// - Ask: 纯问答咨询模式（不触发破坏性工具修改）
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 pub enum AgentMode {
     Agent,
+    Plan,
+    Ask,
 }
 
 // 消息内容：

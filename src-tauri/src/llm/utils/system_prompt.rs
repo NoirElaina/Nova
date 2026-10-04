@@ -133,7 +133,7 @@ Before using one, call `LoadTool` with its name (it becomes callable from the ne
 
 pub fn load_system_prompt(
     app: &AppHandle,
-    _agent_mode: AgentMode,
+    agent_mode: AgentMode,
     conversation_id: Option<&str>,
 ) -> Result<String, String> {
     // 分支问答会话：纯问答精简提示词，完全跳过主工程协议、
@@ -282,7 +282,20 @@ pub fn load_system_prompt(
     };
 
     // 插件提示词片段（end 锚点）：Skills 段之后。
-    let prompt_with_memory = append_plugin_prompt_sections(prompt_with_memory, app, "end");
+    let prompt_with_plugins = append_plugin_prompt_sections(prompt_with_memory, app, "end");
 
-    Ok(prompt_with_memory)
+    // 注入真实生效的 AgentMode 行为规范约束
+    let final_prompt = match agent_mode {
+        AgentMode::Plan => format!(
+            "{}\n\n## Mode: Plan (Architect)\nYou are strictly in Plan Mode. Your goal is to explore the codebase, research architecture, and design detailed implementation plans. You MUST NOT modify any files (do NOT call Edit, Write, or mutation tools). Focus on requirements analysis, architectural design, and step-by-step task breakdowns.\n",
+            prompt_with_plugins
+        ),
+        AgentMode::Ask => format!(
+            "{}\n\n## Mode: Ask (Consultation)\nYou are strictly in Ask Mode. Your goal is to answer questions, analyze issues, and explain concepts. You MUST NOT modify any files or execute mutation actions.\n",
+            prompt_with_plugins
+        ),
+        AgentMode::Agent => prompt_with_plugins,
+    };
+
+    Ok(final_prompt)
 }

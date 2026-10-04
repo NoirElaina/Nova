@@ -62,7 +62,7 @@ fn image_tokens_from_dimensions(width: u32, height: u32) -> i64 {
 }
 
 fn image_tokens_from_bytes(bytes: &[u8]) -> Option<i64> {
-    let image = screenshots::image::load_from_memory(bytes).ok()?;
+    let image = image::load_from_memory(bytes).ok()?;
     Some(image_tokens_from_dimensions(image.width(), image.height()))
 }
 

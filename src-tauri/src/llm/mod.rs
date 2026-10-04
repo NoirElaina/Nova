@@ -3,7 +3,6 @@ pub mod client;
 pub mod commands;
 pub mod history;
 pub mod providers;
-pub mod query;
 pub mod query_engine;
 pub mod services;
 pub mod session_log;

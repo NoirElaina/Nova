@@ -1,6 +1,5 @@
 use crate::llm::services::cron_schedule;
 use crate::llm::tools::shared::cron_store::{add_job, list_jobs, remove_job, remove_job_with_cleanup, CronJob};
-use crate::llm::types::{AgentMode, Content, Message, Role};
 use chrono::{Local, Utc};
 use serde::Serialize;
 use std::collections::{HashMap, HashSet};
@@ -73,21 +72,12 @@ async fn execute_scheduled_prompt_in_bound_conversation(
     };
 
     let message_content = build_scheduled_trigger_user_content(job, triggered_at);
-    let turn_messages = vec![Message {
-        role: Role::User,
-        content: Content::Text(message_content),
-    }];
-
-    crate::llm::cancellation::begin_turn(Some(conversation_id));
-    let result = crate::llm::query::send_chat_message(
+    let result = crate::agent::send_modern_agent_turn(
         app.clone(),
-        Some(conversation_id.to_string()),
-        turn_messages,
-        AgentMode::Agent,
-        None,
+        conversation_id.to_string(),
+        message_content,
     )
     .await;
-    crate::llm::cancellation::finish_turn(Some(conversation_id));
 
     result.map_err(|e| {
         format!(

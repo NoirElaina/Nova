@@ -1,7 +1,7 @@
 use serde::Serialize;
 use tauri::AppHandle;
 
-use crate::llm::types::{AgentMode, Message};
+use crate::llm::types::{AgentMode, Content, Message, Role};
 
 #[derive(Debug, Serialize, Clone)]
 pub struct ChatMessageEvent {
@@ -29,15 +29,24 @@ pub struct ChatMessageEvent {
     pub conversation_id: Option<String>,
 }
 
-// 兼容入口：保留原函数名，内部委托给 query 模块实现。
+/// 统一转发至全新现代化 Agent 核心引擎
 pub async fn send_chat_message(
     app: AppHandle,
     conversation_id: Option<String>,
     messages: Vec<Message>,
-    agent_mode: AgentMode,
-    attachments: Option<Vec<crate::llm::commands::types::HistoryAttachment>>,
+    _agent_mode: AgentMode,
+    _attachments: Option<Vec<crate::llm::commands::types::HistoryAttachment>>,
 ) -> Result<(), String> {
-    // 直接委托给新版 query 模块，保持旧 API 兼容。
-    crate::llm::query::send_chat_message(app, conversation_id, messages, agent_mode, attachments)
-        .await
+    let conv_id = conversation_id.unwrap_or_default();
+    let prompt = messages
+        .iter()
+        .rev()
+        .find(|m| matches!(m.role, Role::User))
+        .and_then(|m| match &m.content {
+            Content::Text(t) => Some(t.clone()),
+            _ => None,
+        })
+        .unwrap_or_default();
+
+    crate::agent::send_modern_agent_turn(app, conv_id, prompt).await
 }

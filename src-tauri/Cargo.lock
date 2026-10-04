@@ -3705,6 +3705,7 @@ dependencies = [
  "similar",
  "sqlite-vec",
  "sqlx",
+ "syn 2.0.117",
  "tauri",
  "tauri-build",
  "tauri-plugin-dialog",

@@ -1,3 +1,4 @@
+pub mod agent;
 pub mod command;
 pub mod llm;
 pub mod logging;
@@ -77,6 +78,7 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             greet,
+            agent::send_modern_agent_turn,
             llm::client::send_chat_message,
             llm::client::cancel_chat_message,
             llm::services::branch::send_branch_message,

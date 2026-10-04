@@ -80,3 +80,4 @@ boa_engine = "0.21"
 # notify 用于监听插件目录变化：开发插件时改 main.js 即时生效、
 # 手动增删插件目录自动刷新注册表并推送前端事件。
 notify = "8"
+syn = { version = "2", default-features = false, features = ["parsing", "full"] }

@@ -1,4 +1,5 @@
 import { createApp } from "vue";
+import { createPinia } from "pinia";
 import App from "./App.vue";
 import BrowserWindowShell from "./components/chat/workspace/BrowserWindowShell.vue";
 import "./main.css"
@@ -15,5 +16,8 @@ if (params.get("novaBrowserWindow") === "1") {
   installGlobalErrorToastHandlers();
   void installBackendErrorToastListener();
   void installBackendWarningToastListener();
-  createApp(App).mount("#app");
+  const pinia = createPinia();
+  const app = createApp(App);
+  app.use(pinia);
+  app.mount("#app");
 }

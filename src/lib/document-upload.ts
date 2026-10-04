@@ -1,10 +1,21 @@
-import JSZip from "jszip";
-import * as pdfjsLib from "pdfjs-dist";
+import type JSZip from "jszip";
 import type { TextItem } from "pdfjs-dist/types/src/display/api";
-pdfjsLib.GlobalWorkerOptions.workerSrc = new URL(
-  "pdfjs-dist/build/pdf.worker.min.mjs",
-  import.meta.url,
-).toString();
+
+async function getJSZip() {
+  const mod = await import("jszip");
+  return mod.default;
+}
+
+async function getPdfJs() {
+  const pdfjsLib = await import("pdfjs-dist");
+  if (!pdfjsLib.GlobalWorkerOptions.workerSrc) {
+    pdfjsLib.GlobalWorkerOptions.workerSrc = new URL(
+      "pdfjs-dist/build/pdf.worker.min.mjs",
+      import.meta.url,
+    ).toString();
+  }
+  return pdfjsLib;
+}
 
 export const SUPPORTED_PLAIN_TEXT_EXTENSIONS = [
   "txt",
@@ -183,6 +194,7 @@ async function readZipText(zip: JSZip, path: string): Promise<string> {
 }
 
 async function parseDocxFile(file: File): Promise<ParsedDocumentUpload> {
+  const JSZip = await getJSZip();
   const zip = await JSZip.loadAsync(await file.arrayBuffer());
   const sections: string[] = [];
 
@@ -217,6 +229,7 @@ async function parseDocxFile(file: File): Promise<ParsedDocumentUpload> {
 }
 
 async function parsePptxFile(file: File): Promise<ParsedDocumentUpload> {
+  const JSZip = await getJSZip();
   const zip = await JSZip.loadAsync(await file.arrayBuffer());
   const slidePaths = Object.keys(zip.files)
     .filter((path) => /^ppt\/slides\/slide\d+\.xml$/i.test(path))
@@ -292,6 +305,7 @@ export function buildDocumentAcceptAttribute(includeImages = false): string {
 }
 
 async function parsePdfFile(file: File): Promise<ParsedDocumentUpload> {
+  const pdfjsLib = await getPdfJs();
   const arrayBuffer = await file.arrayBuffer();
   const pdf = await pdfjsLib.getDocument({ data: arrayBuffer }).promise;
   const pages: string[] = [];

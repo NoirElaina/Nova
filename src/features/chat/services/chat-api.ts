@@ -413,14 +413,6 @@ export async function appendPlainChatMessage(
   await invoke("append_plain_chat_message", { conversationId, role, content });
 }
 
-/** 回写助手消息的展示元数据（transcript/压缩记录/耗时等）到事件日志。 */
-export async function updateAssistantMessageMeta(
-  conversationId: string,
-  cost: Record<string, unknown> | null | undefined,
-): Promise<void> {
-  if (!cost) return;
-  await invoke("update_assistant_message_meta", { conversationId, cost });
-}
 
 export async function getChatTurnStatus(
   conversationId: string | null,

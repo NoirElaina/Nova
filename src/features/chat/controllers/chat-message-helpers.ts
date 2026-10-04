@@ -1,121 +1,10 @@
 import type {
   ChatAttachment,
   ChatMessage,
-  ContextCompactSummary,
   PendingUploadFile,
-  ToolTurnSummary,
-  TurnCost,
   UploadedImageFile,
   UploadedDocumentFile,
 } from "../../../lib/chat-types";
-import type {
-  ConversationTurnRuntimeState,
-  ModelImageBlock,
-  ModelMessage,
-  ModelTextBlock,
-} from "./chat-controller-types";
-
-// 内联注入的纯文本文件：单文件上限与截断保留量（头尾各保留）。
-const MAX_INLINE_DOC_CHARS = 50000;
-const TRUNCATION_HEAD_TAIL_CHARS = 20000;
-
-export function buildAssistantCost(
-  currentInputTokens: number,
-  currentOutputTokens: number,
-  currentToolCalls: number,
-  currentToolDurationMs: number,
-  contextCompacts: ContextCompactSummary[],
-  toolSummary?: ToolTurnSummary,
-  previousCost?: TurnCost,
-): TurnCost {
-  return {
-    cacheReadTokens: previousCost?.cacheReadTokens,
-    cacheCreationTokens: previousCost?.cacheCreationTokens,
-    billableInputTokens: previousCost?.billableInputTokens,
-    inputCostUsd: previousCost?.inputCostUsd,
-    outputCostUsd: previousCost?.outputCostUsd,
-    cacheReadCostUsd: previousCost?.cacheReadCostUsd,
-    cacheCreationCostUsd: previousCost?.cacheCreationCostUsd,
-    totalCostUsd: previousCost?.totalCostUsd,
-    pricingModel: previousCost?.pricingModel,
-    inputTokens: currentInputTokens,
-    outputTokens: currentOutputTokens,
-    toolCalls: currentToolCalls,
-    toolDurationMs: currentToolDurationMs,
-    contextCompacts,
-    toolSummary,
-  };
-}
-
-export function buildAssistantCostForState(
-  state: ConversationTurnRuntimeState,
-  toolSummary?: ToolTurnSummary,
-): TurnCost {
-  return {
-    cacheReadTokens: state.assistantTurnCost?.cacheReadTokens,
-    cacheCreationTokens: state.assistantTurnCost?.cacheCreationTokens,
-    billableInputTokens: state.assistantTurnCost?.billableInputTokens,
-    inputCostUsd: state.assistantTurnCost?.inputCostUsd,
-    outputCostUsd: state.assistantTurnCost?.outputCostUsd,
-    cacheReadCostUsd: state.assistantTurnCost?.cacheReadCostUsd,
-    cacheCreationCostUsd: state.assistantTurnCost?.cacheCreationCostUsd,
-    totalCostUsd: state.assistantTurnCost?.totalCostUsd,
-    pricingModel: state.assistantTurnCost?.pricingModel,
-    inputTokens: state.currentInputTokens,
-    outputTokens: state.currentOutputTokens,
-    toolCalls: state.currentToolCalls,
-    toolDurationMs: state.currentToolDurationMs,
-    contextCompacts: state.currentContextCompacts,
-    toolSummary,
-  };
-}
-
-export function shouldPreservePendingPromptOnStop(
-  turnState: string,
-  stopReason: string,
-): boolean {
-  return (
-    turnState === "awaiting_user_input" ||
-    turnState === "needs_user_input" ||
-    stopReason === "needs_user_input"
-  );
-}
-
-export function formatMessageContentForModel(
-  msg: ChatMessage,
-): string {
-  const text = msg.content.trim();
-
-  const documentAttachments = (msg.attachments ?? [])
-    .filter((item) => item.kind === "document" && item.content?.trim() && item.sourceName?.trim());
-
-  if (documentAttachments.length === 0) {
-    return text;
-  }
-
-  const blocks = documentAttachments.map((item) => {
-    const content = item.content!.trim();
-    const originalLength = content.length;
-    let body: string;
-    let notice = "";
-    if (originalLength > MAX_INLINE_DOC_CHARS) {
-      const head = content.slice(0, TRUNCATION_HEAD_TAIL_CHARS);
-      const tail = content.slice(originalLength - TRUNCATION_HEAD_TAIL_CHARS);
-      body = `${head}\n\n...[中间内容已截断]...\n\n${tail}`;
-      notice = `\n[注意：内容很长（原始 ${originalLength} 字符），已截断为头尾各 ${TRUNCATION_HEAD_TAIL_CHARS} 字符，中间内容可能丢失。如需完整内容请告知用户。]\n`;
-    } else {
-      body = content;
-    }
-    const meta = [`filename="${item.sourceName}"`, item.mimeType ? `mime="${item.mimeType}"` : null]
-      .filter(Boolean)
-      .join(" ");
-    return `<document ${meta}>${notice}\n${body}\n</document>`;
-  });
-
-  const attachedDocumentContext = `\n\n[Attached Documents]\n${blocks.join("\n\n")}`;
-
-  return text ? `${text}${attachedDocumentContext}` : attachedDocumentContext;
-}
 
 export function isDocumentUploadFile(
   file: PendingUploadFile,
@@ -165,84 +54,10 @@ export function toAttachmentMeta(
   });
 }
 
-export function buildModelMessage(
-  msg: ChatMessage,
-): ModelMessage {
-  const textContent = formatMessageContentForModel(msg);
-  if (msg.role !== "user") {
-    return {
-      role: msg.role,
-      content: textContent,
-    };
-  }
-
-  const imageAttachments = (msg.attachments ?? []).filter(isImageAttachment);
-  if (imageAttachments.length === 0) {
-    return {
-      role: msg.role,
-      content: textContent,
-    };
-  }
-
-  const fallbackText = textContent || "请结合我上传的图片回答。";
-  const blocks: Array<ModelTextBlock | ModelImageBlock> = [
-    {
-      type: "text",
-      text: fallbackText,
-    },
-  ];
-
-  for (const image of imageAttachments) {
-    const mediaType = (image.mediaType || image.mimeType || "").trim().toLowerCase();
-    const data = (image.data || "").trim();
-    if (!mediaType || !data) {
-      continue;
-    }
-
-    blocks.push({
-      type: "image",
-      source: {
-        type: "base64",
-        media_type: mediaType,
-        data,
-      },
-    });
-  }
-
-  if (blocks.length <= 1) {
-    return {
-      role: msg.role,
-      content: fallbackText,
-    };
-  }
-
-  return {
-    role: msg.role,
-    content: blocks,
-  };
-}
-
-export function commitAssistantMessageToTurn(
-  currentMessages: ChatMessage[],
-  assistantMessage: ChatMessage,
-): ChatMessage[] {
-  let lastUserIndex = -1;
-  for (let i = currentMessages.length - 1; i >= 0; i -= 1) {
-    if (currentMessages[i]?.role === "user") {
-      lastUserIndex = i;
-      break;
-    }
-  }
-  if (lastUserIndex >= 0) {
-    return [...currentMessages.slice(0, lastUserIndex + 1), assistantMessage];
-  }
-  const lastMsg = currentMessages[currentMessages.length - 1];
-  if (lastMsg?.role === "assistant") {
-    return [...currentMessages.slice(0, -1), assistantMessage];
-  }
-  return [...currentMessages, assistantMessage];
-}
-
+/**
+ * Redundant consecutive assistant message merging (pass-through / safeguard),
+ * as backend `projection.rs` already projects aggregated messages directly.
+ */
 export function sanitizeConsecutiveAssistantMessages(rawMessages: ChatMessage[]): ChatMessage[] {
   const result: ChatMessage[] = [];
   for (const msg of rawMessages) {

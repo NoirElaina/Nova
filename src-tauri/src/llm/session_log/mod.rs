@@ -9,6 +9,6 @@ pub mod store;
 
 pub use events::SessionEvent;
 pub use store::{
-    append_event, append_events, delete_events, load_events, update_last_assistant_message_cost,
+    append_event, append_events, delete_events, load_events,
     StoredEvent,
 };

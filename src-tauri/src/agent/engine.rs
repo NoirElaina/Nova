@@ -169,10 +169,14 @@ impl AgentEngine {
                 let mut event = SessionEvent::from_model_message(msg.clone());
                 if let SessionEvent::AssistantMessage {
                     ref mut token_usage,
+                    ref mut cost,
                     ..
                 } = event
                 {
                     *token_usage = Some((input_tok + output_tok) as i64);
+                    if let Some(ref c) = provider_result.cost {
+                        *cost = serde_json::to_value(c).ok();
+                    }
                 }
                 let _ = crate::llm::session_log::append_event(
                     &self.app,

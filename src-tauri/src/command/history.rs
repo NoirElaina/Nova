@@ -121,26 +121,6 @@ pub async fn append_plain_chat_message(
     )
 }
 
-#[tauri::command]
-pub async fn update_assistant_message_meta(
-    app: AppHandle,
-    conversation_id: String,
-    cost: serde_json::Value,
-) -> Result<(), String> {
-    // 前端回写助手消息的展示元数据（transcript/压缩记录/耗时等），
-    // 富化事件日志里最后一条 assistant_message 的 cost 字段。
-    report_backend_result(
-        &app,
-        "command.history.update_assistant_message_meta",
-        crate::llm::session_log::update_last_assistant_message_cost(
-            &app,
-            &conversation_id,
-            &cost,
-        )
-        .await,
-        None,
-    )
-}
 
 #[tauri::command]
 pub async fn load_conversation_tool_logs(

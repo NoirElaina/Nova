@@ -21,7 +21,6 @@ import {
   loadConversationHistory,
   loadConversationToolLogs,
   setConversationPinned,
-  updateAssistantMessageMeta,
   type SessionFileMeta,
 } from "../services/chat-api";
 import { clearBrowserTabState } from "../../browser/browser-tab-state";
@@ -334,20 +333,12 @@ export function createConversationOperations(deps: ConversationOpsDeps) {
     }
   }
 
-  async function persistMessage(message: ChatMessage, conversationId = activeConversationId.value) {
-    if (!conversationId) return;
-    // 消息本体由后端随回合写入事件日志；前端只回写助手消息的展示元数据
-    // （transcript/压缩记录/耗时等，仅 UI 层使用），再刷新会话列表。
+  async function persistMessage(_message?: ChatMessage, _conversationId = activeConversationId.value) {
+    // 消息本体及元数据（cost / token_usage）由后端 AgentEngine 原子持久化，前端仅需触发会话列表刷新。
     try {
-      if (message.role === "assistant" && message.cost) {
-        await updateAssistantMessageMeta(
-          conversationId,
-          message.cost as unknown as Record<string, unknown>,
-        );
-      }
       await refreshConversations();
     } catch (err) {
-      console.error("Failed to persist message metadata:", err);
+      console.error("Failed to refresh conversations:", err);
     }
   }
 

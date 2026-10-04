@@ -169,39 +169,3 @@ pub async fn delete_events(app: &AppHandle, conversation_id: &str) -> Result<(),
         .map_err(|e| e.to_string())?;
     Ok(())
 }
-
-/// 富化最后一条助手消息事件的展示成本（前端回写 transcript/压缩记录/耗时等
-/// 仅 UI 层的元数据；属元数据补全，不新增事件）。无助手消息时静默返回。
-pub async fn update_last_assistant_message_cost(
-    app: &AppHandle,
-    conversation_id: &str,
-    cost: &serde_json::Value,
-) -> Result<(), String> {
-    let pool = crate::llm::history::history_pool(app).await?;
-    let row: Option<(i64, String)> = sqlx::query_as(
-        "SELECT seq, payload_json FROM session_events
-         WHERE conversation_id = ? AND event_type = 'assistant_message'
-         ORDER BY seq DESC LIMIT 1",
-    )
-    .bind(conversation_id)
-    .fetch_optional(&pool)
-    .await
-    .map_err(|e| e.to_string())?;
-    let Some((seq, payload_json)) = row else {
-        return Ok(());
-    };
-
-    let mut payload: serde_json::Value =
-        serde_json::from_str(&payload_json).map_err(|e| e.to_string())?;
-    payload["cost"] = cost.clone();
-    let next_json = serde_json::to_string(&payload).map_err(|e| e.to_string())?;
-
-    sqlx::query("UPDATE session_events SET payload_json = ? WHERE conversation_id = ? AND seq = ?")
-        .bind(&next_json)
-        .bind(conversation_id)
-        .bind(seq)
-        .execute(&pool)
-        .await
-        .map_err(|e| e.to_string())?;
-    Ok(())
-}

@@ -197,6 +197,11 @@ export const useAgentSessionStore = defineStore("agentSession", () => {
     const targetId = convId || conversationStore.activeConversationId;
     const session = getSession(targetId);
     session.isGenerating = false;
+    session.currentStage = "processing";
+    session.cognitiveState = "idle";
+    session.assistantResponse = "";
+    session.assistantReasoning = "";
+    session.assistantSegments = [];
     if (targetId && targetId !== "__draft__") {
       await loadConversationMessages(targetId);
     }

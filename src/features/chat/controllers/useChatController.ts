@@ -1,4 +1,4 @@
-import { computed, onMounted, onUnmounted, ref, shallowRef, watch } from "vue";
+import { computed, onMounted, onUnmounted, ref } from "vue";
 import { storeToRefs } from "pinia";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { emitToast, NOVA_CHAT_ERROR_EVENT, type ChatErrorPayload } from "../../../lib/toast";
@@ -47,12 +47,49 @@ export function useChatController() {
     pendingAgentBundleId,
   } = storeToRefs(conversationStore);
 
-  const messages = shallowRef<ChatMessage[]>([]);
-  const isGenerating = ref(false);
-  const currentStage = ref<LiveTurnStage>("processing");
-  const assistantResponse = ref("");
-  const assistantReasoning = ref("");
-  const assistantSegments = ref<AssistantTranscriptSegment[]>([]);
+  const messages = computed<ChatMessage[]>({
+    get: () => agentSessionStore.activeSession.messages,
+    set: (val: ChatMessage[]) => {
+      agentSessionStore.activeSession.messages = val;
+    },
+  });
+  const isGenerating = computed<boolean>({
+    get: () => agentSessionStore.activeSession.isGenerating,
+    set: (val: boolean) => {
+      agentSessionStore.activeSession.isGenerating = val;
+    },
+  });
+  const currentStage = computed<LiveTurnStage>({
+    get: () => agentSessionStore.activeSession.currentStage,
+    set: (val: LiveTurnStage) => {
+      agentSessionStore.activeSession.currentStage = val;
+    },
+  });
+  const assistantResponse = computed<string>({
+    get: () => agentSessionStore.activeSession.assistantResponse,
+    set: (val: string) => {
+      agentSessionStore.activeSession.assistantResponse = val;
+    },
+  });
+  const assistantReasoning = computed<string>({
+    get: () => agentSessionStore.activeSession.assistantReasoning,
+    set: (val: string) => {
+      agentSessionStore.activeSession.assistantReasoning = val;
+    },
+  });
+  const assistantSegments = computed<AssistantTranscriptSegment[]>({
+    get: () => agentSessionStore.activeSession.assistantSegments,
+    set: (val: AssistantTranscriptSegment[]) => {
+      agentSessionStore.activeSession.assistantSegments = val;
+    },
+  });
+  const toolExecutionLogs = computed<ToolExecutionEntry[]>({
+    get: () => agentSessionStore.activeSession.toolExecutionLogs,
+    set: (val: ToolExecutionEntry[]) => {
+      agentSessionStore.activeSession.toolExecutionLogs = val;
+    },
+  });
+
   const assistantTokenUsage = ref<number | undefined>(undefined);
   const assistantTurnCost = ref<TurnCost | undefined>(undefined);
   const pendingUploads = ref<PendingUploadFile[]>([]);
@@ -71,30 +108,6 @@ export function useChatController() {
   const currentTurnStartedAt = ref<number | null>(null);
   const agentMode = ref<AgentMode>("agent");
   const isCreatingNewChat = ref(false);
-  const toolExecutionLogs = ref<ToolExecutionEntry[]>([]);
-
-  // 保证 Pinia 会话运行态 Store 与 Controller 状态双向连通，彻底废除各自孤立更新
-  watch(
-    messages,
-    (val) => {
-      agentSessionStore.activeSession.messages = val;
-    },
-    { immediate: true, deep: false },
-  );
-  watch(
-    toolExecutionLogs,
-    (val) => {
-      agentSessionStore.activeSession.toolExecutionLogs = val;
-    },
-    { immediate: true, deep: false },
-  );
-  watch(
-    isGenerating,
-    (val) => {
-      agentSessionStore.activeSession.isGenerating = val;
-    },
-    { immediate: true },
-  );
   const currentTurnToolIds = ref<string[]>([]);
   const chatScreenRef = ref<ChatScreenHandle | null>(null);
   /** AI 主流程错误的临时展示状态：不进消息数组，只保留最新一条，下次发送时清空。 */
@@ -387,42 +400,21 @@ export function useChatController() {
       unlistenAgentEvent = await setupAgentEventListener({
         onTurnStarted: (_turnId, _convId) => {
           agentSessionStore.handleTurnStarted(_turnId, _convId);
-          isGenerating.value = true;
-          currentStage.value = "processing";
-          assistantResponse.value = "";
-          assistantReasoning.value = "";
-          assistantSegments.value = [];
         },
         onStateChanged: (_turnId, state) => {
           agentSessionStore.handleStateChanged(state);
         },
         onThinkingDelta: (delta) => {
           agentSessionStore.handleThinkingDelta(delta);
-          assistantReasoning.value += delta;
         },
         onTextDelta: (delta) => {
           agentSessionStore.handleTextDelta(delta);
-          assistantResponse.value += delta;
         },
         onToolRequested: (callId, toolName, args) => {
           agentSessionStore.handleToolRequested(callId, toolName, args);
-          toolExecutionLogs.value.push({
-            id: callId,
-            toolName,
-            status: "running",
-            input: typeof args === "string" ? args : JSON.stringify(args, null, 2),
-            result: "",
-            startedAt: Date.now(),
-          });
         },
         onToolCompleted: (callId, _toolName, output, isError, _durationMs) => {
           agentSessionStore.handleToolCompleted(callId, _toolName, output, isError, _durationMs);
-          const entry = toolExecutionLogs.value.find((e) => e.id === callId);
-          if (entry) {
-            entry.status = isError ? "error" : "completed";
-            entry.result = output;
-            entry.finishedAt = Date.now();
-          }
         },
         onVerificationStarted: (target) => {
           emitToast({
@@ -447,6 +439,9 @@ export function useChatController() {
         onTurnFinished: async (_turnId, _stopReason) => {
           await agentSessionStore.handleTurnFinished(_turnId, _stopReason);
           isGenerating.value = false;
+          assistantResponse.value = "";
+          assistantReasoning.value = "";
+          assistantSegments.value = [];
           if (activeConversationId.value) {
             await conversationOps.loadConversation(activeConversationId.value);
             void getConversationUsage(activeConversationId.value)

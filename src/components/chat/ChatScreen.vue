@@ -259,12 +259,16 @@ const streamingSegments = computed(() => {
   });
 });
 
-const hasLiveAssistantTurn = computed(
-  () =>
-    isGenerating.value ||
-    streamingSegments.value.length > 0 ||
-    currentTurnToolEntries.value.length > 0,
-);
+const hasLiveAssistantTurn = computed(() => {
+  if (isGenerating.value) {
+    return true;
+  }
+  const lastMsg = messages.value[messages.value.length - 1];
+  if (lastMsg && lastMsg.role === 'assistant') {
+    return false;
+  }
+  return streamingSegments.value.length > 0 || currentTurnToolEntries.value.length > 0;
+});
 
 /** 虚拟列表行：历史消息 + 可选 live 行 */
 type VirtualRow =

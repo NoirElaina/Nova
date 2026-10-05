@@ -1,64 +1,22 @@
 <script setup lang="ts">
 import { nextTick, onMounted, onUnmounted, ref, watch, computed } from 'vue';
 import { invoke } from '@tauri-apps/api/core';
-import { listen, type UnlistenFn } from '@tauri-apps/api/event';
-import type {
-  PendingUploadFile,
-} from '../../lib/chat-types';
-import {
-  buildDocumentAcceptAttribute,
-} from '../../lib/document-upload';
-import {
-  buildPendingUploadFiles,
-  inferImageMimeType,
-  notifyRejectedUploads,
-} from '../../lib/upload-files';
-import { emitToast, emitErrorToast } from '../../lib/toast';
+import type { PendingUploadFile } from '../../lib/chat-types';
+import { parseSlashCommand } from '../../lib/slash-commands';
 import { useConversationStore } from '@/stores/conversation';
 import { useAgentSessionStore } from '@/stores/agentSession';
 import { useComposerStore } from '@/stores/composer';
 import PolicyApprovalMenu from './PolicyApprovalMenu.vue';
 import ModelSelector from './ModelSelector.vue';
 import ContextUsageIndicator from './ContextUsageIndicator.vue';
-import ConversationUsageBar from './ConversationUsageBar.vue';
 import AttachmentChipList from './AttachmentChipList.vue';
 import SlashCommandMenu from './SlashCommandMenu.vue';
 import MemoryPopover from './MemoryPopover.vue';
-import { getWorkspaceDiff } from '../../features/chat/services/chat-api';
-import {
-  initSubagentEvents,
-  panelOpen as subagentPanelOpen,
-  subagentsFor,
-  togglePanel as toggleSubagentPanel,
-} from '../../features/chat/services/subagents';
-import {
-  MEMORY_OPTIONS,
-  REVIEW_OPTIONS,
-  INIT_OPTIONS,
-  PLUGIN_OPTIONS,
-  AGENT_OPTIONS,
-  SKILL_CREATE_VALUE,
-  parseSlashCommand,
-  buildInitPrompt,
-  buildReviewPrompt,
-  buildCreatePluginPrompt,
-  buildCreateAgentPrompt,
-  buildCreateSkillPrompt,
-  formatWorkspaceDiff,
-  allSlashCommands,
-  setPluginCommands,
-} from '../../lib/slash-commands';
-import type {
-  SlashCommandEntry,
-  SlashParamOption,
-  PluginSlashCommand,
-} from '../../lib/slash-commands';
-
-type SkillSummary = {
-  name: string;
-  description: string;
-  path: string;
-};
+import { initSubagentEvents } from '../../features/chat/services/subagents';
+import { useFileInput } from './composer/useFileInput';
+import { useSlashCommands, type SkillSummary } from './composer/useSlashCommands';
+import InputPlusMenu from './composer/InputPlusMenu.vue';
+import InputAreaFooter from './composer/InputAreaFooter.vue';
 
 defineProps<{
   /** 当前对话挂载的智能体（会话级）。null = 默认 Nova（不展示）。 */
@@ -88,40 +46,13 @@ const pendingUploads = computed(() => composerStore.pendingUploads);
 
 const currentInput = ref("");
 const textareaRef = ref<HTMLTextAreaElement | null>(null);
-const fileInputRef = ref<HTMLInputElement | null>(null);
-// IME 合成状态：中文输入法打拼音过程中为 true，按 Enter 时避免误触发发送消息。
+const plusButtonRef = ref<HTMLElement | null>(null);
 const isComposing = ref(false);
 
 // + 按钮菜单状态：null=关闭，'main'=主视图，'skill'=技能视图
 const plusMenuView = ref<null | 'main' | 'skill'>(null);
 const skills = ref<SkillSummary[]>([]);
 const skillsLoading = ref(false);
-
-// 斜杠命令状态：null=未触发，'command'=命令列表阶段，'param'=参数匹配阶段
-const slashPhase = ref<null | 'command' | 'param'>(null);
-const slashQuery = ref('');
-const slashSelectedIndex = ref(0);
-const slashSkills = ref<SkillSummary[]>([]);
-const slashSkillsLoading = ref(false);
-
-const plusButtonRef = ref<HTMLElement | null>(null);
-
-// 当前选中的命令名（进入 param 阶段后固定）
-const slashActiveCommand = ref<string>('');
-
-// /memory 浮层状态
-const memoryEntries = ref<string[]>([]);
-const memoryLoading = ref(false);
-const memoryViewOpen = ref(false);
-
-// /review 执行中标记（异步拿 diff）
-const reviewLoading = ref(false);
-
-// 各命令二级选项动态数据：skill 需加载技能列表，compact 需加载用量统计
-const usageStats = ref<{ total_tokens: number; total_cost_usd: string; favorite_model?: string } | null>(null);
-const usageLoading = ref(false);
-
-const FILE_INPUT_ACCEPT = buildDocumentAcceptAttribute(true);
 
 const settings = ref<any>(null);
 
@@ -162,18 +93,64 @@ const loadSettings = async () => {
   }
 };
 
-// 加载技能列表（用于 + 菜单和斜杠命令参数匹配）
-const loadSkills = async (): Promise<SkillSummary[]> => {
-  try {
-    const list = await invoke<SkillSummary[]>('list_skills');
-    return list || [];
-  } catch (error) {
-    console.error('Failed to load skills:', error);
-    return [];
-  }
+const focusTextarea = () => {
+  textareaRef.value?.focus();
 };
 
-// + 按钮点击：打开主视图，按需预加载技能列表
+const autoResize = () => {
+  const el = textareaRef.value;
+  if (!el) return;
+  el.style.height = 'auto';
+  const newHeight = Math.min(el.scrollHeight, 200);
+  el.style.height = `${newHeight}px`;
+};
+
+// 组合式文件输入
+const {
+  fileInputRef,
+  FILE_INPUT_ACCEPT,
+  triggerFilePicker,
+  onFileChange,
+  onTextareaPaste,
+  handleRemoveUpload,
+} = useFileInput({
+  isGenerating,
+  onUploadFiles: (files) => emit('upload-files', files),
+  onRemoveUpload: (index) => emit('remove-upload', index),
+});
+
+// 组合式斜杠命令
+const {
+  slashPhase,
+  slashSelectedIndex,
+  slashSkills,
+  slashSkillsLoading,
+  slashActiveCommand,
+  slashQuery,
+  slashOptions,
+  memoryEntries,
+  memoryLoading,
+  memoryViewOpen,
+  loadSkills,
+  refreshSlashState,
+  hideSlashMenu,
+  selectSlashOption,
+  handleSlashKeydown,
+  executeSlashCommand,
+  initSlashEvents,
+  cleanupSlashEvents,
+} = useSlashCommands({
+  currentInput,
+  textareaRef,
+  conversationId,
+  compacting,
+  onSend: (msg) => emit('send', msg),
+  onCompact: () => emit('compact'),
+  autoResize,
+  focusTextarea,
+});
+
+// + 按钮操作
 const openPlusMenu = async () => {
   if (isGenerating.value) return;
   plusMenuView.value = 'main';
@@ -198,460 +175,26 @@ const enterSkillView = async () => {
   }
 };
 
-// + 菜单选择"上传文件"
 const pickUploadFromPlusMenu = () => {
   closePlusMenu();
   triggerFilePicker();
 };
 
-// + 菜单选择某个技能：填入 /skill <name> 到输入框
 const pickSkillFromPlusMenu = (skill: SkillSummary) => {
   currentInput.value = `/skill ${skill.name} `;
   closePlusMenu();
-  // 进入参数阶段，便于继续编辑/补充参数
   slashActiveCommand.value = 'skill';
   slashPhase.value = 'param';
   slashQuery.value = skill.name;
   nextTick(() => {
     autoResize();
     focusTextarea();
-    // 光标移到末尾
     const el = textareaRef.value;
     if (el) {
       const len = el.value.length;
       el.setSelectionRange(len, len);
     }
   });
-};
-
-// ── 斜杠命令逻辑 ──────────────────────────────────────────────────
-
-// 命令列表阶段的过滤结果（内置 + 已启用插件命令）
-const filteredCommands = computed(() => {
-  const q = slashQuery.value.trim().toLowerCase();
-  const commands = allSlashCommands();
-  if (!q) return commands;
-  return commands.filter((cmd) => cmd.name.toLowerCase().includes(q));
-});
-
-// 获取指定命令的二级选项列表（含动态加载）
-const currentParamOptions = computed<SlashParamOption[]>(() => {
-  const cmd = slashActiveCommand.value;
-  if (cmd === 'skill') {
-    // skill 二级选项为技能列表 + 末尾"创建新技能"入口
-    return [
-      ...slashSkills.value.map((s) => ({
-        label: s.name,
-        description: s.description,
-        value: s.name,
-      })),
-      {
-        label: '＋ 创建新技能',
-        value: SKILL_CREATE_VALUE,
-        description: '让 AI 采访需求并编写新的 SKILL.md',
-      },
-    ];
-  }
-  if (cmd === 'compact') {
-    // compact 二级选项：展示用量统计后压缩
-    const usage = usageStats.value;
-    if (usage) {
-      return [
-        {
-          label: '继续压缩',
-          value: 'compact',
-          description: `累计 ${usage.total_tokens} tokens / $${usage.total_cost_usd}${usage.favorite_model ? ' / ' + usage.favorite_model : ''}`,
-        },
-      ];
-    }
-    return [{ label: '查看用量并压缩', value: 'compact', description: '加载用量统计中...' }];
-  }
-  if (cmd === 'memory') return MEMORY_OPTIONS;
-  if (cmd === 'review') return REVIEW_OPTIONS;
-  if (cmd === 'init') return INIT_OPTIONS;
-  if (cmd === 'plugin') return PLUGIN_OPTIONS;
-  if (cmd === 'agent') return AGENT_OPTIONS;
-  // 插件命令：展示执行选项（rest 作为附加自由文本附加到展开的模板后）
-  const pluginEntry = allSlashCommands().find(
-    (entry) => entry.name === cmd && entry.type === 'plugin',
-  );
-  if (pluginEntry) {
-    return [
-      {
-        label: pluginEntry.pluginTitle || pluginEntry.name,
-        value: '',
-        description: pluginEntry.description,
-      },
-    ];
-  }
-  return [];
-});
-
-// 对二级选项按查询词过滤
-const filteredParamOptions = computed<SlashParamOption[]>(() => {
-  const opts = currentParamOptions.value;
-  const q = slashQuery.value.trim().toLowerCase();
-  if (!q) return opts;
-  return opts.filter(
-    (o) => o.label.toLowerCase().includes(q) || (o.description?.toLowerCase().includes(q) ?? false),
-  );
-});
-
-// 当前阶段显示的选项列表
-const slashOptions = computed<SlashParamOption[]>(() => {
-  if (slashPhase.value === 'command') {
-    return filteredCommands.value.map((cmd) => ({
-      label: `/${cmd.name}`,
-      description: cmd.description,
-      value: cmd.name,
-    }));
-  }
-  if (slashPhase.value === 'param') {
-    return filteredParamOptions.value;
-  }
-  return [];
-});
-
-// 解析当前输入，决定是否进入斜杠命令阶段
-const refreshSlashState = () => {
-  const text = currentInput.value;
-  const el = textareaRef.value;
-
-  // 非 / 开头则关闭
-  if (!text.startsWith('/')) {
-    slashPhase.value = null;
-    slashActiveCommand.value = '';
-    slashQuery.value = '';
-    return;
-  }
-
-  // 找到第一个空格位置
-  const firstSpace = text.indexOf(' ');
-  const cursorPos = el?.selectionStart ?? text.length;
-
-  // 命令名阶段：光标在第一个空格之前
-  if (firstSpace === -1 || cursorPos <= firstSpace) {
-    const name = text.slice(1, cursorPos);
-    slashActiveCommand.value = '';
-    slashPhase.value = 'command';
-    slashQuery.value = name;
-    slashSelectedIndex.value = 0;
-    return;
-  }
-
-  // 已有空格：检查命令名是否匹配内置或插件命令
-  const cmdName = text.slice(1, firstSpace).toLowerCase();
-  const matched = allSlashCommands().find((cmd) => cmd.name.toLowerCase() === cmdName);
-  if (!matched) {
-    slashPhase.value = null;
-    return;
-  }
-
-  // 进入参数阶段：从第一个空格后到光标
-  const argPart = text.slice(firstSpace + 1, cursorPos);
-  // 参数中不能再有空格（单参数命令）
-  if (argPart.includes(' ')) {
-    slashPhase.value = null;
-    return;
-  }
-
-  slashActiveCommand.value = matched.name;
-  slashPhase.value = 'param';
-  slashQuery.value = argPart;
-  slashSelectedIndex.value = 0;
-};
-
-// 确保斜杠技能列表已加载
-const ensureSlashSkillsLoaded = async () => {
-  if (slashSkills.value.length === 0 && !slashSkillsLoading.value) {
-    slashSkillsLoading.value = true;
-    slashSkills.value = await loadSkills();
-    slashSkillsLoading.value = false;
-  }
-};
-
-// 加载用量统计（/compact 二级选项展示用）
-const ensureUsageStatsLoaded = async () => {
-  if (usageStats.value || usageLoading.value) return;
-  usageLoading.value = true;
-  try {
-    const stats = await invoke<{ total_tokens: number; total_cost_usd: string; favorite_model?: string }>('get_usage_stats');
-    usageStats.value = stats;
-  } catch {
-    // 加载失败不阻塞，仍显示压缩选项
-    usageStats.value = { total_tokens: 0, total_cost_usd: '0' };
-  } finally {
-    usageLoading.value = false;
-  }
-};
-
-const hideSlashMenu = () => {
-  slashPhase.value = null;
-  slashActiveCommand.value = '';
-  slashQuery.value = '';
-};
-
-// 选择某个斜杠选项
-const selectSlashOption = (option: SlashParamOption) => {
-  if (slashPhase.value === 'command') {
-    const entry = allSlashCommands().find((cmd) => cmd.name === option.value);
-    if (!entry) return;
-
-    // 进入参数阶段：命令名后强制加空格，光标定位到空格后
-    currentInput.value = `/${option.value} `;
-    nextTick(() => {
-      const el = textareaRef.value;
-      if (!el) return;
-      const cmdEnd = `/${option.value} `.length;
-      el.setSelectionRange(cmdEnd, cmdEnd);
-      slashActiveCommand.value = option.value;
-      slashPhase.value = 'param';
-      slashQuery.value = '';
-      slashSelectedIndex.value = 0;
-      // 按命令类型预加载二级选项数据
-      if (entry.type === 'skill') {
-        void ensureSlashSkillsLoaded();
-      } else if (entry.name === 'compact') {
-        void ensureUsageStatsLoaded();
-      }
-    });
-    return;
-  }
-
-  if (slashPhase.value === 'param') {
-    // 参数阶段：选中二级选项后直接执行命令（参数为选项 value）
-    const entry = allSlashCommands().find((cmd) => cmd.name === slashActiveCommand.value);
-    if (!entry) return;
-    hideSlashMenu();
-    currentInput.value = '';
-    void executeSlashCommand({ entry, rest: option.value });
-    nextTick(() => {
-      autoResize();
-      focusTextarea();
-    });
-  }
-};
-
-// 斜杠菜单键盘导航：返回 true 表示已处理
-const handleSlashKeydown = (e: KeyboardEvent): boolean => {
-  if (slashPhase.value === null) return false;
-  const opts = slashOptions.value;
-  if (opts.length === 0) return false;
-
-  if (e.key === 'ArrowDown') {
-    e.preventDefault();
-    slashSelectedIndex.value = (slashSelectedIndex.value + 1) % opts.length;
-    return true;
-  }
-  if (e.key === 'ArrowUp') {
-    e.preventDefault();
-    slashSelectedIndex.value = (slashSelectedIndex.value - 1 + opts.length) % opts.length;
-    return true;
-  }
-  if (e.key === 'Enter' || e.key === 'Tab') {
-    e.preventDefault();
-    const selected = opts[slashSelectedIndex.value];
-    if (selected) selectSlashOption(selected);
-    return true;
-  }
-  if (e.key === 'Escape') {
-    e.preventDefault();
-    hideSlashMenu();
-    return true;
-  }
-  return false;
-};
-
-// 执行 Local 类型命令（不发送消息给 AI）。rest 为二级选项 value
-const executeLocalCommand = async (entry: SlashCommandEntry, rest: string): Promise<boolean> => {
-  if (entry.name === 'compact') {
-    if (compacting.value) {
-      emitToast({ message: '正在压缩中，请稍候' });
-      return true;
-    }
-    emit('compact');
-    return true;
-  }
-  if (entry.name === 'memory') {
-    if (rest === 'clear') {
-      try {
-        await invoke('clear_memory_entries');
-        memoryEntries.value = [];
-        emitToast({ message: '全局记忆已清空' });
-      } catch (error) {
-        emitErrorToast('清空记忆', error);
-      }
-      return true;
-    }
-    // 默认 view：展示全局记忆
-    memoryViewOpen.value = true;
-    if (memoryEntries.value.length === 0 && !memoryLoading.value) {
-      memoryLoading.value = true;
-      try {
-        memoryEntries.value = await invoke<string[]>('list_memory_entries');
-      } catch (error) {
-        emitErrorToast('加载记忆', error);
-        memoryViewOpen.value = false;
-      } finally {
-        memoryLoading.value = false;
-      }
-    }
-    return true;
-  }
-  return false;
-};
-
-// 获取应用数据目录（创建类命令的 prompt 需要注入绝对路径）
-const fetchAppDataDir = async (): Promise<string | null> => {
-  try {
-    return await invoke<string>('get_app_data_dir');
-  } catch (error) {
-    emitErrorToast('获取应用数据目录', error);
-    return null;
-  }
-};
-
-// 执行 Prompt 类型命令（构造模板消息发送给 AI）。rest 为二级选项 value
-const executePromptCommand = async (entry: SlashCommandEntry, rest: string): Promise<boolean> => {
-  if (entry.name === 'init') {
-    emit('send', buildInitPrompt(rest));
-    return true;
-  }
-  if (entry.name === 'plugin') {
-    const appDataDir = await fetchAppDataDir();
-    if (!appDataDir) return true;
-    emit('send', buildCreatePluginPrompt(appDataDir, rest));
-    return true;
-  }
-  if (entry.name === 'agent') {
-    const appDataDir = await fetchAppDataDir();
-    if (!appDataDir) return true;
-    emit('send', buildCreateAgentPrompt(appDataDir, rest));
-    return true;
-  }
-  if (entry.name === 'review') {
-    if (reviewLoading.value) return true;
-    reviewLoading.value = true;
-    try {
-      const diff = await getWorkspaceDiff(null);
-      const diffText = formatWorkspaceDiff(diff);
-      const scope = rest === 'all' ? '（含未跟踪文件）' : '（已跟踪改动）';
-      const prompt = `${buildReviewPrompt(scope)}\n\n## 工作区 diff\n\n\`\`\`diff\n${diffText}\n\`\`\``;
-      emit('send', prompt);
-    } catch (error) {
-      emitErrorToast('获取工作区改动', error);
-    } finally {
-      reviewLoading.value = false;
-    }
-    return true;
-  }
-  return false;
-};
-
-// 执行 Prompt 类型命令（构造模板消息发送给 AI）。rest 为二级选项 value
-const executePluginCommand = async (entry: SlashCommandEntry, rest: string): Promise<boolean> => {
-  if (!entry.pluginId) return false;
-  try {
-    const prompt = await invoke<string>('expand_plugin_command', {
-      pluginId: entry.pluginId,
-      name: entry.name,
-      conversationId: conversationId.value ?? null,
-    });
-    const extra = rest.trim();
-    emit('send', extra ? `${prompt}\n\n${extra}` : prompt);
-  } catch (error) {
-    emitErrorToast('执行插件命令', error);
-  }
-  return true;
-};
-
-// 执行已识别的斜杠命令。返回 true 表示已处理（应清空输入框）
-const executeSlashCommand = async (parsed: { entry: SlashCommandEntry; rest: string }): Promise<boolean> => {
-  const { entry, rest } = parsed;
-  if (entry.type === 'local') {
-    return executeLocalCommand(entry, rest);
-  }
-  if (entry.type === 'prompt') {
-    return executePromptCommand(entry, rest);
-  }
-  if (entry.type === 'plugin') {
-    return executePluginCommand(entry, rest);
-  }
-  if (entry.type === 'skill') {
-    // rest 为技能名；"创建新技能"标记走创建模板
-    if (!rest) return false;
-    if (rest === SKILL_CREATE_VALUE) {
-      const appDataDir = await fetchAppDataDir();
-      if (!appDataDir) return true;
-      emit('send', buildCreateSkillPrompt(appDataDir));
-      return true;
-    }
-    emit('send', `请使用 Skill 工具加载并执行技能：${rest}`);
-    return true;
-  }
-  return false;
-};
-
-
-
-
-const triggerFilePicker = () => {
-  if (isGenerating.value) return;
-  fileInputRef.value?.click();
-};
-
-const onFileChange = async (event: Event) => {
-  const input = event.target as HTMLInputElement;
-  const files = input.files ? Array.from(input.files) : [];
-  if (files.length === 0) {
-    return;
-  }
-
-  const { accepted, rejected } = await buildPendingUploadFiles(files);
-
-  if (accepted.length > 0) {
-    composerStore.addUploads(accepted);
-    emit('upload-files', accepted);
-  }
-
-  notifyRejectedUploads(rejected);
-
-  input.value = '';
-};
-
-const onTextareaPaste = async (event: ClipboardEvent) => {
-  if (isGenerating.value) return;
-
-  const clipboardData = event.clipboardData;
-  if (!clipboardData) {
-    return;
-  }
-
-  const itemFiles = Array.from(clipboardData.items ?? [])
-    .filter((item) => item.kind === 'file')
-    .map((item) => item.getAsFile())
-    .filter((file): file is File => !!file);
-  const files = itemFiles.length > 0 ? itemFiles : Array.from(clipboardData.files ?? []);
-  if (files.length === 0) {
-    return;
-  }
-
-  const imageFiles = files.filter((file) => !!inferImageMimeType(file));
-  if (imageFiles.length === 0) {
-    return;
-  }
-
-  event.preventDefault();
-  const { accepted, rejected } = await buildPendingUploadFiles(imageFiles);
-  if (accepted.length > 0) {
-    composerStore.addUploads(accepted);
-    emit('upload-files', accepted);
-  }
-  notifyRejectedUploads(rejected);
-};
-
-const focusTextarea = () => {
-  textareaRef.value?.focus();
 };
 
 /** 把选中文本以 markdown 引用块形式插入输入框末尾（「引用到对话」入口）。 */
@@ -675,47 +218,29 @@ const insertQuotedText = (text: string) => {
   });
 };
 
-const autoResize = () => {
-  const el = textareaRef.value;
-  if (!el) return;
-  el.style.height = 'auto';
-  const newHeight = Math.min(el.scrollHeight, 200);
-  el.style.height = `${newHeight}px`;
-};
-
-
-
-// textarea 输入事件：先调整高度，再刷新斜杠命令状态
 const onTextareaInput = () => {
   autoResize();
   refreshSlashState();
 };
 
-// textarea keydown 事件：斜杠菜单激活时优先拦截导航键，否则交给 sendMessage
 const onTextareaKeydown = (e: KeyboardEvent) => {
   if (slashPhase.value !== null) {
     if (handleSlashKeydown(e)) return;
-    // 斜杠菜单激活时，Enter 已被 handleSlashKeydown 处理；若未处理则放行
   }
   if (e.key === 'Enter' && !e.shiftKey && !isComposing.value) {
     sendMessage(e);
   }
 };
 
-
-// 发送消息，支持 Shift + Enter 换行，当 isGenerating 为 true 时禁用发送功能
 const sendMessage = (e?: KeyboardEvent) => {
   if (e && e.shiftKey) return;
   e?.preventDefault();
   if ((!currentInput.value.trim() && !hasPendingUploads.value) || isGenerating.value) return;
 
   const trimmed = currentInput.value.trim();
-
-  // 识别斜杠命令：所有命令都需通过二级选项选择参数后执行
   const parsed = parseSlashCommand(trimmed);
   if (parsed) {
     const { entry, rest } = parsed;
-    // options 类型命令必须带参数（通过二级选项填入）；无参时回车不执行
     if (entry.args === 'options' && !rest) {
       return;
     }
@@ -740,11 +265,6 @@ const sendMessage = (e?: KeyboardEvent) => {
   });
 };
 
-const handleRemoveUpload = (index: number) => {
-  composerStore.removeUpload(index);
-  emit('remove-upload', index);
-};
-
 watch(
   isGenerating,
   () => {
@@ -755,28 +275,10 @@ watch(
   }
 );
 
-
 const handleSettingsUpdate = () => loadSettings();
 
-// 拉取已启用插件的斜杠命令（列表合并 + 停用即时消失）
-const loadPluginCommands = async () => {
-  try {
-    const commands = await invoke<PluginSlashCommand[]>('list_plugin_commands');
-    setPluginCommands(commands || []);
-  } catch (error) {
-    console.error('Failed to load plugin commands:', error);
-  }
-};
-
-// 后端目录监听推送的插件变化（启停/安装/卸载/开发热改）→ 刷新命令缓存
-const handlePluginsChanged = () => {
-  void loadPluginCommands();
-};
-
-// 点击浮层外部时关闭 + 菜单和 memory 浮层
 const handleDocumentClick = (e: MouseEvent) => {
   const target = e.target as Node | null;
-  // 关闭 + 菜单
   if (plusMenuView.value !== null) {
     if (plusButtonRef.value && target && plusButtonRef.value.contains(target)) return;
     const menus = document.querySelectorAll('[data-plus-menu]');
@@ -785,7 +287,6 @@ const handleDocumentClick = (e: MouseEvent) => {
     }
     closePlusMenu();
   }
-  // 关闭 memory 浮层
   if (memoryViewOpen.value) {
     const memMenu = document.querySelector('[data-memory-menu]');
     if (memMenu && target && memMenu.contains(target)) return;
@@ -793,23 +294,11 @@ const handleDocumentClick = (e: MouseEvent) => {
   }
 };
 
-// 子代理状态（行内按钮）：当前会话的子代理计数 + 抽屉开关。
-const subagentEntries = computed(() => subagentsFor(conversationId.value));
-const subagentCount = computed(() => subagentEntries.value.length);
-const subagentRunning = computed(
-  () => subagentEntries.value.filter((entry) => entry.phase === 'running').length,
-);
-const panelOpen = subagentPanelOpen;
-
 onMounted(() => {
   void initSubagentEvents();
   loadSettings();
-  void loadPluginCommands();
+  initSlashEvents();
   window.addEventListener('settings-updated', handleSettingsUpdate);
-  // Tauri 事件：插件目录变化（启停/安装/卸载/开发热改）→ 刷新插件命令
-  void listen('plugins-changed', handlePluginsChanged).then((unlisten) => {
-    pluginCommandsUnlisten = unlisten;
-  });
   document.addEventListener('click', handleDocumentClick, true);
   nextTick(() => {
     autoResize();
@@ -817,16 +306,10 @@ onMounted(() => {
   });
 });
 
-// plugins-changed 事件注销句柄
-let pluginCommandsUnlisten: UnlistenFn | null = null;
-
 onUnmounted(() => {
   window.removeEventListener('settings-updated', handleSettingsUpdate);
   document.removeEventListener('click', handleDocumentClick, true);
-  if (pluginCommandsUnlisten) {
-    pluginCommandsUnlisten();
-    pluginCommandsUnlisten = null;
-  }
+  cleanupSlashEvents();
 });
 
 defineExpose({
@@ -846,7 +329,8 @@ defineExpose({
       @change="onFileChange"
     />
     <div
-      class="relative bg-white dark:bg-[#2a2a2a] border border-[#e5e5e5] dark:border-[#3a3a3a] rounded-2xl shadow-sm focus-within:ring-2 focus-within:ring-[#e5e5e5] dark:focus-within:ring-[#444] transition-all flex flex-col w-full">
+      class="relative bg-white dark:bg-[#2a2a2a] border border-[#e5e5e5] dark:border-[#3a3a3a] rounded-2xl shadow-sm focus-within:ring-2 focus-within:ring-[#e5e5e5] dark:focus-within:ring-[#444] transition-all flex flex-col w-full"
+    >
       <AttachmentChipList :files="pendingUploads" @remove="handleRemoveUpload" />
       <div class="relative w-full">
         <textarea
@@ -880,70 +364,16 @@ defineExpose({
           @close="memoryViewOpen = false"
         />
 
-        <!-- + 按钮菜单：主视图（与输入框同宽） -->
-        <div
-          v-if="plusMenuView === 'main'"
-          data-plus-menu
-          class="absolute bottom-full left-0 mb-2 w-full rounded-lg border border-border bg-popover shadow-lg z-50 overflow-hidden">
-          <button
-            type="button"
-            class="w-full flex items-center gap-2 px-3 py-2 text-sm text-left hover:bg-secondary/80 transition-colors"
-            @click="pickUploadFromPlusMenu">
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
-              stroke-linecap="round" stroke-linejoin="round" class="shrink-0">
-              <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M17 8l-5-5-5 5M12 3v12" />
-            </svg>
-            <span>上传文件</span>
-          </button>
-          <button
-            type="button"
-            class="w-full flex items-center justify-between gap-2 px-3 py-2 text-sm text-left hover:bg-secondary/80 transition-colors"
-            @click="enterSkillView">
-            <div class="flex items-center gap-2">
-              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
-                stroke-linecap="round" stroke-linejoin="round" class="shrink-0">
-                <path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z" />
-              </svg>
-              <span>使用技能</span>
-            </div>
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
-              stroke-linecap="round" stroke-linejoin="round" class="shrink-0 opacity-60">
-              <path d="M9 18l6-6-6-6" />
-            </svg>
-          </button>
-        </div>
-
-        <!-- + 按钮菜单：技能视图（与输入框同宽） -->
-        <div
-          v-if="plusMenuView === 'skill'"
-          data-plus-menu
-          class="absolute bottom-full left-0 mb-2 w-full rounded-lg border border-border bg-popover shadow-lg z-50 overflow-hidden">
-          <div class="flex items-center gap-2 px-3 py-2 border-b border-border">
-            <button
-              type="button"
-              class="shrink-0 rounded p-0.5 hover:bg-secondary/80 transition-colors"
-              @click="plusMenuView = 'main'">
-              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
-                stroke-linecap="round" stroke-linejoin="round">
-                <path d="M15 18l-6-6 6-6" />
-              </svg>
-            </button>
-            <span class="text-xs font-medium text-muted-foreground">技能列表</span>
-          </div>
-          <div class="max-h-[240px] overflow-y-auto">
-            <div v-if="skillsLoading" class="px-3 py-2 text-xs text-muted-foreground">加载中...</div>
-            <div v-else-if="skills.length === 0" class="px-3 py-2 text-xs text-muted-foreground">暂无可用技能</div>
-            <button
-              v-for="skill in skills"
-              :key="skill.name"
-              type="button"
-              class="w-full flex flex-col items-start gap-0.5 px-3 py-1.5 text-left hover:bg-secondary/80 transition-colors"
-              @click="pickSkillFromPlusMenu(skill)">
-              <span class="text-sm truncate w-full">{{ skill.name }}</span>
-              <span v-if="skill.description" class="text-xs text-muted-foreground truncate w-full">{{ skill.description }}</span>
-            </button>
-          </div>
-        </div>
+        <!-- + 按钮菜单（主视图 / 技能视图） -->
+        <InputPlusMenu
+          :view="plusMenuView"
+          :skills="skills"
+          :loading="skillsLoading"
+          @upload="pickUploadFromPlusMenu"
+          @enter-skill="enterSkillView"
+          @back-main="plusMenuView = 'main'"
+          @select-skill="pickSkillFromPlusMenu"
+        />
       </div>
 
       <div class="flex min-w-0 items-center gap-2 px-3 pb-3 pt-2">
@@ -953,7 +383,8 @@ defineExpose({
             type="button"
             class="w-8 h-8 shrink-0 rounded-lg flex items-center justify-center text-muted-foreground hover:bg-secondary/80 transition-colors"
             :class="{ 'bg-secondary/80': plusMenuView !== null }"
-            @click="plusMenuView !== null ? closePlusMenu() : openPlusMenu()">
+            @click="plusMenuView !== null ? closePlusMenu() : openPlusMenu()"
+          >
             <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
               stroke-linecap="round" stroke-linejoin="round">
               <path d="M12 5v14M5 12h14" />
@@ -981,11 +412,14 @@ defineExpose({
             />
           </div>
         </div>
-        <button class="w-8 h-8 shrink-0 rounded-full flex items-center justify-center transition-colors shadow-sm"
+        <button
+          class="w-8 h-8 shrink-0 rounded-full flex items-center justify-center transition-colors shadow-sm"
           :class="isGenerating
             ? 'bg-[#fee2e2] text-[#b91c1c] hover:bg-[#fecaca]'
             : (canSend ? 'bg-[#111827] text-white hover:bg-[#1f2937]' : 'bg-[#f1f5f9] dark:bg-[#333] text-muted-foreground')"
-          :disabled="!isGenerating && !canSend" @click="isGenerating ? emit('cancel') : sendMessage()">
+          :disabled="!isGenerating && !canSend"
+          @click="isGenerating ? emit('cancel') : sendMessage()"
+        >
           <svg v-if="isGenerating" width="14" height="14" viewBox="0 0 24 24" fill="currentColor">
             <rect x="6" y="6" width="12" height="12" rx="2" ry="2" />
           </svg>
@@ -1004,71 +438,12 @@ defineExpose({
       </div>
     </div>
 
-    <!-- 输入框卡片外部下方状态行：左=当前智能体（无挂载时显示默认 Nova），右=会话用量 -->
-    <div class="mt-1.5 flex items-start justify-between gap-3">
-      <div class="min-w-0">
-        <!-- 挂载了智能体：可点 × 卸载 -->
-        <span
-          v-if="activeAgent"
-          class="inline-flex max-w-full items-center gap-1.5 rounded-md px-1.5 py-0.5 text-[12px] leading-tight text-[#4f5f73] transition-colors hover:bg-[#f1f5f9] dark:text-[#d5dbe3] dark:hover:bg-[#2a2a2a]"
-          :title="activeAgent.description ? `智能体：${activeAgent.name} — ${activeAgent.description}` : `智能体：${activeAgent.name}`"
-        >
-          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-            <rect x="3" y="11" width="18" height="10" rx="2" />
-            <circle cx="12" cy="5" r="2" />
-            <path d="M12 7v4" />
-          </svg>
-          <span class="truncate font-medium">{{ activeAgent.name }}</span>
-          <button
-            type="button"
-            class="ml-0.5 flex h-4 w-4 shrink-0 cursor-pointer items-center justify-center rounded-full opacity-60 transition-opacity hover:opacity-100"
-            title="移除智能体，回到默认 Nova"
-            aria-label="移除智能体"
-            @click="emit('remove-agent')"
-          >
-            <svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-              <line x1="18" y1="6" x2="6" y2="18" />
-              <line x1="6" y1="6" x2="18" y2="18" />
-            </svg>
-          </button>
-        </span>
-        <!-- 未挂载：显示默认 Nova 标签（仅标识，不可交互） -->
-        <span
-          v-else
-          class="inline-flex items-center gap-1.5 rounded-md px-1.5 py-0.5 text-[12px] leading-tight text-[#4f5f73] opacity-55 dark:text-[#d5dbe3]"
-          title="当前对话使用默认智能体 Nova（全部能力）"
-        >
-          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-            <rect x="3" y="11" width="18" height="10" rx="2" />
-            <circle cx="12" cy="5" r="2" />
-            <path d="M12 7v4" />
-          </svg>
-          <span class="font-medium">Nova（默认）</span>
-        </span>
-      </div>
-      <div class="ml-auto min-w-0 shrink-0 flex items-center gap-2">
-        <!-- 子代理按钮：当前会话有记录时显示 -->
-        <button
-          v-if="subagentCount > 0"
-          type="button"
-          class="inline-flex shrink-0 cursor-pointer items-center gap-1.5 rounded-md px-1.5 py-0.5 text-[12px] leading-tight transition-colors hover:bg-[#f1f5f9] dark:hover:bg-[#2a2a2a]"
-          :class="panelOpen ? 'text-[#1a7f37] dark:text-[#4ade80]' : 'text-[#4f5f73] dark:text-[#d5dbe3]'"
-          :title="panelOpen ? '收起子代理面板' : '查看子代理运行详情'"
-          @click="toggleSubagentPanel"
-        >
-          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-            <circle cx="11" cy="11" r="7" />
-            <path d="m21 21-4.3-4.3" />
-          </svg>
-          <span class="font-medium">子代理</span>
-          <span v-if="subagentRunning > 0" class="inline-flex items-center gap-1">
-            <span class="inline-block h-1.5 w-1.5 rounded-full bg-[#22c55e] animate-pulse" />
-            <span class="tabular-nums">{{ subagentRunning }}</span>
-          </span>
-          <span v-else class="tabular-nums opacity-70">{{ subagentCount }}</span>
-        </button>
-        <ConversationUsageBar :usage="conversationUsage" />
-      </div>
-    </div>
+    <!-- 输入框卡片外部下方状态行：由 InputAreaFooter 负责 -->
+    <InputAreaFooter
+      :activeAgent="activeAgent"
+      :conversationId="conversationId"
+      :conversationUsage="conversationUsage"
+      @remove-agent="emit('remove-agent')"
+    />
   </div>
 </template>

@@ -254,14 +254,13 @@ fn migrate_legacy_bundle_file(app: &AppHandle, root: &std::path::Path) {
             let _ = std::fs::remove_file(&path);
             continue;
         }
-        if std::fs::create_dir_all(root.join(stem)).is_ok() {
-            if std::fs::rename(&path, &new_path).is_err() {
+        if std::fs::create_dir_all(root.join(stem)).is_ok()
+            && std::fs::rename(&path, &new_path).is_err() {
                 // rename 失败（跨设备等）退回复制+删除。
                 if std::fs::copy(&path, &new_path).is_ok() {
                     let _ = std::fs::remove_file(&path);
                 }
             }
-        }
     }
     let _ = app; // 预留：迁移结果上报
 }
@@ -281,10 +280,10 @@ fn normalize_name(name: &str) -> String {
 impl AgentBundle {
     /// 内置工具是否对该 bundle 可见（流程控制工具恒可见；默认专属工具恒不可见）。
     pub fn is_tool_enabled(&self, tool_name: &str) -> bool {
-        if DEFAULT_ONLY_TOOLS.iter().any(|t| *t == tool_name) {
+        if DEFAULT_ONLY_TOOLS.contains(&tool_name) {
             return false;
         }
-        if ALWAYS_ON_TOOLS.iter().any(|t| *t == tool_name) {
+        if ALWAYS_ON_TOOLS.contains(&tool_name) {
             return true;
         }
         match &self.enabled_tools {

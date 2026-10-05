@@ -32,8 +32,6 @@
     "katex": "^0.16.22",
     "lucide-vue-next": "^1.0.0",
     "markdown-it": "^14.1.0",
-    "marked": "^17.0.5",
-    "mermaid": "^11.14.0",
     "pdfjs-dist": "^5.7.284",
     "pinia": "^3.0.4",
     "reka-ui": "^2.9.3",

@@ -34,6 +34,12 @@ pub struct ResponsesAdapter {
     seen_unknown_events: HashSet<String>,
 }
 
+impl Default for ResponsesAdapter {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl ResponsesAdapter {
     pub fn new() -> Self {
         Self {

@@ -19,6 +19,39 @@ export default defineConfig(async () => ({
     exclude: ["pdfjs-dist"],
   },
 
+  build: {
+    rollupOptions: {
+      output: {
+        manualChunks(id) {
+          if (id.includes('node_modules')) {
+            if (id.includes('echarts')) {
+              return 'vendor-echarts';
+            }
+            if (id.includes('katex')) {
+              return 'vendor-katex';
+            }
+            if (id.includes('@xterm')) {
+              return 'vendor-xterm';
+            }
+            if (id.includes('highlight.js')) {
+              return 'vendor-highlight';
+            }
+            if (id.includes('markdown-it')) {
+              return 'vendor-markdown';
+            }
+            if (id.includes('reka-ui') || id.includes('lucide-vue-next')) {
+              return 'vendor-ui';
+            }
+            if (id.includes('vue') || id.includes('pinia')) {
+              return 'vendor-vue';
+            }
+          }
+        },
+      },
+    },
+    chunkSizeWarningLimit: 800,
+  },
+
   // Vite options tailored for Tauri development and only applied in `tauri dev` or `tauri build`
   //
   // 1. prevent Vite from obscuring rust errors

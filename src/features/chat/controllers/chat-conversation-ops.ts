@@ -15,11 +15,8 @@ import {
   createConversation,
   deleteConversation,
   getChatTurnStatus,
-  getConversationUsage,
   listSessionFiles,
   listConversations,
-  loadConversationHistory,
-  loadConversationToolLogs,
   setConversationPinned,
   type SessionFileMeta,
 } from "../services/chat-api";
@@ -35,8 +32,8 @@ import {
   stashRuntimeState,
 } from "./chat-runtime-state";
 import { buildAssistantTranscriptSegments } from "../utils/assistant-transcript";
-import { sanitizeConsecutiveAssistantMessages } from "./chat-message-helpers";
 import { clearAllSubagents, clearSubagents } from "../services/subagents";
+import { useAgentSessionStore } from "@/stores/agentSession";
 
 type ConversationOpsDeps = {
   activeConversationId: Ref<string>;
@@ -282,48 +279,19 @@ export function createConversationOperations(deps: ConversationOpsDeps) {
     pendingUploads.value = [];
 
     try {
-      const saved = await loadConversationHistory(targetConversationId);
+      const sessionStore = useAgentSessionStore();
+      await sessionStore.loadConversationMessages(targetConversationId);
       if (isStaleLoad()) return;
-      const savedToolLogs = await loadConversationToolLogs(targetConversationId);
-      if (isStaleLoad()) return;
-      messages.value = sanitizeConsecutiveAssistantMessages((saved || [])
-        .filter(
-          (message) =>
-            (message.role === "user" || message.role === "assistant") &&
-            (!!message.content || !!message.reasoning || (message.attachments?.length ?? 0) > 0),
-        )
-        .map((message, index) => ({
-          id:
-            message.id != null && message.id > 0
-              ? String(message.id)
-              : `hist-${targetConversationId}-${index}`,
-          role: message.role as "user" | "assistant",
-          content: message.content,
-          reasoning: message.reasoning,
-          attachments: message.attachments,
-          tokenUsage: message.tokenUsage,
-          cost: message.cost,
-          transcriptSegments: message.cost?.transcriptSegments,
-        })));
 
-      const restored = restoreRuntimeState(
+      restoreRuntimeState(
         runtimeStateByConversation,
         targetConversationId,
         activeRuntimeRefs,
       );
-      if (!restored || toolExecutionLogs.value.length === 0) {
-        toolExecutionLogs.value = savedToolLogs;
-      }
       await restoreLiveTurnStatus(targetConversationId);
       if (isStaleLoad()) return;
 
       await refreshConversationFiles(targetConversationId);
-      // 用量统计独立加载失败时保留旧值，不阻断会话恢复。
-      try {
-        conversationUsage.value = await getConversationUsage(targetConversationId);
-      } catch (err) {
-        console.error("Failed to load conversation usage:", err);
-      }
     } catch (err) {
       console.error("Failed to load conversation messages:", err);
       if (isStaleLoad()) return;

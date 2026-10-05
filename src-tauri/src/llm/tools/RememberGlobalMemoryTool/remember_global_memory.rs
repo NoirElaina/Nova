@@ -87,7 +87,7 @@ async fn execute_with_app(app: &AppHandle, input: Value) -> Result<ToolOutcome, 
             crate::llm::services::memory_dir::memory_remove(app, old_text).await
         }
         other => {
-            return Err(ToolFailure::invalid_input(&format!(
+            return Err(ToolFailure::invalid_input(format!(
                 "Unknown action '{}'. Use: add, replace, or remove.",
                 other
             )));

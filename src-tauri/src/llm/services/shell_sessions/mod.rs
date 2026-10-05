@@ -52,7 +52,7 @@ fn prompt_patterns() -> &'static [Regex] {
 }
 
 fn looks_like_prompt(text: &str) -> bool {
-    let last_line = text.trim_end().split('\n').last().unwrap_or("");
+    let last_line = text.trim_end().split('\n').next_back().unwrap_or("");
     prompt_patterns().iter().any(|p| p.is_match(last_line))
 }
 

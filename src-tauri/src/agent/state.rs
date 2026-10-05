@@ -4,8 +4,10 @@ use serde::{Deserialize, Serialize};
 /// 严格跟踪从“意图理解 -> 工具调用 -> 验证自愈 -> 任务完成”的每一步。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+#[derive(Default)]
 pub enum CognitiveState {
     /// 空闲中，等待用户指令
+    #[default]
     Idle,
     /// 上下文装配中（Prompt Caching 对齐、历史重构、符号大纲）
     AssemblingContext,
@@ -25,8 +27,3 @@ pub enum CognitiveState {
     Failed,
 }
 
-impl Default for CognitiveState {
-    fn default() -> Self {
-        Self::Idle
-    }
-}

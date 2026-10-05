@@ -42,6 +42,7 @@ pub const EVAL_LIKE_BUILTINS: &[&str] = &[
 /// - `sed`：`-i` 参数会原地写文件
 /// - `awk`：可调用 `system()` 执行任意命令
 /// - `find`：`-exec` / `-delete` 可执行任意命令或删除文件
+///
 /// 这些命令会落入 `NeedApproval` 分支，由用户审批（fail-closed）。
 pub const READ_ONLY_COMMANDS: &[&str] = &[
     // 文件查看

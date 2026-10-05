@@ -37,11 +37,15 @@ const renderSegments = computed(() =>
 const aggregatedToolEntries = computed<ToolExecutionEntry[]>(() => {
   const byId = new Map<string, ToolExecutionEntry>();
   for (const entry of props.entries ?? []) {
-    byId.set(entry.id, entry);
+    const existing = byId.get(entry.id);
+    if (!existing || existing.status === "running" || entry.status !== "running") {
+      byId.set(entry.id, entry);
+    }
   }
   if (props.toolSummary) {
     for (const entry of props.toolSummary.entries) {
-      if (!byId.has(entry.id)) {
+      const existing = byId.get(entry.id);
+      if (!existing || existing.status === "running" || entry.status !== "running") {
         byId.set(entry.id, entry);
       }
     }

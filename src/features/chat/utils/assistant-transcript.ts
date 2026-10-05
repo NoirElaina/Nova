@@ -179,7 +179,13 @@ export function buildToolSummaryForSegment(
   entries: ToolExecutionEntry[],
   snapshot?: ToolTurnSummary,
 ): ToolTurnSummary | undefined {
-  const byId = new Map(entries.map((entry) => [entry.id, entry]));
+  const byId = new Map<string, ToolExecutionEntry>();
+  for (const entry of entries) {
+    const existing = byId.get(entry.id);
+    if (!existing || existing.status === "running" || entry.status !== "running") {
+      byId.set(entry.id, entry);
+    }
+  }
   const liveEntries = segment.toolIds
     .map((id) => byId.get(id))
     .filter((entry): entry is ToolExecutionEntry => !!entry);

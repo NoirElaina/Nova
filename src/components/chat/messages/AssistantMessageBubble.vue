@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { ref, computed } from 'vue';
 import { Button } from '@/components/ui/button';
-import type { ChatMessage } from '../../../lib/chat-types';
+import type { ChatMessage, ToolExecutionEntry } from '../../../lib/chat-types';
 import { normalizeAssistantTranscript } from '../../../features/chat/utils/assistant-transcript';
 import AssistantTranscript from './AssistantTranscript.vue';
 import ContextCompactNotice from './ContextCompactNotice.vue';
@@ -11,6 +11,7 @@ const props = defineProps<{
   index: number;
   copied: boolean;
   conversationTokenUsage: number;
+  entries?: ToolExecutionEntry[];
   reaction?: 'up' | 'down';
 }>();
 
@@ -67,6 +68,7 @@ const triggerReaction = (value: 'up' | 'down') => {
       />
       <AssistantTranscript
         :segments="transcriptSegments"
+        :entries="entries"
         :toolSummary="message.cost?.toolSummary"
       />
       <div

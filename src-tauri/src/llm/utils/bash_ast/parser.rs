@@ -43,7 +43,7 @@ fn redirect_op(op: &str) -> Option<RedirectOp> {
 
 // 全局 Parser 实例（tree-sitter Parser 不是 Send/Sync，用 thread_local）。
 thread_local! {
-    static PARSER: std::cell::RefCell<Option<Parser>> = std::cell::RefCell::new(None);
+    static PARSER: std::cell::RefCell<Option<Parser>> = const { std::cell::RefCell::new(None) };
 }
 
 /// 初始化或复用 Parser。
@@ -248,9 +248,7 @@ fn walk_command(source: &str, node: Node) -> Result<SimpleCommand, String> {
         if ARGUMENT_TYPES.contains(&kind) {
             let text = child_text(source, child);
             // 检查参数内部是否含未处理的展开
-            if let Err(reason) = validate_argument(&child, source) {
-                return Err(reason);
-            }
+            validate_argument(&child)?;
             argv.push(text);
             continue;
         }
@@ -346,7 +344,7 @@ fn walk_command(source: &str, node: Node) -> Result<SimpleCommand, String> {
 }
 
 /// 验证参数节点：检查是否含未处理的展开。
-fn validate_argument(node: &Node, source: &str) -> Result<(), String> {
+fn validate_argument(node: &Node) -> Result<(), String> {
     let mut cursor = node.walk();
     for child in node.children(&mut cursor) {
         let kind = child.kind();
@@ -357,7 +355,7 @@ fn validate_argument(node: &Node, source: &str) -> Result<(), String> {
             return Err(format!("参数包含 shell 展开 '{}'", kind));
         }
         // 递归检查子节点
-        validate_argument(&child, source)?;
+        validate_argument(&child)?;
     }
     Ok(())
 }
@@ -397,7 +395,7 @@ fn parse_redirect(source: &str, node: Node) -> Option<Redirect> {
 }
 
 /// 获取节点的原始文本（含引号）。
-fn node_text<'a>(source: &'a str, node: Node) -> String {
+fn node_text(source: &str, node: Node) -> String {
     let start = node.start_byte();
     let end = node.end_byte();
     source[start..end].to_string()

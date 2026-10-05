@@ -111,39 +111,163 @@ pub fn render_ui_history(events: &[StoredEvent]) -> Vec<HistoryMessage> {
                 if let Some(last) = out.last_mut().filter(|m| m.role == "assistant") {
                     if !content.trim().is_empty() {
                         if last.content.trim().is_empty() {
-                            last.content = content;
+                            last.content = content.clone();
                         } else {
                             last.content.push_str("\n\n");
                             last.content.push_str(&content);
                         }
                     }
-                    if let Some(reasoning) = reasoning {
+                    if let Some(ref r) = reasoning {
                         match &mut last.reasoning {
                             Some(existing) if !existing.trim().is_empty() => {
                                 existing.push_str("\n\n");
-                                existing.push_str(&reasoning);
+                                existing.push_str(r);
                             }
-                            _ => last.reasoning = Some(reasoning),
+                            _ => last.reasoning = Some(r.clone()),
                         }
                     }
                     // token_usage 为单次调用的用量，合并时累加为回合总量。
                     if let Some(usage) = token_usage {
                         last.token_usage = Some(last.token_usage.unwrap_or(0) + *usage);
                     }
-                    // cost 取最后一条非空值：回合末条目的 cost 经前端回写，
-                    // 带完整 transcriptSegments / toolSummary / 耗时等展示元数据。
-                    if cost.is_some() {
-                        last.cost = cost.clone();
+                    if let Some(new_cost) = cost {
+                        let prev_segments = last.cost.as_ref()
+                            .and_then(|c| c.get("transcriptSegments").cloned());
+                        let mut merged_cost = new_cost.clone();
+                        if let Some(prev) = prev_segments {
+                            merged_cost["transcriptSegments"] = prev;
+                        }
+                        last.cost = Some(merged_cost);
                     }
-                } else if !content.trim().is_empty() || reasoning.is_some() {
+
+                    // 动态维护完整的 transcriptSegments
+                    let mut cost_val = last.cost.clone().unwrap_or_else(|| serde_json::json!({}));
+                    let mut segs = cost_val.get("transcriptSegments")
+                        .and_then(|v| v.as_array())
+                        .cloned()
+                        .unwrap_or_default();
+
+                    if let Some(ref r) = reasoning {
+                        if !r.trim().is_empty() {
+                            segs.push(serde_json::json!({
+                                "type": "reasoning",
+                                "text": r,
+                            }));
+                        }
+                    }
+                    if !content.trim().is_empty() {
+                        segs.push(serde_json::json!({
+                            "type": "text",
+                            "text": content,
+                        }));
+                    }
+                    cost_val["transcriptSegments"] = serde_json::json!(segs);
+                    last.cost = Some(cost_val);
+                } else {
+                    let has_tools = match &message.content {
+                        crate::llm::types::Content::Blocks(blocks) => {
+                            blocks.iter().any(|b| matches!(b, crate::llm::types::ContentBlock::ToolUse { .. }))
+                        }
+                        _ => false,
+                    };
+
+                    if !content.trim().is_empty() || reasoning.is_some() || has_tools {
+                        let mut initial_segments = Vec::new();
+                        if let Some(ref r) = reasoning {
+                            if !r.trim().is_empty() {
+                                initial_segments.push(serde_json::json!({
+                                    "type": "reasoning",
+                                    "text": r,
+                                }));
+                            }
+                        }
+                        if let crate::llm::types::Content::Blocks(blocks) = &message.content {
+                            let mut tool_ids = Vec::new();
+                            for block in blocks {
+                                if let crate::llm::types::ContentBlock::ToolUse { id, .. } = block {
+                                    tool_ids.push(id.clone());
+                                }
+                            }
+                            if !tool_ids.is_empty() {
+                                initial_segments.push(serde_json::json!({
+                                    "type": "tools",
+                                    "toolIds": tool_ids,
+                                }));
+                            }
+                        }
+                        if !content.trim().is_empty() {
+                            initial_segments.push(serde_json::json!({
+                                "type": "text",
+                                "text": content,
+                            }));
+                        }
+
+                        let mut initial_cost = cost.clone().unwrap_or_else(|| serde_json::json!({}));
+                        if !initial_segments.is_empty() && initial_cost.get("transcriptSegments").is_none() {
+                            initial_cost["transcriptSegments"] = serde_json::json!(initial_segments);
+                        }
+
+                        out.push(HistoryMessage {
+                            id: Some(stored.seq),
+                            role: "assistant".to_string(),
+                            content,
+                            reasoning,
+                            attachments: None,
+                            token_usage: *token_usage,
+                            cost: Some(initial_cost),
+                        });
+                    }
+                }
+            }
+            SessionEvent::ToolCall { call_id, .. } => {
+                let call_val = serde_json::json!(call_id);
+                if let Some(last) = out.last_mut().filter(|m| m.role == "assistant") {
+                    let mut cost_val = last.cost.clone().unwrap_or_else(|| serde_json::json!({}));
+                    let mut segs = cost_val.get("transcriptSegments")
+                        .and_then(|v| v.as_array())
+                        .cloned()
+                        .unwrap_or_default();
+
+                    let already_exists = segs.iter().any(|seg| {
+                        seg.get("type").and_then(|t| t.as_str()) == Some("tools")
+                            && seg.get("toolIds").and_then(|v| v.as_array()).is_some_and(|arr| arr.contains(&call_val))
+                    });
+
+                    if !already_exists {
+                        let mut appended = false;
+                        if let Some(last_seg) = segs.last_mut() {
+                            if last_seg.get("type").and_then(|t| t.as_str()) == Some("tools") {
+                                if let Some(arr) = last_seg.get_mut("toolIds").and_then(|v| v.as_array_mut()) {
+                                    arr.push(call_val);
+                                    appended = true;
+                                }
+                            }
+                        }
+                        if !appended {
+                            segs.push(serde_json::json!({
+                                "type": "tools",
+                                "toolIds": [call_id],
+                            }));
+                        }
+                        cost_val["transcriptSegments"] = serde_json::json!(segs);
+                        last.cost = Some(cost_val);
+                    }
+                } else {
                     out.push(HistoryMessage {
                         id: Some(stored.seq),
                         role: "assistant".to_string(),
-                        content,
-                        reasoning,
+                        content: String::new(),
+                        reasoning: None,
                         attachments: None,
-                        token_usage: *token_usage,
-                        cost: cost.clone(),
+                        token_usage: None,
+                        cost: Some(serde_json::json!({
+                            "transcriptSegments": [
+                                {
+                                    "type": "tools",
+                                    "toolIds": [call_id],
+                                }
+                            ]
+                        })),
                     });
                 }
             }
@@ -160,28 +284,60 @@ pub fn render_tool_logs(events: &[StoredEvent]) -> Vec<HistoryToolExecution> {
     for stored in events {
         match &stored.event {
             SessionEvent::ToolCall { call_id, tool_name, input, turn_id } => {
-                logs.push(HistoryToolExecution {
-                    id: call_id.clone(),
-                    turn_id: turn_id.clone(),
-                    tool_name: tool_name.clone(),
-                    input: input.clone(),
-                    result: String::new(),
-                    status: "running".to_string(),
-                    started_at: stored.created_at,
-                    finished_at: None,
-                });
+                if let Some(existing) = logs.iter_mut().find(|log| log.id == *call_id) {
+                    if existing.turn_id.is_none() && turn_id.is_some() {
+                        existing.turn_id = turn_id.clone();
+                    }
+                } else {
+                    logs.push(HistoryToolExecution {
+                        id: call_id.clone(),
+                        turn_id: turn_id.clone(),
+                        tool_name: tool_name.clone(),
+                        input: input.clone(),
+                        result: String::new(),
+                        status: "running".to_string(),
+                        started_at: stored.created_at,
+                        finished_at: None,
+                    });
+                }
             }
-            SessionEvent::ToolResult { call_id, output, is_error, finished_at, .. } => {
-                if let Some(entry) = logs.iter_mut().find(|log| log.id == *call_id) {
+            SessionEvent::ToolResult { call_id, tool_name, output, is_error, started_at, finished_at } => {
+                let mut matched = false;
+                for entry in logs.iter_mut().filter(|log| log.id == *call_id) {
+                    matched = true;
                     entry.result = output.clone();
                     entry.status = if *is_error { "error" } else { "completed" }.to_string();
                     entry.finished_at = Some(*finished_at);
+                }
+                if !matched {
+                    logs.push(HistoryToolExecution {
+                        id: call_id.clone(),
+                        turn_id: None,
+                        tool_name: tool_name.clone(),
+                        input: String::new(),
+                        result: output.clone(),
+                        status: if *is_error { "error" } else { "completed" }.to_string(),
+                        started_at: *started_at,
+                        finished_at: Some(*finished_at),
+                    });
                 }
             }
             _ => {}
         }
     }
-    logs
+
+    // 终态去重兜底：以已完成/出错状态优先，严格保证每个 call_id 唯一
+    let mut deduplicated: Vec<HistoryToolExecution> = Vec::with_capacity(logs.len());
+    for log in logs {
+        if let Some(existing) = deduplicated.iter_mut().find(|item| item.id == log.id) {
+            if existing.status == "running" && log.status != "running" {
+                *existing = log;
+            }
+        } else {
+            deduplicated.push(log);
+        }
+    }
+    deduplicated
 }
 
 /// 重建模型上下文：按序拼接消息事件，遇到 CompactBoundary 丢弃之前

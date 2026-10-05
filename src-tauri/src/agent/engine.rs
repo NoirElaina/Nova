@@ -265,8 +265,16 @@ impl AgentEngine {
 
             let mut tool_result_blocks = Vec::new();
             let mut stop_for_user_interaction = false;
+            let mut has_write_or_edit = false;
+            let mut has_error = false;
 
             for executed in executed_calls {
+                if executed.name == "write" || executed.name == "edit" || executed.name == "multi_edit" {
+                    has_write_or_edit = true;
+                }
+                if executed.is_error {
+                    has_error = true;
+                }
                 let now_ms = chrono::Utc::now().timestamp_millis();
                 let _ = crate::llm::session_log::append_event(
                     &self.app,
@@ -330,6 +338,24 @@ impl AgentEngine {
             )
             .await;
             current_messages.push(tool_msg);
+
+            if has_error {
+                let _ = self.app.emit(
+                    "agent-event",
+                    AgentDomainEvent::StateChanged {
+                        turn_id: turn_id.clone(),
+                        state: CognitiveState::Reflecting,
+                    },
+                );
+            } else if has_write_or_edit {
+                let _ = self.app.emit(
+                    "agent-event",
+                    AgentDomainEvent::StateChanged {
+                        turn_id: turn_id.clone(),
+                        state: CognitiveState::VerifyingWorkspace,
+                    },
+                );
+            }
 
             if stop_for_user_interaction {
                 break;

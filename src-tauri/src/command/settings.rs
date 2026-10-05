@@ -120,19 +120,13 @@ pub struct ProviderProfile {
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 #[serde(rename_all = "camelCase")]
+#[derive(Default)]
 pub struct RagSettings {
     #[serde(default)]
     // embedding 模型名称。
     pub embedding_model: String,
 }
 
-impl Default for RagSettings {
-    fn default() -> Self {
-        Self {
-            embedding_model: String::new(),
-        }
-    }
-}
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 #[serde(rename_all = "camelCase")]

@@ -41,7 +41,7 @@ pub fn truncate_to_token_budget(text: &str, budget: i64) -> String {
     let mut lo = 0usize;
     let mut hi = total_chars;
     while lo < hi {
-        let mid = (lo + hi + 1) / 2;
+        let mid = (lo + hi).div_ceil(2);
         let prefix: String = text.chars().take(mid).collect();
         if count_text(&prefix) <= budget {
             lo = mid;

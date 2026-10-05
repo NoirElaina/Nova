@@ -209,7 +209,7 @@ async fn upsert_documents_for_scope(
             });
             continue;
         }
-        if content.as_bytes().len() > MAX_DOCUMENT_BYTES {
+        if content.len() > MAX_DOCUMENT_BYTES {
             rejected.push(RagRejectedItem {
                 source_name,
                 reason: format!("文件超过后端上限 {}KB", MAX_DOCUMENT_BYTES / 1024),

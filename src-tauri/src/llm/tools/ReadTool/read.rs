@@ -412,7 +412,7 @@ async fn execute_async(
         .and_then(Value::as_str);
 
     let path = resolve_file_path(file_path)
-        .map_err(|e| ToolFailure::invalid_input(e))?;
+        .map_err(ToolFailure::invalid_input)?;
 
     if path.is_dir() {
         return Err(ToolFailure::new(format!(

@@ -780,7 +780,7 @@ fn current_turn_cost(
         cache_creation_tokens,
     };
     pricing::calculate_for_model(
-        &model,
+        model,
         &usage,
         pricing::cache_billing_for_provider(provider),
     )

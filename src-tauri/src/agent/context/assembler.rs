@@ -17,7 +17,7 @@ impl ContextAssembler {
         let trimmed = new_prompt.trim();
 
         // 检查末尾是否已经包含了当前的用户意图（避免从 session_log 重构上下文后发生双重追加 Bug）
-        let already_present = messages.last().map_or(false, |last| {
+        let already_present = messages.last().is_some_and(|last| {
             matches!(last.role, Role::User)
                 && match &last.content {
                     Content::Text(t) => t.trim() == trimmed,

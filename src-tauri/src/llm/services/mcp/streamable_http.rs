@@ -86,7 +86,7 @@ fn collect_mcp_json_messages(body: &str) -> Vec<Value> {
 }
 
 fn compact_body_for_error(raw: &str) -> String {
-    let mut compact = raw.replace('\n', " ").replace('\r', " ");
+    let mut compact = raw.replace(['\n', '\r'], " ");
     if compact.len() > 240 {
         compact.truncate(240);
         compact.push_str("...");

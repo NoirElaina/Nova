@@ -23,7 +23,7 @@ pub use types::{
 };
 
 enum ServerConnection {
-    Stdio(StdioMcpConnection),
+    Stdio(Box<StdioMcpConnection>),
     StreamableHttp(StreamableHttpMcpConnection),
 }
 
@@ -376,7 +376,7 @@ async fn connect_server(
                                     McpRuntimeStatus::Connected,
                                     0,
                                     Some(e),
-                                    Some(ServerConnection::Stdio(conn)),
+                                    Some(ServerConnection::Stdio(Box::new(conn))),
                                 )
                             }
                         },
@@ -385,7 +385,7 @@ async fn connect_server(
                         McpRuntimeStatus::Connected,
                         tool_count,
                         None,
-                        Some(ServerConnection::Stdio(conn)),
+                        Some(ServerConnection::Stdio(Box::new(conn))),
                     )
                 }
                 Err(e) => (McpRuntimeStatus::Error, 0, Some(e), None),
@@ -459,7 +459,7 @@ async fn reconnect_server(app: &AppHandle, name: &str) -> Result<(), String> {
         conn.shutdown().await;
     }
 
-    server.status = status.clone();
+    server.status = status;
     server.tool_count = tool_count;
     server.error = error.clone();
     server.connection = connection;

@@ -691,6 +691,16 @@ const liveWaitKind = () => {
 };
 
 const liveStatusText = computed(() => {
+  const cogState = sessionStore.activeSession.cognitiveState;
+  if (cogState === 'verifying_workspace') {
+    return '正在验证代码语法有效性';
+  }
+  if (cogState === 'reflecting') {
+    return '分析诊断信息并自愈修复中';
+  }
+  if (cogState === 'assembling_context') {
+    return '正在装配认知上下文';
+  }
   if (currentStage.value === 'compacting') {
     return '正在压缩上下文';
   }
@@ -804,6 +814,7 @@ defineExpose({
                 v-else
                 :message="messageRowAt(vItem.index)!.message"
                 :index="messageRowAt(vItem.index)!.index"
+                :entries="currentTurnToolEntries"
                 :copied="!!copiedMap[`assistant-${messageRowAt(vItem.index)!.index}`]"
                 :conversationTokenUsage="conversationTokenUsage(messageRowAt(vItem.index)!.index)"
                 :reaction="reactionMap[messageRowAt(vItem.index)!.index]"

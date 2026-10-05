@@ -50,7 +50,7 @@ fn last_block_text(history: &[Message], marker: &str) -> Option<String> {
     history
         .iter()
         .rev()
-        .map(|message| message_text(message))
+        .map(message_text)
         .find(|text| text.starts_with(marker))
 }
 
@@ -67,9 +67,7 @@ async fn build_session_files_block(
     conversation_id: Option<&str>,
     history: &[Message],
 ) -> Option<Message> {
-    let Some(conv_id) = conversation_id.map(str::trim).filter(|s| !s.is_empty()) else {
-        return None;
-    };
+    let conv_id = conversation_id.map(str::trim).filter(|s| !s.is_empty())?;
     let files = match crate::llm::services::session_files::list_session_files(app, conv_id) {
         Ok(files) if !files.is_empty() => files,
         _ => return None,

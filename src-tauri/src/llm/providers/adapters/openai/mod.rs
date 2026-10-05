@@ -29,6 +29,12 @@ pub struct OpenAiAdapter {
     tool_calls_emitted: bool,
 }
 
+impl Default for OpenAiAdapter {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl OpenAiAdapter {
     pub fn new() -> Self {
         Self {
@@ -175,7 +181,7 @@ impl ApiAdapter for OpenAiAdapter {
                 if let Some(tool_call_deltas) = tool_calls {
                     for tc in tool_call_deltas {
                         // 缺 index 的提供商（通常一次只发一个工具调用）回落到当前序号。
-                        let index = tc.index.unwrap_or_else(|| self.pending.len());
+                        let index = tc.index.unwrap_or(self.pending.len());
                         let entry = self.pending.entry(index).or_default();
 
                         if let Some(id) = tc.id {

@@ -468,7 +468,7 @@ pub async fn set_conversation_agent(
 
     let agent = bundle_id.map(str::trim).filter(|v| !v.is_empty());
     sqlx::query("UPDATE conversations SET active_agent_id = ? WHERE id = ?")
-        .bind(&agent)
+        .bind(agent)
         .bind(normalized)
         .execute(&pool)
         .await

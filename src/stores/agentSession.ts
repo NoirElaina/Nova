@@ -17,6 +17,11 @@ import {
   loadConversationToolLogs,
 } from "@/features/chat/services/chat-api";
 import { sanitizeConsecutiveAssistantMessages } from "@/features/chat/controllers/chat-message-helpers";
+import {
+  appendTranscriptReasoning,
+  appendTranscriptText,
+  appendTranscriptTool,
+} from "@/features/chat/utils/assistant-transcript";
 import { useConversationStore } from "./conversation";
 
 export interface SessionRuntimeState {
@@ -97,7 +102,7 @@ export const useAgentSessionStore = defineStore("agentSession", () => {
           .filter(
             (msg) =>
               (msg.role === "user" || msg.role === "assistant") &&
-              (!!msg.content || !!msg.reasoning || (msg.attachments?.length ?? 0) > 0),
+              (!!msg.content || !!msg.reasoning || (msg.attachments?.length ?? 0) > 0 || (msg.cost?.transcriptSegments?.length ?? 0) > 0),
           )
           .map((msg, index) => ({
             id:
@@ -114,9 +119,17 @@ export const useAgentSessionStore = defineStore("agentSession", () => {
           })),
       );
 
-      if (session.toolExecutionLogs.length === 0) {
-        session.toolExecutionLogs = savedToolLogs;
+      const logMap = new Map<string, ToolExecutionEntry>();
+      for (const log of session.toolExecutionLogs) {
+        logMap.set(log.id, log);
       }
+      for (const log of (savedToolLogs || [])) {
+        const existing = logMap.get(log.id);
+        if (!existing || existing.status === "running" || log.status !== "running") {
+          logMap.set(log.id, log);
+        }
+      }
+      session.toolExecutionLogs = Array.from(logMap.values());
 
       try {
         session.conversationUsage = await getConversationUsage(conversationId);
@@ -159,11 +172,13 @@ export const useAgentSessionStore = defineStore("agentSession", () => {
   function handleThinkingDelta(delta: string, convId?: string) {
     const session = convId ? getSession(convId) : activeSession.value;
     session.assistantReasoning += delta;
+    appendTranscriptReasoning(session.assistantSegments, delta);
   }
 
   function handleTextDelta(delta: string, convId?: string) {
     const session = convId ? getSession(convId) : activeSession.value;
     session.assistantResponse += delta;
+    appendTranscriptText(session.assistantSegments, delta);
   }
 
   function handleToolRequested(callId: string, toolName: string, args: Record<string, unknown>, convId?: string) {
@@ -176,6 +191,7 @@ export const useAgentSessionStore = defineStore("agentSession", () => {
       result: "",
       startedAt: Date.now(),
     });
+    appendTranscriptTool(session.assistantSegments, callId);
   }
 
   function handleToolCompleted(callId: string, _toolName: string, output: string, isError: boolean, _durationMs: number, convId?: string) {

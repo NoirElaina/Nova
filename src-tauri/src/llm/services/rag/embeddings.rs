@@ -30,7 +30,7 @@ struct EmbeddingDatum {
 }
 
 pub fn embedding_to_blob(values: &[f32]) -> Vec<u8> {
-    let mut blob = Vec::with_capacity(values.len() * std::mem::size_of::<f32>());
+    let mut blob = Vec::with_capacity(std::mem::size_of_val(values));
     for value in values {
         blob.extend_from_slice(&value.to_le_bytes());
     }

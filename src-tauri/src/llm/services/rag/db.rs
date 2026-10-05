@@ -8,6 +8,7 @@ use tokio::sync::Mutex;
 static SQLITE_VEC_REGISTRATION: OnceLock<()> = OnceLock::new();
 static RAG_POOLS: OnceLock<Mutex<HashMap<String, SqlitePool>>> = OnceLock::new();
 
+#[allow(clippy::missing_transmute_annotations)]
 fn register_sqlite_vec_extension() {
     SQLITE_VEC_REGISTRATION.get_or_init(|| unsafe {
         libsqlite3_sys::sqlite3_auto_extension(Some(std::mem::transmute(

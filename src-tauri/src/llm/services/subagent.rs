@@ -228,7 +228,7 @@ const TOOL_RESULT_TRUNCATE_CHARS: usize = 8_000;
 /// 两级策略：
 /// 1. 估算 token 超窗口 50%：把较早的 ToolResult（保留最近 4 组）替换为占位符；
 /// 2. 仍超 80%：对保留的 ToolResult 长文本做字符截断。
-fn trim_subagent_context(messages: &mut Vec<Message>, window_tokens: i64) {
+fn trim_subagent_context(messages: &mut [Message], window_tokens: i64) {
     let estimate = crate::llm::utils::token_counter::count_messages(messages);
     let half = window_tokens / 2;
     if estimate < half {

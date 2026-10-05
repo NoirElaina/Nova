@@ -228,7 +228,7 @@ fn decode_bytes(bytes: &[u8], path: &Path) -> Result<(String, FileEncoding), Str
 
 /// 把 UTF-16 字节体（不含 BOM）解码为 String。
 fn decode_utf16(body: &[u8], little_endian: bool, path: &Path) -> Result<String, String> {
-    if body.len() % 2 != 0 {
+    if !body.len().is_multiple_of(2) {
         return Err(format!(
             "File {} has an odd-length UTF-16 body and cannot be decoded.",
             path.display()

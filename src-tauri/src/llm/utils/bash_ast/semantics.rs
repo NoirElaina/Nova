@@ -290,15 +290,11 @@ pub fn strip_wrappers_from_argv(argv: &[String]) -> Vec<String> {
                 if (arg == "-o" || arg == "-i" || arg == "-e") && i + 1 < a.len() {
                     i += 2;
                 }
-                // 融合形式：-o0、-eL
+                // 融合形式（-o0、-eL）或长形式（--output=MODE）
                 else if arg.starts_with("-o")
                     || arg.starts_with("-i")
                     || arg.starts_with("-e")
-                {
-                    i += 1;
-                }
-                // 长形式：--output=MODE
-                else if arg.starts_with("--output=")
+                    || arg.starts_with("--output=")
                     || arg.starts_with("--input=")
                     || arg.starts_with("--error=")
                 {
@@ -332,7 +328,7 @@ fn skip_timeout_flags(a: &[String]) -> Option<usize> {
             i += 1;
         } else if arg.starts_with("--kill-after=") || arg.starts_with("--signal=") {
             // 值必须匹配 allowlist [A-Za-z0-9_.+-]+
-            let value = arg.splitn(2, '=').nth(1)?;
+            let value = arg.split_once('=')?.1;
             if !value.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '.' || c == '+' || c == '-') {
                 return None;
             }

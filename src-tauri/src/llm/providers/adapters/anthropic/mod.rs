@@ -28,6 +28,12 @@ pub struct AnthropicAdapter {
     seen_unknown_events: HashSet<String>,
 }
 
+impl Default for AnthropicAdapter {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl AnthropicAdapter {
     pub fn new() -> Self {
         Self {

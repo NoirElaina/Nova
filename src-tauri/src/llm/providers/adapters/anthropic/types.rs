@@ -222,6 +222,7 @@ pub(crate) enum StreamContentBlock {
 
 #[derive(Debug, Deserialize)]
 #[serde(tag = "type")]
+#[allow(clippy::enum_variant_names)]
 pub(crate) enum StreamDelta {
     #[serde(rename = "text_delta")]
     TextDelta { text: String },

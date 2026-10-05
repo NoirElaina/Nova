@@ -14,21 +14,13 @@ use std::path::{Path, PathBuf};
 const MAX_LINE_CHARS: usize = 500;
 
 #[derive(Clone, Debug)]
+#[derive(Default)]
 pub struct WalkOptions {
     pub include_hidden: bool,
     pub include_ignored: bool,
     pub follow_symlinks: bool,
 }
 
-impl Default for WalkOptions {
-    fn default() -> Self {
-        Self {
-            include_hidden: false,
-            include_ignored: false,
-            follow_symlinks: false,
-        }
-    }
-}
 
 #[derive(Clone, Debug)]
 pub struct GlobSearchOptions {
@@ -757,7 +749,7 @@ impl Sink for CountSearchSink {
 
 fn sink_line(line_number: Option<u64>, bytes: &[u8]) -> Result<SearchLine, io::Error> {
     let line_number = line_number
-        .ok_or_else(|| io::Error::new(io::ErrorKind::Other, "line numbers not enabled"))?;
+        .ok_or_else(|| io::Error::other("line numbers not enabled"))?;
     let mut text = String::from_utf8_lossy(bytes)
         .trim_end_matches(&['\r', '\n'][..])
         .to_string();

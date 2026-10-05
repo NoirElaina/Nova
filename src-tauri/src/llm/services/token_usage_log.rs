@@ -60,6 +60,7 @@ pub struct ModelBreakdown {
     pub cost_usd: String,
 }
 
+#[allow(clippy::too_many_arguments)]
 pub async fn log_token_usage(
     app: &AppHandle,
     conversation_id: Option<&str>,

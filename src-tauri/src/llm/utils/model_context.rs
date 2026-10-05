@@ -92,7 +92,7 @@ fn find_entry(model: &str) -> Option<ModelEntry> {
     list.iter().find(|e| {
         let id = e.id.trim().to_ascii_lowercase();
         // 先完整匹配，再匹配 '/' 后的 slug
-        id == key || id.rsplit('/').next().map_or(false, |s| s == key)
+        id == key || id.rsplit('/').next().is_some_and(|s| s == key)
     }).cloned()
 }
 
@@ -161,8 +161,8 @@ pub fn init(app: &tauri::AppHandle) {
     let cache_path = data_dir.join(CACHE_FILE_NAME);
 
     // 同步加载已有缓存（无论新旧都先用着，总比编译期嵌入的新）。
-    match std::fs::read_to_string(&cache_path) {
-        Ok(text) => match parse_model_list(&text) {
+    if let Ok(text) = std::fs::read_to_string(&cache_path) {
+        match parse_model_list(&text) {
             Some(list) => {
                 let count = list.len();
                 set_runtime_models(list);
@@ -172,8 +172,7 @@ pub fn init(app: &tauri::AppHandle) {
                 // 缓存损坏（半截写入等），删掉让后台任务重拉。
                 let _ = std::fs::remove_file(&cache_path);
             }
-        },
-        Err(_) => {} // 无缓存，正常首启
+        }
     }
 
     // 后台任务：启动时若缓存过期立即刷新；之后每 24h 检查一次。

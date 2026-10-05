@@ -152,10 +152,8 @@ async fn execute_async(input: Value) -> Result<ToolOutcome, ToolFailure> {
 
     let client = reqwest::Client::builder()
         .redirect(Policy::custom(|attempt| {
-            if attempt.previous().len() >= 10 {
-                attempt.stop()
-            } else if attempt.previous().last().and_then(|u| u.host_str())
-                != attempt.url().host_str()
+            if attempt.previous().len() >= 10
+                || attempt.previous().last().and_then(|u| u.host_str()) != attempt.url().host_str()
             {
                 attempt.stop()
             } else {

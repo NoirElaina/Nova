@@ -1,4 +1,4 @@
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use tauri::AppHandle;
 
@@ -32,7 +32,7 @@ const GLOBAL_MEMORY_SECTION: &str = r#"
   when the user corrects an existing preference, REPLACE the old entry instead of adding a conflicting one
 "#;
 
-fn read_non_empty_file(path: &PathBuf) -> Option<String> {
+fn read_non_empty_file(path: &Path) -> Option<String> {
     // 经全局文件内容缓存读取（指纹失效）：主提示词文件较大，
     // 避免每轮请求重复读盘；文件未变时直接命中内存。
     let (text, _) = crate::llm::utils::file_io::read_file_meta(path).ok()?;

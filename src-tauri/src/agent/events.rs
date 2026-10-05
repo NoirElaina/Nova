@@ -12,6 +12,11 @@ pub enum AgentDomainEvent {
         conversation_id: String,
         timestamp: i64,
     },
+    /// 认知状态机流转事件
+    StateChanged {
+        turn_id: String,
+        state: crate::agent::state::CognitiveState,
+    },
     /// 模型思考/推理流式增量（thinking / reasoning delta）
     ThinkingDelta {
         turn_id: String,

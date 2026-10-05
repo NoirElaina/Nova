@@ -4,8 +4,6 @@ import { invoke } from '@tauri-apps/api/core';
 import { listen, type UnlistenFn } from '@tauri-apps/api/event';
 import type {
   PendingUploadFile,
-  ContextUsage,
-  ConversationUsageSummary,
 } from '../../lib/chat-types';
 import {
   buildDocumentAcceptAttribute,
@@ -16,9 +14,16 @@ import {
   notifyRejectedUploads,
 } from '../../lib/upload-files';
 import { emitToast, emitErrorToast } from '../../lib/toast';
-import { Select, SelectContent, SelectGroup, SelectItem, SelectLabel, SelectTrigger, SelectValue } from '@/components/ui/select';
+import { useConversationStore } from '@/stores/conversation';
+import { useAgentSessionStore } from '@/stores/agentSession';
+import { useComposerStore } from '@/stores/composer';
+import PolicyApprovalMenu from './PolicyApprovalMenu.vue';
+import ModelSelector from './ModelSelector.vue';
 import ContextUsageIndicator from './ContextUsageIndicator.vue';
 import ConversationUsageBar from './ConversationUsageBar.vue';
+import AttachmentChipList from './AttachmentChipList.vue';
+import SlashCommandMenu from './SlashCommandMenu.vue';
+import MemoryPopover from './MemoryPopover.vue';
 import { getWorkspaceDiff } from '../../features/chat/services/chat-api';
 import {
   initSubagentEvents,
@@ -55,17 +60,9 @@ type SkillSummary = {
   path: string;
 };
 
-const props = defineProps<{
-  isGenerating?: boolean;
-  pendingUploads?: PendingUploadFile[];
-  contextUsage?: ContextUsage;
-  contextTokens?: number;
-  conversationUsage?: ConversationUsageSummary | null;
-  compacting?: boolean;
+defineProps<{
   /** 当前对话挂载的智能体（会话级）。null = 默认 Nova（不展示）。 */
   activeAgent?: { id: string; name: string; description?: string } | null;
-  /** 当前会话 id（插件命令展开 {workspace} 占位符用）。 */
-  conversationId?: string | null;
 }>();
 
 const emit = defineEmits<{
@@ -76,6 +73,18 @@ const emit = defineEmits<{
   (e: 'compact'): void;
   (e: 'remove-agent'): void;
 }>();
+
+const conversationStore = useConversationStore();
+const sessionStore = useAgentSessionStore();
+const composerStore = useComposerStore();
+
+const isGenerating = computed(() => sessionStore.activeSession.isGenerating);
+const compacting = computed(() => sessionStore.activeSession.isCompacting);
+const conversationId = computed(() => conversationStore.activeConversationId);
+const contextUsage = computed(() => sessionStore.activeSession.contextUsage);
+const contextTokens = computed(() => sessionStore.activeSession.contextTokens);
+const conversationUsage = computed(() => sessionStore.activeSession.conversationUsage);
+const pendingUploads = computed(() => composerStore.pendingUploads);
 
 const currentInput = ref("");
 const textareaRef = ref<HTMLTextAreaElement | null>(null);
@@ -137,119 +146,11 @@ const ensureActiveProfile = () => {
   return settings.value.providerProfiles[provider];
 };
 
-type ProviderGroup = { key: string; label: string; models: string[] };
-
-// 模型按提供商分组展示：选其它提供商的模型会同时切换活跃提供商，
-// 免进设置页换提供商。无可用模型的提供商不进列表。
-const providerGroups = computed<ProviderGroup[]>(() => {
-  if (!settings.value) return [];
-  const profiles = (settings.value.providerProfiles ?? {}) as Record<string, any>;
-  const customModels = (settings.value.customModels ?? {}) as Record<string, string[]>;
-  const groups: ProviderGroup[] = [];
-  for (const key of Object.keys(profiles)) {
-    const provider = normalizeProviderKey(key);
-    const listed = customModels[provider];
-    const profileModel = typeof profiles[key]?.model === 'string' ? profiles[key].model.trim() : '';
-    const models = Array.isArray(listed) && listed.length > 0 ? listed : profileModel ? [profileModel] : [];
-    if (models.length === 0) continue;
-    const displayName =
-      typeof profiles[key]?.displayName === 'string' ? profiles[key].displayName.trim() : '';
-    groups.push({ key: provider, label: displayName || provider, models });
-  }
-  // 当前活跃提供商排最前，其余按名称排序。
-  const active = normalizeProviderKey(settings.value.provider || 'anthropic');
-  groups.sort((a, b) =>
-    a.key === active ? -1 : b.key === active ? 1 : a.label.localeCompare(b.label),
-  );
-  return groups;
-});
-
-const hasAnyModel = computed(() => providerGroups.value.some((g) => g.models.length > 0));
-
 const currentModel = computed(() => {
   const profile = ensureActiveProfile();
   return profile?.model || '';
 });
 
-// Select 的 value 用 "provider::model"，区分不同提供商下的同名模型。
-const currentModelKey = computed(() => {
-  const provider = normalizeProviderKey(settings.value?.provider || 'anthropic');
-  return `${provider}::${currentModel.value}`;
-});
-
-// 切换模型（可跨提供商）：以最新设置为基底，同时写回 provider 与目标 profile.model。
-const onModelKeyChange = async (value: unknown) => {
-  if (typeof value !== 'string' || !settings.value) return;
-  const sep = value.indexOf('::');
-  if (sep <= 0) return;
-  const provider = value.slice(0, sep);
-  const model = value.slice(sep + 2);
-  if (!provider || !model) return;
-  try {
-    const base = await invoke<Record<string, any>>('get_settings');
-    const profiles = { ...(base.providerProfiles ?? {}) };
-    profiles[provider] = { ...(profiles[provider] ?? {}), model };
-    const next = { ...base, provider, providerProfiles: profiles };
-    await invoke('save_settings', { settings: next });
-    settings.value = next;
-    window.dispatchEvent(new CustomEvent('settings-updated'));
-  } catch (error) {
-    emitErrorToast('切换模型失败', error, 'model-switcher');
-  }
-};
-
-// ── 审批策略 / 工具披露快捷开关（全局设置，免进设置页） ──
-type ApprovalPolicyValue = 'always_ask' | 'on_request' | 'never';
-
-const policyMenuOpen = ref(false);
-const policyButtonRef = ref<HTMLElement | null>(null);
-
-const policyOptions: { value: ApprovalPolicyValue; label: string; desc: string }[] = [
-  { value: 'always_ask', label: '每次都问', desc: '凡受控操作都弹审批（严格）' },
-  { value: 'on_request', label: '仅风险操作询问', desc: 'Safe 直接放行，仅 Risky 弹审批（推荐）' },
-  { value: 'never', label: '从不询问', desc: '除硬拒绝项外全部放行（慎用）' },
-];
-
-const approvalPolicy = computed<ApprovalPolicyValue>(() => {
-  const v = settings.value?.approvalPolicy;
-  return v === 'always_ask' || v === 'never' ? v : 'on_request';
-});
-
-const disclosureEnabled = computed(() => settings.value?.progressiveToolDisclosure !== false);
-
-// 按钮上只显示短标签，完整文案在浮层里。
-const policyShortLabel = computed(
-  () =>
-    ({
-      always_ask: '每次询问',
-      on_request: '仅风险',
-      never: '从不询问',
-    })[approvalPolicy.value],
-);
-
-// 补丁式保存：以最新设置为基底展开，避免旧副本覆写其他字段。
-const patchSettings = async (patch: Record<string, unknown>) => {
-  try {
-    const base = await invoke<Record<string, unknown>>('get_settings');
-    const next = { ...base, ...patch };
-    await invoke('save_settings', { settings: next });
-    settings.value = next;
-    window.dispatchEvent(new CustomEvent('settings-updated'));
-  } catch (error) {
-    emitErrorToast('保存设置失败', error, 'policy-switcher');
-  }
-};
-
-const setApprovalPolicy = (value: ApprovalPolicyValue) => {
-  if (value === approvalPolicy.value) return;
-  void patchSettings({ approvalPolicy: value });
-};
-
-const toggleDisclosure = () => {
-  void patchSettings({ progressiveToolDisclosure: !disclosureEnabled.value });
-};
-
-const pendingUploads = computed(() => props.pendingUploads ?? []);
 const hasPendingUploads = computed(() => pendingUploads.value.length > 0);
 const canSend = computed(() => !!currentInput.value.trim() || hasPendingUploads.value);
 
@@ -274,7 +175,7 @@ const loadSkills = async (): Promise<SkillSummary[]> => {
 
 // + 按钮点击：打开主视图，按需预加载技能列表
 const openPlusMenu = async () => {
-  if (props.isGenerating) return;
+  if (isGenerating.value) return;
   plusMenuView.value = 'main';
   if (skills.value.length === 0 && !skillsLoading.value) {
     skillsLoading.value = true;
@@ -564,7 +465,7 @@ const handleSlashKeydown = (e: KeyboardEvent): boolean => {
 // 执行 Local 类型命令（不发送消息给 AI）。rest 为二级选项 value
 const executeLocalCommand = async (entry: SlashCommandEntry, rest: string): Promise<boolean> => {
   if (entry.name === 'compact') {
-    if (props.compacting) {
+    if (compacting.value) {
       emitToast({ message: '正在压缩中，请稍候' });
       return true;
     }
@@ -654,7 +555,7 @@ const executePluginCommand = async (entry: SlashCommandEntry, rest: string): Pro
     const prompt = await invoke<string>('expand_plugin_command', {
       pluginId: entry.pluginId,
       name: entry.name,
-      conversationId: props.conversationId ?? null,
+      conversationId: conversationId.value ?? null,
     });
     const extra = rest.trim();
     emit('send', extra ? `${prompt}\n\n${extra}` : prompt);
@@ -695,7 +596,7 @@ const executeSlashCommand = async (parsed: { entry: SlashCommandEntry; rest: str
 
 
 const triggerFilePicker = () => {
-  if (props.isGenerating) return;
+  if (isGenerating.value) return;
   fileInputRef.value?.click();
 };
 
@@ -709,6 +610,7 @@ const onFileChange = async (event: Event) => {
   const { accepted, rejected } = await buildPendingUploadFiles(files);
 
   if (accepted.length > 0) {
+    composerStore.addUploads(accepted);
     emit('upload-files', accepted);
   }
 
@@ -718,7 +620,7 @@ const onFileChange = async (event: Event) => {
 };
 
 const onTextareaPaste = async (event: ClipboardEvent) => {
-  if (props.isGenerating) return;
+  if (isGenerating.value) return;
 
   const clipboardData = event.clipboardData;
   if (!clipboardData) {
@@ -742,6 +644,7 @@ const onTextareaPaste = async (event: ClipboardEvent) => {
   event.preventDefault();
   const { accepted, rejected } = await buildPendingUploadFiles(imageFiles);
   if (accepted.length > 0) {
+    composerStore.addUploads(accepted);
     emit('upload-files', accepted);
   }
   notifyRejectedUploads(rejected);
@@ -804,7 +707,7 @@ const onTextareaKeydown = (e: KeyboardEvent) => {
 const sendMessage = (e?: KeyboardEvent) => {
   if (e && e.shiftKey) return;
   e?.preventDefault();
-  if ((!currentInput.value.trim() && !hasPendingUploads.value) || props.isGenerating) return;
+  if ((!currentInput.value.trim() && !hasPendingUploads.value) || isGenerating.value) return;
 
   const trimmed = currentInput.value.trim();
 
@@ -828,6 +731,7 @@ const sendMessage = (e?: KeyboardEvent) => {
 
   const message = trimmed;
   emit('send', message);
+  composerStore.clearUploads();
   currentInput.value = "";
   hideSlashMenu();
   nextTick(() => {
@@ -836,23 +740,13 @@ const sendMessage = (e?: KeyboardEvent) => {
   });
 };
 
-const formatFileSize = (bytes: number) => {
-  if (!Number.isFinite(bytes) || bytes <= 0) {
-    return '0 B';
-  }
-  if (bytes < 1024) {
-    return `${bytes} B`;
-  }
-  const kb = bytes / 1024;
-  if (kb < 1024) {
-    return `${kb.toFixed(1)} KB`;
-  }
-  const mb = kb / 1024;
-  return `${mb.toFixed(1)} MB`;
+const handleRemoveUpload = (index: number) => {
+  composerStore.removeUpload(index);
+  emit('remove-upload', index);
 };
 
 watch(
-  () => props.isGenerating,
+  isGenerating,
   () => {
     nextTick(() => {
       autoResize();
@@ -879,18 +773,9 @@ const handlePluginsChanged = () => {
   void loadPluginCommands();
 };
 
-// 点击浮层外部时关闭 + 菜单、memory 浮层和策略快捷开关
+// 点击浮层外部时关闭 + 菜单和 memory 浮层
 const handleDocumentClick = (e: MouseEvent) => {
   const target = e.target as Node | null;
-  // 关闭策略快捷开关
-  if (policyMenuOpen.value) {
-    if (policyButtonRef.value && target && policyButtonRef.value.contains(target)) return;
-    const policyMenus = document.querySelectorAll('[data-policy-menu]');
-    for (const menu of policyMenus) {
-      if (menu.contains(target)) return;
-    }
-    policyMenuOpen.value = false;
-  }
   // 关闭 + 菜单
   if (plusMenuView.value !== null) {
     if (plusButtonRef.value && target && plusButtonRef.value.contains(target)) return;
@@ -909,7 +794,7 @@ const handleDocumentClick = (e: MouseEvent) => {
 };
 
 // 子代理状态（行内按钮）：当前会话的子代理计数 + 抽屉开关。
-const subagentEntries = computed(() => subagentsFor(props.conversationId));
+const subagentEntries = computed(() => subagentsFor(conversationId.value));
 const subagentCount = computed(() => subagentEntries.value.length);
 const subagentRunning = computed(
   () => subagentEntries.value.filter((entry) => entry.phase === 'running').length,
@@ -962,64 +847,7 @@ defineExpose({
     />
     <div
       class="relative bg-white dark:bg-[#2a2a2a] border border-[#e5e5e5] dark:border-[#3a3a3a] rounded-2xl shadow-sm focus-within:ring-2 focus-within:ring-[#e5e5e5] dark:focus-within:ring-[#444] transition-all flex flex-col w-full">
-      <div v-if="hasPendingUploads" class="px-3 pt-3 pb-1">
-        <div class="flex flex-wrap gap-2">
-          <div
-            v-for="(file, index) in pendingUploads"
-            :key="`${file.sourceName}-${index}`"
-            class="inline-flex items-center gap-2 rounded-lg border border-[#e5e7eb] dark:border-[#474747] bg-[#f8fafc] dark:bg-[#323232] px-2.5 py-1.5 text-[12px] text-[#475569] dark:text-[#d7d0c5]"
-          >
-            <svg
-              v-if="file.kind === 'image'"
-              width="13"
-              height="13"
-              viewBox="0 0 24 24"
-              fill="none"
-              stroke="currentColor"
-              stroke-width="2"
-              stroke-linecap="round"
-              stroke-linejoin="round"
-            >
-              <rect x="3" y="3" width="18" height="18" rx="2" ry="2" />
-              <circle cx="8.5" cy="8.5" r="1.5" />
-              <path d="M21 15l-5-5L5 21" />
-            </svg>
-            <svg
-              v-else
-              width="13"
-              height="13"
-              viewBox="0 0 24 24"
-              fill="none"
-              stroke="currentColor"
-              stroke-width="2"
-              stroke-linecap="round"
-              stroke-linejoin="round"
-            >
-              <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
-              <polyline points="14 2 14 8 20 8" />
-            </svg>
-            <span class="max-w-[160px] truncate" :title="file.sourceName">{{ file.sourceName }}</span>
-            <span class="text-[11px] opacity-75">{{ formatFileSize(file.size) }}</span>
-            <span
-              v-if="file.kind === 'document'"
-              class="rounded-md bg-black/5 px-1.5 py-0.5 text-[10px] leading-none text-[#64748b] dark:bg-white/10 dark:text-[#cbd5e1]"
-              title="上传的文件将保存为会话文件，AI 可通过 Read 工具随时读取。"
-            >
-              会话文件
-            </span>
-            <button
-              type="button"
-              class="w-4 h-4 inline-flex items-center justify-center rounded hover:bg-black/5 dark:hover:bg-white/10"
-              @click="emit('remove-upload', index)"
-            >
-              <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.3" stroke-linecap="round" stroke-linejoin="round">
-                <line x1="18" y1="6" x2="6" y2="18" />
-                <line x1="6" y1="6" x2="18" y2="18" />
-              </svg>
-            </button>
-          </div>
-        </div>
-      </div>
+      <AttachmentChipList :files="pendingUploads" @remove="handleRemoveUpload" />
       <div class="relative w-full">
         <textarea
           ref="textareaRef"
@@ -1035,65 +863,22 @@ defineExpose({
         ></textarea>
 
         <!-- 斜杠命令下拉菜单：向上弹出，与输入框同宽 -->
-        <div
-          v-if="slashPhase !== null && slashOptions.length > 0"
-          class="absolute bottom-full left-0 mb-2 w-full rounded-lg border border-border bg-popover shadow-lg z-50 overflow-hidden">
-          <div class="max-h-[240px] overflow-y-auto py-1">
-            <button
-              v-for="(option, index) in slashOptions"
-              :key="option.label + index"
-              type="button"
-              class="w-full flex items-center justify-between gap-2 px-3 py-1.5 text-left transition-colors"
-              :class="{ 'bg-secondary/80': index === slashSelectedIndex }"
-              @mouseenter="slashSelectedIndex = index"
-              @click="selectSlashOption(option)">
-              <div class="flex items-center gap-2 min-w-0">
-                <span class="text-sm font-medium truncate">{{ option.label }}</span>
-              </div>
-              <span v-if="option.description" class="text-xs text-muted-foreground truncate shrink-0 max-w-[60%]">{{ option.description }}</span>
-            </button>
-          </div>
-        </div>
-        <div
-          v-else-if="slashPhase === 'param' && slashSkillsLoading"
-          class="absolute bottom-full left-0 mb-2 w-full rounded-lg border border-border bg-popover shadow-lg z-50 overflow-hidden">
-          <div class="px-3 py-2 text-xs text-muted-foreground">加载中...</div>
-        </div>
-        <div
-          v-else-if="slashPhase === 'param' && slashOptions.length === 0 && !slashSkillsLoading"
-          class="absolute bottom-full left-0 mb-2 w-full rounded-lg border border-border bg-popover shadow-lg z-50 overflow-hidden">
-          <div class="px-3 py-2 text-xs text-muted-foreground">暂无匹配项</div>
-        </div>
+        <SlashCommandMenu
+          :visible="slashPhase !== null"
+          :options="slashOptions"
+          :selectedIndex="slashSelectedIndex"
+          :loading="slashPhase === 'param' && slashSkillsLoading"
+          @select="selectSlashOption"
+          @update:selectedIndex="slashSelectedIndex = $event"
+        />
 
         <!-- /memory 浮层：展示全局记忆条目（与输入框同宽） -->
-        <div
-          v-if="memoryViewOpen"
-          data-memory-menu
-          class="absolute bottom-full left-0 mb-2 w-full rounded-lg border border-border bg-popover shadow-lg z-50 overflow-hidden">
-          <div class="flex items-center justify-between gap-2 px-3 py-2 border-b border-border">
-            <span class="text-xs font-medium text-muted-foreground">全局记忆</span>
-            <button
-              type="button"
-              class="shrink-0 rounded p-0.5 hover:bg-secondary/80 transition-colors"
-              @click="memoryViewOpen = false">
-              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
-                stroke-linecap="round" stroke-linejoin="round">
-                <line x1="18" y1="6" x2="6" y2="18" />
-                <line x1="6" y1="6" x2="18" y2="18" />
-              </svg>
-            </button>
-          </div>
-          <div class="max-h-[240px] overflow-y-auto">
-            <div v-if="memoryLoading" class="px-3 py-2 text-xs text-muted-foreground">加载中...</div>
-            <div v-else-if="memoryEntries.length === 0" class="px-3 py-2 text-xs text-muted-foreground">暂无记忆条目</div>
-            <div
-              v-for="(entry, idx) in memoryEntries"
-              :key="idx"
-              class="px-3 py-2 text-sm border-b border-border/50 last:border-b-0 whitespace-pre-wrap break-words">
-              {{ entry }}
-            </div>
-          </div>
-        </div>
+        <MemoryPopover
+          :open="memoryViewOpen"
+          :loading="memoryLoading"
+          :entries="memoryEntries"
+          @close="memoryViewOpen = false"
+        />
 
         <!-- + 按钮菜单：主视图（与输入框同宽） -->
         <div
@@ -1175,91 +960,25 @@ defineExpose({
             </svg>
           </button>
 
-          <!-- 审批策略 / 工具披露快捷开关：紧凑样式与两侧 Select 对齐 -->
-          <div class="relative shrink-0">
-            <button
-              ref="policyButtonRef"
-              type="button"
-              class="flex h-7 items-center gap-1 rounded-md border border-input bg-transparent px-2 text-xs text-muted-foreground transition-colors hover:bg-secondary/60"
-              :class="{ 'bg-secondary/60': policyMenuOpen }"
-              title="审批策略与工具披露快捷开关"
-              @click="policyMenuOpen = !policyMenuOpen"
-            >
-              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
-                stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-                <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z" />
-              </svg>
-              <span>{{ policyShortLabel }}</span>
-            </button>
+          <!-- 审批策略快捷菜单 -->
+          <PolicyApprovalMenu
+            :settings="settings"
+            @update:settings="settings = $event"
+          />
 
-            <div
-              v-if="policyMenuOpen"
-              data-policy-menu
-              class="absolute bottom-full left-0 z-50 mb-2 w-[280px] rounded-lg border border-border bg-popover p-2 shadow-lg"
-            >
-              <div class="px-1.5 pb-1 text-[11px] font-medium text-muted-foreground">审批策略</div>
-              <button
-                v-for="opt in policyOptions"
-                :key="opt.value"
-                type="button"
-                class="flex w-full items-start gap-2 rounded-md px-1.5 py-1.5 text-left transition-colors hover:bg-secondary/80"
-                @click="setApprovalPolicy(opt.value)"
-              >
-                <span
-                  class="mt-0.5 flex h-3.5 w-3.5 shrink-0 items-center justify-center rounded-full border"
-                  :class="approvalPolicy === opt.value ? 'border-[#2563eb]' : 'border-muted-foreground/40'"
-                >
-                  <span v-if="approvalPolicy === opt.value" class="h-1.5 w-1.5 rounded-full bg-[#2563eb]" />
-                </span>
-                <span class="min-w-0">
-                  <span class="block text-xs font-medium">{{ opt.label }}</span>
-                  <span class="block text-[11px] leading-snug text-muted-foreground">{{ opt.desc }}</span>
-                </span>
-              </button>
-
-              <div class="my-1.5 border-t border-border" />
-
-              <button
-                type="button"
-                class="flex w-full items-start gap-2 rounded-md px-1.5 py-1.5 text-left transition-colors hover:bg-secondary/80"
-                @click="toggleDisclosure"
-              >
-                <span
-                  class="mt-0.5 flex h-3.5 w-3.5 shrink-0 items-center justify-center rounded border"
-                  :class="disclosureEnabled ? 'border-[#2563eb] bg-[#2563eb]' : 'border-muted-foreground/40'"
-                >
-                  <svg v-if="disclosureEnabled" width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="#fff"
-                    stroke-width="3" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-                    <path d="M20 6 9 17l-5-5" />
-                  </svg>
-                </span>
-                <span class="min-w-0">
-                  <span class="block text-xs font-medium">渐进式工具披露</span>
-                  <span class="block text-[11px] leading-snug text-muted-foreground">低频工具不进默认清单，由 LoadTool 按需加载，节省上下文</span>
-                </span>
-              </button>
-            </div>
-          </div>
-
-          <div v-if="hasAnyModel && settings" class="flex min-w-0 shrink-0 items-center gap-1.5">
-            <Select :model-value="currentModelKey" @update:model-value="onModelKeyChange">
-              <SelectTrigger size="sm" class="w-[170px] max-w-[28vw] text-xs">
-                <SelectValue placeholder="选择模型" />
-              </SelectTrigger>
-              <SelectContent class="max-h-[300px] text-xs">
-                <SelectGroup v-for="group in providerGroups" :key="group.key">
-                  <SelectLabel class="text-muted-foreground">{{ group.label }}</SelectLabel>
-                  <SelectItem
-                    v-for="model in group.models"
-                    :key="`${group.key}::${model}`"
-                    :value="`${group.key}::${model}`"
-                  >
-                    {{ model }}
-                  </SelectItem>
-                </SelectGroup>
-              </SelectContent>
-            </Select>
-            <ContextUsageIndicator :usage="contextUsage" :usedTokens="contextTokens" :model="currentModel" :compacting="compacting" @compact="emit('compact')" />
+          <!-- 模型选择器与用量指示器 -->
+          <div v-if="settings" class="flex min-w-0 shrink-0 items-center gap-1.5">
+            <ModelSelector
+              :settings="settings"
+              @update:settings="settings = $event"
+            />
+            <ContextUsageIndicator
+              :usage="contextUsage"
+              :usedTokens="contextTokens"
+              :model="currentModel"
+              :compacting="compacting"
+              @compact="emit('compact')"
+            />
           </div>
         </div>
         <button class="w-8 h-8 shrink-0 rounded-full flex items-center justify-center transition-colors shadow-sm"

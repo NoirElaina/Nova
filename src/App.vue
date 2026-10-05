@@ -47,12 +47,6 @@ type BrowserOpenRequest = {
 
 const {
   messages,
-  isGenerating,
-  currentStage,
-  assistantResponse,
-  assistantReasoning,
-  assistantSegments,
-  assistantTokenUsage,
   assistantTurnCost,
   toolExecutionLogs,
   currentTurnToolExecutionLogs,
@@ -60,14 +54,6 @@ const {
   activeConversationId,
   activeWorkspacePath,
   conversationFiles,
-  pendingUploads,
-  currentContextUsage,
-  currentContextCompacts,
-  currentContextTokens,
-  conversationUsage,
-  pendingQuestion,
-  pendingPermissionRequestId,
-  currentTurnStartedAt,
   mainView,
   isSidebarOpen,
   chatScreenRef,
@@ -86,9 +72,7 @@ const {
   handleDeleteConversation,
   handlePinConversation,
   handleChangeMainView,
-  isCompacting,
   handleCompactConversation,
-  chatError,
   dismissChatError,
 } = useChatController();
 
@@ -498,11 +482,6 @@ onBeforeUnmount(() => {
         <template v-else>
           <WelcomeScreen
             v-if="messages.length === 0"
-            :isGenerating="isGenerating"
-            :pendingUploads="pendingUploads"
-            :contextUsage="currentContextUsage"
-            :contextCompacts="currentContextCompacts"
-            :contextTokens="currentContextTokens"
             :workspacePath="activeWorkspacePath"
             :conversationId="activeConversationId"
             :activeAgent="displayAgent"
@@ -516,26 +495,7 @@ onBeforeUnmount(() => {
           <ChatScreen
             v-else
             ref="chatScreenRef"
-            :messages="messages"
-            :isGenerating="isGenerating"
-            :currentStage="currentStage"
-            :assistantResponse="assistantResponse"
-            :assistantReasoning="assistantReasoning"
-            :assistantSegments="assistantSegments"
-            :assistantTokenUsage="assistantTokenUsage"
-            :turnStartedAt="currentTurnStartedAt"
-            :currentTurnToolEntries="currentTurnToolExecutionLogs"
-            :pendingQuestion="pendingQuestion"
-            :pendingPermissionRequestId="pendingPermissionRequestId"
-            :pendingUploads="pendingUploads"
-            :contextUsage="currentContextUsage"
-            :contextCompacts="currentContextCompacts"
-            :contextTokens="currentContextTokens"
-            :conversationUsage="conversationUsage"
-            :compacting="isCompacting"
-            :chatError="chatError"
             :activeAgent="displayAgent"
-            :conversationId="activeConversationId"
             :drawerOpen="isDrawerOpen"
             @open-plan="isPlanPanelOpen = true"
             @open-background-jobs="isBgJobsPanelOpen = true"

@@ -3,16 +3,9 @@ import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch, s
 import { useVirtualizer } from '@tanstack/vue-virtual';
 import type {
   AskUserAnswerSubmission,
-  AssistantTranscriptSegment,
   ChatMessage,
-  ContextCompactSummary,
-  ContextUsage,
-  ConversationUsageSummary,
-  NeedsUserInputPayload,
   PendingUploadFile,
-  ToolExecutionEntry,
 } from '../../lib/chat-types';
-import type { LiveTurnStage } from '../../features/chat/controllers/chat-controller-types';
 import InputArea from '../layout/InputArea.vue';
 import AskUserInputDialog from './AskUserInputDialog.vue';
 import PlanChip from './PlanChip.vue';
@@ -30,35 +23,35 @@ import { buildAssistantTranscriptSegments } from '../../features/chat/utils/assi
 import { estimateTextTokens } from '../../features/chat/services/chat-api';
 import { initBranchEvents, openBranch } from '../../features/branch/branch-chat';
 import { emitToast } from '../../lib/toast';
+import { useConversationStore } from '@/stores/conversation';
+import { useAgentSessionStore } from '@/stores/agentSession';
 
-const props = defineProps<{
-  messages: ChatMessage[];
-  isGenerating: boolean;
-  currentStage?: LiveTurnStage;
-  assistantResponse: string;
-  assistantReasoning?: string;
-  assistantSegments: AssistantTranscriptSegment[];
-  assistantTokenUsage?: number;
-  /** 本轮开始时间（ms epoch）：发送时打点，页面刷新恢复时取后端 live_turns.startedAt */
-  turnStartedAt?: number | null;
-  currentTurnToolEntries: ToolExecutionEntry[];
-  pendingQuestion?: NeedsUserInputPayload | null;
-  pendingPermissionRequestId?: string | null;
-  pendingUploads?: PendingUploadFile[];
-  contextUsage?: ContextUsage;
-  contextCompacts?: ContextCompactSummary[];
-  contextTokens?: number;
-  conversationUsage?: ConversationUsageSummary | null;
-  compacting?: boolean;
-  /** AI 主流程错误原文：临时展示，不进入消息数组，下次发送时清空。 */
-  chatError?: string | null;
+defineProps<{
   /** 当前对话挂载的智能体（会话级）。null = 默认 Nova（不展示）。 */
   activeAgent?: { id: string; name: string; description?: string } | null;
-  /** 当前会话 id（插件命令展开 {workspace} 占位符用）。 */
-  conversationId?: string | null;
   /** 右侧工作区抽屉展开时隐藏消息时间线导航（避免遮挡收窄后的聊天内容）。 */
   drawerOpen?: boolean;
 }>();
+
+const conversationStore = useConversationStore();
+const sessionStore = useAgentSessionStore();
+
+const messages = computed(() => sessionStore.activeSession.messages);
+const isGenerating = computed(() => sessionStore.activeSession.isGenerating);
+const currentStage = computed(() => sessionStore.activeSession.currentStage);
+const assistantResponse = computed(() => sessionStore.activeSession.assistantResponse);
+const assistantReasoning = computed(() => sessionStore.activeSession.assistantReasoning);
+const assistantSegments = computed(() => sessionStore.activeSession.assistantSegments);
+const assistantTokenUsage = computed(() => sessionStore.activeSession.assistantTokenUsage);
+const turnStartedAt = computed(() => sessionStore.activeSession.currentTurnStartedAt);
+const currentTurnToolEntries = computed(() => sessionStore.activeSession.toolExecutionLogs);
+const pendingQuestion = computed(() => sessionStore.activeSession.pendingQuestion);
+const pendingPermissionRequestId = computed(() => sessionStore.activeSession.pendingPermissionRequestId);
+const contextUsage = computed(() => sessionStore.activeSession.contextUsage);
+const contextCompacts = computed(() => sessionStore.activeSession.contextCompacts);
+const contextTokens = computed(() => sessionStore.activeSession.contextTokens);
+const chatError = computed(() => sessionStore.activeSession.chatError);
+const conversationId = computed(() => conversationStore.activeConversationId);
 
 const emit = defineEmits<{
   (e: 'send', msg: string): void;
@@ -156,11 +149,11 @@ const handleQuoteToInput = () => {
 };
 
 const handleOpenBranch = () => {
-  if (!props.conversationId) {
+  if (!conversationId.value) {
     emitToast({ message: '请先开始当前对话，再使用分支提问', variant: 'warning' });
     return;
   }
-  openBranch(props.conversationId, selectionPopover.text);
+  openBranch(conversationId.value, selectionPopover.text);
   hideSelectionPopover();
   window.getSelection()?.removeAllRanges();
 };
@@ -177,10 +170,10 @@ let stickToBottomRaf = 0;
 const tokenPrefixSums = shallowRef<number[]>([]);
 
 const rebuildTokenPrefixSums = () => {
-  const sums: number[] = new Array(props.messages.length);
+  const sums: number[] = new Array(messages.value.length);
   let running = 0;
-  for (let i = 0; i < props.messages.length; i += 1) {
-    const m = props.messages[i];
+  for (let i = 0; i < messages.value.length; i += 1) {
+    const m = messages.value[i];
     const costTotal = (m.cost?.inputTokens ?? 0) + (m.cost?.outputTokens ?? 0);
     running += costTotal > 0 ? costTotal : (m.tokenUsage ?? 0);
     sums[i] = running;
@@ -189,7 +182,7 @@ const rebuildTokenPrefixSums = () => {
 };
 
 watch(
-  () => props.messages,
+  messages,
   () => rebuildTokenPrefixSums(),
   { immediate: true },
 );
@@ -235,13 +228,13 @@ const setReaction = (index: number, value: 'up' | 'down') => {
 };
 
 const retryFromUser = (index: number) => {
-  const text = props.messages[index]?.content?.trim();
+  const text = messages.value[index]?.content?.trim();
   if (!text) return;
   emit('send', text);
 };
 
 const retryFromAssistant = (assistantIndex: number) => {
-  const prev = [...props.messages.slice(0, assistantIndex)].reverse().find((m) => m.role === 'user');
+  const prev = [...messages.value.slice(0, assistantIndex)].reverse().find((m) => m.role === 'user');
   if (!prev?.content?.trim()) return;
   emit('send', prev.content);
 };
@@ -250,27 +243,27 @@ const buildAssistantCopyText = (message: ChatMessage) => {
   return message.content?.trim() || '';
 };
 
-const hasStreamingReasoning = () => !!props.assistantReasoning?.trim();
-const streamingBodyText = () => props.assistantResponse.trim();
+const hasStreamingReasoning = () => !!assistantReasoning.value?.trim();
+const streamingBodyText = () => assistantResponse.value.trim();
 
 // 流式 segments 由 controller 维护；渲染前同样走 buildAssistantTranscriptSegments 的
 // "按正文分组"合并：没有被正文分隔的 thinking/工具块合并展示，
 // 保证流式中和回复完成后的分组视图一致，不会每轮思考/工具都单独成块。
 const streamingSegments = computed(() => {
-  if (props.assistantSegments.length > 0) {
-    return buildAssistantTranscriptSegments(props.assistantSegments);
+  if (assistantSegments.value.length > 0) {
+    return buildAssistantTranscriptSegments(assistantSegments.value);
   }
   return buildAssistantTranscriptSegments([], {
-    reasoning: props.assistantReasoning,
-    text: props.assistantResponse,
+    reasoning: assistantReasoning.value,
+    text: assistantResponse.value,
   });
 });
 
 const hasLiveAssistantTurn = computed(
   () =>
-    props.isGenerating ||
+    isGenerating.value ||
     streamingSegments.value.length > 0 ||
-    props.currentTurnToolEntries.length > 0,
+    currentTurnToolEntries.value.length > 0,
 );
 
 /** 虚拟列表行：历史消息 + 可选 live 行 */
@@ -279,7 +272,7 @@ type VirtualRow =
   | { kind: 'live' };
 
 const virtualRows = computed<VirtualRow[]>(() => {
-  const rows: VirtualRow[] = props.messages.map((message, index) => ({
+  const rows: VirtualRow[] = messages.value.map((message, index) => ({
     kind: 'message',
     index,
     message,
@@ -335,8 +328,8 @@ const scrollToBottom = async () => {
 const scrollLastUserMessageToTop = async () => {
   await nextTick();
   let lastUser = -1;
-  for (let i = props.messages.length - 1; i >= 0; i -= 1) {
-    if (props.messages[i]?.role === 'user') {
+  for (let i = messages.value.length - 1; i >= 0; i -= 1) {
+    if (messages.value[i]?.role === 'user') {
       lastUser = i;
       break;
     }
@@ -351,8 +344,8 @@ const scrollLastUserMessageToTop = async () => {
 const scrollLastUserMessageToBottom = async () => {
   await nextTick();
   let lastUser = -1;
-  for (let i = props.messages.length - 1; i >= 0; i -= 1) {
-    if (props.messages[i]?.role === 'user') {
+  for (let i = messages.value.length - 1; i >= 0; i -= 1) {
+    if (messages.value[i]?.role === 'user') {
       lastUser = i;
       break;
     }
@@ -420,7 +413,7 @@ const summarizeUserMessage = (content: string) => {
 };
 
 const userTimelineItems = computed(() =>
-  props.messages
+  messages.value
     .map((message, index) => ({ message, index }))
     .filter(({ message }) => message.role === 'user' && message.content.trim())
     .map(({ message, index }) => ({
@@ -492,7 +485,7 @@ const scrollToBottomSmooth = async () => {
 
 const scrollToMessageIndex = async (index: number) => {
   await nextTick();
-  if (index < 0 || index >= props.messages.length) return;
+  if (index < 0 || index >= messages.value.length) return;
   activeUserMessageIndex.value = index;
   rowVirtualizer.value.scrollToIndex(index, { align: 'start', behavior: 'smooth' });
 };
@@ -529,7 +522,7 @@ onBeforeUnmount(() => {
 // 禁止在每个 token 上 virtualizer.measure()——那会清空尺寸缓存，
 // 历史行在 estimate(160) 与真实高度间反复横跳，滚动条上下抽搐。
 watch(
-  () => [props.messages.length, hasLiveAssistantTurn.value] as const,
+  () => [messages.value.length, hasLiveAssistantTurn.value] as const,
   async () => {
     await nextTick();
     updateScrollToBottomVisibility();
@@ -544,11 +537,11 @@ watch(
 watch(
   () =>
     [
-      props.assistantResponse.length,
-      props.assistantReasoning?.length ?? 0,
-      props.assistantSegments.length,
-      props.currentTurnToolEntries.length,
-      props.isGenerating,
+      assistantResponse.value.length,
+      assistantReasoning.value?.length ?? 0,
+      assistantSegments.value.length,
+      currentTurnToolEntries.value.length,
+      isGenerating.value,
     ] as const,
   async () => {
     if (stickToBottomRaf) return;
@@ -588,9 +581,9 @@ const refreshStreamingEstimate = () => {
   if (streamingEstimateTimer !== null) return;
   streamingEstimateTimer = setTimeout(() => {
     streamingEstimateTimer = null;
-    const text = props.assistantResponse;
-    if (!text.trim() || !props.isGenerating) return;
-    if (typeof props.assistantTokenUsage === 'number' && props.assistantTokenUsage > 0) return;
+    const text = assistantResponse.value;
+    if (!text.trim() || !isGenerating.value) return;
+    if (typeof assistantTokenUsage.value === 'number' && assistantTokenUsage.value > 0) return;
     void estimateTextTokens(text)
       .then((tokens) => {
         streamingEstimateTokens.value = tokens;
@@ -600,7 +593,7 @@ const refreshStreamingEstimate = () => {
 };
 
 watch(
-  () => [props.assistantResponse, props.isGenerating] as const,
+  () => [assistantResponse.value, isGenerating.value] as const,
   ([, generating]) => {
     if (generating) {
       refreshStreamingEstimate();
@@ -641,14 +634,14 @@ const stopLiveElapsedTimer = () => {
 };
 
 watch(
-  () => [props.isGenerating, props.turnStartedAt] as const,
+  () => [isGenerating.value, turnStartedAt.value] as const,
   ([generating, startedAt]) => {
     if (generating && startedAt && startedAt > 0) {
       liveElapsedMs.value = Math.max(0, Date.now() - startedAt);
       if (liveElapsedTimer === null) {
         liveElapsedTimer = setInterval(() => {
-          const current = props.turnStartedAt;
-          if (props.isGenerating && current && current > 0) {
+          const current = turnStartedAt.value;
+          if (isGenerating.value && current && current > 0) {
             liveElapsedMs.value = Math.max(0, Date.now() - current);
             return;
           }
@@ -664,15 +657,15 @@ watch(
 
 const streamingTokenUsage = (): number => {
   const outputTokens =
-    typeof props.assistantTokenUsage === 'number' && props.assistantTokenUsage > 0
-      ? props.assistantTokenUsage
-      : props.isGenerating
+    typeof assistantTokenUsage.value === 'number' && assistantTokenUsage.value > 0
+      ? assistantTokenUsage.value
+      : isGenerating.value
         ? streamingEstimateTokens.value
         : 0;
   const inputTokens =
-    typeof props.contextUsage?.usedTokens === 'number' && props.contextUsage.usedTokens > 0
-      ? props.contextUsage.usedTokens
-      : props.contextTokens ?? 0;
+    typeof contextUsage.value?.usedTokens === 'number' && contextUsage.value.usedTokens > 0
+      ? contextUsage.value.usedTokens
+      : contextTokens.value ?? 0;
   const total = inputTokens + outputTokens;
   if (total > 0) {
     return total;
@@ -689,12 +682,12 @@ const streamingConversationTokenUsage = (): number => {
 };
 
 const liveWaitKind = () => {
-  if (!props.pendingQuestion) return null;
-  return props.pendingPermissionRequestId ? 'permission' : 'question';
+  if (!pendingQuestion.value) return null;
+  return pendingPermissionRequestId.value ? 'permission' : 'question';
 };
 
 const liveStatusText = computed(() => {
-  if (props.currentStage === 'compacting') {
+  if (currentStage.value === 'compacting') {
     return '正在压缩上下文';
   }
   const waitKind = liveWaitKind();
@@ -704,7 +697,7 @@ const liveStatusText = computed(() => {
   if (waitKind === 'question') {
     return '等待你补充信息';
   }
-  const runningTool = props.currentTurnToolEntries.find((entry) => entry.status === 'running');
+  const runningTool = currentTurnToolEntries.value.find((entry) => entry.status === 'running');
   if (runningTool) {
     const name = runningTool.toolName.toLowerCase();
     if (
@@ -728,14 +721,14 @@ const liveStatusText = computed(() => {
     }
     return `正在调用工具：${runningTool.toolName}`;
   }
-  const hasFinishedTool = props.currentTurnToolEntries.some((entry) => entry.status !== 'running');
+  const hasFinishedTool = currentTurnToolEntries.value.some((entry) => entry.status !== 'running');
   if (hasFinishedTool && !streamingBodyText()) {
     return '等待模型总结';
   }
   if (hasStreamingReasoning() && !streamingBodyText()) {
     return '正在思考';
   }
-  if (props.isGenerating) {
+  if (isGenerating.value) {
     return '正在生成回复';
   }
   return '正在处理你的请求';
@@ -826,18 +819,18 @@ defineExpose({
             <div class="w-full max-w-[85%]">
               <div class="min-w-0 flex-1 text-[0.95rem] leading-relaxed break-words text-[#1a1a1a] dark:text-[#ececec]">
                 <ContextCompactNotice
-                  v-if="props.contextCompacts && props.contextCompacts.length > 0"
-                  :items="props.contextCompacts"
+                  v-if="contextCompacts && contextCompacts.length > 0"
+                  :items="contextCompacts"
                   compact
                 />
                 <AssistantTranscript
                   v-if="streamingSegments.length > 0"
                   :segments="streamingSegments"
-                  :entries="props.currentTurnToolEntries"
+                  :entries="currentTurnToolEntries"
                   live
                 />
                 <p
-                  v-else-if="props.isGenerating || !!liveWaitKind()"
+                  v-else-if="isGenerating || !!liveWaitKind()"
                   class="live-status text-[13px] text-[#64748b] dark:text-[#cbd5e1]"
                 >
                   <span>{{ liveStatusText }}</span>
@@ -947,14 +940,7 @@ defineExpose({
         <InputArea
           v-else
           ref="inputAreaRef"
-          :isGenerating="isGenerating"
-          :pendingUploads="pendingUploads"
-          :contextUsage="contextUsage"
-          :contextTokens="contextTokens"
-          :conversationUsage="conversationUsage"
-          :compacting="compacting"
           :activeAgent="activeAgent"
-          :conversationId="conversationId"
           @send="handleSend"
           @cancel="emit('cancel')"
           @remove-agent="emit('remove-agent')"

@@ -4,6 +4,7 @@ use uuid::Uuid;
 
 use crate::agent::context::assembler::ContextAssembler;
 use crate::agent::events::AgentDomainEvent;
+use crate::agent::state::CognitiveState;
 use crate::llm::providers::LlmClient;
 use crate::llm::session_log::SessionEvent;
 use crate::llm::types::{AgentMode, Content, ContentBlock, Message, Role};
@@ -29,13 +30,20 @@ impl AgentEngine {
         let turn_id = Uuid::new_v4().to_string();
         let timestamp = chrono::Utc::now().timestamp_millis();
 
-        // 1. 发射 TurnStarted 领域事件
+        // 1. 发射 TurnStarted 与 AssemblingContext 领域事件
         let _ = self.app.emit(
             "agent-event",
             AgentDomainEvent::TurnStarted {
                 turn_id: turn_id.clone(),
                 conversation_id: conversation_id.to_string(),
                 timestamp,
+            },
+        );
+        let _ = self.app.emit(
+            "agent-event",
+            AgentDomainEvent::StateChanged {
+                turn_id: turn_id.clone(),
+                state: CognitiveState::AssemblingContext,
             },
         );
 
@@ -112,6 +120,15 @@ impl AgentEngine {
                 return Ok(());
             }
 
+            // 发射模型推理状态事件
+            let _ = self.app.emit(
+                "agent-event",
+                AgentDomainEvent::StateChanged {
+                    turn_id: turn_id.clone(),
+                    state: CognitiveState::ModelInference,
+                },
+            );
+
             // 发起模型流式请求
             let (provider_result, _) = match client
                 .send_request(
@@ -135,6 +152,13 @@ impl AgentEngine {
                         },
                     )
                     .await;
+                    let _ = self.app.emit(
+                        "agent-event",
+                        AgentDomainEvent::StateChanged {
+                            turn_id: turn_id.clone(),
+                            state: CognitiveState::Failed,
+                        },
+                    );
                     let _ = self.app.emit(
                         "agent-event",
                         AgentDomainEvent::TurnError {
@@ -194,8 +218,30 @@ impl AgentEngine {
                 break;
             }
 
-            // 发射工具调用请求领域事件
+            // 发射工具执行状态转移事件
+            let _ = self.app.emit(
+                "agent-event",
+                AgentDomainEvent::StateChanged {
+                    turn_id: turn_id.clone(),
+                    state: CognitiveState::ExecutingTool,
+                },
+            );
+
+            // 写入工具调用事件日志事实源，并向前端派发请求事件
             for call in &tool_calls {
+                let _ = crate::llm::session_log::append_event(
+                    &self.app,
+                    conversation_id,
+                    Some(&turn_id),
+                    &SessionEvent::ToolCall {
+                        call_id: call.id.clone(),
+                        tool_name: call.name.clone(),
+                        input: serde_json::to_string(&call.input).unwrap_or_default(),
+                        turn_id: Some(turn_id.clone()),
+                    },
+                )
+                .await;
+
                 let _ = self.app.emit(
                     "agent-event",
                     AgentDomainEvent::ToolCallRequested {
@@ -221,6 +267,22 @@ impl AgentEngine {
             let mut stop_for_user_interaction = false;
 
             for executed in executed_calls {
+                let now_ms = chrono::Utc::now().timestamp_millis();
+                let _ = crate::llm::session_log::append_event(
+                    &self.app,
+                    conversation_id,
+                    Some(&turn_id),
+                    &SessionEvent::ToolResult {
+                        call_id: executed.id.clone(),
+                        tool_name: executed.name.clone(),
+                        output: executed.output.clone(),
+                        is_error: executed.is_error,
+                        started_at: now_ms.saturating_sub(duration_ms as i64),
+                        finished_at: now_ms,
+                    },
+                )
+                .await;
+
                 let _ = self.app.emit(
                     "agent-event",
                     AgentDomainEvent::ToolCallCompleted {
@@ -252,12 +314,14 @@ impl AgentEngine {
                 }
             }
 
-            // 封装 ToolResult 消息并记入事件日志事实源与当前工作上下文
+            // 封装 ToolResult 消息并以 ContextMessage 记入事件日志事实源与当前工作上下文
             let tool_msg = Message {
                 role: Role::User,
                 content: Content::Blocks(tool_result_blocks),
             };
-            let tool_event = SessionEvent::from_model_message(tool_msg.clone());
+            let tool_event = SessionEvent::ContextMessage {
+                message: tool_msg.clone(),
+            };
             let _ = crate::llm::session_log::append_event(
                 &self.app,
                 conversation_id,
@@ -290,6 +354,14 @@ impl AgentEngine {
             Some(user_prompt),
         )
         .await;
+
+        let _ = self.app.emit(
+            "agent-event",
+            AgentDomainEvent::StateChanged {
+                turn_id: turn_id.clone(),
+                state: CognitiveState::TurnComplete,
+            },
+        );
 
         let _ = self.app.emit(
             "agent-event",

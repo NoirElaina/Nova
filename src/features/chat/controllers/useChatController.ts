@@ -1,16 +1,15 @@
-import { computed, onMounted, onUnmounted, ref, shallowRef } from "vue";
+import { computed, onMounted, onUnmounted, ref, shallowRef, watch } from "vue";
+import { storeToRefs } from "pinia";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { emitToast, NOVA_CHAT_ERROR_EVENT, type ChatErrorPayload } from "../../../lib/toast";
 import {
   getConversationUsage,
-  type SessionFileMeta,
 } from "../services/chat-api";
 import type {
   AgentMode,
   AssistantTranscriptSegment,
   ChatMessage,
   ContextCompactSummary,
-  ConversationMeta,
   ConversationUsageSummary,
   NeedsUserInputPayload,
   PendingUploadFile,
@@ -37,7 +36,17 @@ import { useAgentSessionStore } from "@/stores/agentSession";
 export function useChatController() {
   const conversationStore = useConversationStore();
   const agentSessionStore = useAgentSessionStore();
-  void conversationStore;
+
+  const {
+    conversations,
+    activeConversationId,
+    activeWorkspacePath,
+    conversationFiles,
+    isSidebarOpen,
+    mainView,
+    pendingAgentBundleId,
+  } = storeToRefs(conversationStore);
+
   const messages = shallowRef<ChatMessage[]>([]);
   const isGenerating = ref(false);
   const currentStage = ref<LiveTurnStage>("processing");
@@ -46,16 +55,10 @@ export function useChatController() {
   const assistantSegments = ref<AssistantTranscriptSegment[]>([]);
   const assistantTokenUsage = ref<number | undefined>(undefined);
   const assistantTurnCost = ref<TurnCost | undefined>(undefined);
-  const conversations = ref<ConversationMeta[]>([]);
-  const activeConversationId = ref("");
-  /** 当前工作区路径（前端状态）。空字符串表示使用后端默认工作区。 */
-  const activeWorkspacePath = ref("");
-  const conversationFiles = ref<SessionFileMeta[]>([]);
   const pendingUploads = ref<PendingUploadFile[]>([]);
   const pendingQuestion = ref<NeedsUserInputPayload | null>(null);
   const pendingPermissionRequestId = ref<string | null>(null);
   const conversationUsage = ref<ConversationUsageSummary | null>(null);
-  const mainView = ref<MainView>("chat");
   const currentToolStartedAt = ref<number | null>(null);
   const currentToolCalls = ref(0);
   const currentToolDurationMs = ref(0);
@@ -66,12 +69,32 @@ export function useChatController() {
   const currentOutputTokens = ref(0);
   const currentTurnId = ref<string | null>(null);
   const currentTurnStartedAt = ref<number | null>(null);
-  /** 智能体页「启用」暂存的智能体 id：首次发送创建对话时挂载，之后清空。 */
-  const pendingAgentBundleId = ref<string | null>(null);
   const agentMode = ref<AgentMode>("agent");
   const isCreatingNewChat = ref(false);
-  const isSidebarOpen = ref(true);
   const toolExecutionLogs = ref<ToolExecutionEntry[]>([]);
+
+  // 保证 Pinia 会话运行态 Store 与 Controller 状态双向连通，彻底废除各自孤立更新
+  watch(
+    messages,
+    (val) => {
+      agentSessionStore.activeSession.messages = val;
+    },
+    { immediate: true, deep: false },
+  );
+  watch(
+    toolExecutionLogs,
+    (val) => {
+      agentSessionStore.activeSession.toolExecutionLogs = val;
+    },
+    { immediate: true, deep: false },
+  );
+  watch(
+    isGenerating,
+    (val) => {
+      agentSessionStore.activeSession.isGenerating = val;
+    },
+    { immediate: true },
+  );
   const currentTurnToolIds = ref<string[]>([]);
   const chatScreenRef = ref<ChatScreenHandle | null>(null);
   /** AI 主流程错误的临时展示状态：不进消息数组，只保留最新一条，下次发送时清空。 */
@@ -369,6 +392,9 @@ export function useChatController() {
           assistantResponse.value = "";
           assistantReasoning.value = "";
           assistantSegments.value = [];
+        },
+        onStateChanged: (_turnId, state) => {
+          agentSessionStore.handleStateChanged(state);
         },
         onThinkingDelta: (delta) => {
           agentSessionStore.handleThinkingDelta(delta);

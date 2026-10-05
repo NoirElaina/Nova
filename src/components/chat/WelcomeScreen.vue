@@ -1,18 +1,9 @@
 <script setup lang="ts">
 import InputArea from '../layout/InputArea.vue';
 import EnvironmentBar from './EnvironmentBar.vue';
-import type {
-  ContextCompactSummary,
-  ContextUsage,
-  PendingUploadFile,
-} from '../../lib/chat-types';
+import type { PendingUploadFile } from '../../lib/chat-types';
 
 defineProps<{
-  isGenerating?: boolean;
-  pendingUploads?: PendingUploadFile[];
-  contextUsage?: ContextUsage;
-  contextCompacts?: ContextCompactSummary[];
-  contextTokens?: number;
   workspacePath?: string;
   conversationId?: string | null;
   /** 暂存的智能体（会话未创建时展示，首次发送时挂载到新对话）。 */
@@ -50,10 +41,6 @@ const handleSend = (msg: string) => {
       />
 
       <InputArea
-        :isGenerating="isGenerating"
-        :pendingUploads="pendingUploads"
-        :contextUsage="contextUsage"
-        :contextTokens="contextTokens"
         :activeAgent="activeAgent"
         @send="handleSend"
         @remove-agent="emit('remove-agent')"

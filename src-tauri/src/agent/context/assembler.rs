@@ -14,12 +14,21 @@ impl ContextAssembler {
         new_prompt: &str,
     ) -> Result<Vec<Message>, String> {
         let mut messages = history;
+        let trimmed = new_prompt.trim();
 
-        // 最新用户意图严格以 User Message 追加在尾部，不污染历史前缀
-        if !new_prompt.trim().is_empty() {
+        // 检查末尾是否已经包含了当前的用户意图（避免从 session_log 重构上下文后发生双重追加 Bug）
+        let already_present = messages.last().map_or(false, |last| {
+            matches!(last.role, Role::User)
+                && match &last.content {
+                    Content::Text(t) => t.trim() == trimmed,
+                    _ => false,
+                }
+        });
+
+        if !trimmed.is_empty() && !already_present {
             messages.push(Message {
                 role: Role::User,
-                content: Content::Text(new_prompt.trim().to_string()),
+                content: Content::Text(trimmed.to_string()),
             });
         }
 

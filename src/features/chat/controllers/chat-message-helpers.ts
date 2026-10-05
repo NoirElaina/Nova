@@ -87,3 +87,4 @@ export function sanitizeConsecutiveAssistantMessages(rawMessages: ChatMessage[])
   }
   return result;
 }
+

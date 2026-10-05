@@ -8,6 +8,22 @@ export type AgentDomainEvent =
       };
     }
   | {
+      kind: "state_changed";
+      payload: {
+        turn_id: string;
+        state:
+          | "idle"
+          | "assembling_context"
+          | "model_inference"
+          | "awaiting_approval"
+          | "executing_tool"
+          | "verifying_workspace"
+          | "reflecting"
+          | "turn_complete"
+          | "failed";
+      };
+    }
+  | {
       kind: "thinking_delta";
       payload: {
         turn_id: string;

@@ -3,6 +3,7 @@ import type { AgentDomainEvent } from "./agent-events";
 
 export interface ModernAgentCallbacks {
   onTurnStarted?: (turnId: string, conversationId: string) => void;
+  onStateChanged?: (turnId: string, state: string) => void;
   onThinkingDelta?: (delta: string) => void;
   onTextDelta?: (delta: string) => void;
   onToolRequested?: (callId: string, toolName: string, args: Record<string, unknown>) => void;
@@ -27,6 +28,10 @@ export async function setupAgentEventListener(
     switch (data.kind) {
       case "turn_started":
         callbacks.onTurnStarted?.(data.payload.turn_id, data.payload.conversation_id);
+        break;
+
+      case "state_changed":
+        callbacks.onStateChanged?.(data.payload.turn_id, data.payload.state);
         break;
 
       case "thinking_delta":

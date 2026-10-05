@@ -8,6 +8,8 @@ use crate::llm::types::AgentMode;
 
 // 系统提示文件名（相对工程目录 src/prompt）
 const SYSTEM_PROMPT_FILE_NAME: &str = "system_prompt.md";
+// 编译期内联默认系统提示词，确保打包为独立二进制分发后即使开发机路径不存在也不会崩溃
+const DEFAULT_SYSTEM_PROMPT: &str = include_str!("../../prompt/system_prompt.md");
 
 const GLOBAL_MEMORY_SECTION: &str = r#"
 
@@ -164,15 +166,9 @@ pub fn load_system_prompt(
     let prompt = match &bundle {
         Some(b) if !b.prompt.trim().is_empty() => b.prompt.trim().to_string(),
         _ => {
-            // 计算系统提示文件路径。
+            // 计算系统提示文件路径。开发调试时优先读取磁盘修改，未找到时使用编译期内联默认值。
             let path = main_prompt_path();
-            // 读取并校验主提示词文件，失败时拒绝 fallback。
-            read_non_empty_file(&path).ok_or_else(|| {
-                format!(
-                    "System prompt file is missing or empty: {}. Refusing to use fallback.",
-                    path.display()
-                )
-            })?
+            read_non_empty_file(&path).unwrap_or_else(|| DEFAULT_SYSTEM_PROMPT.trim().to_string())
         }
     };
 

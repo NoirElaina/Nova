@@ -24,6 +24,7 @@ export interface SessionRuntimeState {
   messages: ChatMessage[];
   isGenerating: boolean;
   currentStage: LiveTurnStage;
+  cognitiveState?: string;
   assistantResponse: string;
   assistantReasoning: string;
   assistantSegments: AssistantTranscriptSegment[];
@@ -47,6 +48,7 @@ export function createInitialSessionState(conversationId: string): SessionRuntim
     messages: [],
     isGenerating: false,
     currentStage: "processing",
+    cognitiveState: "idle",
     assistantResponse: "",
     assistantReasoning: "",
     assistantSegments: [],
@@ -130,11 +132,28 @@ export const useAgentSessionStore = defineStore("agentSession", () => {
     const session = getSession(convId);
     session.isGenerating = true;
     session.currentStage = "processing";
+    session.cognitiveState = "assembling_context";
     session.assistantResponse = "";
     session.assistantReasoning = "";
     session.assistantSegments = [];
     session.currentTurnStartedAt = Date.now();
     session.chatError = null;
+  }
+
+  function handleStateChanged(state: string, convId?: string) {
+    const session = convId ? getSession(convId) : activeSession.value;
+    session.cognitiveState = state;
+    if (
+      state === "assembling_context" ||
+      state === "model_inference" ||
+      state === "executing_tool" ||
+      state === "verifying_workspace" ||
+      state === "reflecting"
+    ) {
+      session.isGenerating = true;
+    } else if (state === "turn_complete" || state === "failed" || state === "idle") {
+      session.isGenerating = false;
+    }
   }
 
   function handleThinkingDelta(delta: string, convId?: string) {
@@ -214,6 +233,7 @@ export const useAgentSessionStore = defineStore("agentSession", () => {
     activeSession,
     loadConversationMessages,
     handleTurnStarted,
+    handleStateChanged,
     handleThinkingDelta,
     handleTextDelta,
     handleToolRequested,

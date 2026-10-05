@@ -11,6 +11,7 @@ export interface ModernAgentCallbacks {
   onVerificationStarted?: (target: string) => void;
   onVerificationCompleted?: (target: string, passed: boolean, feedback?: string) => void;
   onTokenUsage?: (usage: { input: number; output: number; cacheRead: number; cacheCreate: number }) => void;
+  onPermissionRequested?: (turnId: string, requestId: string, toolName: string, payload: string) => void;
   onTurnFinished?: (turnId: string, stopReason: string) => void;
   onError?: (error: string) => void;
 }
@@ -79,6 +80,15 @@ export async function setupAgentEventListener(
           cacheRead: data.payload.cache_read_tokens,
           cacheCreate: data.payload.cache_creation_tokens,
         });
+        break;
+
+      case "permission_requested":
+        callbacks.onPermissionRequested?.(
+          data.payload.turn_id,
+          data.payload.request_id,
+          data.payload.tool_name,
+          data.payload.payload
+        );
         break;
 
       case "turn_finished":

@@ -63,6 +63,13 @@ pub enum AgentDomainEvent {
         cache_read_tokens: u32,
         cache_creation_tokens: u32,
     },
+    /// 触发安全审批拦截请求
+    PermissionRequested {
+        turn_id: String,
+        request_id: String,
+        tool_name: String,
+        payload: String,
+    },
     /// 回合成功完成
     TurnFinished {
         turn_id: String,

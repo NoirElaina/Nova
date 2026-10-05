@@ -79,7 +79,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             greet,
             agent::send_modern_agent_turn,
-            llm::client::send_chat_message,
+            agent::cancel_modern_agent_turn,
             llm::client::cancel_chat_message,
             llm::services::branch::send_branch_message,
             llm::services::branch::cancel_branch_message,

@@ -92,6 +92,15 @@ export type AgentDomainEvent =
       };
     }
   | {
+      kind: "permission_requested";
+      payload: {
+        turn_id: string;
+        request_id: string;
+        tool_name: string;
+        payload: string;
+      };
+    }
+  | {
       kind: "turn_error";
       payload: {
         turn_id: string;

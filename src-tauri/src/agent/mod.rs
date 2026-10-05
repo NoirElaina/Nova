@@ -27,3 +27,9 @@ pub async fn send_modern_agent_turn(
     );
     result
 }
+
+/// 现代化 Agent 外部取消统一调用入口
+#[tauri::command]
+pub async fn cancel_modern_agent_turn(conversation_id: Option<String>) -> Result<bool, String> {
+    Ok(crate::llm::cancellation::request_cancel(conversation_id.as_deref()))
+}

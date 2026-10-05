@@ -1,7 +1,4 @@
 use serde::Serialize;
-use tauri::AppHandle;
-
-use crate::llm::types::{AgentMode, Content, Message, Role};
 
 #[derive(Debug, Serialize, Clone)]
 pub struct ChatMessageEvent {
@@ -27,26 +24,4 @@ pub struct ChatMessageEvent {
     pub turn_state: Option<String>,
     // 会话 ID（用于前端按会话分流流式事件）。
     pub conversation_id: Option<String>,
-}
-
-/// 统一转发至全新现代化 Agent 核心引擎
-pub async fn send_chat_message(
-    app: AppHandle,
-    conversation_id: Option<String>,
-    messages: Vec<Message>,
-    _agent_mode: AgentMode,
-    _attachments: Option<Vec<crate::llm::commands::types::HistoryAttachment>>,
-) -> Result<(), String> {
-    let conv_id = conversation_id.unwrap_or_default();
-    let prompt = messages
-        .iter()
-        .rev()
-        .find(|m| matches!(m.role, Role::User))
-        .and_then(|m| match &m.content {
-            Content::Text(t) => Some(t.clone()),
-            _ => None,
-        })
-        .unwrap_or_default();
-
-    crate::agent::send_modern_agent_turn(app, conv_id, prompt).await
 }

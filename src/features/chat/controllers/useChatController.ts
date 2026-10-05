@@ -90,28 +90,78 @@ export function useChatController() {
     },
   });
 
-  const assistantTokenUsage = ref<number | undefined>(undefined);
-  const assistantTurnCost = ref<TurnCost | undefined>(undefined);
+  const assistantTokenUsage = computed<number | undefined>({
+    get: () => agentSessionStore.activeSession.assistantTokenUsage,
+    set: (val) => {
+      agentSessionStore.activeSession.assistantTokenUsage = val;
+    },
+  });
+  const assistantTurnCost = computed<TurnCost | undefined>({
+    get: () => agentSessionStore.activeSession.assistantTurnCost,
+    set: (val) => {
+      agentSessionStore.activeSession.assistantTurnCost = val;
+    },
+  });
   const pendingUploads = ref<PendingUploadFile[]>([]);
-  const pendingQuestion = ref<NeedsUserInputPayload | null>(null);
-  const pendingPermissionRequestId = ref<string | null>(null);
-  const conversationUsage = ref<ConversationUsageSummary | null>(null);
+  const pendingQuestion = computed<NeedsUserInputPayload | null>({
+    get: () => agentSessionStore.activeSession.pendingQuestion,
+    set: (val) => {
+      agentSessionStore.activeSession.pendingQuestion = val;
+    },
+  });
+  const pendingPermissionRequestId = computed<string | null>({
+    get: () => agentSessionStore.activeSession.pendingPermissionRequestId,
+    set: (val) => {
+      agentSessionStore.activeSession.pendingPermissionRequestId = val;
+    },
+  });
+  const conversationUsage = computed<ConversationUsageSummary | null>({
+    get: () => agentSessionStore.activeSession.conversationUsage,
+    set: (val) => {
+      agentSessionStore.activeSession.conversationUsage = val;
+    },
+  });
   const currentToolStartedAt = ref<number | null>(null);
   const currentToolCalls = ref(0);
   const currentToolDurationMs = ref(0);
-  const currentContextUsage = ref<ContextUsage | undefined>(undefined);
-  const currentContextCompacts = ref<ContextCompactSummary[]>([]);
-  const currentContextTokens = ref(0);
+  const currentContextUsage = computed<ContextUsage | undefined>({
+    get: () => agentSessionStore.activeSession.contextUsage,
+    set: (val) => {
+      agentSessionStore.activeSession.contextUsage = val;
+    },
+  });
+  const currentContextCompacts = computed<ContextCompactSummary[]>({
+    get: () => agentSessionStore.activeSession.contextCompacts,
+    set: (val) => {
+      agentSessionStore.activeSession.contextCompacts = val;
+    },
+  });
+  const currentContextTokens = computed<number>({
+    get: () => agentSessionStore.activeSession.contextTokens,
+    set: (val) => {
+      agentSessionStore.activeSession.contextTokens = val;
+    },
+  });
   const currentInputTokens = ref(0);
   const currentOutputTokens = ref(0);
   const currentTurnId = ref<string | null>(null);
-  const currentTurnStartedAt = ref<number | null>(null);
+  const currentTurnStartedAt = computed<number | null>({
+    get: () => agentSessionStore.activeSession.currentTurnStartedAt,
+    set: (val) => {
+      agentSessionStore.activeSession.currentTurnStartedAt = val;
+    },
+  });
   const agentMode = ref<AgentMode>("agent");
   const isCreatingNewChat = ref(false);
   const currentTurnToolIds = ref<string[]>([]);
   const chatScreenRef = ref<ChatScreenHandle | null>(null);
   /** AI 主流程错误的临时展示状态：不进消息数组，只保留最新一条，下次发送时清空。 */
-  const chatError = ref<string | null>(null);
+  const chatError = computed<string | null>({
+    get: () => agentSessionStore.activeSession.chatError,
+    set: (val) => {
+      agentSessionStore.activeSession.chatError = val;
+    },
+  });
   const toolInputById = new Map<string, string>();
   const toolNameById = new Map<string, string>();
   const runtimeStateByConversation = new Map<string, ConversationTurnRuntimeState>();
@@ -435,6 +485,10 @@ export function useChatController() {
         onTokenUsage: (usage) => {
           agentSessionStore.handleTokenUsage(usage);
           assistantTokenUsage.value = usage.input + usage.output;
+        },
+        onPermissionRequested: (_turnId, requestId, toolName, payload) => {
+          agentSessionStore.handlePermissionRequested(requestId, toolName, payload);
+          pendingPermissionRequestId.value = requestId;
         },
         onTurnFinished: async (_turnId, _stopReason) => {
           await agentSessionStore.handleTurnFinished(_turnId, _stopReason);

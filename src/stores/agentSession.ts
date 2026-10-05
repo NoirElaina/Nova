@@ -218,6 +218,17 @@ export const useAgentSessionStore = defineStore("agentSession", () => {
     session.chatError = null;
   }
 
+  function handlePermissionRequested(
+    requestId: string,
+    _toolName: string,
+    _payload: string,
+    convId?: string,
+  ) {
+    const session = convId ? getSession(convId) : activeSession.value;
+    session.pendingPermissionRequestId = requestId;
+    session.currentStage = "awaiting_approval";
+  }
+
   function clearActiveTurnRuntime(convId?: string) {
     const session = convId ? getSession(convId) : activeSession.value;
     session.isGenerating = false;
@@ -244,6 +255,7 @@ export const useAgentSessionStore = defineStore("agentSession", () => {
     handleToolRequested,
     handleToolCompleted,
     handleTokenUsage,
+    handlePermissionRequested,
     handleTurnFinished,
     handleTurnError,
     dismissChatError,

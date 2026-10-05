@@ -56,7 +56,7 @@ fn emit_stream_event(
             }),
         );
     }
-    app.emit("chat-stream", event)
+    Ok(())
 }
 
 // ─────────────────────────────────────────────

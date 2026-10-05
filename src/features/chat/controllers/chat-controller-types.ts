@@ -8,7 +8,7 @@ import type {
 } from "../../../lib/chat-types";
 
 export type MainView = "chat" | "hooks" | "agent" | "plugins" | "schedule" | "settings";
-export type LiveTurnStage = "processing" | "compacting";
+export type LiveTurnStage = "processing" | "compacting" | "awaiting_approval";
 
 export type BackendErrorEvent = {
   source?: string;

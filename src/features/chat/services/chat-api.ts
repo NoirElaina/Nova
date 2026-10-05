@@ -1,6 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
 import type {
-  AgentMode,
   ChatMessage,
   ConversationMeta,
   ConversationUsageSummary,
@@ -11,11 +10,6 @@ import type {
 } from "../../../lib/chat-types";
 import type { PermissionActionName } from "../../../lib/chat-payloads";
 import { buildConversationTitle } from "../utils/session-memory";
-type ChatRequestContent = string | Array<Record<string, unknown>>;
-
-type ChatRequestMessage = Pick<ChatMessage, "role"> & {
-  content: ChatRequestContent;
-};
 
 type RuntimeProviderProfile = {
   protocol?: string;
@@ -378,21 +372,6 @@ export async function initGitRepo(
   return invoke<InitGitRepoResult>("init_git_repo", { conversationId });
 }
 
-export async function sendChatMessage(
-  conversationId: string | null,
-  messages: ChatRequestMessage[],
-  agentMode: AgentMode,
-  attachments?: Record<string, unknown>[] | null,
-): Promise<void> {
-  await invoke("send_chat_message", {
-    conversationId,
-    messages,
-    agentMode,
-    // 本轮用户消息的附件元数据：持久化已收归后端事件日志，随发送一并落盘。
-    attachments: attachments && attachments.length > 0 ? attachments : null,
-  });
-}
-
 /** 发送给全新现代化 Agent 引擎 (单一真实信源 + ReAct 自愈验证) */
 export async function sendModernAgentTurn(
   conversationId: string,
@@ -494,7 +473,7 @@ export async function estimateTextTokens(text: string): Promise<number> {
 }
 
 export async function cancelChatMessage(conversationId: string | null): Promise<boolean> {
-  return invoke<boolean>("cancel_chat_message", {
+  return invoke<boolean>("cancel_modern_agent_turn", {
     conversationId,
   });
 }

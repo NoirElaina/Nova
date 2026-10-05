@@ -1,4 +1,3 @@
-use crate::llm::query_engine::ChatMessageEvent;
 use crate::llm::services::mcp_tools::build_mcp_tool_name;
 use crate::llm::tools::{ToolExecResult, ToolFailure, ToolOutcome};
 use serde_json::Value;
@@ -31,28 +30,15 @@ pub async fn await_permission_and_recheck(
     request_id: String,
     payload: String,
 ) -> Result<(), String> {
-    app.emit(
-        "chat-stream",
-        ChatMessageEvent {
-            r#type: "permission-request".into(),
-            text: Some(payload),
-            tool_use_id: Some(request_id.clone()),
-            tool_use_name: Some(tool_name.to_string()),
-            tool_use_input: None,
-            tool_result: None,
-            tool_is_error: None,
-            token_usage: None,
-            stop_reason: None,
-            turn_state: Some("awaiting_permission".into()),
-            conversation_id: conversation_id.map(str::to_string),
+    let _ = app.emit(
+        "agent-event",
+        crate::agent::events::AgentDomainEvent::PermissionRequested {
+            turn_id: conversation_id.unwrap_or_default().to_string(),
+            request_id: request_id.clone(),
+            tool_name: tool_name.to_string(),
+            payload: payload.clone(),
         },
-    )
-    .map_err(|e| {
-        format!(
-            "Permission request failed for '{}': unable to notify frontend ({})",
-            tool_name, e
-        )
-    })?;
+    );
 
     let decision = crate::llm::utils::permissions::await_permission_decision(
         conversation_id,

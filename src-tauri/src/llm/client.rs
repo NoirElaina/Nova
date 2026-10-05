@@ -1,75 +1,11 @@
 use tauri::AppHandle;
 use tracing::{info, warn};
-
-use crate::llm::types::{AgentMode, Message};
 use crate::llm::utils::error_event::report_backend_result;
+
 
 // 对外复用 query_engine 的事件类型定义。
 pub use crate::llm::query_engine::ChatMessageEvent;
 
-#[tauri::command]
-pub async fn send_chat_message(
-    app: AppHandle,
-    conversation_id: Option<String>,
-    messages: Vec<Message>,
-    agent_mode: Option<AgentMode>,
-    // 本轮用户消息的附件元数据（UI 展示用；持久化已收归后端事件日志）。
-    attachments: Option<Vec<crate::llm::commands::types::HistoryAttachment>>,
-) -> Result<(), String> {
-    // 克隆会话 ID，便于请求前后使用同一作用域 key。
-    let conversation_scope = conversation_id.clone();
-    // 同一会话已有进行中的轮次时直接拒绝：否则两条流会并发写入同一
-    // live_turns entry 并重复推送 chat-stream 事件，导致前端把逐块错乱的
-    // 思考/正文落盘（页面刷新后 isGenerating 尚未恢复时的重发/编辑会触发此场景）。
-    if !crate::llm::services::live_turns::begin_turn(conversation_scope.as_deref()) {
-        warn!(
-            conversation_id = %conversation_scope.as_deref().unwrap_or("__default__"),
-            "chat turn rejected: another turn is already running for this conversation"
-        );
-        return Err("该会话已有正在进行的回复，请等待其完成或先停止。".to_string());
-    }
-    // 标记本轮开始，初始化取消标志位。
-    crate::llm::cancellation::begin_turn(conversation_scope.as_deref());
-
-    // 未显式提供模式时默认 Agent（目前也仅有 Agent 一种模式）。
-    let resolved_mode = agent_mode.unwrap_or(AgentMode::Agent);
-
-    info!(
-        conversation_id = %conversation_scope.as_deref().unwrap_or("__default__"),
-        agent_mode = ?resolved_mode,
-        message_count = messages.len(),
-        "chat turn started"
-    );
-
-    // 工具审批完全由全局审批策略（设置页/快捷开关）控制，回合层不再维护放行状态。
-    let result = crate::llm::query_engine::send_chat_message(
-        app,
-        conversation_id,
-        messages,
-        resolved_mode,
-        attachments,
-    )
-    .await;
-
-    // 无论请求成功失败都结束本轮，清理取消状态。
-    crate::llm::cancellation::finish_turn(conversation_scope.as_deref());
-    if result.is_err() {
-        crate::llm::services::live_turns::mark_terminal(conversation_scope.as_deref(), "error");
-    }
-    match &result {
-        Ok(()) => info!(
-            conversation_id = %conversation_scope.as_deref().unwrap_or("__default__"),
-            "chat turn finished"
-        ),
-        Err(error) => warn!(
-            conversation_id = %conversation_scope.as_deref().unwrap_or("__default__"),
-            error = %error,
-            "chat turn failed"
-        ),
-    }
-    // 返回下游执行结果。
-    result
-}
 
 #[tauri::command]
 pub async fn get_chat_turn_status(

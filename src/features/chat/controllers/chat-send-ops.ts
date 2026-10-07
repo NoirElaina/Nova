@@ -53,7 +53,7 @@ type SendOpsDeps = {
   toolExecutionLogs: Ref<ToolExecutionEntry[]>;
   pendingUploads: Ref<PendingUploadFile[]>;
   pendingPermissionRequestId: Ref<string | null>;
-  mainView: Ref<"chat" | "hooks" | "agent" | "plugins" | "schedule" | "settings">;
+  mainView: Ref<"chat" | "hooks" | "agent" | "schedule" | "settings">;
   agentMode: Ref<AgentMode>;
   assistantResponse: Ref<string>;
   assistantReasoning: Ref<string>;

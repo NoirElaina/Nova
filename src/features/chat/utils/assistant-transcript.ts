@@ -86,53 +86,35 @@ function hasDisplayableSegment(segment: AssistantTranscriptSegment): boolean {
 }
 
 /**
- * 将相邻的 reasoning/tools 块（没有被 text 正文分隔的）合并成一组。
- *
- * 背景：当 AI 进行多轮 thinking → tool → thinking → tool 循环而没有输出正文时，
- * 流式追加会产生交替的 reasoning/tools segments。这里将它们"按正文分组"合并，
- * 使得每个"正文块"之前的所有思考和工具合并为最多一个 reasoning + 一个 tools。
+ * 合并直接相邻且同类型的段（例如两个连续的 reasoning、连续的 text、或并发调用的相邻 tools）。
+ * 绝不跨段强行将相隔的 tools 和 reasoning 打包，严格保持与流式运行期一致的真实时序。
  */
-function mergeAdjacentNonTextSegments(
+function mergeAdjacentSegments(
   segments: AssistantTranscriptSegment[],
 ): AssistantTranscriptSegment[] {
   const result: AssistantTranscriptSegment[] = [];
-
-  // 累计当前"组"里尚未遇到正文的 reasoning 文本和 toolIds
-  let pendingReasoningText = "";
-  const pendingToolIds: string[] = [];
-
-  function flushPending() {
-    if (pendingReasoningText) {
-      result.push({ type: "reasoning", text: pendingReasoningText });
-      pendingReasoningText = "";
-    }
-    if (pendingToolIds.length > 0) {
-      result.push({ type: "tools", toolIds: [...pendingToolIds] });
-      pendingToolIds.length = 0;
-    }
-  }
-
   for (const seg of segments) {
-    if (seg.type === "text") {
-      // 遇到正文：先把积累的 reasoning/tools flush 出去，再输出正文
-      flushPending();
-      result.push(seg);
-    } else if (seg.type === "reasoning") {
-      pendingReasoningText = pendingReasoningText
-        ? pendingReasoningText + "\n\n" + seg.text
-        : seg.text;
-    } else if (seg.type === "tools") {
-      for (const id of seg.toolIds) {
-        if (!pendingToolIds.includes(id)) {
-          pendingToolIds.push(id);
+    const last = result[result.length - 1];
+    if (last && last.type === seg.type) {
+      if (last.type === "reasoning" && seg.type === "reasoning") {
+        last.text = last.text ? `${last.text}\n\n${seg.text}` : seg.text;
+      } else if (last.type === "text" && seg.type === "text") {
+        last.text = last.text ? `${last.text}\n\n${seg.text}` : seg.text;
+      } else if (last.type === "tools" && seg.type === "tools") {
+        for (const id of seg.toolIds) {
+          if (!last.toolIds.includes(id)) {
+            last.toolIds.push(id);
+          }
         }
       }
+    } else {
+      result.push(
+        seg.type === "tools"
+          ? { type: "tools", toolIds: [...seg.toolIds] }
+          : { ...seg }
+      );
     }
   }
-
-  // 末尾可能还有未 flush 的 reasoning/tools
-  flushPending();
-
   return result;
 }
 
@@ -144,8 +126,8 @@ export function buildAssistantTranscriptSegments(
   } = {},
 ): AssistantTranscriptSegment[] {
   const filtered = cloneTranscriptSegments(segments).filter(hasDisplayableSegment);
-  // 先合并相邻非正文块，再补充 fallback reasoning/text
-  const next = mergeAdjacentNonTextSegments(filtered);
+  // 合并直接相邻同类型段，保持与流式期间一致的时间线结构
+  const next = mergeAdjacentSegments(filtered);
   const reasoning = options.reasoning?.trim();
   const text = options.text?.trim();
 

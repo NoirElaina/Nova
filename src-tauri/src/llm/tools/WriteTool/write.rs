@@ -1,5 +1,3 @@
-use crate::agent::tools::verifier::CodeVerifier;
-use crate::llm::tools::shared::read_state;
 use crate::llm::tools::{
     app_tool, AppExecuteFuture, ToolDisclosure, ToolFailure, ToolOutcome, ToolPermissionDescriptor, ToolRegistration,
 };
@@ -110,18 +108,9 @@ async fn execute_async(
         FileEncoding::Utf8
     };
 
-    // 静态自愈语法校验：写入磁盘前进行 AST 语法验证拦截
-    CodeVerifier::verify_file_content(&target, content)
-        .await
-        .map_err(ToolFailure::new)?;
-
     // 落盘走 atomic_write（tempfile + rename + 权限保留 + symlink 解析）。
     // 不还原行尾，模型 content 直接落盘。
     write_text_content_lf(&target, content, encoding).map_err(ToolFailure::new)?;
-
-    // 刷新读取状态，使后续 Edit/Write 可继续。
-    // 注意：record 内部会重新读 mtime，确保拿到写入后的最新 mtime。
-    read_state::record(conversation_id, &target, content);
 
     // 只回一个路径字段，且必须归一化：target 由 resolve_path 得到，
     // 在 Windows 上是 canonicalize 后的 \\?\C:\... 形式，原样返回会和

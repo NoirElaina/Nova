@@ -11,7 +11,6 @@ import PlanPanel from "./components/chat/PlanPanel.vue";
 import BackgroundJobsPanel from "./components/chat/BackgroundJobsPanel.vue";
 import HooksConfigScreen from "./components/hooks/HooksConfigScreen.vue";
 import AgentConfigScreen from "./components/agent/AgentConfigScreen.vue";
-import PluginMarketScreen from "./components/plugins/PluginMarketScreen.vue";
 import ScheduleTaskScreen from "./components/schedule/ScheduleTaskScreen.vue";
 import SettingsScreen from "./components/layout/settings/SettingsScreen.vue";
 import GlobalToastHost from "./components/layout/GlobalToastHost.vue";
@@ -466,11 +465,6 @@ onBeforeUnmount(() => {
           :conversation-id="activeConversationId || null"
           @change-main-view="handleChangeMainView"
           @launch-agent="handleLaunchAgent"
-        />
-
-        <PluginMarketScreen
-          v-else-if="mainView === 'plugins'"
-          @change-main-view="handleChangeMainView"
         />
 
         <ScheduleTaskScreen

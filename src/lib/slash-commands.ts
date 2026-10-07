@@ -1,8 +1,7 @@
 import type { WorkspaceDiff } from '../features/chat/services/chat-api';
 
 // 命令类型：local=直接执行本地动作；prompt=构造模板消息发送给 AI；skill=触发 SkillTool；
-// plugin=插件贡献的命令（promptTemplate 展开，由后端 expand_plugin_command 处理）
-export type SlashCommandType = 'local' | 'prompt' | 'skill' | 'plugin';
+export type SlashCommandType = 'local' | 'prompt' | 'skill';
 
 // 参数模式：options=从二级选项列表选择；free=自由文本参数；none=无参（选中即执行）
 export type SlashCommandArgs = 'options' | 'free' | 'none';
@@ -12,10 +11,6 @@ export type SlashCommandEntry = {
   description: string;
   type: SlashCommandType;
   args: SlashCommandArgs;
-  /** type=plugin 时：贡献该命令的插件 id（展开时传给后端）。 */
-  pluginId?: string;
-  /** type=plugin 时：命令显示标题（二级选项展示用）。 */
-  pluginTitle?: string;
 };
 
 // 二级选项：每个命令在 param 阶段展示的候选项
@@ -32,50 +27,14 @@ export const SLASH_COMMANDS: SlashCommandEntry[] = [
   { name: 'memory', description: '查看全局记忆', type: 'local', args: 'options' },
   { name: 'review', description: '审查工作区改动', type: 'prompt', args: 'options' },
   { name: 'init', description: '生成 AGENTS.md 项目说明', type: 'prompt', args: 'options' },
-  { name: 'plugin', description: '创建插件（AI 编写完整插件）', type: 'prompt', args: 'options' },
   { name: 'agent', description: '创建智能体（AI 生成配置）', type: 'prompt', args: 'options' },
 ];
 
 // /skill 二级选项中的"创建新技能"标记值（区别于已有技能名）
 export const SKILL_CREATE_VALUE = '__create__';
 
-// ---------------- 插件命令注册表（运行时合并） ----------------
-
-// 后端 list_plugin_commands 返回的插件命令条目
-export type PluginSlashCommand = {
-  pluginId: string;
-  pluginName: string;
-  name: string;
-  title: string;
-  description: string;
-};
-
-// 已启用插件的命令缓存（list_plugin_commands 拉取后写入）
-let pluginCommands: PluginSlashCommand[] = [];
-
-// 更新插件命令缓存（后端数据变化时调用）
-export const setPluginCommands = (commands: PluginSlashCommand[]) => {
-  pluginCommands = commands;
-};
-
-// 当前插件命令缓存
-export const getPluginCommands = (): PluginSlashCommand[] => pluginCommands;
-
-// 插件命令转统一的命令条目
-const pluginCommandToEntry = (command: PluginSlashCommand): SlashCommandEntry => ({
-  name: command.name,
-  description: command.description || `插件「${command.pluginName}」贡献的命令`,
-  type: 'plugin',
-  args: 'options',
-  pluginId: command.pluginId,
-  pluginTitle: command.title || command.name,
-});
-
-// 全量命令列表：内置 + 插件（命令列表阶段渲染与匹配的唯一来源）
-export const allSlashCommands = (): SlashCommandEntry[] => [
-  ...SLASH_COMMANDS,
-  ...pluginCommands.map(pluginCommandToEntry),
-];
+// 全量命令列表
+export const allSlashCommands = (): SlashCommandEntry[] => SLASH_COMMANDS;
 
 // 静态二级选项
 export const MEMORY_OPTIONS: SlashParamOption[] = [
@@ -93,18 +52,13 @@ export const INIT_OPTIONS: SlashParamOption[] = [
   { label: '精简', value: 'minimal', description: '仅保留最关键的命令和约束' },
 ];
 
-export const PLUGIN_OPTIONS: SlashParamOption[] = [
-  { label: '创建插件', value: 'create', description: '由 AI 采访需求并编写完整插件' },
-  { label: '改进现有插件', value: 'improve', description: '选择一个已安装插件进行增强' },
-];
-
 export const AGENT_OPTIONS: SlashParamOption[] = [
   { label: '创建智能体', value: 'create', description: '由 AI 采访需求并生成智能体配置' },
   { label: '从当前对话提炼', value: 'extract', description: '把本次对话的工作流沉淀为智能体' },
 ];
 
 // 解析输入中的斜杠命令。返回命令条目和参数尾部（rest）。
-// 匹配范围：内置命令 + 已启用插件命令。
+// 匹配范围：内置命令。
 export const parseSlashCommand = (text: string): { entry: SlashCommandEntry; rest: string } | null => {
   const trimmed = text.trim();
   if (!trimmed.startsWith('/')) return null;
@@ -190,32 +144,6 @@ export const formatWorkspaceDiff = (diff: WorkspaceDiff): string => {
     }
   }
   return lines.join('\n');
-};
-
-// ---------------- /plugin 创建插件模板 ----------------
-// appDataDir 由前端 invoke get_app_data_dir 注入，让 AI 知道插件根目录。
-export const buildCreatePluginPrompt = (appDataDir: string, mode: string): string => {
-  const improveSection =
-    mode === 'improve'
-      ? `## 模式：改进现有插件
-先列出 ${appDataDir}\\plugins\\ 下已安装的插件，让用户选择要改进的一个，阅读其源码后再动手。`
-      : `## 模式：新建插件`;
-
-  return `请帮我${mode === 'improve' ? '改进' : '创建'}一个 Nova 插件。
-
-## 插件位置
-插件根目录：${appDataDir}\\plugins\\（每个插件一个子目录）。
-
-## 动手前必做
-1. 若可用技能中有插件开发规范类技能（名称含 plugin / 插件开发），先用 Skill 工具加载，严格按规范编写。
-2. 否则先用 Glob/Read 查看 ${appDataDir}\\plugins\\ 下现有插件（若有），以真实结构为准：manifest 文件名、字段、贡献点（commands / promptSection 等）都以现有可运行的插件为参照，不要凭空编造格式。
-
-${improveSection}
-
-## 流程
-1. 采访我：插件要解决什么问题？贡献哪些命令或提示词片段？命令触发后展开成什么提示词？
-2. 生成完整插件文件（manifest + 贡献点内容），确保能被 Nova 直接加载。
-3. 完成后告诉我：插件 id、贡献的命令清单、如何在设置里启用验证。`;
 };
 
 // ---------------- /agent 创建智能体模板 ----------------

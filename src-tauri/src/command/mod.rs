@@ -28,8 +28,7 @@ pub mod cron;
 pub mod browser;
 // 主工作区文件树只读命令入口。
 pub mod workspace;
-// 插件系统管理命令入口（列表/启停/设置/UI 协议）。
-pub mod plugins;
+
 // 全局 token 用量统计命令入口。
 pub mod usage;
 // TodoWrite 工具状态查询命令入口。
@@ -43,7 +42,7 @@ pub mod permission_rules;
 
 use tauri::{AppHandle, Manager};
 
-/// 返回应用数据目录绝对路径（斜杠命令创建插件/智能体/技能时注入 prompt，
+/// 返回应用数据目录绝对路径（斜杠命令创建智能体/技能时注入 prompt，
 /// 让 AI 知道往哪里写文件）。
 #[tauri::command]
 pub fn get_app_data_dir(app: AppHandle) -> Result<String, String> {

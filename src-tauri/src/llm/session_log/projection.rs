@@ -56,6 +56,117 @@ fn extract_reasoning(message: &crate::llm::types::Message) -> Option<String> {
     }
 }
 
+/// 严格按消息中内容块（ContentBlock）的原生时间序列追加/合并至 transcriptSegments，
+/// 确保流式进行中与历史重载后的时间线段落顺序 100% 像素级对齐，
+/// 杜绝在同一条消息内强行把工具块挪到正文前面导致的错位与合并。
+fn append_message_blocks_to_segments(
+    message: &crate::llm::types::Message,
+    segs: &mut Vec<Value>,
+) {
+    match &message.content {
+        Content::Text(text) => {
+            if !text.trim().is_empty() {
+                if let Some(last) = segs.last_mut() {
+                    if last.get("type").and_then(|t| t.as_str()) == Some("text") {
+                        if let Some(prev) = last.get("text").and_then(|t| t.as_str()) {
+                            let merged = if prev.trim().is_empty() {
+                                text.clone()
+                            } else {
+                                format!("{}\n\n{}", prev, text)
+                            };
+                            last["text"] = serde_json::json!(merged);
+                            return;
+                        }
+                    }
+                }
+                segs.push(serde_json::json!({
+                    "type": "text",
+                    "text": text,
+                }));
+            }
+        }
+        Content::Blocks(blocks) => {
+            for block in blocks {
+                match block {
+                    ContentBlock::Thinking { thinking, .. } => {
+                        if !thinking.trim().is_empty() {
+                            if let Some(last) = segs.last_mut() {
+                                if last.get("type").and_then(|t| t.as_str()) == Some("reasoning") {
+                                    if let Some(prev) = last.get("text").and_then(|t| t.as_str()) {
+                                        let merged = if prev.trim().is_empty() {
+                                            thinking.clone()
+                                        } else {
+                                            format!("{}\n\n{}", prev, thinking)
+                                        };
+                                        last["text"] = serde_json::json!(merged);
+                                        continue;
+                                    }
+                                }
+                            }
+                            segs.push(serde_json::json!({
+                                "type": "reasoning",
+                                "text": thinking,
+                            }));
+                        }
+                    }
+                    ContentBlock::Text { text } => {
+                        if !text.trim().is_empty() {
+                            if let Some(last) = segs.last_mut() {
+                                if last.get("type").and_then(|t| t.as_str()) == Some("text") {
+                                    if let Some(prev) = last.get("text").and_then(|t| t.as_str()) {
+                                        let merged = if prev.trim().is_empty() {
+                                            text.clone()
+                                        } else {
+                                            format!("{}\n\n{}", prev, text)
+                                        };
+                                        last["text"] = serde_json::json!(merged);
+                                        continue;
+                                    }
+                                }
+                            }
+                            segs.push(serde_json::json!({
+                                "type": "text",
+                                "text": text,
+                            }));
+                        }
+                    }
+                    ContentBlock::ToolUse { id, .. } => {
+                        let call_val = serde_json::json!(id);
+                        let already_exists = segs.iter().any(|seg| {
+                            seg.get("type").and_then(|t| t.as_str()) == Some("tools")
+                                && seg
+                                    .get("toolIds")
+                                    .and_then(|v| v.as_array())
+                                    .is_some_and(|arr| arr.contains(&call_val))
+                        });
+                        if already_exists {
+                            continue;
+                        }
+
+                        let mut appended = false;
+                        if let Some(last) = segs.last_mut() {
+                            if last.get("type").and_then(|t| t.as_str()) == Some("tools") {
+                                if let Some(arr) = last.get_mut("toolIds").and_then(|v| v.as_array_mut()) {
+                                    arr.push(call_val.clone());
+                                    appended = true;
+                                }
+                            }
+                        }
+                        if !appended {
+                            segs.push(serde_json::json!({
+                                "type": "tools",
+                                "toolIds": [id],
+                            }));
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+    }
+}
+
+
 /// 投影 UI 聊天历史：仅 UserMessage / AssistantMessage 进消息流，
 /// id 用事件 seq（稳定唯一，前端作消息键使用）。
 ///
@@ -147,20 +258,7 @@ pub fn render_ui_history(events: &[StoredEvent]) -> Vec<HistoryMessage> {
                         .cloned()
                         .unwrap_or_default();
 
-                    if let Some(ref r) = reasoning {
-                        if !r.trim().is_empty() {
-                            segs.push(serde_json::json!({
-                                "type": "reasoning",
-                                "text": r,
-                            }));
-                        }
-                    }
-                    if !content.trim().is_empty() {
-                        segs.push(serde_json::json!({
-                            "type": "text",
-                            "text": content,
-                        }));
-                    }
+                    append_message_blocks_to_segments(message, &mut segs);
                     cost_val["transcriptSegments"] = serde_json::json!(segs);
                     last.cost = Some(cost_val);
                 } else {
@@ -173,37 +271,10 @@ pub fn render_ui_history(events: &[StoredEvent]) -> Vec<HistoryMessage> {
 
                     if !content.trim().is_empty() || reasoning.is_some() || has_tools {
                         let mut initial_segments = Vec::new();
-                        if let Some(ref r) = reasoning {
-                            if !r.trim().is_empty() {
-                                initial_segments.push(serde_json::json!({
-                                    "type": "reasoning",
-                                    "text": r,
-                                }));
-                            }
-                        }
-                        if let crate::llm::types::Content::Blocks(blocks) = &message.content {
-                            let mut tool_ids = Vec::new();
-                            for block in blocks {
-                                if let crate::llm::types::ContentBlock::ToolUse { id, .. } = block {
-                                    tool_ids.push(id.clone());
-                                }
-                            }
-                            if !tool_ids.is_empty() {
-                                initial_segments.push(serde_json::json!({
-                                    "type": "tools",
-                                    "toolIds": tool_ids,
-                                }));
-                            }
-                        }
-                        if !content.trim().is_empty() {
-                            initial_segments.push(serde_json::json!({
-                                "type": "text",
-                                "text": content,
-                            }));
-                        }
+                        append_message_blocks_to_segments(message, &mut initial_segments);
 
                         let mut initial_cost = cost.clone().unwrap_or_else(|| serde_json::json!({}));
-                        if !initial_segments.is_empty() && initial_cost.get("transcriptSegments").is_none() {
+                        if !initial_segments.is_empty() {
                             initial_cost["transcriptSegments"] = serde_json::json!(initial_segments);
                         }
 
@@ -274,6 +345,42 @@ pub fn render_ui_history(events: &[StoredEvent]) -> Vec<HistoryMessage> {
             _ => {}
         }
     }
+
+    // 为每个包含工具段的 assistant 消息自动组装持久化 toolSummary 快照，
+    // 保证历史重载、脱机以及组件隔离状态下工具卡片 100% 可恢复。
+    let tool_logs = render_tool_logs(events);
+    for msg in out.iter_mut().filter(|m| m.role == "assistant") {
+        if let Some(ref mut cost_val) = msg.cost {
+            if let Some(segs) = cost_val.get("transcriptSegments").and_then(|v| v.as_array()) {
+                let mut referenced_tool_ids = std::collections::HashSet::new();
+                for seg in segs {
+                    if seg.get("type").and_then(|t| t.as_str()) == Some("tools") {
+                        if let Some(ids) = seg.get("toolIds").and_then(|v| v.as_array()) {
+                            for id in ids {
+                                if let Some(id_str) = id.as_str() {
+                                    referenced_tool_ids.insert(id_str.to_string());
+                                }
+                            }
+                        }
+                    }
+                }
+                if !referenced_tool_ids.is_empty() {
+                    let matching_entries: Vec<&HistoryToolExecution> = tool_logs
+                        .iter()
+                        .filter(|t| referenced_tool_ids.contains(&t.id))
+                        .collect();
+                    if !matching_entries.is_empty() {
+                        let snapshot = serde_json::json!({
+                            "totalCalls": matching_entries.len(),
+                            "entries": matching_entries,
+                        });
+                        cost_val["toolSummary"] = snapshot;
+                    }
+                }
+            }
+        }
+    }
+
     out
 }
 
@@ -444,3 +551,92 @@ pub fn render_turn_traces(events: &[StoredEvent]) -> Vec<TurnTrace> {
 
     traces
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::llm::types::{Content, ContentBlock, Message, Role};
+
+    #[test]
+    fn test_chronological_block_ordering_preserves_separate_tools() {
+        let mut segs = Vec::new();
+
+        // Round 1: Model thinks then calls LoadTool
+        let msg1 = Message {
+            role: Role::Assistant,
+            content: Content::Blocks(vec![
+                ContentBlock::Thinking {
+                    thinking: "thinking 1".to_string(),
+                    signature: String::new(),
+                },
+                ContentBlock::ToolUse {
+                    id: "call_load_tool".to_string(),
+                    name: "LoadTool".to_string(),
+                    input: serde_json::json!({}),
+                },
+            ]),
+        };
+        append_message_blocks_to_segments(&msg1, &mut segs);
+
+        assert_eq!(segs.len(), 2);
+        assert_eq!(segs[0]["type"], "reasoning");
+        assert_eq!(segs[1]["type"], "tools");
+        assert_eq!(segs[1]["toolIds"], serde_json::json!(["call_load_tool"]));
+
+        // Round 2: Model outputs text FIRST, then calls Bash 1
+        let msg2 = Message {
+            role: Role::Assistant,
+            content: Content::Blocks(vec![
+                ContentBlock::Text {
+                    text: "我将先调用工具".to_string(),
+                },
+                ContentBlock::ToolUse {
+                    id: "call_bash_1".to_string(),
+                    name: "Bash".to_string(),
+                    input: serde_json::json!({}),
+                },
+            ]),
+        };
+        append_message_blocks_to_segments(&msg2, &mut segs);
+
+        // Crucial invariant: tools from round 1 and round 2 MUST NOT be merged,
+        // because round 2 output text in between!
+        assert_eq!(segs.len(), 4);
+        assert_eq!(segs[0]["type"], "reasoning");
+        assert_eq!(segs[1]["type"], "tools");
+        assert_eq!(segs[1]["toolIds"], serde_json::json!(["call_load_tool"]));
+        assert_eq!(segs[2]["type"], "text");
+        assert_eq!(segs[2]["text"], "我将先调用工具");
+        assert_eq!(segs[3]["type"], "tools");
+        assert_eq!(segs[3]["toolIds"], serde_json::json!(["call_bash_1"]));
+    }
+
+    #[test]
+    fn test_consecutive_parallel_tools_merged_together() {
+        let mut segs = Vec::new();
+
+        // Parallel tools in a single step (no text in between)
+        let msg = Message {
+            role: Role::Assistant,
+            content: Content::Blocks(vec![
+                ContentBlock::ToolUse {
+                    id: "call_1".to_string(),
+                    name: "tool1".to_string(),
+                    input: serde_json::json!({}),
+                },
+                ContentBlock::ToolUse {
+                    id: "call_2".to_string(),
+                    name: "tool2".to_string(),
+                    input: serde_json::json!({}),
+                },
+            ]),
+        };
+        append_message_blocks_to_segments(&msg, &mut segs);
+
+        assert_eq!(segs.len(), 1);
+        assert_eq!(segs[0]["type"], "tools");
+        assert_eq!(segs[0]["toolIds"], serde_json::json!(["call_1", "call_2"]));
+    }
+}
+
+

@@ -208,7 +208,7 @@ pub struct ToolCallResult {
 fn find_tool_definition(name: &str) -> Option<Tool> {
     registered_tools().iter().find_map(|entry| {
         let tool = (entry.tool)();
-        if tool.name == name {
+        if tool.name.eq_ignore_ascii_case(name) {
             Some(tool)
         } else {
             None
@@ -219,7 +219,7 @@ fn find_tool_definition(name: &str) -> Option<Tool> {
 fn find_registered_tool(name: &str) -> Option<ToolRegistration> {
     registered_tools().iter().copied().find(|entry| {
         let tool = (entry.tool)();
-        tool.name == name
+        tool.name.eq_ignore_ascii_case(name)
     })
 }
 
@@ -656,21 +656,13 @@ fn disclosure_for_tool(name: &str) -> Option<ToolDisclosure> {
 /// 渐进披露入口工具名（系统提示词与目录过滤共用）。
 pub(crate) const LOAD_TOOL_NAME: &str = "LoadTool";
 
-/// 内置工具名清单（插件工具名冲突校验用）。
-pub fn builtin_tool_names() -> Vec<String> {
-    registered_tools()
-        .iter()
-        .map(|entry| (entry.tool)().name)
-        .collect()
-}
-
 /// 按会话挂载的智能体套件过滤后的工具列表。
 /// 会话未挂载 bundle 或 bundle 工具清单为 null 时等价于全部工具；
-/// provider adapter 一律走这里。启用插件的工具在此合并进同一工具池。
-/// 子代理会话（`:sub:` 派生 ID）：只暴露只读白名单，不含插件/MCP/Task，
+/// provider adapter 一律走这里。
+/// 子代理会话（`:sub:` 派生 ID）：只暴露只读白名单，不含 MCP/Task，
 /// 防止子代理获得任何修改能力或递归派生。
 /// 渐进式披露开启时：内置工具仅保留 Core + 本会话已加载的 Deferred；
-/// MCP/插件工具不参与披露，全量保留。
+/// MCP 工具不参与披露，全量保留。
 pub fn get_available_tools_for_agent(app: &AppHandle, conversation_id: Option<&str>) -> Vec<Tool> {
     // 分支问答会话（`:branch:` 派生 ID）：不暴露任何工具，纯文本问答，
     // 防止分支获得工作区修改能力。
@@ -689,14 +681,12 @@ pub fn get_available_tools_for_agent(app: &AppHandle, conversation_id: Option<&s
     }
 
     let builtin = get_available_tools();
-    let plugin_tools = crate::llm::services::plugins::plugin_tools(app);
 
-    // 智能体套件过滤：内置 + 插件工具同一口径。
+    // 智能体套件过滤：内置工具口径。
     let bundle_filtered: Vec<Tool> = match crate::llm::services::agent_bundles::active_bundle(app, conversation_id) {
-        None => builtin.into_iter().chain(plugin_tools).collect(),
+        None => builtin,
         Some(bundle) => builtin
             .into_iter()
-            .chain(plugin_tools)
             .filter(|tool| bundle.is_tool_enabled(&tool.name))
             .collect(),
     };
@@ -720,7 +710,7 @@ pub fn get_available_tools_for_agent(app: &AppHandle, conversation_id: Option<&s
                 // 内置工具：Core 始终可见，Deferred 需本会话已加载。
                 Some(ToolDisclosure::Core) => true,
                 Some(ToolDisclosure::Deferred) => disclosed.contains(&tool.name),
-                // 非内置（MCP 动态/插件）：不参与披露。
+                // 非内置（MCP 动态）：不参与披露。
                 None => true,
             }
         })
@@ -728,14 +718,13 @@ pub fn get_available_tools_for_agent(app: &AppHandle, conversation_id: Option<&s
 }
 
 /// 前端智能体配置页展示的工具目录（含 always_on 标记）。
-/// 启用插件的工具一并纳入，智能体套件可像内置工具一样勾选。
 /// 默认专属工具（memory）不进目录：专用智能体不允许写全局记忆。
 pub fn configurable_tool_catalog(
     app: &AppHandle,
 ) -> Result<Vec<crate::command::agent_config::ConfigurableTool>, String> {
     // 目录与当前激活 bundle 无关：配置的是任意 bundle 的勾选清单。
     let _ = app;
-    let mut catalog: Vec<crate::command::agent_config::ConfigurableTool> = registered_tools()
+    let catalog: Vec<crate::command::agent_config::ConfigurableTool> = registered_tools()
         .iter()
         .filter(|entry| {
             let name = (entry.tool)().name;
@@ -755,14 +744,6 @@ pub fn configurable_tool_catalog(
         })
         .collect();
 
-    for plugin_tool in crate::llm::services::plugins::plugin_tools(app) {
-        catalog.push(crate::command::agent_config::ConfigurableTool {
-            description: plugin_tool.description.clone(),
-            name: plugin_tool.name.clone(),
-            read_only: false,
-            always_on: false,
-        });
-    }
     Ok(catalog)
 }
 
@@ -774,7 +755,7 @@ pub(crate) async fn execute_tool_with_app(
     input: Value,
 ) -> ToolExecResult {
     // 子代理执行期白名单强制：即使模型尝试按名调用非白名单工具
-    //（含 MCP 动态分发、插件工具），也在此直接拒绝。与工具列表过滤互为双保险。
+    //（含 MCP 动态分发），也在此直接拒绝。与工具列表过滤互为双保险。
     if crate::llm::services::subagent::is_subagent_conversation(conversation_id)
         && !crate::llm::services::subagent::SUBAGENT_ALLOWED_TOOLS.contains(&name)
     {
@@ -815,15 +796,6 @@ pub(crate) async fn execute_tool_with_app(
 
     if let Some(output) =
         crate::llm::services::mcp_tools::execute_dynamic_with_app(app, name, input.clone()).await
-    {
-        return output;
-    }
-
-    // 插件工具（boa JS 沙箱）：按注册表分发，与内置/MCP 工具同一执行链。
-    // conversation_id 透传给沙箱（宿主数据桥 nova.session.* 上下文）。
-    if let Some(output) =
-        crate::llm::services::plugins::execute_plugin_tool(app, conversation_id, name, input.clone())
-            .await
     {
         return output;
     }

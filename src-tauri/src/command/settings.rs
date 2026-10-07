@@ -160,9 +160,6 @@ pub struct AppSettings {
     #[serde(default = "default_enable_app_log")]
     // 是否记录统一软件日志到文件。
     pub enable_app_log: bool,
-    #[serde(default)]
-    // 被停用的插件 id 列表。
-    pub disabled_plugins: Vec<String>,
     #[serde(default = "default_approval_policy")]
     // 审批策略：always_ask / on_request / never。
     pub approval_policy: String,
@@ -185,7 +182,6 @@ impl Default for AppSettings {
             ui_language: default_ui_language(),
             ui_theme: default_ui_theme(),
             enable_app_log: default_enable_app_log(),
-            disabled_plugins: Vec::new(),
             approval_policy: default_approval_policy(),
             progressive_tool_disclosure: default_progressive_tool_disclosure(),
         }

@@ -9,7 +9,6 @@
 
 /// 清理指定会话的全部进程内缓存；`None` 表示"清除全部会话"路径，全量清空。
 pub fn clear_conversation_caches(conversation_id: Option<&str>) {
-    crate::llm::tools::shared::read_state::clear_conversation(conversation_id);
     crate::llm::tools::shared::todo_state::global_registry().clear_session(conversation_id);
     crate::command::workspace::evict_conversation_workspace(conversation_id);
     crate::llm::services::agent_bundles::evict_conversation_agent_cache(conversation_id);

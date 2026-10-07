@@ -11,7 +11,6 @@ pub mod mcp_tools;
 pub mod memory_dir;
 pub mod model_fetch;
 pub mod plan_files;
-pub mod plugins;
 pub mod prompt_cache_break;
 pub mod rag;
 pub mod search;

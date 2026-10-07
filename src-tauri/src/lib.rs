@@ -60,21 +60,8 @@ pub fn run() {
                 crate::command::cron::run_scheduler_loop(scheduler_handle).await;
             });
 
-            // 启动时扫描插件目录，预热注册表缓存（工具目录立即可用）。
-            let plugins_handle = app.handle().clone();
-            let broken = crate::llm::services::plugins::refresh_registry(&plugins_handle);
-            for info in broken {
-                warn!(plugin = %info.id, error = ?info.error, "plugin failed to load at startup");
-            }
-
-            // 启动插件目录监听：开发插件改 main.js 免重启、手动增删目录自动刷新。
-            crate::llm::services::plugins::start_plugins_watcher(app.handle().clone());
-
             info!("application setup completed");
             Ok(())
-        })
-        .register_uri_scheme_protocol("nova-plugin", |app, request| {
-            crate::command::plugins::handle_plugin_uri(app, request)
         })
         .invoke_handler(tauri::generate_handler![
             greet,
@@ -178,18 +165,6 @@ pub fn run() {
             command::usage::get_conversation_usage,
             command::todo::list_todos,
             command::plan::get_conversation_plan,
-            command::plugins::list_plugins,
-            command::plugins::set_plugin_enabled,
-            command::plugins::get_plugin_settings,
-            command::plugins::set_plugin_settings,
-            command::plugins::call_plugin_tool,
-            command::plugins::open_plugins_dir,
-            command::plugins::install_plugin_from_zip,
-            command::plugins::uninstall_plugin,
-            command::plugins::check_plugin_update,
-            command::plugins::update_plugin,
-            command::plugins::list_plugin_commands,
-            command::plugins::expand_plugin_command,
             command::hooks::get_hooks_toml,
             command::hooks::get_hooks_structured,
             command::hooks::save_hooks_toml,

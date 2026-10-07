@@ -1,26 +1,21 @@
 import { ref, computed, nextTick, type Ref, type ComputedRef } from 'vue';
 import { invoke } from '@tauri-apps/api/core';
-import { listen, type UnlistenFn } from '@tauri-apps/api/event';
 import { emitToast, emitErrorToast } from '../../../lib/toast';
 import { getWorkspaceDiff } from '../../../features/chat/services/chat-api';
 import {
   MEMORY_OPTIONS,
   REVIEW_OPTIONS,
   INIT_OPTIONS,
-  PLUGIN_OPTIONS,
   AGENT_OPTIONS,
   SKILL_CREATE_VALUE,
   buildInitPrompt,
   buildReviewPrompt,
-  buildCreatePluginPrompt,
   buildCreateAgentPrompt,
   buildCreateSkillPrompt,
   formatWorkspaceDiff,
   allSlashCommands,
-  setPluginCommands,
   type SlashCommandEntry,
   type SlashParamOption,
-  type PluginSlashCommand,
 } from '../../../lib/slash-commands';
 
 export interface SkillSummary {
@@ -44,7 +39,7 @@ export function useSlashCommands(options: UseSlashCommandsOptions) {
   const {
     currentInput,
     textareaRef,
-    conversationId,
+    conversationId: _conversationId,
     compacting,
     onSend,
     onCompact,
@@ -67,8 +62,6 @@ export function useSlashCommands(options: UseSlashCommandsOptions) {
 
   const usageStats = ref<{ total_tokens: number; total_cost_usd: string; favorite_model?: string } | null>(null);
   const usageLoading = ref(false);
-
-  let pluginCommandsUnlisten: UnlistenFn | null = null;
 
   const loadSkills = async (): Promise<SkillSummary[]> => {
     try {
@@ -119,21 +112,8 @@ export function useSlashCommands(options: UseSlashCommandsOptions) {
     if (cmd === 'memory') return MEMORY_OPTIONS;
     if (cmd === 'review') return REVIEW_OPTIONS;
     if (cmd === 'init') return INIT_OPTIONS;
-    if (cmd === 'plugin') return PLUGIN_OPTIONS;
     if (cmd === 'agent') return AGENT_OPTIONS;
 
-    const pluginEntry = allSlashCommands().find(
-      (entry) => entry.name === cmd && entry.type === 'plugin',
-    );
-    if (pluginEntry) {
-      return [
-        {
-          label: pluginEntry.pluginTitle || pluginEntry.name,
-          value: '',
-          description: pluginEntry.description,
-        },
-      ];
-    }
     return [];
   });
 
@@ -280,12 +260,6 @@ export function useSlashCommands(options: UseSlashCommandsOptions) {
       onSend(buildInitPrompt(rest));
       return true;
     }
-    if (entry.name === 'plugin') {
-      const appDataDir = await fetchAppDataDir();
-      if (!appDataDir) return true;
-      onSend(buildCreatePluginPrompt(appDataDir, rest));
-      return true;
-    }
     if (entry.name === 'agent') {
       const appDataDir = await fetchAppDataDir();
       if (!appDataDir) return true;
@@ -311,22 +285,6 @@ export function useSlashCommands(options: UseSlashCommandsOptions) {
     return false;
   };
 
-  const executePluginCommand = async (entry: SlashCommandEntry, rest: string): Promise<boolean> => {
-    if (!entry.pluginId) return false;
-    try {
-      const prompt = await invoke<string>('expand_plugin_command', {
-        pluginId: entry.pluginId,
-        name: entry.name,
-        conversationId: conversationId.value ?? null,
-      });
-      const extra = rest.trim();
-      onSend(extra ? `${prompt}\n\n${extra}` : prompt);
-    } catch (error) {
-      emitErrorToast('执行插件命令', error);
-    }
-    return true;
-  };
-
   const executeSlashCommand = async (parsed: { entry: SlashCommandEntry; rest: string }): Promise<boolean> => {
     const { entry, rest } = parsed;
     if (entry.type === 'local') {
@@ -334,9 +292,6 @@ export function useSlashCommands(options: UseSlashCommandsOptions) {
     }
     if (entry.type === 'prompt') {
       return executePromptCommand(entry, rest);
-    }
-    if (entry.type === 'plugin') {
-      return executePluginCommand(entry, rest);
     }
     if (entry.type === 'skill') {
       if (!rest) return false;
@@ -418,31 +373,6 @@ export function useSlashCommands(options: UseSlashCommandsOptions) {
     return false;
   };
 
-  const loadPluginCommands = async () => {
-    try {
-      const commands = await invoke<PluginSlashCommand[]>('list_plugin_commands');
-      setPluginCommands(commands || []);
-    } catch (error) {
-      console.error('Failed to load plugin commands:', error);
-    }
-  };
-
-  const initSlashEvents = () => {
-    void loadPluginCommands();
-    void listen('plugins-changed', () => {
-      void loadPluginCommands();
-    }).then((unlisten) => {
-      pluginCommandsUnlisten = unlisten;
-    });
-  };
-
-  const cleanupSlashEvents = () => {
-    if (pluginCommandsUnlisten) {
-      pluginCommandsUnlisten();
-      pluginCommandsUnlisten = null;
-    }
-  };
-
   return {
     slashPhase,
     slashQuery,
@@ -461,7 +391,5 @@ export function useSlashCommands(options: UseSlashCommandsOptions) {
     selectSlashOption,
     handleSlashKeydown,
     executeSlashCommand,
-    initSlashEvents,
-    cleanupSlashEvents,
   };
 }

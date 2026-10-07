@@ -355,7 +355,8 @@ export function clearActiveRuntimeState(active: ActiveRuntimeRefs) {
   active.currentInputTokens.value = 0;
   active.currentOutputTokens.value = 0;
   active.currentTurnId.value = null;
-  active.toolExecutionLogs.value = [];
+  // 保留当前会话的工具执行历史（toolExecutionLogs），供已完成气泡中的工具卡片渲染使用；
+  // 仅清空当前回合暂存的工具 ID 队列及输入名称映射。
   active.currentTurnToolIds.value = [];
   active.toolInputById.clear();
   active.toolNameById.clear();

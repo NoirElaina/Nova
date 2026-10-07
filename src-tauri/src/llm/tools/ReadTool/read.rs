@@ -1,4 +1,3 @@
-use crate::llm::tools::shared::read_state;
 use crate::llm::tools::{
     app_tool, AppExecuteFuture, ToolDisclosure, ToolFailure, ToolOutcome, ToolPermissionDescriptor,
     ToolRegistration,
@@ -449,12 +448,7 @@ async fn execute_async(
         return Ok(ToolOutcome::text(note).with_additional_messages(vec![image_message]));
     }
 
-    let (formatted, content) = read_text(&path, limit, offset).map_err(ToolFailure::new)?;
-
-    // 仅在完整读取（无 offset/limit）时记录读取状态，作为 Edit/Write 的「先读后改」凭据。
-    if offset.is_none() && limit.is_none() {
-        read_state::record(conversation_id, &path, &content);
-    }
+    let (formatted, _content) = read_text(&path, limit, offset).map_err(ToolFailure::new)?;
 
     Ok(ToolOutcome::text(formatted))
 }

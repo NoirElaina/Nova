@@ -9,7 +9,7 @@ interface ConversationItem {
   pinnedAt?: number | null;
 }
 
-type MainView = "chat" | "hooks" | "agent" | "plugins" | "schedule" | "settings";
+type MainView = "chat" | "hooks" | "agent" | "schedule" | "settings";
 type ConversationExportFormat = "json" | "pdf";
 
 const props = defineProps<{
@@ -319,17 +319,6 @@ onBeforeUnmount(() => {
       >
         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" class="text-[#64748b]"><circle cx="11" cy="11" r="8" stroke="currentColor" stroke-width="1.8"/><path d="M21 21l-4.35-4.35" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>
         <span>搜索</span>
-      </Button>
-      <Button
-        variant="ghost"
-        :class="[sidebarItemClass, props.activeMainView === 'plugins' ? sidebarItemActiveClass : sidebarItemIdleClass]"
-        @click="emit('change-main-view', 'plugins')"
-      >
-        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" class="text-[#64748b]">
-          <path d="M12 3l2.4 4.9 5.4.8-3.9 3.8.9 5.4L12 15.4l-4.8 2.5.9-5.4L4.2 8.7l5.4-.8L12 3Z" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/>
-          <path d="M19.5 14.5l.9 1.9 2 .3-1.5 1.4.4 2-1.8-1-1.8 1 .4-2-1.5-1.4 2-.3.9-1.9Z" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round"/>
-        </svg>
-        <span>插件</span>
       </Button>
 
       <div v-if="isSearchOpen" class="px-0.5 pb-1 pt-1">

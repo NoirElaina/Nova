@@ -137,8 +137,6 @@ const {
   selectSlashOption,
   handleSlashKeydown,
   executeSlashCommand,
-  initSlashEvents,
-  cleanupSlashEvents,
 } = useSlashCommands({
   currentInput,
   textareaRef,
@@ -297,7 +295,6 @@ const handleDocumentClick = (e: MouseEvent) => {
 onMounted(() => {
   void initSubagentEvents();
   loadSettings();
-  initSlashEvents();
   window.addEventListener('settings-updated', handleSettingsUpdate);
   document.addEventListener('click', handleDocumentClick, true);
   nextTick(() => {
@@ -309,7 +306,6 @@ onMounted(() => {
 onUnmounted(() => {
   window.removeEventListener('settings-updated', handleSettingsUpdate);
   document.removeEventListener('click', handleDocumentClick, true);
-  cleanupSlashEvents();
 });
 
 defineExpose({

@@ -5,7 +5,7 @@
 //   系统提示词分支 / 权限拦截）通过 is_subagent_conversation 识别；
 // - 工具白名单（只读）：Read / Grep / Glob / WebSearch / WebFetch。
 //   请求构建时过滤工具列表 + 执行时拦截非白名单调用，双层强制，
-//   天然排除插件、MCP、写工具、Task 自身（防递归）和 ask_user_question；
+//   天然排除 MCP、写工具、Task 自身（防递归）和 ask_user_question；
 // - 用量归并父会话记账（runner 在此直接以父 ID 调 log_token_usage）；
 // - 并发由 Task 工具的 read_only 标记走现有批量执行器，另有信号量限制
 //   同时运行的子代理数（防止一轮起飞过多烧钱）；

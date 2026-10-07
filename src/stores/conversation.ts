@@ -9,7 +9,7 @@ import {
   type SessionFileMeta,
 } from "@/features/chat/services/chat-api";
 
-export type MainView = "chat" | "hooks" | "agent" | "plugins" | "schedule" | "settings";
+export type MainView = "chat" | "hooks" | "agent" | "schedule" | "settings";
 
 export const useConversationStore = defineStore("conversation", () => {
   const conversations = ref<ConversationMeta[]>([]);

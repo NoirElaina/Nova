@@ -2,7 +2,7 @@
 //!
 //! 设计定位：轻量、纯问答、不持久化。
 //! - 派生 scope id 形如 `{parent}:branch:{branchId}`，仿子代理 `:sub:` 约定；
-//! - 系统提示词为专属精简版（system_prompt.rs 早退），不注入工程协议/Memory/插件段；
+//! - 系统提示词为专属精简版（system_prompt.rs 早退），不注入工程协议/Memory 段；
 //! - 工具列表为空（tools/mod.rs 早退），模型无法执行任何工具；
 //! - 不走 turn snapshot / hooks / 历史落库，分支历史完全由前端内存态持有，
 //!   每轮请求全量上传；

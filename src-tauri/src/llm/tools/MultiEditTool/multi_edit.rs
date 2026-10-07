@@ -1,10 +1,8 @@
 use crate::agent::tools::edit::{execute_exact_multi_edit, EditOperation};
-use crate::llm::tools::shared::read_state;
 use crate::llm::tools::{
     app_tool, AppExecuteFuture, ToolDisclosure, ToolFailure, ToolOutcome, ToolPermissionDescriptor, ToolRegistration,
 };
 use crate::llm::types::Tool;
-use crate::llm::utils::file_io::{read_file_meta, resolve_tool_path};
 use serde_json::{json, Value};
 use tauri::AppHandle;
 
@@ -15,7 +13,7 @@ pub(super) fn registration() -> ToolRegistration {
 pub fn tool() -> Tool {
     Tool {
         name: "MultiEdit".into(),
-        description: r#"Performs multiple exact string replacements on the same file in a single atomic call. The default choice whenever a change touches 2+ places in one file — one round trip instead of several Edit calls, and the file is read and written once.
+        description: r#"Performs multiple precise string replacements on the same file in a single atomic call. The default choice whenever a change touches 2+ places in one file — one round trip instead of several Edit calls, and the file is read and written once.
 
 ## When to choose which editing tool
 - One change in one file → Edit.
@@ -26,8 +24,8 @@ pub fn tool() -> Tool {
 - Pass an ordered list of edits; each edit is `{ old_string, new_string, replace_all? }`.
 - Edits apply sequentially in array order — each edit sees the result of the previous one. If edit #1 changes a line, edit #2's `old_string` must match the NEW content, not the original.
 - Each `old_string` must be unique in the current file state (or set `replace_all: true` for that edit). When ambiguous, include surrounding context lines to disambiguate.
-- Base `old_string` values on the file's actual current content, ideally from a recent Read.
-- The matcher is fault-tolerant (line-trimmed, block-anchor, whitespace-normalized, indentation-flexible, escape-normalized, in that order), but prefer exact matches — fuzzy matching is a safety net, not a shortcut.
+- Base `old_string` values on the file's actual current content from a recent Read.
+- The matcher attempts exact match first, falling back to line-trimmed matching (ignoring trailing whitespace differences).
 - `file_path` must be an absolute path to an existing file.
 
 ## Line-number prefix (critical)
@@ -35,7 +33,7 @@ Read tool output prefixes each line with: spaces + line number + tab (e.g. `    
 
 ## Atomicity and failure recovery
 - If any edit fails, the entire batch is aborted and NO changes are written — a failed MultiEdit leaves the file untouched.
-- On failure, re-Read the file, find which `old_string` went stale, fix the whole batch, and resubmit it. Do not blindly resubmit the identical failed batch.
+- On failure, the error response identifies which edit failed and displays the CLOSEST matching block in the file with line numbers to help you correct the batch.
 - After three consecutive failures on the same file, stop patching: rewrite the whole file with Write instead.
 
 ## Common mistakes
@@ -128,7 +126,7 @@ fn parse_edit(value: &Value, idx: usize) -> Result<EditOperation, ToolFailure> {
 
 async fn execute_async(
     _app: &AppHandle,
-    conversation_id: Option<&str>,
+    _conversation_id: Option<&str>,
     input: Value,
 ) -> Result<ToolOutcome, ToolFailure> {
     let file_path = input
@@ -153,11 +151,6 @@ async fn execute_async(
     let res = execute_exact_multi_edit(file_path, &edits)
         .await
         .map_err(ToolFailure::new)?;
-
-    let target = resolve_tool_path(file_path).map_err(ToolFailure::invalid_input)?;
-    if let Ok((content, _)) = read_file_meta(&target) {
-        read_state::record(conversation_id, &target, &content);
-    }
 
     Ok(ToolOutcome::json(res))
 }

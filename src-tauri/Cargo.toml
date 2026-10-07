@@ -61,7 +61,6 @@ portable-pty = "0.9.0"
 url = "2.5.8"
 urlencoding = "2"
 croner = "3.0.1"
-zip = "2"
 tiktoken-rs = "0.12.0"
 once_cell = "1.21.4"
 tempfile = "3"
@@ -73,11 +72,4 @@ tree-sitter-bash = "0.23"
 # libc 用于 Unix 上的 setsid（创建新进程组）和 killpg（杀整个进程组）系统调用。
 # 避免通过 fork+exec 调用 kill 命令，直接系统调用更可靠且无额外进程开销。
 libc = "0.2"
-# boa_engine 是纯 Rust 实现的 JS 引擎，用于插件沙箱：执行用户插件的 main.js，
-# 无 C 依赖（相比 QuickJS 绑定免去 Windows C 工具链问题），且 boa_gc 保证
-# 沙箱内对象无法逃逸到 Rust 侧。
-boa_engine = "0.21"
-# notify 用于监听插件目录变化：开发插件时改 main.js 即时生效、
-# 手动增删插件目录自动刷新注册表并推送前端事件。
-notify = "8"
 syn = { version = "2", default-features = false, features = ["parsing", "full"] }

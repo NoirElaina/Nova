@@ -497,7 +497,6 @@ export function useChatController() {
           assistantReasoning.value = "";
           assistantSegments.value = [];
           if (activeConversationId.value) {
-            await conversationOps.loadConversation(activeConversationId.value);
             void getConversationUsage(activeConversationId.value)
               .then((usage) => {
                 if (activeConversationId.value) {

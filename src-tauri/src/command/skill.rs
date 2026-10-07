@@ -65,7 +65,7 @@ pub fn delete_skill(app: AppHandle, path: String) -> Result<(), String> {
 
         std::fs::remove_dir_all(&skill_dir).map_err(|e| format!("删除技能目录失败: {}", e))?;
 
-        // 从停用名单移除该技能名（对标插件卸载的清理逻辑：残留无害但顺手清干净）。
+        // 从停用名单移除该技能名（残留无害但顺手清干净）。
         if let Some(name) = skill_name {
             if let Ok(mut settings) = crate::command::settings::load_settings(&app) {
                 let target = crate::llm::services::skills::normalize_skill_name(&name);

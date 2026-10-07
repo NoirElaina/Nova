@@ -269,7 +269,8 @@ impl AgentEngine {
             let mut has_error = false;
 
             for executed in executed_calls {
-                if executed.name == "write" || executed.name == "edit" || executed.name == "multi_edit" {
+                let name_lower = executed.name.to_lowercase();
+                if name_lower == "write" || name_lower == "edit" || name_lower == "multiedit" || name_lower == "multi_edit" {
                     has_write_or_edit = true;
                 }
                 if executed.is_error {

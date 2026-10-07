@@ -364,7 +364,7 @@ fn resolve_file_path(raw: &str) -> Result<PathBuf, String> {
 
 async fn execute_async(
     _app: &AppHandle,
-    conversation_id: Option<&str>,
+    _conversation_id: Option<&str>,
     input: Value,
 ) -> Result<ToolOutcome, ToolFailure> {
     let file_path = input

@@ -1,8 +1,8 @@
 <script setup lang="ts">
 import { nextTick, onMounted, onUnmounted, ref, watch, computed } from 'vue';
 import { invoke } from '@tauri-apps/api/core';
-import type { PendingUploadFile } from '../../lib/chat-types';
-import { parseSlashCommand } from '../../lib/slash-commands';
+import type { PendingUploadFile } from '@/lib/chat-types';
+import { parseSlashCommand } from '@/lib/slash-commands';
 import { useConversationStore } from '@/stores/conversation';
 import { useAgentSessionStore } from '@/stores/agentSession';
 import { useComposerStore } from '@/stores/composer';
@@ -12,7 +12,7 @@ import ContextUsageIndicator from './ContextUsageIndicator.vue';
 import AttachmentChipList from './AttachmentChipList.vue';
 import SlashCommandMenu from './SlashCommandMenu.vue';
 import MemoryPopover from './MemoryPopover.vue';
-import { initSubagentEvents } from '../../features/chat/services/subagents';
+import { initSubagentEvents } from '@/features/chat/services/subagents';
 import { useFileInput } from './composer/useFileInput';
 import { useSlashCommands, type SkillSummary } from './composer/useSlashCommands';
 import InputPlusMenu from './composer/InputPlusMenu.vue';
@@ -44,10 +44,18 @@ const contextTokens = computed(() => sessionStore.activeSession.contextTokens);
 const conversationUsage = computed(() => sessionStore.activeSession.conversationUsage);
 const pendingUploads = computed(() => composerStore.pendingUploads);
 
-const currentInput = ref("");
+const currentInput = computed({
+  get: () => composerStore.currentInput,
+  set: (val: string) => composerStore.setInput(val),
+});
 const textareaRef = ref<HTMLTextAreaElement | null>(null);
 const plusButtonRef = ref<HTMLElement | null>(null);
-const isComposing = ref(false);
+const isComposing = computed({
+  get: () => composerStore.isComposing,
+  set: (val: boolean) => {
+    composerStore.isComposing = val;
+  },
+});
 
 // + 按钮菜单状态：null=关闭，'main'=主视图，'skill'=技能视图
 const plusMenuView = ref<null | 'main' | 'skill'>(null);

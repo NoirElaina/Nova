@@ -98,3 +98,19 @@ pub struct Tool {
     pub description: String,
     pub input_schema: Value,
 }
+
+/// 流式事件传输载荷（供分支与子代理侧边栏流式事件复用）
+#[derive(Debug, Serialize, Clone)]
+pub struct ChatMessageEvent {
+    pub r#type: String,
+    pub text: Option<String>,
+    pub tool_use_id: Option<String>,
+    pub tool_use_name: Option<String>,
+    pub tool_use_input: Option<String>,
+    pub tool_result: Option<String>,
+    pub tool_is_error: Option<bool>,
+    pub token_usage: Option<u32>,
+    pub stop_reason: Option<String>,
+    pub turn_state: Option<String>,
+    pub conversation_id: Option<String>,
+}

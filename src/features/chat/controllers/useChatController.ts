@@ -1,199 +1,72 @@
-import { computed, onMounted, onUnmounted, ref } from "vue";
-import { storeToRefs } from "pinia";
+import { ref, computed, onMounted, onUnmounted } from "vue";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { emitToast, NOVA_CHAT_ERROR_EVENT, type ChatErrorPayload } from "../../../lib/toast";
-import {
-  getConversationUsage,
-} from "../services/chat-api";
 import type {
   AgentMode,
-  AssistantTranscriptSegment,
-  ChatMessage,
-  ContextCompactSummary,
-  ConversationUsageSummary,
-  NeedsUserInputPayload,
-  PendingUploadFile,
-  ToolExecutionEntry,
-  TurnCost,
+  ConversationMeta,
   ContextUsage,
 } from "../../../lib/chat-types";
 import {
-  type LiveTurnStage,
+  getConversationUsage,
+  type SessionFileMeta,
+} from "../services/chat-api";
+import {
   type ChatScreenHandle,
-  type ConversationTurnRuntimeState,
   type MainView,
   type ScheduledTaskTriggerEvent,
 } from "./chat-controller-types";
-import {
-  resetPendingPromptState,
-} from "./chat-runtime-state";
 import { createConversationOperations } from "./chat-conversation-ops";
 import { createSendOperations } from "./chat-send-ops";
 import { setupAgentEventListener } from "../../agent/agent-listener";
 import { useConversationStore } from "@/stores/conversation";
 import { useAgentSessionStore } from "@/stores/agentSession";
+import { useComposerStore } from "@/stores/composer";
 
 export function useChatController() {
   const conversationStore = useConversationStore();
   const agentSessionStore = useAgentSessionStore();
+  const composerStore = useComposerStore();
 
-  const {
-    conversations,
-    activeConversationId,
-    activeWorkspacePath,
-    conversationFiles,
-    isSidebarOpen,
-    mainView,
-    pendingAgentBundleId,
-  } = storeToRefs(conversationStore);
-
-  const messages = computed<ChatMessage[]>({
-    get: () => agentSessionStore.activeSession.messages,
-    set: (val: ChatMessage[]) => {
-      agentSessionStore.activeSession.messages = val;
-    },
-  });
-  const isGenerating = computed<boolean>({
-    get: () => agentSessionStore.activeSession.isGenerating,
-    set: (val: boolean) => {
-      agentSessionStore.activeSession.isGenerating = val;
-    },
-  });
-  const currentStage = computed<LiveTurnStage>({
-    get: () => agentSessionStore.activeSession.currentStage,
-    set: (val: LiveTurnStage) => {
-      agentSessionStore.activeSession.currentStage = val;
-    },
-  });
-  const assistantResponse = computed<string>({
-    get: () => agentSessionStore.activeSession.assistantResponse,
+  const activeConversationId = computed({
+    get: () => conversationStore.activeConversationId,
     set: (val: string) => {
-      agentSessionStore.activeSession.assistantResponse = val;
-    },
-  });
-  const assistantReasoning = computed<string>({
-    get: () => agentSessionStore.activeSession.assistantReasoning,
-    set: (val: string) => {
-      agentSessionStore.activeSession.assistantReasoning = val;
-    },
-  });
-  const assistantSegments = computed<AssistantTranscriptSegment[]>({
-    get: () => agentSessionStore.activeSession.assistantSegments,
-    set: (val: AssistantTranscriptSegment[]) => {
-      agentSessionStore.activeSession.assistantSegments = val;
-    },
-  });
-  const toolExecutionLogs = computed<ToolExecutionEntry[]>({
-    get: () => agentSessionStore.activeSession.toolExecutionLogs,
-    set: (val: ToolExecutionEntry[]) => {
-      agentSessionStore.activeSession.toolExecutionLogs = val;
+      conversationStore.activeConversationId = val;
     },
   });
 
-  const assistantTokenUsage = computed<number | undefined>({
-    get: () => agentSessionStore.activeSession.assistantTokenUsage,
-    set: (val) => {
-      agentSessionStore.activeSession.assistantTokenUsage = val;
-    },
-  });
-  const assistantTurnCost = computed<TurnCost | undefined>({
-    get: () => agentSessionStore.activeSession.assistantTurnCost,
-    set: (val) => {
-      agentSessionStore.activeSession.assistantTurnCost = val;
-    },
-  });
-  const pendingUploads = ref<PendingUploadFile[]>([]);
-  const pendingQuestion = computed<NeedsUserInputPayload | null>({
-    get: () => agentSessionStore.activeSession.pendingQuestion,
-    set: (val) => {
-      agentSessionStore.activeSession.pendingQuestion = val;
-    },
-  });
-  const pendingPermissionRequestId = computed<string | null>({
-    get: () => agentSessionStore.activeSession.pendingPermissionRequestId,
-    set: (val) => {
-      agentSessionStore.activeSession.pendingPermissionRequestId = val;
-    },
-  });
-  const conversationUsage = computed<ConversationUsageSummary | null>({
-    get: () => agentSessionStore.activeSession.conversationUsage,
-    set: (val) => {
-      agentSessionStore.activeSession.conversationUsage = val;
-    },
-  });
-  const currentToolStartedAt = ref<number | null>(null);
-  const currentToolCalls = ref(0);
-  const currentToolDurationMs = ref(0);
-  const currentContextUsage = computed<ContextUsage | undefined>({
-    get: () => agentSessionStore.activeSession.contextUsage,
-    set: (val) => {
-      agentSessionStore.activeSession.contextUsage = val;
-    },
-  });
-  const currentContextCompacts = computed<ContextCompactSummary[]>({
-    get: () => agentSessionStore.activeSession.contextCompacts,
-    set: (val) => {
-      agentSessionStore.activeSession.contextCompacts = val;
-    },
-  });
-  const currentContextTokens = computed<number>({
-    get: () => agentSessionStore.activeSession.contextTokens,
-    set: (val) => {
-      agentSessionStore.activeSession.contextTokens = val;
-    },
-  });
-  const currentInputTokens = ref(0);
-  const currentOutputTokens = ref(0);
-  const currentTurnId = ref<string | null>(null);
-  const currentTurnStartedAt = computed<number | null>({
-    get: () => agentSessionStore.activeSession.currentTurnStartedAt,
-    set: (val) => {
-      agentSessionStore.activeSession.currentTurnStartedAt = val;
-    },
-  });
+  const activeSession = computed(() => agentSessionStore.activeSession);
+  const messages = computed(() => activeSession.value.messages);
+  const isGenerating = computed(() => activeSession.value.isGenerating);
+  const currentStage = computed(() => activeSession.value.currentStage);
+  const assistantResponse = computed(() => activeSession.value.assistantResponse);
+  const assistantReasoning = computed(() => activeSession.value.assistantReasoning);
+  const assistantSegments = computed(() => activeSession.value.assistantSegments);
+  const assistantTokenUsage = computed(() => activeSession.value.assistantTokenUsage);
+  const assistantTurnCost = computed(() => activeSession.value.assistantTurnCost);
+  const toolExecutionLogs = computed(() => activeSession.value.toolExecutionLogs);
+  const pendingQuestion = computed(() => activeSession.value.pendingQuestion);
+  const pendingPermissionRequestId = computed(() => activeSession.value.pendingPermissionRequestId);
+  const conversationUsage = computed(() => activeSession.value.conversationUsage);
+  const currentTurnStartedAt = computed(() => activeSession.value.currentTurnStartedAt);
+  const currentContextUsage = computed(() => activeSession.value.contextUsage);
+  const currentContextCompacts = computed(() => activeSession.value.contextCompacts);
+  const currentContextTokens = computed(() => activeSession.value.contextTokens);
+  const chatError = computed(() => activeSession.value.chatError);
+
+  const activeWorkspacePath = ref<string>("");
+  const conversations = ref<ConversationMeta[]>([]);
+  const conversationFiles = ref<SessionFileMeta[]>([]);
+  const pendingUploads = computed(() => composerStore.pendingUploads);
+  const pendingAgentBundleId = ref<string | null>(null);
+  const mainView = ref<MainView>("chat");
+  const isSidebarOpen = ref(true);
   const agentMode = ref<AgentMode>("agent");
-  const isCreatingNewChat = ref(false);
-  const currentTurnToolIds = ref<string[]>([]);
   const chatScreenRef = ref<ChatScreenHandle | null>(null);
-  /** AI 主流程错误的临时展示状态：不进消息数组，只保留最新一条，下次发送时清空。 */
-  const chatError = computed<string | null>({
-    get: () => agentSessionStore.activeSession.chatError,
-    set: (val) => {
-      agentSessionStore.activeSession.chatError = val;
-    },
-  });
-  const toolInputById = new Map<string, string>();
-  const toolNameById = new Map<string, string>();
-  const runtimeStateByConversation = new Map<string, ConversationTurnRuntimeState>();
-  const activeRuntimeRefs = {
-    isGenerating,
-    currentStage,
-    assistantResponse,
-    assistantReasoning,
-    assistantSegments,
-    assistantTokenUsage,
-    assistantTurnCost,
-    pendingQuestion,
-    pendingPermissionRequestId,
-    currentTurnStartedAt,
-    currentToolStartedAt,
-    currentToolCalls,
-    currentToolDurationMs,
-    currentContextUsage,
-    currentContextCompacts,
-    currentContextTokens,
-    currentInputTokens,
-    currentOutputTokens,
-    currentTurnId,
-    toolExecutionLogs,
-    currentTurnToolIds,
-    toolInputById,
-    toolNameById,
-  };
+
   const currentTurnToolExecutionLogs = computed(() => {
-    const ids = new Set(currentTurnToolIds.value);
-    return toolExecutionLogs.value.filter((entry) => ids.has(entry.id));
+    return toolExecutionLogs.value;
   });
+
   const latestPersistedPromptTokens = computed(() => {
     for (let index = messages.value.length - 1; index >= 0; index -= 1) {
       const message = messages.value[index];
@@ -203,6 +76,7 @@ export function useChatController() {
     }
     return 0;
   });
+
   const displayContextUsage = computed<ContextUsage | undefined>(() => {
     if ((currentContextUsage.value?.usedTokens ?? 0) > 0) {
       return currentContextUsage.value;
@@ -215,6 +89,7 @@ export function useChatController() {
     }
     return undefined;
   });
+
   const displayContextTokens = computed(() => {
     if (currentContextTokens.value > 0) {
       return currentContextTokens.value;
@@ -246,22 +121,18 @@ export function useChatController() {
         summary: string;
       }>("manual_compact_conversation", { conversationId });
       await conversationOps.loadConversation(conversationId);
-      currentContextCompacts.value = [];
-      currentContextTokens.value = outcome.afterTokens;
-      currentContextUsage.value = {
-        usedTokens: outcome.afterTokens,
-        source: "actual",
-      };
+      activeSession.value.contextTokens = outcome.afterTokens;
       emitToast({
         variant: "success",
-        source: "manual-compact",
-        message: `对话已压缩，节省 ${outcome.savedTokens} tokens`,
+        source: "compact",
+        message: `上下文已压缩：节省约 ${outcome.savedTokens} tokens (${outcome.beforeTokens} -> ${outcome.afterTokens})`,
       });
-    } catch (err) {
+    } catch (err: unknown) {
+      const rawMsg = err instanceof Error ? err.message : String(err);
       emitToast({
         variant: "error",
-        source: "manual-compact",
-        message: `压缩失败: ${err}`,
+        source: "compact",
+        message: `压缩失败: ${rawMsg}`,
       });
     } finally {
       isCompacting.value = false;
@@ -272,36 +143,10 @@ export function useChatController() {
     activeConversationId,
     activeWorkspacePath,
     agentMode,
-    isGenerating,
-    isCreatingNewChat,
     conversations,
-    messages,
-    toolExecutionLogs,
     conversationFiles,
-    pendingUploads,
-    conversationUsage,
-    assistantResponse,
-    assistantReasoning,
-    assistantSegments,
-    assistantTokenUsage,
-    assistantTurnCost,
-    runtimeStateByConversation,
-    activeRuntimeRefs,
     hasConversationContent,
   });
-
-  function resetBackgroundRuntimeState(
-    _conversationId: string,
-    state: ConversationTurnRuntimeState,
-    _preservePendingPrompt?: boolean,
-  ) {
-    state.isGenerating = false;
-    state.currentStage = "processing";
-    state.assistantResponse = "";
-    state.assistantReasoning = "";
-    state.assistantSegments = [];
-    state.toolExecutionLogs = [];
-  }
 
   async function finalizeActiveTurnOnError() {
     const content = assistantResponse.value.trim();
@@ -321,54 +166,28 @@ export function useChatController() {
 
   const sendOps = createSendOperations({
     activeConversationId,
-    isGenerating,
-    currentStage,
-    messages,
-    toolExecutionLogs,
-    pendingUploads,
-    pendingPermissionRequestId,
     mainView,
     agentMode,
-    assistantResponse,
-    assistantReasoning,
-    assistantSegments,
-    assistantTokenUsage,
-    assistantTurnCost,
-    currentToolStartedAt,
-    currentToolCalls,
-    currentToolDurationMs,
-    currentContextUsage,
-    currentContextCompacts,
-    currentContextTokens,
-    currentInputTokens,
-    currentOutputTokens,
-    currentTurnId,
-    currentTurnStartedAt,
     pendingAgentBundleId,
     chatScreenRef,
-    runtimeStateByConversation,
-    activeRuntimeRefs,
     createNewConversation: conversationOps.createNewConversation,
     persistMessage: conversationOps.persistMessage,
     refreshConversationFiles: conversationOps.refreshConversationFiles,
-    resetBackgroundRuntimeState,
     finalizeActiveTurnOnError,
   });
 
   async function handleNewChat() {
     mainView.value = "chat";
-    chatError.value = null;
+    agentSessionStore.dismissChatError();
     pendingAgentBundleId.value = null;
-    resetPendingPromptState(activeRuntimeRefs);
     await conversationOps.handleNewChat();
   }
 
   /** 智能体页点「启用」：不建会话，只暂存智能体并回到欢迎页；首次发送时才创建对话并挂载。 */
   async function handleLaunchAgentConversation(bundleId: string) {
     mainView.value = "chat";
-    chatError.value = null;
+    agentSessionStore.dismissChatError();
     pendingAgentBundleId.value = bundleId;
-    resetPendingPromptState(activeRuntimeRefs);
     await conversationOps.handleNewChat();
   }
 
@@ -378,38 +197,37 @@ export function useChatController() {
 
   async function handleSelectConversation(id: string) {
     mainView.value = "chat";
-    chatError.value = null;
+    agentSessionStore.dismissChatError();
     pendingAgentBundleId.value = null;
     await conversationOps.handleSelectConversation(id);
   }
 
   async function handleDeleteConversation(id: string) {
-    chatError.value = null;
+    agentSessionStore.dismissChatError();
     await conversationOps.handleDeleteConversation(id);
   }
 
   async function handleSendMessageWithErrorReset(userText: string) {
-    chatError.value = null;
+    agentSessionStore.dismissChatError();
     await sendOps.handleSendMessage(userText);
   }
 
   async function handleEditMessageWithErrorReset(
     payload: { index: number; content: string; id?: string },
   ) {
-    chatError.value = null;
+    agentSessionStore.dismissChatError();
     await sendOps.handleEditMessage(payload);
   }
 
   function dismissChatError() {
-    chatError.value = null;
+    agentSessionStore.dismissChatError();
   }
 
   function onChatErrorEvent(event: Event) {
     const detail = (event as CustomEvent<ChatErrorPayload>).detail;
     const message = detail?.message?.trim();
     if (!message) return;
-    // 一个会话同一时刻只保留最新一条错误，新错误直接覆盖旧错误。
-    chatError.value = message;
+    agentSessionStore.activeSession.chatError = message;
     void chatScreenRef.value?.scrollLiveAssistantIntoView();
   }
 
@@ -452,19 +270,19 @@ export function useChatController() {
           agentSessionStore.handleTurnStarted(_turnId, _convId);
         },
         onStateChanged: (_turnId, state) => {
-          agentSessionStore.handleStateChanged(state);
+          agentSessionStore.handleStateChanged(state, _turnId);
         },
-        onThinkingDelta: (delta) => {
-          agentSessionStore.handleThinkingDelta(delta);
+        onThinkingDelta: (delta, turnId) => {
+          agentSessionStore.handleThinkingDelta(delta, turnId);
         },
-        onTextDelta: (delta) => {
-          agentSessionStore.handleTextDelta(delta);
+        onTextDelta: (delta, turnId) => {
+          agentSessionStore.handleTextDelta(delta, turnId);
         },
-        onToolRequested: (callId, toolName, args) => {
-          agentSessionStore.handleToolRequested(callId, toolName, args);
+        onToolRequested: (callId, toolName, args, turnId) => {
+          agentSessionStore.handleToolRequested(callId, toolName, args, turnId);
         },
-        onToolCompleted: (callId, _toolName, output, isError, _durationMs) => {
-          agentSessionStore.handleToolCompleted(callId, _toolName, output, isError, _durationMs);
+        onToolCompleted: (callId, _toolName, output, isError, _durationMs, turnId) => {
+          agentSessionStore.handleToolCompleted(callId, _toolName, output, isError, _durationMs, turnId);
         },
         onVerificationStarted: (target) => {
           emitToast({
@@ -482,33 +300,26 @@ export function useChatController() {
             });
           }
         },
-        onTokenUsage: (usage) => {
-          agentSessionStore.handleTokenUsage(usage);
-          assistantTokenUsage.value = usage.input + usage.output;
+        onTokenUsage: (usage, turnId) => {
+          agentSessionStore.handleTokenUsage(usage, turnId);
         },
-        onPermissionRequested: (_turnId, requestId, toolName, payload) => {
-          agentSessionStore.handlePermissionRequested(requestId, toolName, payload);
-          pendingPermissionRequestId.value = requestId;
+        onPermissionRequested: (turnId, requestId, toolName, payload) => {
+          agentSessionStore.handlePermissionRequested(requestId, toolName, payload, turnId);
         },
         onTurnFinished: async (_turnId, _stopReason) => {
-          await agentSessionStore.handleTurnFinished(_turnId, _stopReason);
-          isGenerating.value = false;
-          assistantResponse.value = "";
-          assistantReasoning.value = "";
-          assistantSegments.value = [];
+          await agentSessionStore.handleTurnFinished(_turnId, _stopReason, _turnId);
           if (activeConversationId.value) {
             void getConversationUsage(activeConversationId.value)
               .then((usage) => {
                 if (activeConversationId.value) {
-                  conversationUsage.value = usage;
+                  agentSessionStore.activeSession.conversationUsage = usage;
                 }
               })
               .catch(() => {});
           }
         },
-        onError: (error) => {
-          agentSessionStore.handleTurnError(error);
-          isGenerating.value = false;
+        onError: (error, turnId) => {
+          agentSessionStore.handleTurnError(error, turnId);
           emitToast({
             variant: "error",
             source: "agent",
@@ -520,17 +331,16 @@ export function useChatController() {
       console.error("Failed to setup modern agent event listener:", err);
     }
 
-    window.addEventListener("history-cleared", conversationOps.handleHistoryCleared as EventListener);
+    window.addEventListener("history-cleared", conversationOps.handleHistoryCleared as unknown as EventListener);
     window.addEventListener(NOVA_CHAT_ERROR_EVENT, onChatErrorEvent as EventListener);
   });
 
   onUnmounted(() => {
     if (unlistenScheduledTaskTrigger) unlistenScheduledTaskTrigger();
     if (unlistenAgentEvent) unlistenAgentEvent();
-    window.removeEventListener("history-cleared", conversationOps.handleHistoryCleared as EventListener);
+    window.removeEventListener("history-cleared", conversationOps.handleHistoryCleared as unknown as EventListener);
     window.removeEventListener(NOVA_CHAT_ERROR_EVENT, onChatErrorEvent as EventListener);
   });
-
 
   return {
     messages,

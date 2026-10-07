@@ -1,60 +1,29 @@
-import type { Ref } from "vue";
+import { ref, type Ref } from "vue";
 import { emitToast } from "../../../lib/toast";
 import type {
   AgentMode,
-  AssistantTranscriptSegment,
   ChatMessage,
   ConversationMeta,
-  ConversationUsageSummary,
-  PendingUploadFile,
-  ToolExecutionEntry,
-  TurnCost,
 } from "../../../lib/chat-types";
 import {
-  ackChatTurnStatus,
   createConversation,
   deleteConversation,
-  getChatTurnStatus,
   listSessionFiles,
   listConversations,
   setConversationPinned,
   type SessionFileMeta,
 } from "../services/chat-api";
 import { clearBrowserTabState } from "../../browser/browser-tab-state";
-import type { ConversationTurnRuntimeState } from "./chat-controller-types";
-import type { ActiveRuntimeRefs } from "./chat-runtime-state";
-import {
-  clearActiveRuntimeState,
-  hasAnyGeneratingConversations,
-  isSpecificConversationGenerating,
-  normalizeConversationId,
-  restoreRuntimeState,
-  stashRuntimeState,
-} from "./chat-runtime-state";
-import { buildAssistantTranscriptSegments } from "../utils/assistant-transcript";
-import { clearAllSubagents, clearSubagents } from "../services/subagents";
+import { clearSubagents } from "../services/subagents";
 import { useAgentSessionStore } from "@/stores/agentSession";
+import { useComposerStore } from "@/stores/composer";
 
-type ConversationOpsDeps = {
+export type ConversationOpsDeps = {
   activeConversationId: Ref<string>;
-  /** 当前工作区路径（前端状态）。无活跃会话时由 EnvironmentBar 修改；有活跃会话时反映该会话的工作区。 */
   activeWorkspacePath: Ref<string>;
   agentMode: Ref<AgentMode>;
-  isGenerating: Ref<boolean>;
-  isCreatingNewChat: Ref<boolean>;
   conversations: Ref<ConversationMeta[]>;
-  messages: Ref<ChatMessage[]>;
-  toolExecutionLogs: Ref<ToolExecutionEntry[]>;
   conversationFiles: Ref<SessionFileMeta[]>;
-  pendingUploads: Ref<PendingUploadFile[]>;
-  conversationUsage: Ref<ConversationUsageSummary | null>;
-  assistantResponse: Ref<string>;
-  assistantReasoning: Ref<string>;
-  assistantSegments: Ref<AssistantTranscriptSegment[]>;
-  assistantTokenUsage: Ref<number | undefined>;
-  assistantTurnCost: Ref<TurnCost | undefined>;
-  runtimeStateByConversation: Map<string, ConversationTurnRuntimeState>;
-  activeRuntimeRefs: ActiveRuntimeRefs;
   hasConversationContent: () => boolean;
 };
 
@@ -62,24 +31,14 @@ export function createConversationOperations(deps: ConversationOpsDeps) {
   const {
     activeConversationId,
     activeWorkspacePath,
-    agentMode,
-    isGenerating,
-    isCreatingNewChat,
     conversations,
-    messages,
-    toolExecutionLogs,
     conversationFiles,
-    pendingUploads,
-    conversationUsage,
-    assistantResponse,
-    assistantReasoning,
-    assistantSegments,
-    assistantTokenUsage,
-    assistantTurnCost,
-    runtimeStateByConversation,
-    activeRuntimeRefs,
     hasConversationContent,
   } = deps;
+
+  const sessionStore = useAgentSessionStore();
+  const composerStore = useComposerStore();
+  const isCreatingNewChat = ref(false);
 
   async function refreshConversationFiles(conversationId: string) {
     if (!conversationId) {
@@ -99,131 +58,6 @@ export function createConversationOperations(deps: ConversationOpsDeps) {
     await refreshConversationFiles(activeConversationId.value);
   }
 
-  function clearLiveTurnRuntime() {
-    isGenerating.value = false;
-    activeRuntimeRefs.currentStage.value = "processing";
-    assistantResponse.value = "";
-    assistantReasoning.value = "";
-    assistantSegments.value = [];
-    assistantTokenUsage.value = undefined;
-    assistantTurnCost.value = undefined;
-    activeRuntimeRefs.pendingQuestion.value = null;
-    activeRuntimeRefs.pendingPermissionRequestId.value = null;
-    activeRuntimeRefs.currentTurnStartedAt.value = null;
-    activeRuntimeRefs.currentToolStartedAt.value = null;
-    activeRuntimeRefs.currentToolCalls.value = 0;
-    activeRuntimeRefs.currentToolDurationMs.value = 0;
-    activeRuntimeRefs.currentContextUsage.value = undefined;
-    activeRuntimeRefs.currentContextCompacts.value = [];
-    activeRuntimeRefs.currentContextTokens.value = 0;
-    activeRuntimeRefs.currentInputTokens.value = 0;
-    activeRuntimeRefs.currentOutputTokens.value = 0;
-    activeRuntimeRefs.currentTurnId.value = null;
-    activeRuntimeRefs.currentTurnToolIds.value = [];
-    activeRuntimeRefs.toolInputById.clear();
-    activeRuntimeRefs.toolNameById.clear();
-  }
-
-  function isDuplicateAssistantMessage(content: string, reasoning: string) {
-    // 只比最后一条不够：报错回合的增量落库可能以纯 thinking/工具消息收尾（投影后被过滤），
-    // 或部分输出只是快照全文的子串。回扫尾部几条 assistant 消息，字段双向包含即视为重复，
-    // 避免快照恢复把已落盘内容再追加一遍。
-    const normalizedContent = content.trim();
-    const normalizedReasoning = reasoning.trim();
-    const overlaps = (a: string, b: string) =>
-      a.length > 0 && b.length > 0 && (a.includes(b) || b.includes(a));
-    const start = Math.max(0, messages.value.length - 5);
-    for (let index = messages.value.length - 1; index >= start; index -= 1) {
-      const candidate = messages.value[index];
-      if (candidate?.role !== "assistant") {
-        continue;
-      }
-      const existingContent = (candidate.content ?? "").trim();
-      const existingReasoning = (candidate.reasoning ?? "").trim();
-      if (existingContent === normalizedContent || overlaps(existingContent, normalizedContent)) return true;
-      if (normalizedReasoning && existingReasoning && (existingReasoning === normalizedReasoning || overlaps(existingReasoning, normalizedReasoning))) return true;
-    }
-    return false;
-  }
-
-  async function restoreLiveTurnStatus(conversationId: string) {
-    const liveTurn = await getChatTurnStatus(conversationId);
-    if (!liveTurn) {
-      return;
-    }
-
-    const response = liveTurn.assistantResponse ?? "";
-    const reasoning = liveTurn.assistantReasoning ?? "";
-    if (liveTurn.state === "running") {
-      isGenerating.value = true;
-      activeRuntimeRefs.currentStage.value = "processing";
-      // 计时起点用后端 live_turns 的 startedAt，页面刷新后仍从真实起点继续走
-      activeRuntimeRefs.currentTurnStartedAt.value =
-        liveTurn.startedAt > 0 ? liveTurn.startedAt : Date.now();
-      assistantResponse.value = response;
-      assistantReasoning.value = reasoning;
-      assistantSegments.value = buildAssistantTranscriptSegments(undefined, {
-        reasoning,
-        text: response,
-      });
-      assistantTokenUsage.value = undefined;
-      assistantTurnCost.value = undefined;
-      const lastUserIdx = messages.value.map((m) => m.role).lastIndexOf("user");
-      if (lastUserIdx >= 0 && lastUserIdx < messages.value.length - 1) {
-        messages.value = messages.value.slice(0, lastUserIdx + 1);
-      }
-      return;
-    }
-
-    const finalText = response.trim();
-    const finalReasoning = reasoning.trim();
-    if (finalText || finalReasoning) {
-      const content =
-        liveTurn.state === "cancelled"
-          ? finalText
-            ? `${finalText}\n\n（已取消当前轮）`
-            : "已取消当前轮。"
-          : finalText || "（本轮没有返回可显示的文本内容）";
-
-      const lastUserIdx = messages.value.map((m) => m.role).lastIndexOf("user");
-      const hasAssistantAfterLastUser =
-        lastUserIdx >= 0 &&
-        messages.value.slice(lastUserIdx + 1).some((m) => m.role === "assistant");
-
-      if (!hasAssistantAfterLastUser && !isDuplicateAssistantMessage(content, finalReasoning)) {
-        const assistantMessage: ChatMessage = {
-          id: `assistant-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
-          role: "assistant",
-          content,
-          reasoning: finalReasoning || undefined,
-          transcriptSegments: buildAssistantTranscriptSegments(undefined, {
-            reasoning: finalReasoning,
-            text: finalText,
-          }),
-          createdAt: Date.now(),
-        };
-        messages.value = [...messages.value, assistantMessage];
-        await persistMessage(assistantMessage, conversationId);
-      }
-    }
-
-    clearLiveTurnRuntime();
-    await ackChatTurnStatus(conversationId);
-  }
-
-  /**
-   * 基于后端 live_turns 快照对当前会话再执行一次轮次恢复。
-   * 快照在页面刷新期间也由后端持续累积，始终是完整数据；
-   * 用于启动加载完成后覆盖加载窗口内错过的流式增量。
-   */
-  async function restoreActiveLiveTurn() {
-    const conversationId = activeConversationId.value;
-    if (!conversationId) {
-      return;
-    }
-    await restoreLiveTurnStatus(conversationId);
-  }
-
   async function refreshConversations() {
     try {
       const items = await listConversations();
@@ -238,7 +72,7 @@ export function createConversationOperations(deps: ConversationOpsDeps) {
   async function createNewConversation(seedTitle?: string): Promise<string | null> {
     try {
       const conv = await createConversation(seedTitle, activeWorkspacePath.value || undefined);
-      activeWorkspacePath.value = conv.workspacePath || '';
+      activeWorkspacePath.value = conv.workspacePath || "";
       await refreshConversations();
       return conv.id;
     } catch (err) {
@@ -247,9 +81,6 @@ export function createConversationOperations(deps: ConversationOpsDeps) {
     }
   }
 
-  // 会话加载序号：快速切换会话时多个 loadConversation 会并发飞行，
-  // 后发先至的旧结果会覆盖新会话的 UI（消息/记忆/文件串台），
-  // 每个 await 之后都校验序号，过期的加载直接放弃写入。
   let conversationLoadSequence = 0;
 
   async function loadConversation(id: string) {
@@ -263,46 +94,24 @@ export function createConversationOperations(deps: ConversationOpsDeps) {
       loadToken !== conversationLoadSequence ||
       activeConversationId.value !== targetConversationId;
 
-    const previousConversationId = activeConversationId.value;
-    if (previousConversationId && previousConversationId !== targetConversationId) {
-      stashRuntimeState(
-        runtimeStateByConversation,
-        previousConversationId,
-        activeRuntimeRefs,
-        agentMode.value,
-      );
-    }
-
     activeConversationId.value = targetConversationId;
     const conversationMeta = conversations.value.find((c) => c.id === targetConversationId);
-    activeWorkspacePath.value = conversationMeta?.workspacePath || '';
-    pendingUploads.value = [];
+    activeWorkspacePath.value = conversationMeta?.workspacePath || "";
+    composerStore.clearUploads();
 
     try {
-      const sessionStore = useAgentSessionStore();
       await sessionStore.loadConversationMessages(targetConversationId);
-      if (isStaleLoad()) return;
-
-      restoreRuntimeState(
-        runtimeStateByConversation,
-        targetConversationId,
-        activeRuntimeRefs,
-      );
-      await restoreLiveTurnStatus(targetConversationId);
       if (isStaleLoad()) return;
 
       await refreshConversationFiles(targetConversationId);
     } catch (err) {
       console.error("Failed to load conversation messages:", err);
       if (isStaleLoad()) return;
-      messages.value = [];
-      clearActiveRuntimeState(activeRuntimeRefs);
       conversationFiles.value = [];
     }
   }
 
   async function persistMessage(_message?: ChatMessage, _conversationId = activeConversationId.value) {
-    // 消息本体及元数据（cost / token_usage）由后端 AgentEngine 原子持久化，前端仅需触发会话列表刷新。
     try {
       await refreshConversations();
     } catch (err) {
@@ -311,38 +120,23 @@ export function createConversationOperations(deps: ConversationOpsDeps) {
   }
 
   function clearAllSessionState() {
-    clearActiveRuntimeState(activeRuntimeRefs);
     activeConversationId.value = "";
     activeWorkspacePath.value = "";
-    messages.value = [];
-    pendingUploads.value = [];
+    composerStore.clearUploads();
     conversationFiles.value = [];
-    conversationUsage.value = null;
-    toolExecutionLogs.value = [];
+    sessionStore.clearActiveTurnRuntime();
   }
 
   async function handleNewChat() {
     if (isCreatingNewChat.value) return;
 
-    // 已在空白欢迎界面：直接确保会话态彻底清理，无需重复创建流程
-    if (!activeConversationId.value && messages.value.length === 0 && !hasConversationContent() && !assistantResponse.value.trim()) {
+    if (!activeConversationId.value && sessionStore.activeSession.messages.length === 0 && !hasConversationContent()) {
       clearAllSessionState();
       return;
     }
 
-    const previousConversationId = activeConversationId.value;
-    if (previousConversationId) {
-      stashRuntimeState(
-        runtimeStateByConversation,
-        previousConversationId,
-        activeRuntimeRefs,
-        agentMode.value,
-      );
-    }
-
     isCreatingNewChat.value = true;
     try {
-      // 不立即创建会话；让用户在欢迎页选择工作区，发消息时再创建。
       clearAllSessionState();
     } finally {
       isCreatingNewChat.value = false;
@@ -356,14 +150,7 @@ export function createConversationOperations(deps: ConversationOpsDeps) {
 
   async function handleDeleteConversation(id: string) {
     if (!id) return;
-    if (
-      isSpecificConversationGenerating(
-        activeConversationId,
-        isGenerating,
-        runtimeStateByConversation,
-        id,
-      )
-    ) {
+    if (sessionStore.isConversationGenerating(id)) {
       emitToast({
         variant: "info",
         source: "delete-conversation",
@@ -372,74 +159,70 @@ export function createConversationOperations(deps: ConversationOpsDeps) {
       return;
     }
 
-    const normalizedId = normalizeConversationId(id);
-    runtimeStateByConversation.delete(normalizedId);
+    sessionStore.deleteSession(id);
     void clearBrowserTabState(id);
 
     const isCurrentActive = activeConversationId.value === id;
     if (isCurrentActive) {
-      // 提前清空 activeConversationId 和运行时会话态，
-      // 避免随后 loadConversation 把被删除会话的状态重新 stash 进去。
       clearAllSessionState();
     }
 
     try {
       await deleteConversation(id);
-      // 子代理记录是模块级单例 Map，随会话删除同步清理，避免跨会话累积泄漏。
       clearSubagents(id);
       await refreshConversations();
 
       if (isCurrentActive) {
-        if (conversations.value.length > 0) {
-          await loadConversation(conversations.value[0].id);
+        const remaining = conversations.value.filter((item) => item.id !== id);
+        if (remaining.length > 0) {
+          await loadConversation(remaining[0].id);
         } else {
           clearAllSessionState();
         }
       }
     } catch (err) {
       console.error("Failed to delete conversation:", err);
+      emitToast({
+        variant: "error",
+        source: "delete-conversation",
+        message: "删除会话失败，请重试。",
+      });
     }
   }
 
   async function handlePinConversation(id: string, pinned: boolean) {
-    if (!id) return;
-
     try {
       await setConversationPinned(id, pinned);
       await refreshConversations();
     } catch (err) {
-      console.error("Failed to pin conversation:", err);
+      console.error("Failed to toggle pin for conversation:", err);
       emitToast({
         variant: "error",
         source: "pin-conversation",
-        message: pinned ? "置顶会话失败。" : "取消置顶失败。",
+        message: "固定/取消固定会话失败，请重试。",
       });
     }
   }
 
-  const handleHistoryCleared = async () => {
-    if (hasAnyGeneratingConversations(isGenerating, runtimeStateByConversation)) {
+  async function handleHistoryCleared(event: CustomEvent<{ conversationId?: string }>) {
+    const clearedId = event.detail?.conversationId;
+    if (sessionStore.hasAnyGenerating) {
       emitToast({
-        variant: "info",
-        source: "history",
-        message: "存在进行中的会话回复，请先停止后再清空历史。",
+        variant: "warning",
+        source: "clear-history",
+        message: "会话正在生成中，已在后台清空历史，生成结束后生效。",
       });
       return;
     }
 
-    runtimeStateByConversation.clear();
-    clearAllSessionState();
-    // 历史全部清空，子代理单例记录一并清掉。
-    clearAllSubagents();
-
-    await refreshConversations();
-    if (conversations.value.length === 0) {
-      clearAllSessionState();
-      return;
+    if (!clearedId || clearedId === activeConversationId.value) {
+      if (activeConversationId.value) {
+        await sessionStore.loadConversationMessages(activeConversationId.value);
+      }
+      sessionStore.clearActiveTurnRuntime();
     }
-
-    await loadConversation(conversations.value[0].id);
-  };
+    await refreshConversations();
+  }
 
   return {
     refreshConversationFiles,
@@ -447,7 +230,6 @@ export function createConversationOperations(deps: ConversationOpsDeps) {
     refreshConversations,
     createNewConversation,
     loadConversation,
-    restoreActiveLiveTurn,
     persistMessage,
     handleNewChat,
     handleSelectConversation,

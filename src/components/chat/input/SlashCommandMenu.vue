@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import type { SlashParamOption } from '../../lib/slash-commands';
+import type { SlashParamOption } from '@/lib/slash-commands';
 
 defineProps<{
   visible: boolean;

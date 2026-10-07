@@ -141,7 +141,16 @@ export const useAgentSessionStore = defineStore("agentSession", () => {
     }
   }
 
-  function handleTurnStarted(_turnId: string, convId: string) {
+  const turnToConversation = new Map<string, string>();
+
+  function getSessionByTurnOrConv(turnOrConvId?: string): SessionRuntimeState {
+    if (!turnOrConvId) return activeSession.value;
+    const mapped = turnToConversation.get(turnOrConvId) || turnOrConvId;
+    return getSession(mapped);
+  }
+
+  function handleTurnStarted(turnId: string, convId: string) {
+    turnToConversation.set(turnId, convId);
     const session = getSession(convId);
     session.isGenerating = true;
     session.currentStage = "processing";
@@ -153,8 +162,8 @@ export const useAgentSessionStore = defineStore("agentSession", () => {
     session.chatError = null;
   }
 
-  function handleStateChanged(state: string, convId?: string) {
-    const session = convId ? getSession(convId) : activeSession.value;
+  function handleStateChanged(state: string, turnOrConvId?: string) {
+    const session = getSessionByTurnOrConv(turnOrConvId);
     session.cognitiveState = state;
     if (
       state === "assembling_context" ||
@@ -169,20 +178,20 @@ export const useAgentSessionStore = defineStore("agentSession", () => {
     }
   }
 
-  function handleThinkingDelta(delta: string, convId?: string) {
-    const session = convId ? getSession(convId) : activeSession.value;
+  function handleThinkingDelta(delta: string, turnOrConvId?: string) {
+    const session = getSessionByTurnOrConv(turnOrConvId);
     session.assistantReasoning += delta;
     appendTranscriptReasoning(session.assistantSegments, delta);
   }
 
-  function handleTextDelta(delta: string, convId?: string) {
-    const session = convId ? getSession(convId) : activeSession.value;
+  function handleTextDelta(delta: string, turnOrConvId?: string) {
+    const session = getSessionByTurnOrConv(turnOrConvId);
     session.assistantResponse += delta;
     appendTranscriptText(session.assistantSegments, delta);
   }
 
-  function handleToolRequested(callId: string, toolName: string, args: Record<string, unknown>, convId?: string) {
-    const session = convId ? getSession(convId) : activeSession.value;
+  function handleToolRequested(callId: string, toolName: string, args: Record<string, unknown>, turnOrConvId?: string) {
+    const session = getSessionByTurnOrConv(turnOrConvId);
     session.toolExecutionLogs.push({
       id: callId,
       toolName,
@@ -194,8 +203,8 @@ export const useAgentSessionStore = defineStore("agentSession", () => {
     appendTranscriptTool(session.assistantSegments, callId);
   }
 
-  function handleToolCompleted(callId: string, _toolName: string, output: string, isError: boolean, _durationMs: number, convId?: string) {
-    const session = convId ? getSession(convId) : activeSession.value;
+  function handleToolCompleted(callId: string, _toolName: string, output: string, isError: boolean, _durationMs: number, turnOrConvId?: string) {
+    const session = getSessionByTurnOrConv(turnOrConvId);
     const entry = session.toolExecutionLogs.find((e) => e.id === callId);
     if (entry) {
       entry.status = isError ? "error" : "completed";
@@ -204,13 +213,14 @@ export const useAgentSessionStore = defineStore("agentSession", () => {
     }
   }
 
-  function handleTokenUsage(usage: { input: number; output: number }, convId?: string) {
-    const session = convId ? getSession(convId) : activeSession.value;
+  function handleTokenUsage(usage: { input: number; output: number }, turnOrConvId?: string) {
+    const session = getSessionByTurnOrConv(turnOrConvId);
     session.assistantTokenUsage = usage.input + usage.output;
   }
 
-  async function handleTurnFinished(_turnId: string, _stopReason: string, convId?: string) {
-    const targetId = convId || conversationStore.activeConversationId;
+  async function handleTurnFinished(turnId: string, _stopReason: string, turnOrConvId?: string) {
+    const targetId = turnToConversation.get(turnId) || turnOrConvId || conversationStore.activeConversationId;
+    turnToConversation.delete(turnId);
     const session = getSession(targetId);
     session.isGenerating = false;
     session.currentStage = "processing";
@@ -218,13 +228,19 @@ export const useAgentSessionStore = defineStore("agentSession", () => {
     session.assistantResponse = "";
     session.assistantReasoning = "";
     session.assistantSegments = [];
+    for (const tool of session.toolExecutionLogs) {
+      if (tool.status === "running") {
+        tool.status = _stopReason === "cancelled" ? "cancelled" : "error";
+      }
+    }
     if (targetId && targetId !== "__draft__") {
       await loadConversationMessages(targetId);
     }
   }
 
-  function handleTurnError(error: string, convId?: string) {
-    const session = convId ? getSession(convId) : activeSession.value;
+  function handleTurnError(error: string, turnOrConvId?: string) {
+    const session = getSessionByTurnOrConv(turnOrConvId);
+    if (turnOrConvId) turnToConversation.delete(turnOrConvId);
     session.isGenerating = false;
     session.chatError = error;
   }
@@ -276,5 +292,18 @@ export const useAgentSessionStore = defineStore("agentSession", () => {
     handleTurnError,
     dismissChatError,
     clearActiveTurnRuntime,
+    hasAnyGenerating: computed(() => Object.values(sessions).some((s) => s.isGenerating)),
+    isConversationGenerating(convId: string) {
+      return !!sessions[convId]?.isGenerating;
+    },
+    deleteSession(convId: string) {
+      delete sessions[convId];
+    },
+    clearAllSessions() {
+      for (const k in sessions) {
+        delete sessions[k];
+      }
+    },
   };
 });
+

@@ -1,4 +1,4 @@
-use crate::llm::services::browser_sessions::{self, BrowserAutomationResult};
+use crate::services::browser_sessions::{self, BrowserAutomationResult};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};

@@ -424,21 +424,39 @@ pub(crate) async fn execute_single_tool_call(
         .await;
     }
 
-    let outcome = match execute_tool_with_app(app, conversation_id, &name, input.clone()).await {
-        Ok(outcome) => outcome,
-        Err(failure) => {
+    let cancel_token = crate::llm::cancellation::get_token(conversation_id);
+    let outcome = tokio::select! {
+        biased;
+        _ = cancel_token.cancelled() => {
             return finalize_failure_result(
                 app,
                 conversation_id,
                 id,
                 name,
                 input,
-                failure,
+                ToolFailure::cancelled("Tool execution cancelled"),
                 additional_messages,
-                prevent_continuation,
-                stop_reason,
+                true,
+                Some("cancelled".into()),
             )
             .await;
+        }
+        res = execute_tool_with_app(app, conversation_id, &name, input.clone()) => match res {
+            Ok(outcome) => outcome,
+            Err(failure) => {
+                return finalize_failure_result(
+                    app,
+                    conversation_id,
+                    id,
+                    name,
+                    input,
+                    failure,
+                    additional_messages,
+                    prevent_continuation,
+                    stop_reason,
+                )
+                .await;
+            }
         }
     };
 
@@ -538,7 +556,19 @@ async fn execute_read_only_batch(
             });
         }
 
-        let Some(joined) = tasks.join_next().await else {
+        let cancel_token = crate::llm::cancellation::get_token(conversation_id);
+        let maybe_joined = tokio::select! {
+            biased;
+            _ = cancel_token.cancelled() => {
+                tasks.abort_all();
+                while tasks.join_next().await.is_some() {}
+                cancellation_reason = Some("cancelled".into());
+                break;
+            }
+            joined = tasks.join_next() => joined,
+        };
+
+        let Some(joined) = maybe_joined else {
             break;
         };
 
@@ -616,6 +646,10 @@ pub async fn execute_tool_calls_with_app(
         }
 
         flush_read_only_batch(app, conversation_id, &mut read_only_batch, &mut results).await;
+        if crate::llm::cancellation::is_cancelled(conversation_id) {
+            results.push(cancelled_result_from_call(call, "cancelled"));
+            continue;
+        }
         results.push(execute_single_tool_call(app, conversation_id, call).await);
     }
 

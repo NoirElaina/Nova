@@ -9,119 +9,52 @@ import {
 import type {
   AgentMode,
   AskUserAnswerSubmission,
-  AssistantTranscriptSegment,
   ChatAttachment,
   ChatMessage,
-  ContextCompactSummary,
-  ContextUsage,
   PendingUploadFile,
-  ToolExecutionEntry,
-  TurnCost,
 } from "../../../lib/chat-types";
 import {
   cancelChatMessage,
-  getChatTurnStatus,
   replaceConversationHistory,
   sendModernAgentTurn,
   submitPermissionDecision,
   saveSessionFile,
 } from "../services/chat-api";
-import type {
-  ChatScreenHandle,
-  ConversationTurnRuntimeState,
-  LiveTurnStage,
-} from "./chat-controller-types";
-import type { ActiveRuntimeRefs } from "./chat-runtime-state";
-import {
-  ensureRuntimeState,
-  normalizeConversationId,
-  resetPendingPromptState,
-  resetToolTrackingState,
-  resetTurnRuntimeState,
-} from "./chat-runtime-state";
+import type { ChatScreenHandle } from "./chat-controller-types";
 import {
   isDocumentUploadFile,
   isImageUploadFile,
   toAttachmentMeta,
 } from "./chat-message-helpers";
+import { useAgentSessionStore } from "@/stores/agentSession";
+import { useComposerStore } from "@/stores/composer";
 
-type SendOpsDeps = {
+export type SendOpsDeps = {
   activeConversationId: Ref<string>;
-  isGenerating: Ref<boolean>;
-  currentStage: Ref<LiveTurnStage>;
-  messages: Ref<ChatMessage[]>;
-  toolExecutionLogs: Ref<ToolExecutionEntry[]>;
-  pendingUploads: Ref<PendingUploadFile[]>;
-  pendingPermissionRequestId: Ref<string | null>;
   mainView: Ref<"chat" | "hooks" | "agent" | "schedule" | "settings">;
   agentMode: Ref<AgentMode>;
-  assistantResponse: Ref<string>;
-  assistantReasoning: Ref<string>;
-  assistantSegments: Ref<AssistantTranscriptSegment[]>;
-  assistantTokenUsage: Ref<number | undefined>;
-  assistantTurnCost: Ref<TurnCost | undefined>;
-  currentTurnStartedAt: Ref<number | null>;
-  currentToolStartedAt: Ref<number | null>;
-  currentToolCalls: Ref<number>;
-  currentToolDurationMs: Ref<number>;
-  currentContextUsage: Ref<ContextUsage | undefined>;
-  currentContextCompacts: Ref<ContextCompactSummary[]>;
-  currentContextTokens: Ref<number>;
-  currentInputTokens: Ref<number>;
-  currentOutputTokens: Ref<number>;
-  currentTurnId: Ref<string | null>;
   pendingAgentBundleId: Ref<string | null>;
   chatScreenRef: Ref<ChatScreenHandle | null>;
-  runtimeStateByConversation: Map<string, ConversationTurnRuntimeState>;
-  activeRuntimeRefs: ActiveRuntimeRefs;
   createNewConversation: (seedTitle?: string) => Promise<string | null>;
   persistMessage: (message: ChatMessage, conversationId?: string) => Promise<void>;
   refreshConversationFiles: (conversationId: string) => Promise<void>;
-  resetBackgroundRuntimeState: (
-    conversationId: string,
-    state: ConversationTurnRuntimeState,
-    preservePendingPrompt?: boolean,
-  ) => void;
-  /** 出错时把已流出的内容收口为“中断”消息（重入保护保证与 stop 事件不会双写）。 */
   finalizeActiveTurnOnError: () => Promise<void>;
 };
 
 export function createSendOperations(deps: SendOpsDeps) {
   const {
     activeConversationId,
-    isGenerating,
-    currentStage,
-    messages,
-    toolExecutionLogs,
-    pendingUploads,
-    pendingPermissionRequestId,
     mainView,
-    agentMode,
-    assistantResponse,
-    assistantReasoning,
-    assistantSegments,
-    assistantTokenUsage,
-    assistantTurnCost,
-    currentTurnStartedAt,
-    currentToolStartedAt,
-    currentToolCalls,
-    currentToolDurationMs,
-    currentContextUsage,
-    currentContextCompacts,
-    currentContextTokens,
-    currentInputTokens,
-    currentOutputTokens,
-    currentTurnId,
     pendingAgentBundleId,
     chatScreenRef,
-    runtimeStateByConversation,
-    activeRuntimeRefs,
     createNewConversation,
     persistMessage,
     refreshConversationFiles,
-    resetBackgroundRuntimeState,
     finalizeActiveTurnOnError,
   } = deps;
+
+  const sessionStore = useAgentSessionStore();
+  const composerStore = useComposerStore();
 
   async function dispatchConversationMessages(
     sendingConversationId: string,
@@ -136,95 +69,41 @@ export function createSendOperations(deps: SendOpsDeps) {
       return;
     }
 
-    isGenerating.value = true;
-    currentStage.value = "processing";
-    currentTurnStartedAt.value = Date.now();
-    assistantResponse.value = "";
-    assistantReasoning.value = "";
-    assistantSegments.value = [];
-    assistantTokenUsage.value = undefined;
-    assistantTurnCost.value = undefined;
-    currentToolStartedAt.value = null;
-    currentToolCalls.value = 0;
-    currentToolDurationMs.value = 0;
-    currentContextUsage.value = undefined;
-    currentContextCompacts.value = [];
-    currentContextTokens.value = 0;
-    currentOutputTokens.value = 0;
-    currentInputTokens.value = 0;
-    resetToolTrackingState(activeRuntimeRefs);
-    currentTurnId.value = `turn-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-    // 记录本轮 mode，切到后台会话时 permission 双保险可读到
-    const turnRuntime = ensureRuntimeState(runtimeStateByConversation, sendingConversationId);
-    turnRuntime.agentMode = agentMode.value;
+    const turnId = `turn-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    sessionStore.handleTurnStarted(turnId, sendingConversationId);
     void chatScreenRef.value?.scrollLiveAssistantIntoView();
 
     const lastMessage = nextMessages[nextMessages.length - 1];
     const userPrompt = lastMessage?.role === "user" ? lastMessage.content : "";
 
     try {
-      await sendModernAgentTurn(
-        sendingConversationId,
-        userPrompt,
-      );
+      await sendModernAgentTurn(sendingConversationId, userPrompt);
     } catch (err: unknown) {
-      const isActiveFailedConversation = activeConversationId.value === sendingConversationId;
-      if (isActiveFailedConversation && !isGenerating.value) {
-        return;
-      }
-
       console.error("Chat error:", err);
-      if (isActiveFailedConversation) {
-        // 发送失败属于 AI 主流程错误：在对话框内以红色块展示错误原文。
-        const raw = getRawErrorText(err);
-        emitChatError({
-          source: "send",
-          message: raw || "消息发送失败，请检查后端日志后重试。",
-        });
-        // 并发重发被拒（后端回合仍在运行）时绝不能碰运行时状态：
-        // 此时 refs 里是仍在运行回合的实时内容，提前收口/清空会把正在进行的回复从画面抹掉。
-        // 以后端 live_turns 状态为准：仍在 running 则仅提示，等 stop 事件正常收口。
-        const liveTurn = await getChatTurnStatus(sendingConversationId).catch(() => null);
-        if (liveTurn?.state === "running") {
-          return;
-        }
-        // 出错也要保存已输出内容：若 invoke 拒绝先于 stop 事件到达，
-        // 这里把已流式内容收口为带中断标记的消息，避免半截回复直接从画面消失；
-        // stop 事件已先处理过时 refs 已清空，会落到下方清理分支（重入保护不会双写）。
-        if (
-          assistantResponse.value.trim().length > 0 ||
-          assistantReasoning.value.trim().length > 0
-        ) {
-          await finalizeActiveTurnOnError();
-          resetTurnRuntimeState(activeRuntimeRefs);
-          runtimeStateByConversation.delete(normalizeConversationId(sendingConversationId));
-        } else {
-          assistantResponse.value = "";
-          assistantReasoning.value = "";
-          assistantSegments.value = [];
-          assistantTokenUsage.value = undefined;
-          assistantTurnCost.value = undefined;
-          isGenerating.value = false;
-          resetTurnRuntimeState(activeRuntimeRefs);
-          runtimeStateByConversation.delete(normalizeConversationId(sendingConversationId));
-        }
-      } else {
-        const backgroundState = ensureRuntimeState(
-          runtimeStateByConversation,
-          sendingConversationId,
-        );
-        resetBackgroundRuntimeState(sendingConversationId, backgroundState);
+      const raw = getRawErrorText(err);
+      emitChatError({
+        source: "send",
+        message: raw || "消息发送失败，请检查后端日志后重试。",
+      });
+
+      const session = sessionStore.getSession(sendingConversationId);
+      if (
+        session.assistantResponse.trim().length > 0 ||
+        session.assistantReasoning.trim().length > 0
+      ) {
+        await finalizeActiveTurnOnError();
       }
+      sessionStore.handleTurnError(raw || "Turn execution failed", sendingConversationId);
     }
   }
 
   async function handleUploadFiles(files: PendingUploadFile[]) {
-    if (!files.length || isGenerating.value) {
+    if (!files.length || sessionStore.activeSession.isGenerating) {
       return;
     }
 
     mainView.value = "chat";
-    pendingUploads.value = [...pendingUploads.value, ...files];
+    composerStore.addUploads(files);
     emitToast({
       variant: "success",
       source: "upload",
@@ -233,22 +112,27 @@ export function createSendOperations(deps: SendOpsDeps) {
   }
 
   function handleRemovePendingUpload(index: number) {
-    if (index < 0 || index >= pendingUploads.value.length) {
-      return;
-    }
-    pendingUploads.value.splice(index, 1);
+    composerStore.removeUpload(index);
   }
 
   async function handleCancelGeneration() {
-    if (!isGenerating.value) return;
+    if (!sessionStore.activeSession.isGenerating) return;
     try {
+      // 1. 立即前端响应：设置生成状态为 false，将正在运行的工具直接标记为已取消，给用户立竿见影的反馈
+      sessionStore.activeSession.isGenerating = false;
+      sessionStore.activeSession.currentStage = "processing";
+      sessionStore.activeSession.cognitiveState = "idle";
+      for (const tool of sessionStore.activeSession.toolExecutionLogs) {
+        if (tool.status === "running") {
+          tool.status = "cancelled";
+        }
+      }
+
+      // 2. 向后端发送强制取消指令
       const hit = await cancelChatMessage(activeConversationId.value || null);
       if (!hit) {
-        emitToast({
-          variant: "warning",
-          source: "cancel",
-          message: "取消信号已发送，但未命中活动会话。",
-        });
+        // 兜底：若带 ID 未命中，尝试全局取消
+        await cancelChatMessage(null);
       }
     } catch (err) {
       console.error("Failed to cancel generation:", err);
@@ -256,22 +140,22 @@ export function createSendOperations(deps: SendOpsDeps) {
   }
 
   async function handleSendMessage(userText: string) {
-    if (isGenerating.value) return;
+    if (sessionStore.activeSession.isGenerating) return;
     const text = userText.trim();
-    const filesToSend = pendingUploads.value.slice();
+    const filesToSend = composerStore.pendingUploads.slice();
     const textFiles = filesToSend.filter(isDocumentUploadFile);
     const imageFiles = filesToSend.filter(isImageUploadFile);
     if (!text && filesToSend.length === 0) return;
 
     mainView.value = "chat";
-    resetPendingPromptState(activeRuntimeRefs);
+    sessionStore.clearActiveTurnRuntime();
 
     if (!activeConversationId.value) {
       const seedTitle = text || filesToSend[0]?.sourceName;
       const id = await createNewConversation(seedTitle);
       if (!id) return;
       activeConversationId.value = id;
-      messages.value = [];
+      sessionStore.activeSession.messages = [];
       // 智能体页「启用」暂存的智能体：对话真正创建时才挂载（延迟创建语义），挂载后清空暂存。
       const pendingAgentId = pendingAgentBundleId.value;
       if (pendingAgentId) {
@@ -332,13 +216,14 @@ export function createSendOperations(deps: SendOpsDeps) {
       attachments: uploadedAttachments.length > 0 ? uploadedAttachments : undefined,
       createdAt: Date.now(),
     };
-    const nextMessages = [...messages.value, userMessage];
+
+    const nextMessages = [...sessionStore.activeSession.messages, userMessage];
 
     if (filesToSend.length > 0) {
-      pendingUploads.value = [];
+      composerStore.clearUploads();
     }
 
-    messages.value = nextMessages;
+    sessionStore.activeSession.messages = nextMessages;
     await persistMessage(userMessage, sendingConversationId);
     await dispatchConversationMessages(sendingConversationId, nextMessages);
   }
@@ -346,25 +231,25 @@ export function createSendOperations(deps: SendOpsDeps) {
   async function handleEditMessage(
     payload: { index: number; content: string; id?: string },
   ) {
-    if (isGenerating.value) return;
+    if (sessionStore.activeSession.isGenerating) return;
     const conversationId = activeConversationId.value.trim();
     const trimmedContent = payload.content.trim();
     if (!conversationId || !trimmedContent) return;
 
-    // 优先用稳定 id 定位，避免虚拟列表/过滤导致 index 指错而多删前面消息。
+    const currentMessages = sessionStore.activeSession.messages;
     let messageIndex = -1;
     if (payload.id) {
-      messageIndex = messages.value.findIndex((item) => item.id === payload.id);
+      messageIndex = currentMessages.findIndex((item) => item.id === payload.id);
     }
     if (messageIndex < 0) {
       messageIndex = payload.index;
     }
 
-    const originalMessage = messages.value[messageIndex];
+    const originalMessage = currentMessages[messageIndex];
     if (!originalMessage || originalMessage.role !== "user") {
       return;
     }
-    // id 命中时再校验 index 是否离谱（防止错删）
+
     if (
       payload.id &&
       originalMessage.id &&
@@ -379,10 +264,10 @@ export function createSendOperations(deps: SendOpsDeps) {
     }
 
     mainView.value = "chat";
-    resetPendingPromptState(activeRuntimeRefs);
+    sessionStore.clearActiveTurnRuntime();
 
     const nextMessages = [
-      ...messages.value.slice(0, messageIndex),
+      ...currentMessages.slice(0, messageIndex),
       {
         ...originalMessage,
         content: trimmedContent,
@@ -391,9 +276,9 @@ export function createSendOperations(deps: SendOpsDeps) {
 
     try {
       await replaceConversationHistory(conversationId, nextMessages);
-      messages.value = nextMessages;
-      toolExecutionLogs.value = [];
-      pendingUploads.value = [];
+      sessionStore.activeSession.messages = nextMessages;
+      sessionStore.activeSession.toolExecutionLogs = [];
+      composerStore.clearUploads();
       await dispatchConversationMessages(conversationId, nextMessages);
     } catch (err) {
       console.error("Failed to edit and resend message:", err);
@@ -406,7 +291,8 @@ export function createSendOperations(deps: SendOpsDeps) {
   }
 
   async function handlePendingQuestionSubmit(payload: AskUserAnswerSubmission) {
-    if (pendingPermissionRequestId.value) {
+    const pendingReqId = sessionStore.activeSession.pendingPermissionRequestId;
+    if (pendingReqId) {
       const action = extractPermissionActionFromAnswers(payload);
       if (!action) {
         emitToast({
@@ -420,10 +306,10 @@ export function createSendOperations(deps: SendOpsDeps) {
       try {
         await submitPermissionDecision(
           activeConversationId.value || null,
-          pendingPermissionRequestId.value,
+          pendingReqId,
           action,
         );
-        resetPendingPromptState(activeRuntimeRefs);
+        sessionStore.activeSession.pendingPermissionRequestId = null;
       } catch (err) {
         console.error("Failed to submit permission decision:", err);
       }
@@ -434,14 +320,15 @@ export function createSendOperations(deps: SendOpsDeps) {
   }
 
   async function handlePendingQuestionSkip() {
-    if (pendingPermissionRequestId.value) {
+    const pendingReqId = sessionStore.activeSession.pendingPermissionRequestId;
+    if (pendingReqId) {
       try {
         await submitPermissionDecision(
           activeConversationId.value || null,
-          pendingPermissionRequestId.value,
+          pendingReqId,
           "deny_once",
         );
-        resetPendingPromptState(activeRuntimeRefs);
+        sessionStore.activeSession.pendingPermissionRequestId = null;
       } catch (err) {
         console.error("Failed to submit permission denial:", err);
       }

@@ -13,9 +13,8 @@ use tokio_util::sync::CancellationToken;
 
 use super::sse_utils::{extract_sse_data, find_sse_event_delimiter, truncate_for_log};
 use crate::llm::providers::{ProviderTurnError, ProviderTurnResult};
-use crate::llm::query_engine::ChatMessageEvent;
 use crate::llm::tools;
-use crate::llm::types::{ContentBlock, Message, Role};
+use crate::llm::types::{ChatMessageEvent, ContentBlock, Message, Role};
 use crate::llm::utils::error_event::emit_backend_error;
 use crate::llm::utils::pricing::{self, TokenUsageBreakdown, TurnCostBreakdown};
 
@@ -420,8 +419,11 @@ pub async fn run_streaming<P: StreamParser>(
     // 将剩余 pending 文本按顺序写入输出块。
     let output_blocks = assistant_output.take_blocks();
 
-    // 若流内未发 stop，这里补发一次。
-    if !emitted_stop {
+    // 若流内未发 stop，这里补发一次（仅用于子代理与分支会话）。
+    if !emitted_stop
+        && (crate::llm::services::branch::is_branch_conversation(conversation_id)
+            || crate::llm::services::subagent::is_subagent_conversation(conversation_id))
+    {
         emit_stream_event(
             app,
             conversation_id,
@@ -570,107 +572,121 @@ async fn process_delta(
     match delta {
         Delta::Text(text) => {
             assistant_output.append_text(&text);
-            if !crate::llm::services::subagent::is_subagent_conversation(conversation_id) {
+            let is_branch_or_sub = crate::llm::services::branch::is_branch_conversation(conversation_id)
+                || crate::llm::services::subagent::is_subagent_conversation(conversation_id);
+            if !is_branch_or_sub {
                 crate::llm::services::live_turns::append_text(conversation_id, &text);
+                let _ = app.emit(
+                    "agent-event",
+                    crate::agent::events::AgentDomainEvent::TextDelta {
+                        turn_id: conversation_id.unwrap_or_default().to_string(),
+                        delta: text.clone(),
+                    },
+                );
+            } else {
+                emit_stream_event(
+                    app,
+                    conversation_id,
+                    ChatMessageEvent {
+                        r#type: "text".into(),
+                        text: Some(text),
+                        tool_use_id: None,
+                        tool_use_name: None,
+                        tool_use_input: None,
+                        tool_result: None,
+                        tool_is_error: None,
+                        token_usage: None,
+                        stop_reason: None,
+                        turn_state: Some("streaming_text".into()),
+                        conversation_id: conversation_id.map(str::to_string),
+                    },
+                )
+                .ok();
             }
-            let _ = app.emit(
-                "agent-event",
-                crate::agent::events::AgentDomainEvent::TextDelta {
-                    turn_id: conversation_id.unwrap_or_default().to_string(),
-                    delta: text.clone(),
-                },
-            );
-            emit_stream_event(
-                app,
-                conversation_id,
-                ChatMessageEvent {
-                    r#type: "text".into(),
-                    text: Some(text),
-                    tool_use_id: None,
-                    tool_use_name: None,
-                    tool_use_input: None,
-                    tool_result: None,
-                    tool_is_error: None,
-                    token_usage: None,
-                    stop_reason: None,
-                    turn_state: Some("streaming_text".into()),
-                    conversation_id: conversation_id.map(str::to_string),
-                },
-            )
-            .ok();
         }
 
         Delta::Reasoning(text) => {
-            if !crate::llm::services::subagent::is_subagent_conversation(conversation_id) {
+            let is_branch_or_sub = crate::llm::services::branch::is_branch_conversation(conversation_id)
+                || crate::llm::services::subagent::is_subagent_conversation(conversation_id);
+            if !is_branch_or_sub {
                 crate::llm::services::live_turns::append_reasoning(conversation_id, &text);
+                let _ = app.emit(
+                    "agent-event",
+                    crate::agent::events::AgentDomainEvent::ThinkingDelta {
+                        turn_id: conversation_id.unwrap_or_default().to_string(),
+                        delta: text.clone(),
+                    },
+                );
+            } else {
+                emit_stream_event(
+                    app,
+                    conversation_id,
+                    ChatMessageEvent {
+                        r#type: "reasoning".into(),
+                        text: Some(text),
+                        tool_use_id: None,
+                        tool_use_name: None,
+                        tool_use_input: None,
+                        tool_result: None,
+                        tool_is_error: None,
+                        token_usage: None,
+                        stop_reason: None,
+                        turn_state: Some("streaming_reasoning".into()),
+                        conversation_id: conversation_id.map(str::to_string),
+                    },
+                )
+                .ok();
             }
-            let _ = app.emit(
-                "agent-event",
-                crate::agent::events::AgentDomainEvent::ThinkingDelta {
-                    turn_id: conversation_id.unwrap_or_default().to_string(),
-                    delta: text.clone(),
-                },
-            );
-            emit_stream_event(
-                app,
-                conversation_id,
-                ChatMessageEvent {
-                    r#type: "reasoning".into(),
-                    text: Some(text),
-                    tool_use_id: None,
-                    tool_use_name: None,
-                    tool_use_input: None,
-                    tool_result: None,
-                    tool_is_error: None,
-                    token_usage: None,
-                    stop_reason: None,
-                    turn_state: Some("streaming_reasoning".into()),
-                    conversation_id: conversation_id.map(str::to_string),
-                },
-            )
-            .ok();
         }
 
         Delta::ToolStart { id, name } => {
-            emit_stream_event(
-                app,
-                conversation_id,
-                ChatMessageEvent {
-                    r#type: "tool-use-start".into(),
-                    text: None,
-                    tool_use_id: id,
-                    tool_use_name: Some(name),
-                    tool_use_input: None,
-                    tool_result: None,
-                    tool_is_error: None,
-                    token_usage: None,
-                    stop_reason: None,
-                    turn_state: Some("tool_running".into()),
-                    conversation_id: conversation_id.map(str::to_string),
-                },
-            )
-            .ok();
+            if crate::llm::services::branch::is_branch_conversation(conversation_id)
+                || crate::llm::services::subagent::is_subagent_conversation(conversation_id)
+            {
+                emit_stream_event(
+                    app,
+                    conversation_id,
+                    ChatMessageEvent {
+                        r#type: "tool-use-start".into(),
+                        text: None,
+                        tool_use_id: id,
+                        tool_use_name: Some(name),
+                        tool_use_input: None,
+                        tool_result: None,
+                        tool_is_error: None,
+                        token_usage: None,
+                        stop_reason: None,
+                        turn_state: Some("tool_running".into()),
+                        conversation_id: conversation_id.map(str::to_string),
+                    },
+                )
+                .ok();
+            }
         }
 
         Delta::ToolArgsDelta { id, args } => {
-            emit_stream_event(
-                app,
-                conversation_id,
-                ChatMessageEvent {
-                    r#type: "tool-json-delta".into(),
-                    text: None,
-                    tool_use_id: id,
-                    tool_use_name: None,
-                    tool_use_input: Some(args),
-                    tool_result: None,
-                    tool_is_error: None,
-                    token_usage: None,
-                    stop_reason: None,
-                    turn_state: Some("tool_input_streaming".into()),
-                    conversation_id: conversation_id.map(str::to_string),
-                },
-            )
-            .ok();
+            if crate::llm::services::branch::is_branch_conversation(conversation_id)
+                || crate::llm::services::subagent::is_subagent_conversation(conversation_id)
+            {
+                emit_stream_event(
+                    app,
+                    conversation_id,
+                    ChatMessageEvent {
+                        r#type: "tool-json-delta".into(),
+                        text: None,
+                        tool_use_id: id,
+                        tool_use_name: None,
+                        tool_use_input: Some(args),
+                        tool_result: None,
+                        tool_is_error: None,
+                        token_usage: None,
+                        stop_reason: None,
+                        turn_state: Some("tool_input_streaming".into()),
+                        conversation_id: conversation_id.map(str::to_string),
+                    },
+                )
+                .ok();
+            }
         }
 
         Delta::ToolsReady(ready_calls) => {

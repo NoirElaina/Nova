@@ -16,7 +16,7 @@ import {
   setStoredUiTheme,
   type UiLanguage,
   type UiTheme,
-} from '../../../../lib/ui-preferences'
+} from '@/lib/ui-preferences'
 
 const theme = ref<UiTheme>(getStoredUiTheme())
 const language = ref<UiLanguage>(getStoredUiLanguage())
@@ -84,7 +84,7 @@ const localeTexts = {
   },
 } as const
 
-const t = computed(() => localeTexts[language.value])
+const t = computed(() => localeTexts[language.value as keyof typeof localeTexts] ?? localeTexts['zh-CN'])
 
 const themeOptions = computed(() => [
   { value: 'system' as UiTheme, label: t.value.themeSystem },

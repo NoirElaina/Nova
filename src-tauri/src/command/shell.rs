@@ -1,4 +1,4 @@
-use crate::llm::services::shell_sessions::{self, BackgroundOutput, ShellExecutionResult, ShellSessionStatus};
+use crate::services::shell_sessions::{self, BackgroundOutput, ShellExecutionResult, ShellSessionStatus};
 use crate::llm::utils::error_event::report_backend_result;
 use tauri::AppHandle;
 

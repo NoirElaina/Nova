@@ -86,35 +86,63 @@ function hasDisplayableSegment(segment: AssistantTranscriptSegment): boolean {
 }
 
 /**
- * 合并直接相邻且同类型的段（例如两个连续的 reasoning、连续的 text、或并发调用的相邻 tools）。
- * 绝不跨段强行将相隔的 tools 和 reasoning 打包，严格保持与流式运行期一致的真实时序。
+ * 核心合并逻辑：按正文（text）为边界分组。
+ * 只有遇见正文才分开；在同一个无正文区间内：
+ * - 所有的思考块（reasoning）合并为同一个思考块，思考内容追加在一起；
+ * - 所有的工具块（tools）合并为同一个工具块，工具 ID 收集在一起；
+ * - 思考与工具互不混合，保持各自原本的卡片类型与独立性。
  */
-function mergeAdjacentSegments(
+export function mergeSegmentsByTextBoundary(
   segments: AssistantTranscriptSegment[],
 ): AssistantTranscriptSegment[] {
   const result: AssistantTranscriptSegment[] = [];
+
+  let currentReasoning: Extract<AssistantTranscriptSegment, { type: "reasoning" }> | null = null;
+  let currentTools: Extract<AssistantTranscriptSegment, { type: "tools" }> | null = null;
+
+  function flushSpan() {
+    // 思考块始终放在工具前面
+    if (currentReasoning) {
+      result.push(currentReasoning);
+    }
+    if (currentTools) {
+      result.push(currentTools);
+    }
+    currentReasoning = null;
+    currentTools = null;
+  }
+
   for (const seg of segments) {
-    const last = result[result.length - 1];
-    if (last && last.type === seg.type) {
-      if (last.type === "reasoning" && seg.type === "reasoning") {
+    if (seg.type === "text") {
+      flushSpan();
+      const last = result[result.length - 1];
+      if (last && last.type === "text") {
         last.text = last.text ? `${last.text}\n\n${seg.text}` : seg.text;
-      } else if (last.type === "text" && seg.type === "text") {
-        last.text = last.text ? `${last.text}\n\n${seg.text}` : seg.text;
-      } else if (last.type === "tools" && seg.type === "tools") {
+      } else {
+        result.push({ type: "text", text: seg.text });
+      }
+    } else if (seg.type === "reasoning") {
+      if (!currentReasoning) {
+        currentReasoning = { type: "reasoning", text: seg.text };
+      } else {
+        currentReasoning.text = currentReasoning.text
+          ? `${currentReasoning.text}\n\n${seg.text}`
+          : seg.text;
+      }
+    } else if (seg.type === "tools") {
+      if (!currentTools) {
+        currentTools = { type: "tools", toolIds: [...seg.toolIds] };
+      } else {
         for (const id of seg.toolIds) {
-          if (!last.toolIds.includes(id)) {
-            last.toolIds.push(id);
+          if (!currentTools.toolIds.includes(id)) {
+            currentTools.toolIds.push(id);
           }
         }
       }
-    } else {
-      result.push(
-        seg.type === "tools"
-          ? { type: "tools", toolIds: [...seg.toolIds] }
-          : { ...seg }
-      );
     }
   }
+
+  flushSpan();
   return result;
 }
 
@@ -126,8 +154,8 @@ export function buildAssistantTranscriptSegments(
   } = {},
 ): AssistantTranscriptSegment[] {
   const filtered = cloneTranscriptSegments(segments).filter(hasDisplayableSegment);
-  // 合并直接相邻同类型段，保持与流式期间一致的时间线结构
-  const next = mergeAdjacentSegments(filtered);
+  // 按正文划分区间：未被正文分隔的思考追加在思考块，工具追加在工具块
+  const next = mergeSegmentsByTextBoundary(filtered);
   const reasoning = options.reasoning?.trim();
   const text = options.text?.trim();
 

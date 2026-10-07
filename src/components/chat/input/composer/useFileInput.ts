@@ -1,11 +1,11 @@
 import { ref, type Ref, type ComputedRef } from 'vue';
-import type { PendingUploadFile } from '../../../lib/chat-types';
-import { buildDocumentAcceptAttribute } from '../../../lib/document-upload';
+import type { PendingUploadFile } from '@/lib/chat-types';
+import { buildDocumentAcceptAttribute } from '@/lib/document-upload';
 import {
   buildPendingUploadFiles,
   inferImageMimeType,
   notifyRejectedUploads,
-} from '../../../lib/upload-files';
+} from '@/lib/upload-files';
 import { useComposerStore } from '@/stores/composer';
 
 export interface UseFileInputOptions {

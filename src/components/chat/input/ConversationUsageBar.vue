@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed } from 'vue';
-import type { ConversationUsageSummary } from '../../lib/chat-types';
+import type { ConversationUsageSummary } from '@/lib/chat-types';
 
 const props = defineProps<{
   usage?: ConversationUsageSummary | null;

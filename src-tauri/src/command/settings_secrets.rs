@@ -8,21 +8,21 @@ use tracing::warn;
 
 use crate::command::settings::AppSettings;
 
-/// ?????????
+/// 现代加密密钥前缀
 const SECRET_PREFIX: &str = "nova:v2:";
-/// ? DPAPI ?????????????????????
+/// 旧版 DPAPI 加密密钥前缀（兼容提示）
 const LEGACY_DPAPI_PREFIX: &str = "nova:dpapi:v1:";
-/// ???????
+/// 主密钥持久化文件名
 const MASTER_KEY_FILENAME: &str = "master_key";
-/// AES-256-GCM nonce ???12 ?? / 96 ???
+/// AES-256-GCM nonce 长度（12 字节 / 96 位）
 const NONCE_LEN: usize = 12;
-/// AES-256 ?????32 ?? / 256 ???
+/// AES-256 密钥长度（32 字节 / 256 位）
 const KEY_LEN: usize = 32;
 
-/// ?????????????????????
+/// 进程内缓存的主加密密钥
 static MASTER_KEY: OnceLock<[u8; KEY_LEN]> = OnceLock::new();
 
-/// ???????????????????????????
+/// 初始化主加密密钥，应用启动时必须优先调用
 pub fn init_master_key(app: &AppHandle) -> Result<(), String> {
     let key = load_or_create_master_key(app)?;
     MASTER_KEY
@@ -30,7 +30,7 @@ pub fn init_master_key(app: &AppHandle) -> Result<(), String> {
         .map_err(|_| "Master key already initialized".to_string())
 }
 
-/// ??????????????? init_master_key?
+/// 获取已初始化的主密钥；未初始化则报错
 fn get_master_key() -> Result<[u8; KEY_LEN], String> {
     MASTER_KEY
         .get()
@@ -38,7 +38,7 @@ fn get_master_key() -> Result<[u8; KEY_LEN], String> {
         .ok_or_else(|| "Master key not initialized; call init_master_key first".to_string())
 }
 
-/// ? app data ????????????????????
+/// 从 app data 目录加载或生成新的主密钥
 fn load_or_create_master_key(app: &AppHandle) -> Result<[u8; KEY_LEN], String> {
     let data_dir = app
         .path()
@@ -58,7 +58,7 @@ fn load_or_create_master_key(app: &AppHandle) -> Result<[u8; KEY_LEN], String> {
         return Ok(key);
     }
 
-    // ?????????????????
+    // 初次启动：生成随机密钥并持久化到本地
     std::fs::create_dir_all(&data_dir)
         .map_err(|e| format!("Failed to create app data directory: {}", e))?;
 
@@ -70,8 +70,7 @@ fn load_or_create_master_key(app: &AppHandle) -> Result<[u8; KEY_LEN], String> {
     Ok(key)
 }
 
-/// AES-256-GCM ???
-/// ?????nonce(12 bytes) + ciphertext + tag??? base64 ???
+/// AES-256-GCM 加密，前置 12 字节随机 Nonce
 fn aes_encrypt(plaintext: &[u8]) -> Result<Vec<u8>, String> {
     let key = get_master_key()?;
     let cipher =
@@ -91,8 +90,7 @@ fn aes_encrypt(plaintext: &[u8]) -> Result<Vec<u8>, String> {
     Ok(out)
 }
 
-/// AES-256-GCM ???
-/// ?????nonce(12 bytes) + ciphertext + tag??? base64 ???
+/// AES-256-GCM 解密，提取前置 12 字节 Nonce
 fn aes_decrypt(blob: &[u8]) -> Result<Vec<u8>, String> {
     if blob.len() < NONCE_LEN {
         return Err("Encrypted payload too short".to_string());

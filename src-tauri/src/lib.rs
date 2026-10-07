@@ -2,6 +2,7 @@ pub mod agent;
 pub mod command;
 pub mod llm;
 pub mod logging;
+pub mod services;
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::OnceLock;
@@ -67,7 +68,6 @@ pub fn run() {
             greet,
             agent::send_modern_agent_turn,
             agent::cancel_modern_agent_turn,
-            llm::client::cancel_chat_message,
             llm::services::branch::send_branch_message,
             llm::services::branch::cancel_branch_message,
             llm::client::get_chat_turn_status,
@@ -181,9 +181,9 @@ pub fn run() {
                 .swap(true, Ordering::Relaxed);
             if !already_cleaned {
                 tauri::async_runtime::block_on(
-                    crate::llm::services::shell_sessions::close_all_sessions(),
+                    crate::services::shell_sessions::close_all_sessions(),
                 );
-                crate::llm::services::user_terminal::close_all_sessions();
+                crate::services::user_terminal::close_all_sessions();
             }
         }
     });

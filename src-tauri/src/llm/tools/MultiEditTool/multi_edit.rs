@@ -1,4 +1,4 @@
-use crate::agent::tools::edit::{execute_exact_multi_edit, EditOperation};
+use crate::llm::tools::shared::edit::{execute_exact_multi_edit, EditOperation};
 use crate::llm::tools::{
     app_tool, AppExecuteFuture, ToolDisclosure, ToolFailure, ToolOutcome, ToolPermissionDescriptor, ToolRegistration,
 };

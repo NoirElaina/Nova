@@ -494,8 +494,8 @@ mod tests {
         assert!(res.is_err());
         let err = res.unwrap_err();
         assert!(
-            err.starts_with("图片已损坏："),
-            "Expected '图片已损坏：', got: {}",
+            err.starts_with("Corrupted image"),
+            "Expected 'Corrupted image', got: {}",
             err
         );
     }
@@ -520,8 +520,8 @@ mod tests {
         assert!(res.is_err());
         let err = res.unwrap_err();
         assert!(
-            err.starts_with("图片已损坏："),
-            "Expected '图片已损坏：', got: {}",
+            err.starts_with("Corrupted image"),
+            "Expected 'Corrupted image', got: {}",
             err
         );
     }

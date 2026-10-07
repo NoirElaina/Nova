@@ -45,16 +45,29 @@ pub fn request_cancel(conversation_id: Option<&str>) -> bool {
     let key = scope_key(conversation_id);
     // 获取全局状态锁；若锁中毒则提取内部值继续工作。
     let state = cancel_state().lock().unwrap_or_else(|e| e.into_inner());
-    // 若会话存在，触发取消令牌并返回成功。
+    // 若特定会话存在，触发取消令牌并返回成功。
     if let Some(token) = state.get(&key) {
-        // 触发取消——所有持有该令牌克隆的 cancelled() future 立即返回。
         token.cancel();
-        // 返回已成功提交取消请求。
+        true
+    } else if !state.is_empty() {
+        // 兜底：若特定 key 未命中（例如前端会话切换或传递 None），取消当前所有活跃回合
+        for (_, token) in state.iter() {
+            token.cancel();
+        }
         true
     } else {
-        // 目标会话不存在，返回取消失败。
         false
     }
+}
+
+pub fn cancel_all() -> bool {
+    let state = cancel_state().lock().unwrap_or_else(|e| e.into_inner());
+    let mut hit = false;
+    for (_, token) in state.iter() {
+        token.cancel();
+        hit = true;
+    }
+    hit
 }
 
 pub fn is_cancelled(conversation_id: Option<&str>) -> bool {

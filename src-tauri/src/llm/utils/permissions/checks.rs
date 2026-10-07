@@ -115,12 +115,20 @@ pub(crate) fn check_command(command: &str) -> (RiskLevel, Option<String>) {
     let parsed = match parse_for_security(command) {
         crate::llm::utils::bash_ast::types::ParseForSecurityResult::Simple { commands } => commands,
         crate::llm::utils::bash_ast::types::ParseForSecurityResult::TooComplex { reason } => {
+            #[cfg(target_os = "windows")]
+            if let Some(res) = check_windows_powershell_fallback(command) {
+                return res;
+            }
             return (
                 RiskLevel::Risky,
                 Some(format!("命令无法静态分析（{}），需要确认", reason)),
             );
         }
         crate::llm::utils::bash_ast::types::ParseForSecurityResult::ParseUnavailable => {
+            #[cfg(target_os = "windows")]
+            if let Some(res) = check_windows_powershell_fallback(command) {
+                return res;
+            }
             return (
                 RiskLevel::Risky,
                 Some("bash 解析器不可用，无法静态分析命令安全性".to_string()),
@@ -187,6 +195,10 @@ pub(crate) fn check_command(command: &str) -> (RiskLevel, Option<String>) {
         }
         let stripped = strip_wrappers_from_argv(&cmd.argv);
         if !is_read_only_command(&stripped) {
+            #[cfg(target_os = "windows")]
+            if let Some(res) = check_windows_powershell_fallback(command) {
+                return res;
+            }
             return (
                 RiskLevel::Risky,
                 Some(format!(
@@ -198,6 +210,89 @@ pub(crate) fn check_command(command: &str) -> (RiskLevel, Option<String>) {
     }
 
     (RiskLevel::Safe, None)
+}
+
+#[cfg(target_os = "windows")]
+fn check_windows_powershell_fallback(command: &str) -> Option<(RiskLevel, Option<String>)> {
+    let lower = command.to_ascii_lowercase();
+
+    // 1. 检查是否存在重定向符号写入文件
+    if lower.contains('>') {
+        return Some((
+            RiskLevel::Risky,
+            Some("命令包含重定向符号 (> / >>)，可能写入文件，需要确认".to_string()),
+        ));
+    }
+
+    // 2. 检查危险命令与写操作关键字
+    const POWERSHELL_DANGEROUS_TOKENS: &[&str] = &[
+        "remove-item", "rmdir", "del", "erase", "clear-content",
+        "set-content", "add-content", "out-file", "new-item",
+        "copy-item", "move-item", "rename-item",
+        "invoke-expression", "iex", "start-process", "saps",
+        "invoke-webrequest", "iwr", "irm", "set-executionpolicy",
+        "format-volume", "stop-process", "kill", "restart-computer", "stop-computer"
+    ];
+
+    // 分割管道
+    let stages: Vec<&str> = command.split('|').map(|s| s.trim()).collect();
+    if stages.is_empty() {
+        return None;
+    }
+
+    const SAFE_POWERSHELL_CMDLETS: &[&str] = &[
+        "get-childitem", "gci", "dir", "ls",
+        "get-content", "gc", "cat", "type",
+        "get-location", "gl", "pwd",
+        "select-object", "select",
+        "where-object", "where",
+        "measure-object", "measure",
+        "sort-object", "sort",
+        "get-command", "gcm",
+        "get-help", "help", "man",
+        "get-date", "get-host",
+        "get-process", "gps",
+        "get-service", "gsv",
+        "get-history", "history",
+        "write-output", "echo", "write-host",
+        "findstr", "head", "tail", "more", "less"
+    ];
+
+    for stage in &stages {
+        let trimmed_stage = stage.trim();
+        if trimmed_stage.is_empty() {
+            return None;
+        }
+        let tokens: Vec<&str> = trimmed_stage.split_whitespace().collect();
+        let first_token = tokens[0].to_ascii_lowercase();
+
+        // 检查参数中是否有指向受保护路径的参数
+        for token in &tokens[1..] {
+            let clean_token = token.trim_matches(|c| c == '\'' || c == '"');
+            if let Err(reason) = check_file_path(clean_token) {
+                return Some((RiskLevel::Forbidden, Some(reason)));
+            }
+        }
+
+        // 检查是否包含危险关键字
+        for dang in POWERSHELL_DANGEROUS_TOKENS {
+            if first_token == *dang || tokens.iter().any(|t| t.to_ascii_lowercase() == *dang) {
+                return Some((
+                    RiskLevel::Risky,
+                    Some(format!("PowerShell 命令包含写/执行操作（{}），需要确认", dang)),
+                ));
+            }
+        }
+
+        // 检查首 token 是否在安全只读命令表中
+        let is_safe = SAFE_POWERSHELL_CMDLETS.iter().any(|c| &first_token == c)
+            || is_read_only_command(&[first_token.clone()]);
+        if !is_safe {
+            return None;
+        }
+    }
+
+    Some((RiskLevel::Safe, None))
 }
 
 fn looks_like_shell_mcp(server: &str, tool: &str) -> bool {
@@ -334,4 +429,28 @@ mod tests {
     fn command_signature_normalized() {
         assert_eq!(normalize_command_for_match("  Git   STATUS "), "git status");
     }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn powershell_safe_commands_pass() {
+        let (risk, _) = check_command("Get-ChildItem -Path d:/project");
+        assert!(matches!(risk, RiskLevel::Safe));
+
+        let (risk_pipeline, _) = check_command("Get-ChildItem | Select-Object -First 10");
+        assert!(matches!(risk_pipeline, RiskLevel::Safe));
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn powershell_risky_and_forbidden_commands_flagged() {
+        let (risk, _) = check_command("Remove-Item file.txt");
+        assert!(matches!(risk, RiskLevel::Risky));
+
+        let (risk_redirect, _) = check_command("Get-ChildItem > out.txt");
+        assert!(matches!(risk_redirect, RiskLevel::Risky));
+
+        let (risk_protected, _) = check_command("Get-ChildItem C:/Windows");
+        assert!(matches!(risk_protected, RiskLevel::Forbidden));
+    }
 }
+

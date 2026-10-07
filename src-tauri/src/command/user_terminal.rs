@@ -1,4 +1,4 @@
-use crate::llm::services::user_terminal::{self, UserTerminalInfo};
+use crate::services::user_terminal::{self, UserTerminalInfo};
 use tauri::AppHandle;
 
 #[tauri::command]

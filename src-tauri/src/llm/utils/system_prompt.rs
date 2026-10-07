@@ -141,9 +141,15 @@ pub fn load_system_prompt(
     let prompt = match &bundle {
         Some(b) if !b.prompt.trim().is_empty() => b.prompt.trim().to_string(),
         _ => {
-            // 计算系统提示文件路径。开发调试时优先读取磁盘修改，未找到时使用编译期内联默认值。
-            let path = main_prompt_path();
-            read_non_empty_file(&path).unwrap_or_else(|| DEFAULT_SYSTEM_PROMPT.trim().to_string())
+            #[cfg(debug_assertions)]
+            {
+                let path = main_prompt_path();
+                read_non_empty_file(&path).unwrap_or_else(|| DEFAULT_SYSTEM_PROMPT.trim().to_string())
+            }
+            #[cfg(not(debug_assertions))]
+            {
+                DEFAULT_SYSTEM_PROMPT.trim().to_string()
+            }
         }
     };
 

@@ -1,12 +1,12 @@
 <script setup lang="ts">
 import { computed } from 'vue';
-import type { ConversationUsageSummary } from '../../../lib/chat-types';
+import type { ConversationUsageSummary } from '@/lib/chat-types';
 import ConversationUsageBar from '../ConversationUsageBar.vue';
 import {
   panelOpen as subagentPanelOpen,
   subagentsFor,
   togglePanel as toggleSubagentPanel,
-} from '../../../features/chat/services/subagents';
+} from '@/features/chat/services/subagents';
 
 const props = defineProps<{
   activeAgent?: { id: string; name: string; description?: string } | null;

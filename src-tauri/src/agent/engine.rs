@@ -170,6 +170,30 @@ impl AgentEngine {
                 }
             };
 
+            if cancel_token.is_cancelled()
+                || provider_result.stop_reason.as_deref() == Some("cancelled")
+            {
+                let _ = crate::llm::session_log::append_event(
+                    &self.app,
+                    conversation_id,
+                    Some(&turn_id),
+                    &SessionEvent::TurnEnd {
+                        turn_id: turn_id.clone(),
+                        stop_reason: Some("cancelled".to_string()),
+                    },
+                )
+                .await;
+                let _ = self.app.emit(
+                    "agent-event",
+                    AgentDomainEvent::TurnFinished {
+                        turn_id: turn_id.clone(),
+                        stop_reason: "cancelled".to_string(),
+                        total_tokens: total_turn_tokens,
+                    },
+                );
+                return Ok(());
+            }
+
             // 发射用量事件
             let input_tok = provider_result.input_tokens.unwrap_or(0);
             let output_tok = provider_result.output_tokens.unwrap_or(0);
@@ -253,14 +277,38 @@ impl AgentEngine {
                 );
             }
 
-            // 在 ReAct 决策循环外层执行工具（沙盒、权限、自愈 AST 语法树检查）
+            // 在 ReAct 决策循环外层执行工具（支持立即强制取消中断）
             let exec_start = std::time::Instant::now();
-            let executed_calls = crate::llm::tools::execute_tool_calls_with_app(
-                &self.app,
-                Some(conversation_id),
-                tool_calls,
-            )
-            .await;
+            let executed_calls = tokio::select! {
+                biased;
+                _ = cancel_token.cancelled() => {
+                    tracing::info!("Agent turn cancelled during tool execution");
+                    let _ = crate::llm::session_log::append_event(
+                        &self.app,
+                        conversation_id,
+                        Some(&turn_id),
+                        &SessionEvent::TurnEnd {
+                            turn_id: turn_id.clone(),
+                            stop_reason: Some("cancelled".to_string()),
+                        },
+                    )
+                    .await;
+                    let _ = self.app.emit(
+                        "agent-event",
+                        AgentDomainEvent::TurnFinished {
+                            turn_id: turn_id.clone(),
+                            stop_reason: "cancelled".to_string(),
+                            total_tokens: total_turn_tokens,
+                        },
+                    );
+                    return Ok(());
+                }
+                calls = crate::llm::tools::execute_tool_calls_with_app(
+                    &self.app,
+                    Some(conversation_id),
+                    tool_calls,
+                ) => calls,
+            };
             let duration_ms = exec_start.elapsed().as_millis() as u64;
 
             let mut tool_result_blocks = Vec::new();
@@ -364,13 +412,19 @@ impl AgentEngine {
         }
 
         // 6. 认知循环收尾：终结事件记录与会话元信息同步
+        let final_stop_reason = if cancel_token.is_cancelled() {
+            "cancelled".to_string()
+        } else {
+            "end_turn".to_string()
+        };
+
         let _ = crate::llm::session_log::append_event(
             &self.app,
             conversation_id,
             Some(&turn_id),
             &SessionEvent::TurnEnd {
                 turn_id: turn_id.clone(),
-                stop_reason: Some("end_turn".to_string()),
+                stop_reason: Some(final_stop_reason.clone()),
             },
         )
         .await;
@@ -386,7 +440,11 @@ impl AgentEngine {
             "agent-event",
             AgentDomainEvent::StateChanged {
                 turn_id: turn_id.clone(),
-                state: CognitiveState::TurnComplete,
+                state: if cancel_token.is_cancelled() {
+                    CognitiveState::Idle
+                } else {
+                    CognitiveState::TurnComplete
+                },
             },
         );
 
@@ -394,7 +452,7 @@ impl AgentEngine {
             "agent-event",
             AgentDomainEvent::TurnFinished {
                 turn_id: turn_id.clone(),
-                stop_reason: "end_turn".to_string(),
+                stop_reason: final_stop_reason,
                 total_tokens: total_turn_tokens,
             },
         );

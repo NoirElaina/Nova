@@ -1,7 +1,7 @@
 import { ref, computed, nextTick, type Ref, type ComputedRef } from 'vue';
 import { invoke } from '@tauri-apps/api/core';
-import { emitToast, emitErrorToast } from '../../../lib/toast';
-import { getWorkspaceDiff } from '../../../features/chat/services/chat-api';
+import { emitToast, emitErrorToast } from '@/lib/toast';
+import { getWorkspaceDiff } from '@/features/chat/services/chat-api';
 import {
   MEMORY_OPTIONS,
   REVIEW_OPTIONS,
@@ -16,7 +16,7 @@ import {
   allSlashCommands,
   type SlashCommandEntry,
   type SlashParamOption,
-} from '../../../lib/slash-commands';
+} from '@/lib/slash-commands';
 
 export interface SkillSummary {
   name: string;

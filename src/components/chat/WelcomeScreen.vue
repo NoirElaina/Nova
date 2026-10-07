@@ -1,7 +1,7 @@
 <script setup lang="ts">
-import InputArea from '../layout/InputArea.vue';
+import InputArea from './input/InputArea.vue';
 import EnvironmentBar from './EnvironmentBar.vue';
-import type { PendingUploadFile } from '../../lib/chat-types';
+import type { PendingUploadFile } from '@/lib/chat-types';
 
 defineProps<{
   workspacePath?: string;

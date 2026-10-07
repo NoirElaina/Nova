@@ -5,7 +5,10 @@ import type {
   ToolExecutionEntry,
   ToolTurnSummary,
 } from "../../../lib/chat-types";
-import { buildToolSummaryForSegment } from "../../../features/chat/utils/assistant-transcript";
+import {
+  buildAssistantTranscriptSegments,
+  buildToolSummaryForSegment,
+} from "../../../features/chat/utils/assistant-transcript";
 import MarkdownRenderer from "../MarkdownRenderer.vue";
 import TurnActivitySummaryCard from "./TurnActivitySummaryCard.vue";
 import ModifiedFilesCard from "./ModifiedFilesCard.vue";
@@ -21,18 +24,11 @@ const props = withDefaults(
   { live: false },
 );
 
-// 不深拷贝：直接过滤，降低每 token 分配
-const renderSegments = computed(() =>
-  props.segments.filter((segment) => {
-    if (segment.type === "reasoning") {
-      return segment.text.trim().length > 0;
-    }
-    if (segment.type === "tools") {
-      return segment.toolIds.length > 0;
-    }
-    return segment.text.trim().length > 0;
-  }),
-);
+// 渲染前统一通过 buildAssistantTranscriptSegments 执行“正文边界合并”：
+// 没有被正文分开的思考块合并在同一个思考块中，工具块合并在同一个工具块中，思考与工具互不混合。
+const renderSegments = computed(() => {
+  return buildAssistantTranscriptSegments(props.segments);
+});
 
 const aggregatedToolEntries = computed<ToolExecutionEntry[]>(() => {
   const byId = new Map<string, ToolExecutionEntry>();
@@ -55,9 +51,7 @@ const aggregatedToolEntries = computed<ToolExecutionEntry[]>(() => {
 
 function segmentKey(segment: AssistantTranscriptSegment, index: number): string {
   if (segment.type === "tools") {
-    // 锚定该组第一个工具 ID（追加新工具时不变）。
-    // 不能混入 index/length：流式执行中组内追加工具会让 key 变化，
-    // 卡片被销毁重建，<details> 的展开状态随之丢失（面板莫名折叠）。
+    // 锚定该组第一个工具 ID（追加新工具时不变，避免卡片重建导致折叠状态丢失）
     return `tools-${segment.toolIds[0] ?? index}`;
   }
   return `${index}-${segment.type}`;
@@ -191,9 +185,7 @@ function reasoningLivePreview(text: string): string {
   transition: transform 0.16s ease;
 }
 
-/* 流式思考预览：单行最新思考文字 + 流光扫过动画；展开详情或思考结束后隐藏。
-   direction:rtl + text-align:left：短行左对齐，长行从左侧裁掉（最新内容恒可见），
-   左缘用遮罩渐隐代替省略号（文字透明，CSS 省略号不可见）。 */
+/* 流式思考预览：单行最新思考文字 + 流光扫过动画；展开详情或思考结束后隐藏。 */
 .transcript-reasoning__live {
   flex-basis: 100%;
   display: block;

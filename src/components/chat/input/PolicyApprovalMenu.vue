@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref } from 'vue';
 import { invoke } from '@tauri-apps/api/core';
-import { emitErrorToast } from '../../lib/toast';
+import { emitErrorToast } from '@/lib/toast';
 
 type ApprovalPolicyValue = 'always_ask' | 'on_request' | 'never';
 

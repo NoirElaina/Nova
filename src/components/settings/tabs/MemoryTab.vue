@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref } from 'vue'
 import { invoke } from '@tauri-apps/api/core'
-import { emitToast } from '../../../../lib/toast'
+import { emitToast } from '@/lib/toast'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { ConfirmDialog } from '@/components/ui/confirm-dialog'
@@ -10,7 +10,7 @@ import {
   getStoredUiLanguage,
   normalizeUiLanguage,
   type UiLanguage,
-} from '../../../../lib/ui-preferences'
+} from '@/lib/ui-preferences'
 
 const uiLanguage = ref<UiLanguage>(getStoredUiLanguage())
 const isLoadingMemory = ref(false)

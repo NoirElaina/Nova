@@ -96,7 +96,7 @@ async fn execute_async(
         .and_then(Value::as_bool)
         .unwrap_or(false);
 
-    let res = crate::agent::tools::edit::execute_exact_edit(file_path, old_string, new_string, replace_all)
+    let res = crate::llm::tools::shared::edit::execute_exact_edit(file_path, old_string, new_string, replace_all)
         .await
         .map_err(ToolFailure::new)?;
 

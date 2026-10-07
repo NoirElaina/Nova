@@ -1,10 +1,9 @@
 use tauri::AppHandle;
-use tracing::{info, warn};
 use crate::llm::utils::error_event::report_backend_result;
 
 
-// 对外复用 query_engine 的事件类型定义。
-pub use crate::llm::query_engine::ChatMessageEvent;
+// 对外复用 types 的事件类型定义。
+pub use crate::llm::types::ChatMessageEvent;
 
 
 #[tauri::command]
@@ -23,23 +22,7 @@ pub async fn ack_chat_turn_status(conversation_id: Option<String>) -> Result<boo
     ))
 }
 
-#[tauri::command]
-pub async fn cancel_chat_message(conversation_id: Option<String>) -> Result<bool, String> {
-    // 提交取消请求并返回是否成功命中运行中的会话。
-    let hit = crate::llm::cancellation::request_cancel(conversation_id.as_deref());
-    if hit {
-        info!(
-            conversation_id = %conversation_id.as_deref().unwrap_or("__default__"),
-            "chat turn cancel requested"
-        );
-    } else {
-        warn!(
-            conversation_id = %conversation_id.as_deref().unwrap_or("__default__"),
-            "chat turn cancel missed active scope"
-        );
-    }
-    Ok(hit)
-}
+
 
 #[tauri::command]
 pub async fn submit_permission_decision(

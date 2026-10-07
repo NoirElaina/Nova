@@ -5,7 +5,7 @@ import {
   getStoredUiLanguage,
   normalizeUiLanguage,
   type UiLanguage,
-} from '../../../lib/ui-preferences'
+} from '@/lib/ui-preferences'
 
 import GeneralTab from './tabs/GeneralTab.vue'
 import ModelTab   from './tabs/ModelTab.vue'
@@ -78,7 +78,7 @@ const localeTexts = {
   },
 } as const
 
-const t = computed(() => localeTexts[uiLanguage.value])
+const t = computed(() => localeTexts[uiLanguage.value as keyof typeof localeTexts] ?? localeTexts['zh-CN'])
 
 const sidebarItemClass = 'h-8 w-full justify-start gap-2.5 rounded-md px-2.5 text-left text-[13px] font-normal transition-colors'
 const sidebarItemActiveClass = 'bg-white text-[#111827] shadow-[0_1px_1px_rgba(15,23,42,0.04)] ring-1 ring-[#e5e7eb] dark:bg-[#2b2b2b] dark:text-[#f5f5f5] dark:ring-[#383838]'

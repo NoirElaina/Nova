@@ -10,7 +10,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select';
-import { emitErrorToast } from '../../lib/toast';
+import { emitErrorToast } from '@/lib/toast';
 
 const props = defineProps<{
   settings: Record<string, any> | null;

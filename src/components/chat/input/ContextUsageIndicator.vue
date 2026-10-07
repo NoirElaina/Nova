@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue';
 import { invoke } from '@tauri-apps/api/core';
-import type { ContextUsage } from '../../lib/chat-types';
+import type { ContextUsage } from '@/lib/chat-types';
 
 const props = defineProps<{
   usage?: ContextUsage;

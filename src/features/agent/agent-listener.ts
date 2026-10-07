@@ -4,16 +4,16 @@ import type { AgentDomainEvent } from "./agent-events";
 export interface ModernAgentCallbacks {
   onTurnStarted?: (turnId: string, conversationId: string) => void;
   onStateChanged?: (turnId: string, state: string) => void;
-  onThinkingDelta?: (delta: string) => void;
-  onTextDelta?: (delta: string) => void;
-  onToolRequested?: (callId: string, toolName: string, args: Record<string, unknown>) => void;
-  onToolCompleted?: (callId: string, toolName: string, output: string, isError: boolean, durationMs: number) => void;
+  onThinkingDelta?: (delta: string, turnId?: string) => void;
+  onTextDelta?: (delta: string, turnId?: string) => void;
+  onToolRequested?: (callId: string, toolName: string, args: Record<string, unknown>, turnId?: string) => void;
+  onToolCompleted?: (callId: string, toolName: string, output: string, isError: boolean, durationMs: number, turnId?: string) => void;
   onVerificationStarted?: (target: string) => void;
   onVerificationCompleted?: (target: string, passed: boolean, feedback?: string) => void;
-  onTokenUsage?: (usage: { input: number; output: number; cacheRead: number; cacheCreate: number }) => void;
+  onTokenUsage?: (usage: { input: number; output: number; cacheRead: number; cacheCreate: number }, turnId?: string) => void;
   onPermissionRequested?: (turnId: string, requestId: string, toolName: string, payload: string) => void;
   onTurnFinished?: (turnId: string, stopReason: string) => void;
-  onError?: (error: string) => void;
+  onError?: (error: string, turnId?: string) => void;
 }
 
 /**
@@ -36,18 +36,19 @@ export async function setupAgentEventListener(
         break;
 
       case "thinking_delta":
-        callbacks.onThinkingDelta?.(data.payload.delta);
+        callbacks.onThinkingDelta?.(data.payload.delta, data.payload.turn_id);
         break;
 
       case "text_delta":
-        callbacks.onTextDelta?.(data.payload.delta);
+        callbacks.onTextDelta?.(data.payload.delta, data.payload.turn_id);
         break;
 
       case "tool_call_requested":
         callbacks.onToolRequested?.(
           data.payload.call_id,
           data.payload.tool_name,
-          data.payload.arguments
+          data.payload.arguments,
+          data.payload.turn_id
         );
         break;
 
@@ -57,7 +58,8 @@ export async function setupAgentEventListener(
           data.payload.tool_name,
           data.payload.output,
           data.payload.is_error,
-          data.payload.duration_ms
+          data.payload.duration_ms,
+          data.payload.turn_id
         );
         break;
 
@@ -79,7 +81,7 @@ export async function setupAgentEventListener(
           output: data.payload.output_tokens,
           cacheRead: data.payload.cache_read_tokens,
           cacheCreate: data.payload.cache_creation_tokens,
-        });
+        }, data.payload.turn_id);
         break;
 
       case "permission_requested":
@@ -96,7 +98,7 @@ export async function setupAgentEventListener(
         break;
 
       case "turn_error":
-        callbacks.onError?.(data.payload.error);
+        callbacks.onError?.(data.payload.error, data.payload.turn_id);
         break;
     }
   });

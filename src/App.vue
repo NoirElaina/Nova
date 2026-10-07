@@ -12,7 +12,7 @@ import BackgroundJobsPanel from "./components/chat/BackgroundJobsPanel.vue";
 import HooksConfigScreen from "./components/hooks/HooksConfigScreen.vue";
 import AgentConfigScreen from "./components/agent/AgentConfigScreen.vue";
 import ScheduleTaskScreen from "./components/schedule/ScheduleTaskScreen.vue";
-import SettingsScreen from "./components/layout/settings/SettingsScreen.vue";
+import SettingsScreen from "./components/settings/SettingsScreen.vue";
 import GlobalToastHost from "./components/layout/GlobalToastHost.vue";
 import { useChatController } from "./features/chat/controllers/useChatController";
 import {

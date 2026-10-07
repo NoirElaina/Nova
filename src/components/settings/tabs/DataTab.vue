@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref } from 'vue'
 import { invoke } from '@tauri-apps/api/core'
-import { emitToast } from '../../../../lib/toast'
+import { emitToast } from '@/lib/toast'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { ConfirmDialog } from '@/components/ui/confirm-dialog'
@@ -9,7 +9,7 @@ import {
   getStoredUiLanguage,
   normalizeUiLanguage,
   type UiLanguage,
-} from '../../../../lib/ui-preferences'
+} from '@/lib/ui-preferences'
 
 type ProviderProfile = {
   apiKey?: string
@@ -79,7 +79,7 @@ const localeTexts = {
   },
 } as const
 
-const t = computed(() => localeTexts[uiLanguage.value])
+const t = computed(() => localeTexts[uiLanguage.value as keyof typeof localeTexts] ?? localeTexts['zh-CN'])
 const confirmDialogOpen = computed({
   get: () => pendingConfirmAction.value !== null,
   set: (value: boolean) => {

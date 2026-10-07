@@ -14,7 +14,7 @@ import {
   getStoredUiLanguage,
   normalizeUiLanguage,
   type UiLanguage,
-} from '../../../lib/ui-preferences'
+} from '@/lib/ui-preferences'
 
 const props = defineProps<{ modelValue: boolean }>()
 const emit  = defineEmits<{ 'update:modelValue': [val: boolean] }>()

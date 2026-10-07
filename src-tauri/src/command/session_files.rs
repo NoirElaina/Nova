@@ -1,7 +1,7 @@
 use tauri::AppHandle;
 
-use crate::llm::services::session_files::{self, SessionFileMeta};
-use crate::llm::utils::error_event::report_backend_result;
+use crate::agent::capabilities::session_files::{self, SessionFileMeta};
+use crate::agent::utils::error_event::report_backend_result;
 
 #[tauri::command]
 pub async fn save_session_file(

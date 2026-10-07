@@ -1,5 +1,5 @@
-use crate::llm::services::skills::{list_skill_summaries_with_app, SkillSummary};
-use crate::llm::utils::error_event::report_backend_result;
+use crate::agent::capabilities::skills::{list_skill_summaries_with_app, SkillSummary};
+use crate::agent::utils::error_event::report_backend_result;
 use std::path::PathBuf;
 use tauri::AppHandle;
 use tauri::Manager;
@@ -34,7 +34,7 @@ pub fn delete_skill(app: AppHandle, path: String) -> Result<(), String> {
         let skills_root = app_data.join("skills");
 
         let allowed = skill_dir.starts_with(&skills_root)
-            || crate::llm::services::agent_bundles::list_bundles(&app)
+            || crate::agent::capabilities::agent_bundles::list_bundles(&app)
                 .map(|bundles| {
                     bundles.iter().any(|b| {
                         agent_bundle_skills_dir(&app, &b.id)
@@ -55,7 +55,7 @@ pub fn delete_skill(app: AppHandle, path: String) -> Result<(), String> {
         // 用于删除后清理 disabledSkills 中的残留条目。
         let skill_name = std::fs::read_to_string(&skill_md)
             .ok()
-            .map(|raw| crate::llm::services::skills::pick_skill_name(&skill_md, &raw))
+            .map(|raw| crate::agent::capabilities::skills::pick_skill_name(&skill_md, &raw))
             .or_else(|| {
                 skill_dir
                     .file_name()
@@ -68,12 +68,12 @@ pub fn delete_skill(app: AppHandle, path: String) -> Result<(), String> {
         // 从停用名单移除该技能名（残留无害但顺手清干净）。
         if let Some(name) = skill_name {
             if let Ok(mut settings) = crate::command::settings::load_settings(&app) {
-                let target = crate::llm::services::skills::normalize_skill_name(&name);
+                let target = crate::agent::capabilities::skills::normalize_skill_name(&name);
                 let before = settings.disabled_skills.len();
                 settings
                     .disabled_skills
                     .retain(|existing| {
-                        crate::llm::services::skills::normalize_skill_name(existing) != target
+                        crate::agent::capabilities::skills::normalize_skill_name(existing) != target
                     });
                 if settings.disabled_skills.len() != before {
                     let _ = crate::command::settings::save_settings_inner(&app, settings);
@@ -90,5 +90,5 @@ fn agent_bundle_skills_dir(
     app: &AppHandle,
     bundle_id: &str,
 ) -> Result<PathBuf, String> {
-    crate::llm::services::agent_bundles::agent_skills_dir(app, bundle_id)
+    crate::agent::capabilities::agent_bundles::agent_skills_dir(app, bundle_id)
 }

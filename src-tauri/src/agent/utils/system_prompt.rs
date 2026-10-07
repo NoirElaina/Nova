@@ -1,0 +1,268 @@
+use std::path::{Path, PathBuf};
+
+use tauri::AppHandle;
+
+use crate::agent::capabilities::agent_bundles;
+use crate::agent::capabilities::skills::list_enabled_skill_summaries_with_app;
+use crate::provider::types::AgentMode;
+
+// 系统提示文件名（相对工程目录 src/prompt）
+const SYSTEM_PROMPT_FILE_NAME: &str = "system_prompt.md";
+// 编译期内联默认系统提示词，确保打包为独立二进制分发后即使开发机路径不存在也不会崩溃
+const DEFAULT_SYSTEM_PROMPT: &str = include_str!("../../prompt/system_prompt.md");
+
+const GLOBAL_MEMORY_SECTION: &str = r#"
+
+## Memory
+- You SHOULD call the `memory` tool to persist stable cross-session facts when:
+  1. The user expresses a preference or correction (e.g. "太长了"、"不要兜底"、"用中文"、"我说的是...")
+  2. The user reveals durable facts about themselves or their project
+  3. The user establishes a workflow rule or convention
+  4. You NOTICE implicit signals worth remembering — not only explicit statements:
+     the language/style the user consistently writes in, their tech stack and tooling
+     (visible from the code and workflows they discuss), recurring habits, skill level,
+     or anything they would not want to re-explain in a future session
+- Priority: user preferences and corrections > user profile traits > project facts > procedural details
+- Write DECLARATIVE facts, not imperatives:
+  ✓ "User prefers concise responses"
+  ✗ "Always respond concisely"
+- Do NOT store: secrets, credentials, private tokens, one-off tasks, environment errors, transient failures
+- Keep entries concise, specific, and reusable
+- Use `action="replace"` or `action="remove"` to consolidate or prune stale entries;
+  when the user corrects an existing preference, REPLACE the old entry instead of adding a conflicting one
+"#;
+
+fn read_non_empty_file(path: &Path) -> Option<String> {
+    // 经全局文件内容缓存读取（指纹失效）：主提示词文件较大，
+    // 避免每轮请求重复读盘；文件未变时直接命中内存。
+    let (text, _) = crate::agent::utils::file_io::read_file_meta(path).ok()?;
+    // 去掉首尾空白后判断是否为空。
+    let trimmed = text.trim();
+    // 空文件或全空白文件视为无效。
+    if trimmed.is_empty() {
+        return None;
+    }
+    // 返回裁剪后的新字符串。
+    Some(trimmed.to_string())
+}
+
+fn main_prompt_path() -> PathBuf {
+    // 从编译时清单目录开始构造绝对路径。
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        // 进入 src 目录。
+        .join("src")
+        // 进入 prompt 子目录。
+        .join("prompt")
+        // 拼接系统提示文件名。
+        .join(SYSTEM_PROMPT_FILE_NAME)
+}
+
+/// 渐进式披露：把 Deferred 工具目录（名字 + 一行描述）注入提示词，
+/// 告诉模型这些工具需先通过 LoadTool 加载，同时列出本会话已加载的名字。
+fn append_on_demand_tools_section(
+    prompt: String,
+    app: &AppHandle,
+    conversation_id: Option<&str>,
+) -> String {
+    let disclosure_enabled = crate::command::settings::load_settings(app)
+        .map(|settings| settings.progressive_tool_disclosure)
+        .unwrap_or(true);
+    if !disclosure_enabled {
+        return prompt;
+    }
+
+    let deferred = crate::agent::tools::deferred_tool_definitions();
+    if deferred.is_empty() {
+        return prompt;
+    }
+
+    let mut lines: Vec<String> = deferred
+        .iter()
+        .map(|tool| {
+            let summary: String = tool.description.chars().take(120).collect();
+            format!("- **{}**: {}", tool.name, summary.trim())
+        })
+        .collect();
+    lines.sort();
+
+    let mut section = format!(
+        "\n\n## On-Demand Tools\nThe following tools are available but NOT loaded by default. \
+Before using one, call `LoadTool` with its name (it becomes callable from the next step):\n{}\n",
+        lines.join("\n")
+    );
+
+    let disclosed = crate::agent::capabilities::tool_disclosure::disclosed_tools(app, conversation_id);
+    if !disclosed.is_empty() {
+        let mut loaded: Vec<&String> = disclosed.iter().collect();
+        loaded.sort();
+        section.push_str(&format!(
+            "Already loaded in this conversation (call directly): {}\n",
+            loaded
+                .iter()
+                .map(|name| name.as_str())
+                .collect::<Vec<_>>()
+                .join(", ")
+        ));
+    }
+
+    format!("{}{}", prompt, section)
+}
+
+pub fn load_system_prompt(
+    app: &AppHandle,
+    agent_mode: AgentMode,
+    conversation_id: Option<&str>,
+) -> Result<String, String> {
+    // 分支问答会话：纯问答精简提示词，完全跳过主工程协议、
+    // bundle/skills/memory 段（分支无任何工具，写了就是误导）。
+    if crate::agent::orchestration::branch::is_branch_conversation(conversation_id) {
+        return Ok(crate::agent::orchestration::branch::system_prompt());
+    }
+
+    // 子代理会话：使用专属精简提示词，完全跳过主工程协议、
+    // bundle/skills/memory 段（对应工具对子代理不可见，写了就是误导）。
+    // 工作区按父会话解析（子 ID 不在会话表里）。
+    if crate::agent::orchestration::subagent::is_subagent_conversation(conversation_id) {
+        let parent = conversation_id
+            .map(crate::agent::orchestration::subagent::parent_conversation_id)
+            .unwrap_or_default();
+        let ws = crate::command::workspace::workspace_root_for_conversation(app, Some(parent))?;
+        let prompt = crate::agent::orchestration::subagent::system_prompt().replace(
+            "Workspace root is provided in the first message.",
+            &format!("Workspace root: {}.", ws.display()),
+        );
+        return Ok(prompt);
+    }
+
+    let bundle = agent_bundles::active_bundle(app, conversation_id);
+
+    // 基础提示词：挂载了带提示词的智能体套件时**完整替换**默认系统提示词——
+    // 用户定义的是独立智能体，不叠加 Nova 默认的工程协议；为空时回落默认 system_prompt.md。
+    let prompt = match &bundle {
+        Some(b) if !b.prompt.trim().is_empty() => b.prompt.trim().to_string(),
+        _ => {
+            #[cfg(debug_assertions)]
+            {
+                let path = main_prompt_path();
+                read_non_empty_file(&path).unwrap_or_else(|| DEFAULT_SYSTEM_PROMPT.trim().to_string())
+            }
+            #[cfg(not(debug_assertions))]
+            {
+                DEFAULT_SYSTEM_PROMPT.trim().to_string()
+            }
+        }
+    };
+
+    // 将 workspace 路径注入提示词（bundle 提示词同样支持占位符）。
+    let ws = crate::command::workspace::workspace_root_for_conversation(app, conversation_id)?;
+    let prompt = prompt.replace("{{NOVA_WORKSPACE}}", &ws.display().to_string());
+
+    // 将平台信息注入提示词。
+    let platform = if cfg!(target_os = "windows") {
+        "Windows"
+    } else if cfg!(target_os = "macos") {
+        "macOS"
+    } else {
+        "Linux"
+    };
+    let prompt = prompt.replace("{{NOVA_PLATFORM}}", platform);
+
+    // 将 rg 完整路径注入提示词。复用 GrepTool 的 find_rg_path,
+    // 保证提示词里写的路径与 Grep 实际使用的路径一致(含 env/bundled/PATH 回退)。
+    let rg_path = crate::agent::tools::grep_tool::find_rg_path(app);
+    let prompt = prompt.replace("{{RG_PATH}}", &rg_path);
+
+    // 渐进式披露目录：告知模型哪些工具需先通过 LoadTool 加载。
+    let prompt = append_on_demand_tools_section(prompt, app, conversation_id);
+
+    // Memory 使用说明只有 memory 工具对当前智能体可见时才注入
+    //（bundle 自定义工具清单排除了 memory 时，写它就是误导）。
+    let memory_tool_visible = match &bundle {
+        Some(b) => b.is_tool_enabled("memory"),
+        None => true,
+    };
+    let prompt_with_memory = if memory_tool_visible {
+        format!("{}{}", prompt, GLOBAL_MEMORY_SECTION)
+    } else {
+        prompt
+    };
+
+    // 注入全局记忆 snapshot：随记忆增删改实时重建，删除记忆后立即不再注入。
+    let prompt_with_memory = match crate::agent::capabilities::memory_dir::snapshot(app) {
+        Some(snapshot_block) => format!("{}\n\n{}\n", prompt_with_memory, snapshot_block),
+        None => prompt_with_memory,
+    };
+
+    // 注入可用 skill 元数据，AI 无需先 list 即可直接 run。
+    // 已停用（全局设置）、不在当前 bundle 白名单内、或 Skill 工具本身被 bundle
+    // 排除时（列出来模型也调不了），一律不注入。
+    // bundle 私有技能（agents/<id>/skills/）始终附加：它们不受白名单约束。
+    let skill_tool_visible = match &bundle {
+        Some(b) => b.is_tool_enabled("Skill"),
+        None => true,
+    };
+    let prompt_with_memory = if skill_tool_visible {
+        let skills_result = match &bundle {
+            Some(bundle) => crate::agent::capabilities::skills::load_skills_for_conversation(app, Some(bundle))
+                .map(|entries| entries
+                    .into_iter()
+                    .map(|s| crate::agent::capabilities::skills::SkillSummary {
+                        name: s.name,
+                        description: s.description,
+                        path: s.path.display().to_string(),
+                    })
+                    .collect::<Vec<_>>()),
+            None => list_enabled_skill_summaries_with_app(app),
+        };
+        match skills_result {
+            Ok(skills) if !skills.is_empty() => {
+                let lines: String = skills
+                    .iter()
+                    .map(|s| format!("- **{}**: {}", s.name, s.description))
+                    .collect::<Vec<String>>()
+                    .join("\n");
+                format!("{}\n\n## Available Skills\n{}\n", prompt_with_memory, lines)
+            }
+            _ => prompt_with_memory,
+        }
+    } else {
+        prompt_with_memory
+    };
+
+    // 智能体资料目录：bundle 挂载且 files/ 非空时注入绝对路径，
+    // AI 用 Read/Glob/Grep 按需访问（与 [Session Files] 注入同一模式）。
+    let prompt_with_memory = match &bundle {
+        Some(bundle) => match crate::agent::capabilities::agent_bundles::agent_files_dir(app, &bundle.id)
+        {
+            Ok(files_dir)
+                if files_dir.is_dir()
+                    && std::fs::read_dir(&files_dir)
+                        .map(|mut it| it.next().is_some())
+                        .unwrap_or(false) =>
+            {
+                format!(
+                    "{}\n\n## Agent Resources\nThis agent has a resource directory with reference files. Files are stored at: {}; use the Read, Glob, and Grep tools to access them via absolute path.\n",
+                    prompt_with_memory,
+                    files_dir.display()
+                )
+            }
+            _ => prompt_with_memory,
+        },
+        None => prompt_with_memory,
+    };
+
+    // 注入真实生效的 AgentMode 行为规范约束
+    let final_prompt = match agent_mode {
+        AgentMode::Plan => format!(
+            "{}\n\n## Mode: Plan (Architect)\nYou are strictly in Plan Mode. Your goal is to explore the codebase, research architecture, and design detailed implementation plans. You MUST NOT modify any files (do NOT call Edit, Write, or mutation tools). Focus on requirements analysis, architectural design, and step-by-step task breakdowns.\n",
+            prompt_with_memory
+        ),
+        AgentMode::Ask => format!(
+            "{}\n\n## Mode: Ask (Consultation)\nYou are strictly in Ask Mode. Your goal is to answer questions, analyze issues, and explain concepts. You MUST NOT modify any files or execute mutation actions.\n",
+            prompt_with_memory
+        ),
+        AgentMode::Agent => prompt_with_memory,
+    };
+
+    Ok(final_prompt)
+}

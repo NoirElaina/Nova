@@ -1,0 +1,378 @@
+use crate::agent::tools::{
+    app_tool, AppExecuteFuture, ToolDisclosure, ToolFailure, ToolOutcome, ToolPermissionDescriptor,
+    ToolRegistration,
+};
+use crate::provider::types::Tool;
+use crate::agent::permissions::protected_path_violation;
+use serde_json::{json, Value};
+use std::path::PathBuf;
+use tauri::AppHandle;
+use tauri::Manager;
+use tokio::process::Command;
+
+#[cfg(target_os = "windows")]
+const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+
+pub(super) fn registration() -> ToolRegistration {
+    // read_only=true，permission=Some（搜索敏感目录需审批，与 ReadTool 保持一致）
+    app_tool(tool, execute_with_app_boxed, true, Some(grep_permission), ToolDisclosure::Core)
+}
+
+/// GrepTool 权限检查：搜索路径命中受保护路径时需审批。
+/// 攻击场景：Grep(pattern="AWS_ACCESS_KEY", path="/Users/victim/.aws")
+fn grep_permission(input: &Value) -> Option<ToolPermissionDescriptor> {
+    let path = input.get("path").and_then(Value::as_str).unwrap_or("");
+    if path.is_empty() {
+        return None;
+    }
+    if protected_path_violation(path).is_err() {
+        return Some(ToolPermissionDescriptor {
+            signature: format!("grep:sensitive:{}", path),
+            preview: format!("搜索敏感路径 {}", path),
+            warning: Some("该路径可能包含凭据或密钥".to_string()),
+            risk: crate::agent::permissions::RiskLevel::Risky,
+        });
+    }
+    None
+}
+
+pub fn tool() -> Tool {
+    Tool {
+        name: "Grep".into(),
+        description: r#"Content search built on ripgrep (rg) — the primary tool for finding where code, symbols, strings, or patterns live in a codebase. Always prefer it over shell grep/rg/findstr.
+
+## When to use this tool
+- Finding where a function/class/variable is defined, referenced, or called.
+- Finding string literals, error messages, or configuration keys.
+- Locating code by content when the file name is unknown (use Glob when you know the name).
+- Gauging the blast radius of a rename or API change before editing.
+
+## How to search effectively
+- `pattern` is a ripgrep-flavored regular expression. Escape regex metacharacters (`( ) [ ] { } . + * ? $ ^ | \`) with a backslash when searching for them literally.
+- Search broadly first (omit `path` to search the workspace root), then narrow with `path` and `glob` if there is too much noise.
+- For "where is X defined" queries, search definition-shaped patterns: `fn X`, `struct X`, `class X`, `def X`, `const X`, `interface X`, etc.
+- Combine with Read: Grep locates the lines; Read shows the full surrounding context.
+
+## Output control
+- `output_mode`: `"files_with_matches"` (default — file paths only), `"content"` (matching lines with line numbers), or `"count"` (match counts per file).
+- `-A`/`-B`/`-C`: context lines after/before/around each match (content mode only) — often cheaper than a follow-up Read.
+- `-i`: case-insensitive. `-n`: line numbers (defaults to true in content mode).
+- `head_limit` (default 250) caps output; `offset` skips earlier entries for paging.
+- `multiline`: `.` matches newlines and patterns can span lines (rg -U --multiline-dotall).
+
+## Common mistakes
+- Unescaped metacharacters when searching literal text (e.g. `foo.bar` also matches `fooxbar`).
+- Searching a single directory when the symbol may live elsewhere — default to the workspace root.
+- Requesting content mode on patterns with thousands of hits without a `head_limit`.
+- Using shell grep via Bash instead of this tool."#
+            .into(),
+        input_schema: json!({
+            "type": "object",
+            "properties": {
+                "pattern": {
+                    "type": "string",
+                    "description": "The regular expression pattern to search for in file contents"
+                },
+                "path": {
+                    "type": "string",
+                    "description": "File or directory to search in. Defaults to the workspace root."
+                },
+                "glob": {
+                    "type": "string",
+                    "description": "Glob pattern to filter files (e.g. \"*.rs\", \"*.{ts,tsx}\")"
+                },
+                "output_mode": {
+                    "type": "string",
+                    "enum": ["content", "files_with_matches", "count"],
+                    "description": "Output mode. Defaults to \"files_with_matches\"."
+                },
+                "-A": {
+                    "type": "integer",
+                    "description": "Number of lines to show after each match (rg -A). Requires output_mode: \"content\"."
+                },
+                "-B": {
+                    "type": "integer",
+                    "description": "Number of lines to show before each match (rg -B). Requires output_mode: \"content\"."
+                },
+                "-C": {
+                    "type": "integer",
+                    "description": "Number of lines to show before and after each match (rg -C). Requires output_mode: \"content\"."
+                },
+                "-i": {
+                    "type": "boolean",
+                    "description": "Case insensitive search (rg -i)"
+                },
+                "-n": {
+                    "type": "boolean",
+                    "description": "Show line numbers in output (rg -n). Requires output_mode: \"content\". Defaults to true."
+                },
+                "multiline": {
+                    "type": "boolean",
+                    "description": "Enable multiline mode where . matches newlines and patterns can span lines (rg -U --multiline-dotall). Default: false."
+                },
+                "head_limit": {
+                    "type": "integer",
+                    "description": "Limit output to the first N lines/entries. Defaults to 250."
+                },
+                "offset": {
+                    "type": "integer",
+                    "description": "Skip first N lines/entries before applying head_limit. Defaults to 0."
+                }
+            },
+            "required": ["pattern"]
+        }),
+    }
+}
+
+const DEFAULT_HEAD_LIMIT: usize = 250;
+const MAX_OUTPUT_BYTES: usize = 512 * 1024;
+
+pub(crate) fn find_rg_path(app: &AppHandle) -> String {
+    if let Ok(val) = std::env::var("NOVA_RG_PATH") {
+        let trimmed = val.trim().to_string();
+        if !trimmed.is_empty() && PathBuf::from(&trimmed).exists() {
+            return trimmed;
+        }
+    }
+    if let Ok(resource_dir) = app.path().resource_dir() {
+        let bundled = resource_dir.join("bin").join(
+            if cfg!(target_os = "windows") {
+                "rg.exe"
+            } else {
+                "rg"
+            },
+        );
+        if bundled.exists() {
+            // resource_dir 在 Windows 下是 \\?\ verbatim 形式，剥掉前缀：
+            // 该路径会注入系统提示词（{{RG_PATH}}），普通形式对进程启动同样有效。
+            return crate::command::workspace::display_path_string(&bundled);
+        }
+    }
+    "rg".to_string()
+}
+
+fn resolve_base_path(
+    app: &AppHandle,
+    conversation_id: Option<&str>,
+    input: &Value,
+) -> PathBuf {
+    match input.get("path").and_then(Value::as_str) {
+        Some(p) => PathBuf::from(p),
+        None => crate::command::workspace::workspace_root_for_conversation(app, conversation_id)
+            .unwrap_or_else(|_| {
+                crate::command::workspace::default_workspace_root(app)
+                    .unwrap_or_else(|_| PathBuf::from("."))
+            }),
+    }
+}
+
+/// 归一化 rg 的 stderr。
+///
+/// 原始 stderr 形如：
+/// `rg: C:\x\y: IO error for operation on C:\x\y: 系统找不到指定的文件。 (os error 2)`
+/// ——路径重复、还混着本地化的中文。直接回传给模型既难读又误导排查方向
+/// （真正含义只是"搜索路径不存在"）。统一成其它工具同款的 `Path not found: <path>`。
+fn normalize_rg_error(stderr: &str) -> String {
+    let raw = stderr.trim();
+    // 去掉可能出现的 "rg: " 前缀（rg 有时会重复输出两次）
+    let body = raw.strip_prefix("rg: ").unwrap_or(raw).trim();
+    let path = body
+        .split_once(": ")
+        .map(|(head, _)| head.trim())
+        .unwrap_or(body);
+
+    let lower = raw.to_ascii_lowercase();
+    if lower.contains("io error")
+        || lower.contains("no such file")
+        || lower.contains("not a directory")
+        || lower.contains("cannot find the path")
+        || lower.contains("系统找不到")
+    {
+        return format!("Path not found: {}", path);
+    }
+    if lower.contains("permission denied") || lower.contains("拒绝访问") {
+        return format!("Permission denied: {}", path);
+    }
+    if lower.contains("invalid") || lower.contains("unclosed") {
+        return format!("Invalid regex pattern: {}", raw);
+    }
+
+    format!("Search failed: {}", raw)
+}
+
+async fn execute_async(
+    app: &AppHandle,
+    conversation_id: Option<&str>,
+ input: Value,
+) -> Result<ToolOutcome, ToolFailure> {
+    let pattern = input
+        .get("pattern")
+        .and_then(Value::as_str)
+        .ok_or_else(|| ToolFailure::invalid_input("Missing required parameter: pattern"))?;
+
+    let base_path = resolve_base_path(app, conversation_id, &input);
+
+    let output_mode = input
+        .get("output_mode")
+        .and_then(Value::as_str)
+        .unwrap_or("files_with_matches");
+
+    let case_insensitive = input
+        .get("-i")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+
+    let show_line_numbers = input
+        .get("-n")
+        .and_then(Value::as_bool)
+        .unwrap_or(output_mode == "content");
+
+    let head_limit = input
+        .get("head_limit")
+        .and_then(|v| v.as_u64())
+        .map(|v| v as usize)
+        .unwrap_or(DEFAULT_HEAD_LIMIT);
+
+    let offset = input
+        .get("offset")
+        .and_then(|v| v.as_u64())
+        .map(|v| v as usize)
+        .unwrap_or(0);
+
+    let context_before = input
+        .get("-B")
+        .and_then(|v| v.as_u64())
+        .map(|v| v as usize);
+
+    let context_after = input
+        .get("-A")
+        .and_then(|v| v.as_u64())
+        .map(|v| v as usize);
+
+    let context = input
+        .get("-C")
+        .and_then(|v| v.as_u64())
+        .map(|v| v as usize);
+
+    let multiline = input
+        .get("multiline")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+
+    let file_glob = input.get("glob").and_then(Value::as_str);
+
+    let rg_path = find_rg_path(app);
+
+    let mut cmd = Command::new(&rg_path);
+
+    #[cfg(target_os = "windows")]
+    cmd.creation_flags(CREATE_NO_WINDOW);
+
+    cmd.arg("--no-heading");
+    cmd.arg("--with-filename");
+
+    match output_mode {
+        "content" => {
+            if show_line_numbers {
+                cmd.arg("--line-number");
+            }
+        }
+        "count" => {
+            cmd.arg("--count");
+        }
+        _ => {
+            cmd.arg("--files-with-matches");
+        }
+    }
+
+    if case_insensitive {
+        cmd.arg("-i");
+    }
+
+    if let Some(n) = context {
+        cmd.arg("-C");
+        cmd.arg(n.to_string());
+    }
+    if let Some(n) = context_before {
+        cmd.arg("-B");
+        cmd.arg(n.to_string());
+    }
+    if let Some(n) = context_after {
+        cmd.arg("-A");
+        cmd.arg(n.to_string());
+    }
+
+    if multiline {
+        cmd.arg("-U");
+        cmd.arg("--multiline-dotall");
+    }
+
+    if let Some(g) = file_glob {
+        cmd.arg("--glob");
+        cmd.arg(g);
+    }
+
+    cmd.arg("--");
+    cmd.arg(pattern);
+    cmd.arg(&base_path);
+
+    let output = cmd.output().await.map_err(|e| {
+        ToolFailure::new(format!("Failed to run rg: {}", e))
+    })?;
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+
+
+    if output.status.code() == Some(2) {
+        return Err(ToolFailure::new(normalize_rg_error(&stderr)));
+    }
+
+    if stdout.trim().is_empty() {
+        return Ok(ToolOutcome::text("No matches found."));
+    }
+
+    let lines: Vec<&str> = stdout.lines().collect();
+    let total = lines.len();
+
+    // Apply offset first, then head_limit.
+    let after_offset = if offset > 0 && offset < total {
+        &lines[offset..]
+    } else {
+        &lines[..]
+    };
+
+    let limited: Vec<&str> = after_offset.iter().take(head_limit).copied().collect();
+    let mut result = limited.join("\n");
+
+    if total > head_limit + offset {
+        result.push_str(&format!(
+            "\n\n... ({} total results, showing {}-{})",
+            total,
+            offset + 1,
+            (offset + limited.len()).min(total)
+        ));
+    }
+
+    if result.len() > MAX_OUTPUT_BYTES {
+        let mut boundary = MAX_OUTPUT_BYTES;
+        while !result.is_char_boundary(boundary) {
+            boundary -= 1;
+        }
+        result = format!(
+            "{}\n\n... (output truncated at {} bytes)",
+            &result[..boundary],
+            MAX_OUTPUT_BYTES
+        );
+    }
+
+    Ok(ToolOutcome::text(result))
+}
+
+fn execute_with_app_boxed(
+    app: AppHandle,
+    conversation_id: Option<String>,
+    input: Value,
+) -> AppExecuteFuture {
+    Box::pin(async move { execute_async(&app, conversation_id.as_deref(), input).await })
+}

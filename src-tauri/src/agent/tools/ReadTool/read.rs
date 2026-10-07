@@ -1,0 +1,528 @@
+use crate::agent::tools::{
+    app_tool, AppExecuteFuture, ToolDisclosure, ToolFailure, ToolOutcome, ToolPermissionDescriptor,
+    ToolRegistration,
+};
+use crate::provider::types::{Content, ContentBlock, ImageSource, Message, Role, Tool};
+use crate::agent::utils::file_io::read_file_meta;
+use crate::agent::permissions::protected_path_violation;
+use serde_json::{json, Value};
+use std::path::PathBuf;
+use tauri::AppHandle;
+
+pub(super) fn registration() -> ToolRegistration {
+    // read_only=true（可批量并发），permission=Some(read_permission)（敏感路径需审批）。
+    // 此前 permission=None 导致 ReadTool 可无审批读取 ~/.ssh/id_rsa 等任意文件。
+    app_tool(tool, execute_with_app_boxed, true, Some(read_permission), ToolDisclosure::Core)
+}
+
+/// ReadTool 权限检查：
+/// - 命中受保护路径（.ssh/.aws/.gnupg/.git 等）→ 需要审批
+/// - Unix 设备文件（/dev/zero 等会挂起进程）→ 需要审批
+/// - 其他路径 → 无需审批（返回 None）
+///
+/// 注意：此函数只决定"是否需要审批"，不阻止读取。
+/// 受保护路径的 deny 逻辑由 check_file_path 在 BashTool 层处理；
+/// 这里对 read 操作改为 ask（而非 deny），允许用户审批后读取合法需求。
+fn read_permission(input: &Value) -> Option<ToolPermissionDescriptor> {
+    let file_path = input.get("file_path")?.as_str()?;
+
+    // 1. 受保护路径检查（复用 BashTool 的 PROTECTED_PATH_CONTAINS）
+    if protected_path_violation(file_path).is_err() {
+        return Some(ToolPermissionDescriptor {
+            signature: format!("read:sensitive:{}", file_path),
+            preview: format!("读取敏感路径 {}", file_path),
+            warning: Some(
+                "该路径可能包含凭据或密钥，读取需要确认".to_string(),
+            ),
+            risk: crate::agent::permissions::RiskLevel::Risky,
+        });
+    }
+
+    // 2. Unix 设备文件阻止（防止进程挂起或无限输出）
+    #[cfg(unix)]
+    if is_blocked_device_path(file_path) {
+        return Some(ToolPermissionDescriptor {
+            signature: format!("read:device:{}", file_path),
+            preview: format!("读取设备文件 {}", file_path),
+            warning: Some(
+                "设备文件可能导致进程挂起或产生无限输出".to_string(),
+            ),
+            risk: crate::agent::permissions::RiskLevel::Risky,
+        });
+    }
+
+    None
+}
+
+#[cfg(unix)]
+fn is_blocked_device_path(path: &str) -> bool {
+    const BLOCKED_DEVICE_PATHS: &[&str] = &[
+        "/dev/zero",
+        "/dev/random",
+        "/dev/urandom",
+        "/dev/full",
+        "/dev/stdin",
+        "/dev/tty",
+        "/dev/console",
+        "/dev/stdout",
+        "/dev/stderr",
+        "/dev/fd/0",
+        "/dev/fd/1",
+        "/dev/fd/2",
+    ];
+    BLOCKED_DEVICE_PATHS.contains(&path)
+}
+
+pub fn tool() -> Tool {
+    Tool {
+        name: "Read".into(),
+        description: r#"Reads a file from the local filesystem. Returns the file content with line numbers (like `cat -n`), with each line prefixed by its line number and a tab.
+
+## When to use this tool:
+- Always prefer this tool over shell commands (cat, head, tail, Get-Content) when reading file contents.
+- Read a file before editing it if you have not seen its current content — editing from memory risks stale, mismatched diffs. Partial reads count too; there is no hard read-before-edit gate.
+- When exploring an unfamiliar codebase, start with Glob (find files by name) and Grep (find code by content), then Read the most relevant files. Do not Read files speculatively when a Grep with context lines would answer the question.
+- When referencing specific lines in your reply or in an Edit `old_string`, use the exact content AFTER the line-number prefix (format: spaces + line number + tab). Everything after that tab is the real file content.
+
+## File type support:
+- Text files: returned with line numbers. Full reads of files larger than 2 MB are rejected — read them in chunks with offset/limit.
+- Images (PNG/JPG/JPEG): the image is attached to the conversation so you can see it directly. Do not pass offset/limit/pages for images.
+- PDF files: use the `pages` parameter (e.g. "1-5", max 20 pages per request).
+
+## Parameters:
+- `file_path` must be an absolute path.
+- `offset` is 1-based (line 1 is the first line). When both `offset` and `limit` are omitted, the entire file is returned.
+- `limit` is the number of lines to read. Only provide it when the file is too large to read at once.
+- Reading a directory, a missing file, or an empty file returns an error.
+
+## Reading strategy:
+- For files up to a few hundred lines, read the whole file at once — piecemeal reads of small files waste turns and miss context.
+- For very long files, first Grep for the key symbols to get line numbers, then Read targeted ranges around the hits.
+- Partial reads report how many lines remain after the returned range, so you can plan follow-up reads without re-reading from the top."#
+            .into(),
+        input_schema: json!({
+            "type": "object",
+            "properties": {
+                "file_path": {
+                    "type": "string",
+                    "description": "The absolute path to the file to read"
+                },
+                "limit": {
+                    "type": "integer",
+                    "description": "The number of lines to read. Only provide if the file is too large to read at once."
+                },
+                "offset": {
+                    "type": "integer",
+                    "description": "The line number to start reading from (1-based). Only provide if the file is too large to read at once."
+                },
+                "pages": {
+                    "type": "string",
+                    "description": "Page range for PDF files (e.g., \"1-5\", \"3\", \"10-20\"). Only applicable to PDF files. Maximum 20 pages per request."
+                }
+            },
+            "required": ["file_path"]
+        }),
+    }
+}
+
+const IMAGE_EXTENSIONS: &[&str] = &["png", "jpg", "jpeg"];
+const PDF_EXTENSION: &str = "pdf";
+const MAX_TEXT_SIZE: u64 = 2 * 1024 * 1024;
+
+fn ext_lower(path: &std::path::Path) -> String {
+    path.extension()
+        .and_then(|ext| ext.to_str())
+        .unwrap_or("")
+        .to_ascii_lowercase()
+}
+
+fn is_image_ext(path: &std::path::Path) -> bool {
+    IMAGE_EXTENSIONS.contains(&ext_lower(path).as_str())
+}
+
+fn is_pdf(path: &std::path::Path) -> bool {
+    ext_lower(path) == PDF_EXTENSION
+}
+
+fn read_image(path: &std::path::Path) -> Result<(String, String), String> {
+    let bytes = std::fs::read(path)
+        .map_err(|e| format!("Error reading image {}: {}", path.display(), e))?;
+
+    // 真解码校验（用 image crate decode 一次），识别文件损坏（如 zlib 校验失败、残缺数据流等）
+    // 错误文案保持英文：所有工具返回给模型的错误统一英文，中英混排会让模型难以模式匹配。
+    image::load_from_memory(&bytes)
+        .map_err(|e| format!("Corrupted image ({}): {}", path.display(), e))?;
+
+    let media_type = match ext_lower(path).as_str() {
+        "jpg" | "jpeg" => "image/jpeg",
+        _ => "image/png",
+    };
+    Ok((media_type.to_string(), base64(&bytes)))
+}
+
+fn base64(bytes: &[u8]) -> String {
+    use base64::Engine;
+    base64::engine::general_purpose::STANDARD.encode(bytes)
+}
+
+/// 读取文本文件。返回 (带行号的格式化输出, 归一化后的完整内容)。
+/// `offset` 为 1-based 起始行。
+fn read_text(
+    path: &std::path::Path,
+    limit: Option<usize>,
+    offset: Option<usize>,
+) -> Result<(String, String), String> {
+    let metadata = std::fs::metadata(path)
+        .map_err(|e| format!("Error accessing file: {}", e))?;
+    if !metadata.is_file() {
+        return Err(format!("Not a regular file: {}", path.display()));
+    }
+    // 大小上限只约束整文件读取；带 offset/limit 的分段读取放行（输出量由 limit 控制）。
+    if metadata.len() > MAX_TEXT_SIZE && offset.is_none() && limit.is_none() {
+        return Err(format!(
+            "File is too large ({} bytes, max {} bytes). Use offset/limit to read in chunks.",
+            metadata.len(),
+            MAX_TEXT_SIZE
+        ));
+    }
+
+    // read_file_meta 解码 + 剥 BOM + CRLF→LF，让模型看到干净的 LF 内容。
+    let (content, _meta) = read_file_meta(path)
+        .map_err(|e| format!("Error reading {}: {}", path.display(), e))?;
+
+    if content.is_empty() {
+        return Err(format!("File is empty: {}", path.display()));
+    }
+
+    let all_lines: Vec<&str> = content.lines().collect();
+    let total_lines = all_lines.len();
+
+    // offset 为 1-based 行号，映射到 0-based 索引。
+    let start = offset.map(|o| o.saturating_sub(1)).unwrap_or(0);
+    let end = match limit {
+        Some(n) => (start + n).min(total_lines),
+        None => total_lines,
+    };
+
+    if start >= total_lines {
+        return Err(format!(
+            "offset {} is beyond file end ({} lines)",
+            start + 1,
+            total_lines
+        ));
+    }
+
+    let shown = &all_lines[start..end];
+
+    let mut output = String::new();
+    for (i, line) in shown.iter().enumerate() {
+        let line_num = start + i;
+        output.push_str(&format!("{:>6}\t{}\n", line_num + 1, line));
+    }
+
+    if limit.is_some() && end < total_lines {
+        output.push_str(&format!(
+            "\n... (lines {}-{} of {}, {} lines remaining)\n",
+            start + 1,
+            end,
+            total_lines,
+            total_lines - end
+        ));
+    }
+
+    Ok((output, content))
+}
+
+fn parse_page_range(pages: &str) -> Result<(u32, u32), String> {
+    let trimmed = pages.trim();
+    if trimmed.is_empty() {
+        return Err("pages must not be empty".to_string());
+    }
+    if let Some((start, end)) = trimmed.split_once('-') {
+        let start: u32 = start
+            .trim()
+            .parse()
+            .map_err(|_| format!("Invalid page number: {}", start))?;
+        let end: u32 = end
+            .trim()
+            .parse()
+            .map_err(|_| format!("Invalid page number: {}", end))?;
+        if start < 1 {
+            return Err("Page numbers start at 1".to_string());
+        }
+        if end < start {
+            return Err(format!(
+                "Invalid page range: end ({}) must be >= start ({})",
+                end, start
+            ));
+        }
+        if end - start + 1 > 20 {
+            return Err(format!(
+                "Maximum 20 pages per request, requested {}",
+                end - start + 1
+            ));
+        }
+        Ok((start, end))
+    } else {
+        let page: u32 = trimmed
+            .parse()
+            .map_err(|_| format!("Invalid page number: {}", trimmed))?;
+        if page < 1 {
+            return Err("Page numbers start at 1".to_string());
+        }
+        Ok((page, page))
+    }
+}
+
+fn read_pdf(path: &std::path::Path, pages: Option<&str>) -> Result<String, String> {
+    let bytes = std::fs::read(path)
+        .map_err(|e| format!("Error reading PDF {}: {}", path.display(), e))?;
+
+    let doc = lopdf::Document::load_mem(&bytes)
+        .map_err(|e| format!("Failed to parse PDF: {}", e))?;
+
+    // 页数必须走 page tree：get_pages() 返回 页码 -> 页对象 id 的映射，其长度才是真实页数。
+    // 此前用 doc.max_id（文档里最大的间接对象编号）当页数，会系统性高估
+    // —— 一个 60 页的 PDF 有 133 个间接对象，于是页码越界校验失效、
+    // 且 "pages 1-N of X" 提示里的 X 全是错的。
+    let total_pages = doc.get_pages().len() as u32;
+    if total_pages == 0 {
+        return Err(
+            "Failed to determine the PDF page count: the page tree is empty or unreadable."
+                .to_string(),
+        );
+    }
+
+    let (start, end) = if let Some(pages_str) = pages {
+        parse_page_range(pages_str)?
+    } else if total_pages > 10 {
+        return Err(format!(
+            "PDF has {} pages. Use the `pages` parameter to specify which pages to read (max 20 per request).",
+            total_pages
+        ));
+    } else {
+        (1, total_pages.min(20))
+    };
+
+    if start > total_pages {
+        return Err(format!(
+            "Page {} requested but PDF only has {} pages",
+            start, total_pages
+        ));
+    }
+    let end = end.min(total_pages);
+
+    let mut output = String::new();
+    for page_num in start..=end {
+        output.push_str(&format!("\n--- Page {} ---\n", page_num));
+        match doc.extract_text(&[page_num]) {
+            Ok(text) => {
+                let trimmed = text.trim();
+                if trimmed.is_empty() {
+                    output.push_str("[no extractable text on this page]\n");
+                } else {
+                    output.push_str(trimmed);
+                    output.push('\n');
+                }
+            }
+            Err(_) => {
+                output.push_str("[could not extract text from this page]\n");
+            }
+        }
+    }
+
+    if end < total_pages {
+        output.push_str(&format!(
+            "\n... (pages {}-{} of {}, {} pages remaining)\n",
+            start,
+            end,
+            total_pages,
+            total_pages - end
+        ));
+    }
+
+    Ok(output)
+}
+
+fn resolve_file_path(raw: &str) -> Result<PathBuf, String> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return Err("file_path is required".to_string());
+    }
+    let path = PathBuf::from(trimmed);
+    if !path.is_absolute() {
+        return Err(format!(
+            "file_path must be an absolute path: {}",
+            trimmed
+        ));
+    }
+    if !path.exists() {
+        return Err(format!("File not found: {}", trimmed));
+    }
+    Ok(path)
+}
+
+async fn execute_async(
+    _app: &AppHandle,
+    _conversation_id: Option<&str>,
+    input: Value,
+) -> Result<ToolOutcome, ToolFailure> {
+    let file_path = input
+        .get("file_path")
+        .and_then(Value::as_str)
+        .ok_or_else(|| ToolFailure::invalid_input("Missing required parameter: file_path"))?;
+
+    // offset/limit 必须显式校验：serde 的 as_u64 对负数返回 None，
+    // 静默退化成"未传"会让 offset=-5 悄悄从头开始读，模型完全不知情。
+    let offset = match input.get("offset") {
+        None => None,
+        Some(value) => {
+            let parsed = value
+                .as_i64()
+                .ok_or_else(|| ToolFailure::invalid_input("offset must be an integer"))?;
+            if parsed < 1 {
+                return Err(ToolFailure::invalid_input(format!(
+                    "offset must be >= 1 (1-based line number), got {}",
+                    parsed
+                )));
+            }
+            Some(parsed as usize)
+        }
+    };
+
+    let limit = match input.get("limit") {
+        None => None,
+        Some(value) => {
+            let parsed = value
+                .as_i64()
+                .ok_or_else(|| ToolFailure::invalid_input("limit must be an integer"))?;
+            if parsed < 1 {
+                return Err(ToolFailure::invalid_input(format!(
+                    "limit must be >= 1, got {}",
+                    parsed
+                )));
+            }
+            Some(parsed as usize)
+        }
+    };
+
+    let pages = input
+        .get("pages")
+        .and_then(Value::as_str);
+
+    let path = resolve_file_path(file_path)
+        .map_err(ToolFailure::invalid_input)?;
+
+    if path.is_dir() {
+        return Err(ToolFailure::new(format!(
+            "Path is a directory, not a file: {}",
+            file_path
+        )));
+    }
+
+    if is_pdf(&path) {
+        let content = read_pdf(&path, pages).map_err(ToolFailure::new)?;
+        return Ok(ToolOutcome::text(content));
+    }
+    if is_image_ext(&path) {
+        // 把图片作为真正的图像块附加到上下文，模型可直接“看到”，而不是把 base64 当文本灌入。
+        // 若真解码校验失败（如损坏的图片、zlib 校验失败等），降级为文本错误返回给模型，避免损坏的图像块导致 LLM API 请求失败。
+        let (media_type, data) = match read_image(&path) {
+            Ok(val) => val,
+            Err(err) => return Ok(ToolOutcome::text(err)),
+        };
+        let note = format!("Image attached ({}). Inspect it directly.", media_type);
+        let image_message = Message {
+            role: Role::User,
+            content: Content::Blocks(vec![
+                ContentBlock::Text { text: note.clone() },
+                ContentBlock::Image {
+                    source: ImageSource {
+                        source_type: "base64".to_string(),
+                        media_type,
+                        data,
+                    },
+                },
+            ]),
+        };
+        return Ok(ToolOutcome::text(note).with_additional_messages(vec![image_message]));
+    }
+
+    let (formatted, _content) = read_text(&path, limit, offset).map_err(ToolFailure::new)?;
+
+    Ok(ToolOutcome::text(formatted))
+}
+
+fn execute_with_app_boxed(
+    app: AppHandle,
+    conversation_id: Option<String>,
+    input: Value,
+) -> AppExecuteFuture {
+    Box::pin(async move {
+        execute_async(&app, conversation_id.as_deref(), input).await
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Write;
+
+    #[test]
+    fn test_read_image_valid_png() {
+        let dir = tempfile::tempdir().unwrap();
+        let file_path = dir.path().join("test.png");
+        let img = image::RgbaImage::new(2, 2);
+        img.save(&file_path).unwrap();
+
+        let res = read_image(&file_path);
+        assert!(res.is_ok());
+        let (media_type, data) = res.unwrap();
+        assert_eq!(media_type, "image/png");
+        assert!(!data.is_empty());
+    }
+
+    #[test]
+    fn test_read_image_magic_bytes_only_fails_decode() {
+        let dir = tempfile::tempdir().unwrap();
+        let file_path = dir.path().join("corrupted.png");
+        // PNG magic bytes followed by truncated/garbage bytes
+        let mut file = std::fs::File::create(&file_path).unwrap();
+        file.write_all(b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00\x00\x01\x08\x06\x00\x00\x00corrupted_payload").unwrap();
+
+        let res = read_image(&file_path);
+        assert!(res.is_err());
+        let err = res.unwrap_err();
+        assert!(
+            err.starts_with("Corrupted image"),
+            "Expected 'Corrupted image', got: {}",
+            err
+        );
+    }
+
+    #[test]
+    fn test_read_image_corrupted_zlib_fails_decode() {
+        let dir = tempfile::tempdir().unwrap();
+        let valid_path = dir.path().join("valid.png");
+        let corrupted_path = dir.path().join("corrupted_zlib.png");
+
+        let img = image::RgbaImage::new(10, 10);
+        img.save(&valid_path).unwrap();
+
+        let mut bytes = std::fs::read(&valid_path).unwrap();
+        // Corrupt the IDAT chunk payload (around the middle of the file)
+        let mid = bytes.len() / 2;
+        bytes[mid] ^= 0xFF;
+        bytes[mid + 1] ^= 0xAA;
+        std::fs::write(&corrupted_path, &bytes).unwrap();
+
+        let res = read_image(&corrupted_path);
+        assert!(res.is_err());
+        let err = res.unwrap_err();
+        assert!(
+            err.starts_with("Corrupted image"),
+            "Expected 'Corrupted image', got: {}",
+            err
+        );
+    }
+}

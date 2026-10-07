@@ -1,9 +1,9 @@
 use tauri::AppHandle;
 
-use crate::llm::history;
-use crate::llm::utils::error_event::report_backend_result;
+use crate::agent::session::history;
+use crate::agent::utils::error_event::report_backend_result;
 // 对外复用 llm/commands 公共类型。
-pub use crate::llm::commands::types::{
+pub use crate::agent::session::types::{
     ConversationMeta, HistoryMessage, HistoryToolExecution,
 };
 
@@ -139,11 +139,11 @@ pub async fn load_conversation_tool_logs(
 pub async fn get_conversation_turn_traces(
     app: AppHandle,
     conversation_id: String,
-) -> Result<Vec<crate::llm::session_log::projection::TurnTrace>, String> {
+) -> Result<Vec<crate::agent::session::projection::TurnTrace>, String> {
     // 调试面板：从事件流投影出按回合分组的完整交互轨迹。
     let result = async {
-        let events = crate::llm::session_log::load_events(&app, &conversation_id).await?;
-        Ok(crate::llm::session_log::projection::render_turn_traces(&events))
+        let events = crate::agent::session::load_events(&app, &conversation_id).await?;
+        Ok(crate::agent::session::projection::render_turn_traces(&events))
     }
     .await;
     report_backend_result(
@@ -176,7 +176,7 @@ pub async fn delete_conversation(app: AppHandle, conversation_id: String) -> Res
     );
     if result.is_ok() {
         // 联动清理该会话的渐进式工具披露状态（内存缓存 + 磁盘记录）。
-        crate::llm::services::tool_disclosure::forget_conversation(&app, Some(&conversation_id));
+        crate::agent::capabilities::tool_disclosure::forget_conversation(&app, Some(&conversation_id));
     }
     result
 }
@@ -225,11 +225,11 @@ pub async fn clear_memory_entries(app: AppHandle) -> Result<(), String> {
 pub async fn manual_compact_conversation(
     app: AppHandle,
     conversation_id: String,
-) -> Result<crate::llm::services::compact::ManualCompactOutcome, String> {
+) -> Result<crate::agent::capabilities::compact::ManualCompactOutcome, String> {
     report_backend_result(
         &app,
         "command.history.manual_compact_conversation",
-        crate::llm::services::compact::manual_compact(&app, &conversation_id).await,
+        crate::agent::capabilities::compact::manual_compact(&app, &conversation_id).await,
         None,
     )
 }

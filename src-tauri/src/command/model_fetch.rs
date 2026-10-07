@@ -1,7 +1,7 @@
 use serde::Serialize;
 use tauri::AppHandle;
 
-use crate::llm::utils::error_event::report_backend_result;
+use crate::agent::utils::error_event::report_backend_result;
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -19,7 +19,7 @@ pub async fn fetch_available_models(
     models_url_override: Option<String>,
     api_format: Option<String>,
 ) -> Result<Vec<FetchedModel>, String> {
-    let result = crate::llm::services::model_fetch::fetch_models(
+    let result = crate::provider::model_fetch::fetch_models(
         &base_url,
         &api_key,
         is_full_url.unwrap_or(false),

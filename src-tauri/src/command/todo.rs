@@ -5,7 +5,7 @@
 
 use tauri::AppHandle;
 
-pub use crate::llm::tools::shared::todo_state::TodoEntry;
+pub use crate::agent::tools::shared::todo_state::TodoEntry;
 
 /// 读取当前会话的待办列表。会话无待办时返回空数组。
 #[tauri::command]
@@ -14,6 +14,6 @@ pub async fn list_todos(
     conversation_id: Option<String>,
 ) -> Result<Vec<TodoEntry>, String> {
     let _ = app; // 保持与其他命令签名一致，便于后续扩展（如事件推送）。
-    Ok(crate::llm::tools::shared::todo_state::global_registry()
+    Ok(crate::agent::tools::shared::todo_state::global_registry()
         .list(conversation_id.as_deref()))
 }

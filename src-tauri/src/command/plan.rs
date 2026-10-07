@@ -5,8 +5,8 @@
 
 use tauri::AppHandle;
 
-use crate::llm::services::plan_files::{self, ConversationPlan};
-use crate::llm::utils::error_event::report_backend_result;
+use crate::agent::capabilities::plan_files::{self, ConversationPlan};
+use crate::agent::utils::error_event::report_backend_result;
 
 /// 读取当前会话的 plan；会话没有 plan 时返回 null。
 #[tauri::command]

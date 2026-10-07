@@ -1,0 +1,843 @@
+// 这是工具注册入口模块，定义了所有内置工具（Bash/PowerShell/File/Task/... 等）
+// 以及工具发现、执行、权限检查的统一接口。具体工具包由 build.rs 扫描
+// tools/*/mod.rs 中的 registrations() 后生成，避免中心模块手写工具清单。
+include!(concat!(env!("OUT_DIR"), "/builtin_tool_registry.rs"));
+
+pub mod shared;
+
+use crate::provider::types::{Message, Tool};
+use serde_json::Value;
+use std::collections::{BTreeMap, VecDeque};
+use std::future::Future;
+use std::pin::Pin;
+use std::sync::OnceLock;
+use tauri::AppHandle;
+use tokio::task::JoinSet;
+
+pub(crate) type ToolExecResult = Result<ToolOutcome, ToolFailure>;
+pub(crate) type AppExecuteFuture = Pin<Box<dyn Future<Output = ToolExecResult> + Send>>;
+pub(crate) type AppExecuteFn = fn(AppHandle, Option<String>, Value) -> AppExecuteFuture;
+pub(crate) type PermissionFn = fn(&Value) -> Option<ToolPermissionDescriptor>;
+
+#[derive(Debug, Clone)]
+pub(crate) struct ToolOutcome {
+    pub output: String,
+    pub additional_messages: Vec<Message>,
+    pub prevent_continuation: bool,
+    pub stop_reason: Option<String>,
+}
+
+impl ToolOutcome {
+    pub(crate) fn text(output: impl Into<String>) -> Self {
+        Self {
+            output: output.into(),
+            additional_messages: Vec::new(),
+            prevent_continuation: false,
+            stop_reason: None,
+        }
+    }
+
+    pub(crate) fn json(value: Value) -> Self {
+        Self::text(value.to_string())
+    }
+
+    pub(crate) fn with_additional_messages(mut self, messages: Vec<Message>) -> Self {
+        self.additional_messages = messages;
+        self
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ToolFailureKind {
+    Execution,
+    InvalidInput,
+    PermissionDenied,
+    UnknownTool,
+    Cancelled,
+    Mcp,
+    Hook,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct ToolFailure {
+    pub message: String,
+    pub kind: ToolFailureKind,
+    pub additional_messages: Vec<Message>,
+    pub prevent_continuation: bool,
+    pub stop_reason: Option<String>,
+    pub suppress_backend_error: bool,
+}
+
+impl ToolFailure {
+    pub(crate) fn new(message: impl Into<String>) -> Self {
+        Self {
+            message: message.into(),
+            kind: ToolFailureKind::Execution,
+            additional_messages: Vec::new(),
+            prevent_continuation: false,
+            stop_reason: None,
+            suppress_backend_error: false,
+        }
+    }
+
+    pub(crate) fn invalid_input(message: impl Into<String>) -> Self {
+        Self::new(message).with_kind(ToolFailureKind::InvalidInput)
+    }
+
+    pub(crate) fn permission_denied(message: impl Into<String>) -> Self {
+        Self::new(message).with_kind(ToolFailureKind::PermissionDenied)
+    }
+
+    pub(crate) fn unknown_tool(message: impl Into<String>) -> Self {
+        Self::new(message).with_kind(ToolFailureKind::UnknownTool)
+    }
+
+    pub(crate) fn cancelled(message: impl Into<String>) -> Self {
+        Self::new(message)
+            .with_kind(ToolFailureKind::Cancelled)
+            .suppress_backend_error()
+    }
+
+    pub(crate) fn mcp(message: impl Into<String>) -> Self {
+        Self::new(message).with_kind(ToolFailureKind::Mcp)
+    }
+
+    pub(crate) fn hook(message: impl Into<String>) -> Self {
+        Self::new(message).with_kind(ToolFailureKind::Hook)
+    }
+
+    pub(crate) fn with_kind(mut self, kind: ToolFailureKind) -> Self {
+        self.kind = kind;
+        self
+    }
+
+    pub(crate) fn suppress_backend_error(mut self) -> Self {
+        self.suppress_backend_error = true;
+        self
+    }
+}
+
+impl From<String> for ToolFailure {
+    fn from(message: String) -> Self {
+        Self::new(message)
+    }
+}
+
+impl From<&str> for ToolFailure {
+    fn from(message: &str) -> Self {
+        Self::new(message)
+    }
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct ToolPermissionDescriptor {
+    // signature: 当前敏感操作的稳定签名，用于会话内权限复用、去重与持久化规则匹配。
+    pub signature: String,
+    // preview: 展示给用户看的简短操作摘要。
+    pub preview: String,
+    // warning: 风险提示文案；为空表示仅记录该操作，不额外提示风险。
+    pub warning: Option<String>,
+    // risk: 操作风险级别（事实描述），是否审批由审批策略裁决。
+    pub risk: crate::agent::permissions::RiskLevel,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ToolDisclosure {
+    /// 高频核心工具：始终在工具清单里。
+    Core,
+    /// 低频工具：不进默认清单，由模型通过 LoadTool 按需加载。
+    Deferred,
+}
+
+#[derive(Clone, Copy)]
+pub(crate) struct ToolRegistration {
+    // tool: 暴露给模型看的静态定义（name/description/schema）。
+    tool: fn() -> Tool,
+    // execute_with_app: 唯一执行入口，始终携带 AppHandle / conversation_id / workspace context。
+    execute_with_app: AppExecuteFn,
+    // permission: 工具自己的权限描述函数；内置工具不再走按名字兜底。
+    permission: Option<PermissionFn>,
+    // read_only: 只读工具可进入批量并发执行队列。
+    read_only: bool,
+    // disclosure: 渐进式披露分级（Core 始终可见 / Deferred 按需加载）。
+    disclosure: ToolDisclosure,
+}
+
+pub(crate) const fn app_tool(
+    tool: fn() -> Tool,
+    execute_with_app: AppExecuteFn,
+    read_only: bool,
+    permission: Option<PermissionFn>,
+    disclosure: ToolDisclosure,
+) -> ToolRegistration {
+    ToolRegistration {
+        tool,
+        execute_with_app,
+        permission,
+        read_only,
+        disclosure,
+    }
+}
+fn registered_tools() -> &'static [ToolRegistration] {
+    static REGISTERED_TOOLS: OnceLock<Vec<ToolRegistration>> = OnceLock::new();
+    // REGISTERED_TOOLS: 进程级缓存，避免每次请求都重新构建注册表。
+    REGISTERED_TOOLS
+        .get_or_init(builtin_tool_registrations)
+        .as_slice()
+}
+
+#[derive(Debug, Clone)]
+pub struct ToolCallRequest {
+    pub id: String,
+    pub name: String,
+    pub input: Value,
+}
+
+#[derive(Debug, Clone)]
+pub struct ToolCallResult {
+    pub id: String,
+    pub name: String,
+    pub input: Value,
+    pub output: String,
+    pub is_error: bool,
+    pub additional_messages: Vec<crate::provider::types::Message>,
+    pub prevent_continuation: bool,
+    pub stop_reason: Option<String>,
+}
+
+fn find_tool_definition(name: &str) -> Option<Tool> {
+    registered_tools().iter().find_map(|entry| {
+        let tool = (entry.tool)();
+        if tool.name.eq_ignore_ascii_case(name) {
+            Some(tool)
+        } else {
+            None
+        }
+    })
+}
+
+fn find_registered_tool(name: &str) -> Option<ToolRegistration> {
+    registered_tools().iter().copied().find(|entry| {
+        let tool = (entry.tool)();
+        tool.name.eq_ignore_ascii_case(name)
+    })
+}
+
+fn validate_tool_input(name: &str, input: &Value) -> Result<(), String> {
+    if let Some(tool) = find_tool_definition(name) {
+        let validator = jsonschema::validator_for(&tool.input_schema)
+            .map_err(|error| format!("Tool schema validation failed for '{}': {}", name, error))?;
+        let errors: Vec<_> = validator.iter_errors(input).collect();
+        if errors.is_empty() {
+            return Ok(());
+        }
+
+        let detail = errors
+            .iter()
+            .map(|error| {
+                let instance_path = error.instance_path().to_string();
+                let path = if instance_path.is_empty() {
+                    name.to_string()
+                } else {
+                    format!("{}{}", name, instance_path)
+                };
+                format!("{}: {}", path, error)
+            })
+            .collect::<Vec<_>>()
+            .join("; ");
+
+        return Err(format!(
+            "Input validation failed for '{}': {}",
+            name, detail
+        ));
+    }
+
+    Ok(())
+}
+
+pub(crate) fn is_read_only_tool(name: &str) -> bool {
+    if let Some(entry) = find_registered_tool(name) {
+        return entry.read_only;
+    }
+
+    if let Some(read_only) = crate::agent::capabilities::mcp_tools::dynamic_tool_read_only(name) {
+        return read_only;
+    }
+
+    false
+}
+
+fn max_tool_use_concurrency() -> usize {
+    std::env::var("NOVA_MAX_TOOL_USE_CONCURRENCY")
+        .ok()
+        .and_then(|v| v.trim().parse::<usize>().ok())
+        .filter(|v| *v > 0)
+        .unwrap_or(10)
+}
+
+fn cancelled_result_from_call(call: ToolCallRequest, reason: &str) -> ToolCallResult {
+    ToolCallResult {
+        id: call.id,
+        name: call.name,
+        input: call.input,
+        output: reason.to_string(),
+        is_error: true,
+        additional_messages: Vec::new(),
+        prevent_continuation: false,
+        stop_reason: None,
+    }
+}
+
+fn merge_controls(
+    additional_messages: &mut Vec<Message>,
+    prevent_continuation: &mut bool,
+    stop_reason: &mut Option<String>,
+    messages: Vec<Message>,
+    should_prevent: bool,
+    reason: Option<String>,
+) {
+    additional_messages.extend(messages);
+    if should_prevent {
+        *prevent_continuation = true;
+        if stop_reason.is_none() {
+            *stop_reason = reason;
+        }
+    }
+}
+
+fn emit_tool_failure(app: &AppHandle, name: &str, failure: &ToolFailure) {
+    if failure.suppress_backend_error || failure.kind == ToolFailureKind::Cancelled {
+        return;
+    }
+
+    crate::agent::utils::error_event::emit_backend_error(
+        app,
+        "tool.execute",
+        format!("工具 {} 执行失败：{}", name, failure.message),
+        Some(name),
+    );
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn finalize_failure_result(
+    app: &AppHandle,
+    conversation_id: Option<&str>,
+    id: String,
+    name: String,
+    input: Value,
+    mut failure: ToolFailure,
+    mut additional_messages: Vec<Message>,
+    mut prevent_continuation: bool,
+    mut stop_reason: Option<String>,
+) -> ToolCallResult {
+    merge_controls(
+        &mut additional_messages,
+        &mut prevent_continuation,
+        &mut stop_reason,
+        failure.additional_messages.clone(),
+        failure.prevent_continuation,
+        failure.stop_reason.clone(),
+    );
+
+    let failure_hook = crate::agent::lifecycle::hooks::run_post_tool_use_failure_hooks(
+        app,
+        &name,
+        &input,
+        &failure.message,
+        conversation_id,
+    )
+    .await;
+    merge_controls(
+        &mut additional_messages,
+        &mut prevent_continuation,
+        &mut stop_reason,
+        failure_hook.additional_messages,
+        failure_hook.prevent_continuation,
+        failure_hook.stop_reason,
+    );
+    if let Some(err) = failure_hook.override_error {
+        failure = ToolFailure::hook(err);
+    }
+
+    emit_tool_failure(app, &name, &failure);
+
+    ToolCallResult {
+        id,
+        name,
+        input,
+        output: failure.message,
+        is_error: true,
+        additional_messages,
+        prevent_continuation,
+        stop_reason,
+    }
+}
+
+pub(crate) async fn execute_single_tool_call(
+    app: &AppHandle,
+    conversation_id: Option<&str>,
+    call: ToolCallRequest,
+) -> ToolCallResult {
+    let ToolCallRequest { id, name, input } = call;
+    let mut additional_messages = Vec::new();
+    let mut prevent_continuation = false;
+    let mut stop_reason: Option<String> = None;
+
+    // 子智能体生命周期挂钩（SubagentStart/SubagentStop）由 TaskTool 在
+    // 子代理真正启动/返回时自行触发，不在通用执行链里按工具角色猜测。
+    let pre_hook =
+        crate::agent::lifecycle::hooks::run_pre_tool_use_hooks(app, &name, &input, conversation_id)
+            .await;
+    additional_messages.extend(pre_hook.additional_messages);
+    if pre_hook.prevent_continuation {
+        prevent_continuation = true;
+        stop_reason = pre_hook.stop_reason.clone();
+    }
+
+    if let Some(err) = pre_hook.override_error {
+        return finalize_failure_result(
+            app,
+            conversation_id,
+            id,
+            name,
+            input,
+            ToolFailure::hook(err),
+            additional_messages,
+            prevent_continuation,
+            stop_reason,
+        )
+        .await;
+    }
+
+    if let Err(e) = validate_tool_input(&name, &input) {
+        return finalize_failure_result(
+            app,
+            conversation_id,
+            id,
+            name,
+            input,
+            ToolFailure::invalid_input(e),
+            additional_messages,
+            prevent_continuation,
+            stop_reason,
+        )
+        .await;
+    }
+
+    let cancel_token = crate::agent::cancellation::get_token(conversation_id);
+    let outcome = tokio::select! {
+        biased;
+        _ = cancel_token.cancelled() => {
+            return finalize_failure_result(
+                app,
+                conversation_id,
+                id,
+                name,
+                input,
+                ToolFailure::cancelled("Tool execution cancelled"),
+                additional_messages,
+                true,
+                Some("cancelled".into()),
+            )
+            .await;
+        }
+        res = execute_tool_with_app(app, conversation_id, &name, input.clone()) => match res {
+            Ok(outcome) => outcome,
+            Err(failure) => {
+                return finalize_failure_result(
+                    app,
+                    conversation_id,
+                    id,
+                    name,
+                    input,
+                    failure,
+                    additional_messages,
+                    prevent_continuation,
+                    stop_reason,
+                )
+                .await;
+            }
+        }
+    };
+
+    let tool_output = outcome.output;
+    merge_controls(
+        &mut additional_messages,
+        &mut prevent_continuation,
+        &mut stop_reason,
+        outcome.additional_messages,
+        outcome.prevent_continuation,
+        outcome.stop_reason,
+    );
+
+    let post_hook = crate::agent::lifecycle::hooks::run_post_tool_use_hooks(
+        app,
+        &name,
+        &input,
+        &tool_output,
+        conversation_id,
+    )
+    .await;
+    merge_controls(
+        &mut additional_messages,
+        &mut prevent_continuation,
+        &mut stop_reason,
+        post_hook.additional_messages,
+        post_hook.prevent_continuation,
+        post_hook.stop_reason,
+    );
+    if let Some(err) = post_hook.override_error {
+        return finalize_failure_result(
+            app,
+            conversation_id,
+            id,
+            name,
+            input,
+            ToolFailure::hook(err),
+            additional_messages,
+            prevent_continuation,
+            stop_reason,
+        )
+        .await;
+    }
+
+    ToolCallResult {
+        id,
+        name,
+        input,
+        is_error: false,
+        output: tool_output,
+        additional_messages,
+        prevent_continuation,
+        stop_reason,
+    }
+}
+
+async fn execute_read_only_batch(
+    app: &AppHandle,
+    conversation_id: Option<&str>,
+    calls: Vec<ToolCallRequest>,
+) -> Vec<ToolCallResult> {
+    let total = calls.len();
+    if total == 0 {
+        return Vec::new();
+    }
+
+    let mut queue: VecDeque<(usize, ToolCallRequest)> = calls.into_iter().enumerate().collect();
+    let mut in_flight: BTreeMap<usize, ToolCallRequest> = BTreeMap::new();
+    let mut results_by_index: BTreeMap<usize, ToolCallResult> = BTreeMap::new();
+    let mut tasks: JoinSet<(usize, ToolCallResult)> = JoinSet::new();
+    let mut cancellation_reason: Option<String> = None;
+    let max_concurrency = max_tool_use_concurrency();
+    let conversation_owned = conversation_id.map(|v| v.to_string());
+
+    while !queue.is_empty() || !tasks.is_empty() {
+        // 用户取消时立即中止所有已起飞的并发任务。
+        if crate::agent::cancellation::is_cancelled(conversation_id) {
+            tasks.abort_all();
+            while tasks.join_next().await.is_some() {}
+            cancellation_reason = Some("cancelled".into());
+            break;
+        }
+
+        while tasks.len() < max_concurrency && !queue.is_empty() {
+            let Some((index, call)) = queue.pop_front() else {
+                break;
+            };
+
+            let app_clone = app.clone();
+            let conversation_for_task = conversation_owned.clone();
+            in_flight.insert(index, call.clone());
+            tasks.spawn(async move {
+                let result =
+                    execute_single_tool_call(&app_clone, conversation_for_task.as_deref(), call)
+                        .await;
+                (index, result)
+            });
+        }
+
+        let cancel_token = crate::agent::cancellation::get_token(conversation_id);
+        let maybe_joined = tokio::select! {
+            biased;
+            _ = cancel_token.cancelled() => {
+                tasks.abort_all();
+                while tasks.join_next().await.is_some() {}
+                cancellation_reason = Some("cancelled".into());
+                break;
+            }
+            joined = tasks.join_next() => joined,
+        };
+
+        let Some(joined) = maybe_joined else {
+            break;
+        };
+
+        if let Ok((index, result)) = joined {
+            in_flight.remove(&index);
+            results_by_index.insert(index, result);
+        }
+    }
+
+    if let Some(reason) = cancellation_reason {
+        for (index, call) in in_flight.into_iter() {
+            results_by_index
+                .entry(index)
+                .or_insert_with(|| cancelled_result_from_call(call, &reason));
+        }
+        while let Some((index, call)) = queue.pop_front() {
+            results_by_index
+                .entry(index)
+                .or_insert_with(|| cancelled_result_from_call(call, &reason));
+        }
+    } else {
+        for (index, call) in in_flight.into_iter() {
+            results_by_index.entry(index).or_insert_with(|| {
+                cancelled_result_from_call(call, "cancelled: read-only task aborted")
+            });
+        }
+        while let Some((index, call)) = queue.pop_front() {
+            results_by_index.entry(index).or_insert_with(|| {
+                cancelled_result_from_call(call, "cancelled: read-only task not executed")
+            });
+        }
+    }
+
+    let mut ordered_results = Vec::with_capacity(total);
+    for index in 0..total {
+        if let Some(result) = results_by_index.remove(&index) {
+            ordered_results.push(result);
+        }
+    }
+    ordered_results
+}
+
+async fn flush_read_only_batch(
+    app: &AppHandle,
+    conversation_id: Option<&str>,
+    batch: &mut Vec<ToolCallRequest>,
+    out: &mut Vec<ToolCallResult>,
+) {
+    if batch.is_empty() {
+        return;
+    }
+
+    let drained = std::mem::take(batch);
+    let mut batch_results = execute_read_only_batch(app, conversation_id, drained).await;
+    out.append(&mut batch_results);
+}
+
+pub async fn execute_tool_calls_with_app(
+    app: &AppHandle,
+    conversation_id: Option<&str>,
+    calls: Vec<ToolCallRequest>,
+) -> Vec<ToolCallResult> {
+    let mut results: Vec<ToolCallResult> = Vec::with_capacity(calls.len());
+    let mut read_only_batch: Vec<ToolCallRequest> = Vec::new();
+
+    for call in calls {
+        if crate::agent::cancellation::is_cancelled(conversation_id) {
+            results.push(cancelled_result_from_call(call, "cancelled"));
+            continue;
+        }
+
+        if is_read_only_tool(&call.name) {
+            read_only_batch.push(call);
+            continue;
+        }
+
+        flush_read_only_batch(app, conversation_id, &mut read_only_batch, &mut results).await;
+        if crate::agent::cancellation::is_cancelled(conversation_id) {
+            results.push(cancelled_result_from_call(call, "cancelled"));
+            continue;
+        }
+        results.push(execute_single_tool_call(app, conversation_id, call).await);
+    }
+
+    flush_read_only_batch(app, conversation_id, &mut read_only_batch, &mut results).await;
+    results
+}
+
+pub(crate) fn permission_descriptor_for_tool(
+    name: &str,
+    input: &Value,
+) -> Option<ToolPermissionDescriptor> {
+    find_registered_tool(name)
+        .and_then(|entry| entry.permission.and_then(|permission| permission(input)))
+}
+
+// 取当前注册工具列表，用于在 LLM 提示里传给模型，告诉模型可调用哪些功能。
+pub fn get_available_tools() -> Vec<Tool> {
+    registered_tools()
+        .iter()
+        .map(|entry| (entry.tool)())
+        .collect()
+}
+
+/// 所有声明为 Deferred 的内置工具定义（LoadTool 目录与按需加载用）。
+pub(crate) fn deferred_tool_definitions() -> Vec<Tool> {
+    registered_tools()
+        .iter()
+        .filter(|entry| entry.disclosure == ToolDisclosure::Deferred)
+        .map(|entry| (entry.tool)())
+        .collect()
+}
+
+/// 按名字查披露分级（未注册工具返回 None）。
+fn disclosure_for_tool(name: &str) -> Option<ToolDisclosure> {
+    find_registered_tool(name).map(|entry| entry.disclosure)
+}
+
+/// 渐进披露入口工具名（系统提示词与目录过滤共用）。
+pub(crate) const LOAD_TOOL_NAME: &str = "LoadTool";
+
+/// 按会话挂载的智能体套件过滤后的工具列表。
+/// 会话未挂载 bundle 或 bundle 工具清单为 null 时等价于全部工具；
+/// provider adapter 一律走这里。
+/// 子代理会话（`:sub:` 派生 ID）：只暴露只读白名单，不含 MCP/Task，
+/// 防止子代理获得任何修改能力或递归派生。
+/// 渐进式披露开启时：内置工具仅保留 Core + 本会话已加载的 Deferred；
+/// MCP 工具不参与披露，全量保留。
+pub fn get_available_tools_for_agent(app: &AppHandle, conversation_id: Option<&str>) -> Vec<Tool> {
+    // 分支问答会话（`:branch:` 派生 ID）：不暴露任何工具，纯文本问答，
+    // 防止分支获得工作区修改能力。
+    if crate::agent::orchestration::branch::is_branch_conversation(conversation_id) {
+        return Vec::new();
+    }
+
+    if crate::agent::orchestration::subagent::is_subagent_conversation(conversation_id) {
+        return get_available_tools()
+            .into_iter()
+            .filter(|tool| {
+                crate::agent::orchestration::subagent::SUBAGENT_ALLOWED_TOOLS
+                    .contains(&tool.name.as_str())
+            })
+            .collect();
+    }
+
+    let builtin = get_available_tools();
+
+    // 智能体套件过滤：内置工具口径。
+    let bundle_filtered: Vec<Tool> = match crate::agent::capabilities::agent_bundles::active_bundle(app, conversation_id) {
+        None => builtin,
+        Some(bundle) => builtin
+            .into_iter()
+            .filter(|tool| bundle.is_tool_enabled(&tool.name))
+            .collect(),
+    };
+
+    // 披露开关关闭：全量暴露（与重构前行为一致），并隐藏孤立的 LoadTool。
+    let disclosure_enabled = crate::command::settings::load_settings(app)
+        .map(|settings| settings.progressive_tool_disclosure)
+        .unwrap_or(true);
+    if !disclosure_enabled {
+        return bundle_filtered
+            .into_iter()
+            .filter(|tool| tool.name != LOAD_TOOL_NAME)
+            .collect();
+    }
+
+    let disclosed = crate::agent::capabilities::tool_disclosure::disclosed_tools(app, conversation_id);
+    bundle_filtered
+        .into_iter()
+        .filter(|tool| {
+            match disclosure_for_tool(&tool.name) {
+                // 内置工具：Core 始终可见，Deferred 需本会话已加载。
+                Some(ToolDisclosure::Core) => true,
+                Some(ToolDisclosure::Deferred) => disclosed.contains(&tool.name),
+                // 非内置（MCP 动态）：不参与披露。
+                None => true,
+            }
+        })
+        .collect()
+}
+
+/// 前端智能体配置页展示的工具目录（含 always_on 标记）。
+/// 默认专属工具（memory）不进目录：专用智能体不允许写全局记忆。
+pub fn configurable_tool_catalog(
+    app: &AppHandle,
+) -> Result<Vec<crate::command::agent_config::ConfigurableTool>, String> {
+    // 目录与当前激活 bundle 无关：配置的是任意 bundle 的勾选清单。
+    let _ = app;
+    let catalog: Vec<crate::command::agent_config::ConfigurableTool> = registered_tools()
+        .iter()
+        .filter(|entry| {
+            let name = (entry.tool)().name;
+            // 记忆专属工具不进目录；LoadTool 是披露基础设施，不可被套件勾选。
+            !crate::agent::capabilities::agent_bundles::DEFAULT_ONLY_TOOLS.contains(&name.as_str())
+                && name != LOAD_TOOL_NAME
+        })
+        .map(|entry| {
+            let tool = (entry.tool)();
+            crate::command::agent_config::ConfigurableTool {
+                name: tool.name.clone(),
+                description: tool.description.clone(),
+                read_only: entry.read_only,
+                always_on: crate::agent::capabilities::agent_bundles::ALWAYS_ON_TOOLS
+                    .contains(&tool.name.as_str()),
+            }
+        })
+        .collect();
+
+    Ok(catalog)
+}
+
+// 在带 AppHandle 的环境中执行工具，附带权限校验和 MCP 代理能力。
+pub(crate) async fn execute_tool_with_app(
+    app: &AppHandle,
+    conversation_id: Option<&str>,
+    name: &str,
+    input: Value,
+) -> ToolExecResult {
+    // 子代理执行期白名单强制：即使模型尝试按名调用非白名单工具
+    //（含 MCP 动态分发），也在此直接拒绝。与工具列表过滤互为双保险。
+    if crate::agent::orchestration::subagent::is_subagent_conversation(conversation_id)
+        && !crate::agent::orchestration::subagent::SUBAGENT_ALLOWED_TOOLS.contains(&name)
+    {
+        return Err(ToolFailure::permission_denied(format!(
+            "Tool '{}' is not available to subagents (read-only whitelist enforced)",
+            name
+        )));
+    }
+
+    match crate::agent::permissions::enforce_tool_permission(
+        app,
+        conversation_id,
+        name,
+        &input,
+    ) {
+        crate::agent::permissions::PermissionEnforcement::Allow => {}
+        crate::agent::permissions::PermissionEnforcement::Deny(e) => {
+            return Err(ToolFailure::permission_denied(e));
+        }
+        crate::agent::permissions::PermissionEnforcement::AskUser {
+            request_id,
+            payload,
+        } => {
+            if let Err(e) = shared::permission_runtime::await_permission_and_recheck(
+                app,
+                conversation_id,
+                name,
+                &input,
+                request_id,
+                payload,
+            )
+            .await
+            {
+                return Err(ToolFailure::permission_denied(e));
+            }
+        }
+    }
+
+    if let Some(output) =
+        crate::agent::capabilities::mcp_tools::execute_dynamic_with_app(app, name, input.clone()).await
+    {
+        return output;
+    }
+
+    if let Some(entry) = find_registered_tool(name) {
+        return (entry.execute_with_app)(app.clone(), conversation_id.map(str::to_string), input)
+            .await;
+    }
+
+    Err(ToolFailure::unknown_tool(format!("Unknown tool: {}", name)))
+}

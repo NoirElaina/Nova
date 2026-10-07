@@ -5,9 +5,9 @@ use uuid::Uuid;
 use crate::agent::context::assembler::ContextAssembler;
 use crate::agent::events::AgentDomainEvent;
 use crate::agent::state::CognitiveState;
-use crate::llm::providers::LlmClient;
-use crate::llm::session_log::SessionEvent;
-use crate::llm::types::{AgentMode, Content, ContentBlock, Message, Role};
+use crate::provider::LlmClient;
+use crate::agent::session::SessionEvent;
+use crate::provider::types::{AgentMode, Content, ContentBlock, Message, Role};
 
 /// 现代化 Agent 核心引擎（Modern Cognitive Engine）
 /// 严格践行单真实信源（Single Source of Truth），实现完整的 ReAct 状态流转与即时自愈验证。
@@ -52,7 +52,7 @@ impl AgentEngine {
             role: Role::User,
             content: Content::Text(user_prompt.to_string()),
         };
-        let _ = crate::llm::session_log::append_event(
+        let _ = crate::agent::session::append_event(
             &self.app,
             conversation_id,
             Some(&turn_id),
@@ -61,7 +61,7 @@ impl AgentEngine {
             },
         )
         .await;
-        let _ = crate::llm::session_log::append_event(
+        let _ = crate::agent::session::append_event(
             &self.app,
             conversation_id,
             Some(&turn_id),
@@ -73,11 +73,11 @@ impl AgentEngine {
         .await;
 
         // 3. 加载历史上下文并组装
-        let raw_events = crate::llm::session_log::load_events(&self.app, conversation_id)
+        let raw_events = crate::agent::session::load_events(&self.app, conversation_id)
             .await
             .unwrap_or_default();
         let reconstructed =
-            crate::llm::session_log::projection::reconstruct_model_context(&raw_events);
+            crate::agent::session::projection::reconstruct_model_context(&raw_events);
 
         let mut current_messages = ContextAssembler::assemble(
             &self.app,
@@ -99,7 +99,7 @@ impl AgentEngine {
             loop_count += 1;
 
             if cancel_token.is_cancelled() {
-                let _ = crate::llm::session_log::append_event(
+                let _ = crate::agent::session::append_event(
                     &self.app,
                     conversation_id,
                     Some(&turn_id),
@@ -142,7 +142,7 @@ impl AgentEngine {
                 Ok(res) => res,
                 Err(err) => {
                     let err_msg = err.message.clone();
-                    let _ = crate::llm::session_log::append_event(
+                    let _ = crate::agent::session::append_event(
                         &self.app,
                         conversation_id,
                         Some(&turn_id),
@@ -173,7 +173,7 @@ impl AgentEngine {
             if cancel_token.is_cancelled()
                 || provider_result.stop_reason.as_deref() == Some("cancelled")
             {
-                let _ = crate::llm::session_log::append_event(
+                let _ = crate::agent::session::append_event(
                     &self.app,
                     conversation_id,
                     Some(&turn_id),
@@ -226,7 +226,7 @@ impl AgentEngine {
                         *cost = serde_json::to_value(c).ok();
                     }
                 }
-                let _ = crate::llm::session_log::append_event(
+                let _ = crate::agent::session::append_event(
                     &self.app,
                     conversation_id,
                     Some(&turn_id),
@@ -253,7 +253,7 @@ impl AgentEngine {
 
             // 写入工具调用事件日志事实源，并向前端派发请求事件
             for call in &tool_calls {
-                let _ = crate::llm::session_log::append_event(
+                let _ = crate::agent::session::append_event(
                     &self.app,
                     conversation_id,
                     Some(&turn_id),
@@ -283,7 +283,7 @@ impl AgentEngine {
                 biased;
                 _ = cancel_token.cancelled() => {
                     tracing::info!("Agent turn cancelled during tool execution");
-                    let _ = crate::llm::session_log::append_event(
+                    let _ = crate::agent::session::append_event(
                         &self.app,
                         conversation_id,
                         Some(&turn_id),
@@ -303,7 +303,7 @@ impl AgentEngine {
                     );
                     return Ok(());
                 }
-                calls = crate::llm::tools::execute_tool_calls_with_app(
+                calls = crate::agent::tools::execute_tool_calls_with_app(
                     &self.app,
                     Some(conversation_id),
                     tool_calls,
@@ -325,7 +325,7 @@ impl AgentEngine {
                     has_error = true;
                 }
                 let now_ms = chrono::Utc::now().timestamp_millis();
-                let _ = crate::llm::session_log::append_event(
+                let _ = crate::agent::session::append_event(
                     &self.app,
                     conversation_id,
                     Some(&turn_id),
@@ -352,7 +352,7 @@ impl AgentEngine {
                     },
                 );
 
-                if crate::llm::providers::stream_runner::is_needs_user_input_payload(&executed.output)
+                if crate::provider::stream_runner::is_needs_user_input_payload(&executed.output)
                     || executed.prevent_continuation
                 {
                     stop_for_user_interaction = true;
@@ -379,7 +379,7 @@ impl AgentEngine {
             let tool_event = SessionEvent::ContextMessage {
                 message: tool_msg.clone(),
             };
-            let _ = crate::llm::session_log::append_event(
+            let _ = crate::agent::session::append_event(
                 &self.app,
                 conversation_id,
                 Some(&turn_id),
@@ -418,7 +418,7 @@ impl AgentEngine {
             "end_turn".to_string()
         };
 
-        let _ = crate::llm::session_log::append_event(
+        let _ = crate::agent::session::append_event(
             &self.app,
             conversation_id,
             Some(&turn_id),
@@ -429,7 +429,7 @@ impl AgentEngine {
         )
         .await;
 
-        let _ = crate::llm::history::refresh_conversation_activity(
+        let _ = crate::agent::session::history::refresh_conversation_activity(
             &self.app,
             conversation_id,
             Some(user_prompt),

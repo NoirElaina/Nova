@@ -1,7 +1,7 @@
 pub mod agent;
 pub mod command;
-pub mod llm;
 pub mod logging;
+pub mod provider;
 pub mod services;
 
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -50,10 +50,10 @@ pub fn run() {
             });
 
             // 后台预热 BPE 词表（约几百毫秒），避免首次 token 计算时同步加载。
-            tauri::async_runtime::spawn_blocking(crate::llm::utils::token_counter::warmup);
+            tauri::async_runtime::spawn_blocking(crate::provider::token_counter::warmup);
 
             // 模型库初始化：加载运行时缓存 + 每 24h 从 OpenRouter 自动拉新。
-            crate::llm::utils::model_context::init(app.handle());
+            crate::agent::utils::model_context::init(app.handle());
 
             let scheduler_handle = app.handle().clone();
             tauri::async_runtime::spawn(async move {
@@ -68,11 +68,11 @@ pub fn run() {
             greet,
             agent::send_modern_agent_turn,
             agent::cancel_modern_agent_turn,
-            llm::services::branch::send_branch_message,
-            llm::services::branch::cancel_branch_message,
-            llm::client::get_chat_turn_status,
-            llm::client::ack_chat_turn_status,
-            llm::client::submit_permission_decision,
+            agent::orchestration::branch::send_branch_message,
+            agent::orchestration::branch::cancel_branch_message,
+            command::live_turns::get_chat_turn_status,
+            command::live_turns::ack_chat_turn_status,
+            command::permission_rules::submit_permission_decision,
             command::settings::get_settings,
             command::settings::save_settings,
             command::agent_config::list_agent_bundles,

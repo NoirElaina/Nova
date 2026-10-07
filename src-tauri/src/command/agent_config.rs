@@ -1,8 +1,8 @@
 // 智能体套件命令层：bundle 增删改查 + 会话级挂载/卸载 + 前端配置所需的工具目录。
 // 智能体是会话级的：set_conversation_agent 只影响指定对话，全局始终是默认 Nova。
 
-use crate::llm::services::agent_bundles::{self, AgentBundle};
-use crate::llm::utils::error_event::report_backend_result;
+use crate::agent::capabilities::agent_bundles::{self, AgentBundle};
+use crate::agent::utils::error_event::report_backend_result;
 use serde::Serialize;
 use tauri::AppHandle;
 
@@ -76,7 +76,7 @@ pub async fn get_conversation_agent(
     conversation_id: String,
 ) -> Result<Option<AgentBundle>, String> {
     let result = async {
-        let bundle_id = crate::llm::history::get_conversation_agent(&app, &conversation_id).await?;
+        let bundle_id = crate::agent::session::history::get_conversation_agent(&app, &conversation_id).await?;
         match bundle_id {
             Some(id) => Ok(agent_bundles::load_bundle(&app, &id).ok()),
             None => Ok(None),
@@ -106,10 +106,10 @@ pub async fn set_conversation_agent(
                 return Err(format!("智能体「{}」已禁用，无法挂载", bundle.name));
             }
         }
-        crate::llm::history::set_conversation_agent(&app, &conversation_id, bundle_id.as_deref())
+        crate::agent::session::history::set_conversation_agent(&app, &conversation_id, bundle_id.as_deref())
             .await?;
         let active_id =
-            crate::llm::history::get_conversation_agent(&app, &conversation_id).await?;
+            crate::agent::session::history::get_conversation_agent(&app, &conversation_id).await?;
         Ok(active_id.and_then(|id| agent_bundles::load_bundle(&app, &id).ok()))
     }
     .await;
@@ -125,7 +125,7 @@ pub async fn set_conversation_agent(
 /// 流程控制工具（计划模式/用户问答）标记 always_on，前端锁定其勾选框。
 #[tauri::command]
 pub fn list_configurable_tools(app: AppHandle) -> Result<Vec<ConfigurableTool>, String> {
-    let result = crate::llm::tools::configurable_tool_catalog(&app);
+    let result = crate::agent::tools::configurable_tool_catalog(&app);
     report_backend_result(
         &app,
         "command.agent_config.list_configurable_tools",
@@ -141,11 +141,11 @@ pub fn list_configurable_tools(app: AppHandle) -> Result<Vec<ConfigurableTool>, 
 pub fn list_agent_private_skills(
     app: AppHandle,
     bundle_id: String,
-) -> Result<Vec<crate::llm::services::skills::SkillSummary>, String> {
+) -> Result<Vec<crate::agent::capabilities::skills::SkillSummary>, String> {
     report_backend_result(
         &app,
         "command.agent_config.list_agent_private_skills",
-        crate::llm::services::skills::list_agent_private_skill_summaries(&app, &bundle_id),
+        crate::agent::capabilities::skills::list_agent_private_skill_summaries(&app, &bundle_id),
         None,
     )
 }

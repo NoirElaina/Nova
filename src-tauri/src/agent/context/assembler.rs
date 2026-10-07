@@ -1,5 +1,5 @@
 use tauri::AppHandle;
-use crate::llm::types::{Content, Message, Role};
+use crate::provider::types::{Content, Message, Role};
 
 /// 确定性上下文装配器（Deterministic Context Assembler）
 /// 严格确保 Prompt Caching 字节对齐，前缀绝对稳定，杜绝由于插入时间戳或动态标记导致缓存击穿。

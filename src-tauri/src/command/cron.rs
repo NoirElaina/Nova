@@ -1,5 +1,5 @@
 use crate::services::cron_schedule;
-use crate::llm::tools::shared::cron_store::{add_job, list_jobs, remove_job, remove_job_with_cleanup, CronJob};
+use crate::agent::tools::shared::cron_store::{add_job, list_jobs, remove_job, remove_job_with_cleanup, CronJob};
 use chrono::{Local, Utc};
 use serde::Serialize;
 use std::collections::{HashMap, HashSet};
@@ -8,7 +8,7 @@ use tokio::time::{self, Duration};
 use tracing::{error, warn};
 use uuid::Uuid;
 
-use crate::llm::utils::error_event::report_backend_result;
+use crate::agent::utils::error_event::report_backend_result;
 
 const SCHEDULER_TICK_SECONDS: u64 = 15;
 
@@ -46,7 +46,7 @@ async fn create_bound_conversation_for_task(
     prompt: &str,
 ) -> Result<String, String> {
     let title = build_scheduled_conversation_title(cron, prompt);
-    let conversation = crate::llm::history::create_conversation(app, Some(title), None).await?;
+    let conversation = crate::agent::session::history::create_conversation(app, Some(title), None).await?;
     Ok(conversation.id)
 }
 
@@ -255,7 +255,7 @@ pub async fn create_scheduled_task(
             Ok(saved) => Ok(saved),
             Err(e) => {
                 if let Err(cleanup_error) =
-                    crate::llm::history::delete_conversation(&app, &conversation_id).await
+                    crate::agent::session::history::delete_conversation(&app, &conversation_id).await
                 {
                     error!(
                         operation = "command.cron.create_scheduled_task.cleanup",

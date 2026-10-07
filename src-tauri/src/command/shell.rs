@@ -1,5 +1,5 @@
 use crate::services::shell_sessions::{self, BackgroundOutput, ShellExecutionResult, ShellSessionStatus};
-use crate::llm::utils::error_event::report_backend_result;
+use crate::agent::utils::error_event::report_backend_result;
 use tauri::AppHandle;
 
 fn is_clear_shell_command(command: &str) -> bool {

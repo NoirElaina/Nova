@@ -4,7 +4,7 @@ use std::path::PathBuf;
 use tauri::{AppHandle, Manager};
 use tracing::warn;
 
-use crate::llm::utils::error_event::report_backend_result;
+use crate::agent::utils::error_event::report_backend_result;
 
 fn default_custom_models() -> HashMap<String, Vec<String>> {
     // custom_models 默认空映射。
@@ -191,7 +191,7 @@ impl Default for AppSettings {
 impl AppSettings {
     /// 当前模型最终上下文窗口：用户覆盖 > JSON 库 > 默认。
     pub fn context_window_for_model(&self, model: &str) -> u32 {
-        crate::llm::utils::model_context::resolve_context_window_tokens(
+        crate::agent::utils::model_context::resolve_context_window_tokens(
             model,
             &self.model_context_windows,
         )
@@ -267,7 +267,7 @@ impl AppSettings {
         self.ui_theme = normalize_ui_theme(&self.ui_theme);
 
         // 规范化审批策略：非法值回落默认。
-        if crate::llm::utils::permissions::ApprovalPolicy::parse(&self.approval_policy).is_none() {
+        if crate::agent::permissions::ApprovalPolicy::parse(&self.approval_policy).is_none() {
             self.approval_policy = default_approval_policy();
         }
     }
@@ -339,7 +339,7 @@ fn validate_provider_profiles(settings: &AppSettings) -> Result<(), String> {
 /// 系统提示词组装、工具披露判定的热路径，文件未变时直接返回内存克隆，
 /// 避免重复读盘/解析/密钥解密；保存后由 invalidate_settings_cache 失效。
 static SETTINGS_CACHE: std::sync::Mutex<
-    Option<(crate::llm::utils::fingerprint::FileFingerprint, AppSettings)>,
+    Option<(crate::agent::utils::fingerprint::FileFingerprint, AppSettings)>,
 > = std::sync::Mutex::new(None);
 
 /// 失效设置缓存（写盘成功后调用）。
@@ -361,7 +361,7 @@ pub fn load_settings(app: &AppHandle) -> Result<AppSettings, String> {
     }
 
     // 指纹命中：文件未变直接返回缓存克隆。
-    let fingerprint = crate::llm::utils::fingerprint::FileFingerprint::of(&path);
+    let fingerprint = crate::agent::utils::fingerprint::FileFingerprint::of(&path);
     if let Some(fp) = fingerprint {
         if let Ok(guard) = SETTINGS_CACHE.lock() {
             if let Some((cached_fp, cached_settings)) = guard.as_ref() {
@@ -398,7 +398,7 @@ pub fn load_settings(app: &AppHandle) -> Result<AppSettings, String> {
     crate::command::settings_secrets::decrypt_provider_api_keys(&mut settings);
 
     // 写入缓存：迁移回写可能已改变文件，重新取指纹；取不到则不入缓存（下次重走完整路径）。
-    if let Some(fp) = crate::llm::utils::fingerprint::FileFingerprint::of(&path) {
+    if let Some(fp) = crate::agent::utils::fingerprint::FileFingerprint::of(&path) {
         if let Ok(mut guard) = SETTINGS_CACHE.lock() {
             *guard = Some((fp, settings.clone()));
         }
@@ -451,7 +451,7 @@ pub fn save_settings(app: AppHandle, settings: AppSettings) -> Result<(), String
 pub fn get_model_window_tokens(app: AppHandle, model: String) -> u32 {
     match load_settings(&app) {
         Ok(settings) => settings.context_window_for_model(&model),
-        Err(_) => crate::llm::utils::model_context::get_context_window_tokens(&model),
+        Err(_) => crate::agent::utils::model_context::get_context_window_tokens(&model),
     }
 }
 
@@ -459,5 +459,5 @@ pub fn get_model_window_tokens(app: AppHandle, model: String) -> u32 {
 /// 不区分协议/模型——分词是模型能力而非协议差异，统一基准即可。
 #[tauri::command]
 pub fn estimate_text_tokens(text: String) -> u32 {
-    crate::llm::utils::token_counter::count_text(&text).clamp(0, u32::MAX as i64) as u32
+    crate::provider::token_counter::count_text(&text).clamp(0, u32::MAX as i64) as u32
 }

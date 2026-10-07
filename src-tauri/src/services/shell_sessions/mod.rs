@@ -1181,7 +1181,7 @@ pub async fn run_foreground(
     timeout_ms: Option<u64>,
     initial_cwd: Option<&str>,
 ) -> Result<ShellExecutionResult, String> {
-    let cancel_token = crate::llm::cancellation::get_token(conversation_id);
+    let cancel_token = crate::agent::cancellation::get_token(conversation_id);
     let handle = get_or_create_handle(conversation_id, initial_cwd).await?;
     let mut session = handle.inner.lock().await;
     let command_id = "{command_id}";

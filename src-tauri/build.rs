@@ -10,7 +10,7 @@ fn main() {
 fn generate_builtin_tool_registry() {
     let manifest_dir =
         PathBuf::from(env::var("CARGO_MANIFEST_DIR").expect("missing CARGO_MANIFEST_DIR"));
-    let tools_dir = manifest_dir.join("src").join("llm").join("tools");
+    let tools_dir = manifest_dir.join("src").join("agent").join("tools");
     let out_dir = PathBuf::from(env::var("OUT_DIR").expect("missing OUT_DIR"));
     let registry_path = out_dir.join("builtin_tool_registry.rs");
 

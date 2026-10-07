@@ -2,7 +2,7 @@
 
 use tauri::AppHandle;
 
-use crate::llm::services::hooks;
+use crate::agent::lifecycle::hooks;
 
 /// 读取 hooks.toml 原文；文件不存在返回空串。
 #[tauri::command]
@@ -51,7 +51,7 @@ pub fn save_hooks_toml(app: AppHandle, content: String) -> Result<usize, String>
         std::fs::create_dir_all(parent)
             .map_err(|e| format!("Failed to create {}: {}", parent.display(), e))?;
     }
-    crate::llm::utils::atomic_write::write_str(&path, &content)
+    crate::agent::utils::atomic_write::write_str(&path, &content)
         .map_err(|e| format!("Failed to write {}: {}", path.display(), e))?;
     hooks::invalidate_hooks_cache();
     Ok(handler_count)

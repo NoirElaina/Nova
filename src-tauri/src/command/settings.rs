@@ -166,6 +166,9 @@ pub struct AppSettings {
     #[serde(default = "default_progressive_tool_disclosure")]
     // 渐进式工具披露：低频工具不进提示词，由模型通过 LoadTool 按需加载。
     pub progressive_tool_disclosure: bool,
+    #[serde(default)]
+    // 用户偏好终端/Shell（支持终端 id 如 "pwsh"/"powershell"/"git-bash"/"cmd"，或自定义可执行文件完整路径；None 表示自动选择）。
+    pub terminal_shell: Option<String>,
 }
 
 impl Default for AppSettings {
@@ -184,6 +187,7 @@ impl Default for AppSettings {
             enable_app_log: default_enable_app_log(),
             approval_policy: default_approval_policy(),
             progressive_tool_disclosure: default_progressive_tool_disclosure(),
+            terminal_shell: None,
         }
     }
 }
@@ -403,6 +407,7 @@ pub fn load_settings(app: &AppHandle) -> Result<AppSettings, String> {
             *guard = Some((fp, settings.clone()));
         }
     }
+    crate::services::terminal_detector::set_configured_terminal(settings.terminal_shell.clone());
     Ok(settings)
 }
 
@@ -434,6 +439,7 @@ pub fn save_settings_inner(app: &AppHandle, settings: AppSettings) -> Result<(),
     std::fs::write(path, content).map_err(|e| e.to_string())?;
     // 写盘成功后立即失效缓存，下次加载重走完整路径。
     invalidate_settings_cache();
+    crate::services::terminal_detector::set_configured_terminal(normalized.terminal_shell.clone());
     crate::logging::set_file_logging_enabled(normalized.enable_app_log);
     Ok(())
 }
@@ -460,4 +466,10 @@ pub fn get_model_window_tokens(app: AppHandle, model: String) -> u32 {
 #[tauri::command]
 pub fn estimate_text_tokens(text: String) -> u32 {
     crate::provider::token_counter::count_text(&text).clamp(0, u32::MAX as i64) as u32
+}
+
+/// 查询本机已探测到的可用终端与 Shell 列表
+#[tauri::command]
+pub fn get_available_terminals() -> Vec<crate::services::terminal_detector::TerminalInfo> {
+    crate::services::terminal_detector::list_available_terminals()
 }

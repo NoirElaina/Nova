@@ -8,11 +8,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::OnceLock;
 use tracing::{info, warn};
 
-// Learn more about Tauri commands at https://tauri.app/develop/calling-rust/
-#[tauri::command]
-fn greet(name: &str) -> String {
-    format!("Hello, {}! You've been greeted from Rust!", name)
-}
+
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -55,6 +51,9 @@ pub fn run() {
             // 模型库初始化：加载运行时缓存 + 每 24h 从 OpenRouter 自动拉新。
             crate::agent::utils::model_context::init(app.handle());
 
+            // 预加载设置并初始化当前终端
+            let _ = crate::command::settings::load_settings(app.handle());
+
             let scheduler_handle = app.handle().clone();
             tauri::async_runtime::spawn(async move {
                 info!("scheduler loop starting");
@@ -65,7 +64,7 @@ pub fn run() {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
-            greet,
+            command::settings::get_available_terminals,
             agent::send_modern_agent_turn,
             agent::cancel_modern_agent_turn,
             agent::orchestration::branch::send_branch_message,

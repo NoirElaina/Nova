@@ -83,7 +83,6 @@ impl AgentEngine {
             &self.app,
             Some(conversation_id),
             reconstructed,
-            user_prompt,
         )
         .await?;
 
@@ -313,17 +312,10 @@ impl AgentEngine {
 
             let mut tool_result_blocks = Vec::new();
             let mut stop_for_user_interaction = false;
-            let mut has_write_or_edit = false;
-            let mut has_error = false;
+
+            let mut pending_additional_messages = Vec::new();
 
             for executed in executed_calls {
-                let name_lower = executed.name.to_lowercase();
-                if name_lower == "write" || name_lower == "edit" || name_lower == "multiedit" || name_lower == "multi_edit" {
-                    has_write_or_edit = true;
-                }
-                if executed.is_error {
-                    has_error = true;
-                }
                 let now_ms = chrono::Utc::now().timestamp_millis();
                 let _ = crate::agent::session::append_event(
                     &self.app,
@@ -367,11 +359,12 @@ impl AgentEngine {
                 });
 
                 if !executed.additional_messages.is_empty() {
-                    current_messages.extend(executed.additional_messages);
+                    pending_additional_messages.extend(executed.additional_messages);
                 }
             }
 
-            // 封装 ToolResult 消息并以 ContextMessage 记入事件日志事实源与当前工作上下文
+            // 封装 ToolResult 消息并以 ContextMessage 记入事件日志事实源与当前工作上下文。
+            // 重要：在 Anthropic 等协议中，ToolResult 必须紧跟在包含 ToolUse 的 Assistant 消息之后！
             let tool_msg = Message {
                 role: Role::User,
                 content: Content::Blocks(tool_result_blocks),
@@ -388,23 +381,22 @@ impl AgentEngine {
             .await;
             current_messages.push(tool_msg);
 
-            if has_error {
-                let _ = self.app.emit(
-                    "agent-event",
-                    AgentDomainEvent::StateChanged {
-                        turn_id: turn_id.clone(),
-                        state: CognitiveState::Reflecting,
-                    },
-                );
-            } else if has_write_or_edit {
-                let _ = self.app.emit(
-                    "agent-event",
-                    AgentDomainEvent::StateChanged {
-                        turn_id: turn_id.clone(),
-                        state: CognitiveState::VerifyingWorkspace,
-                    },
-                );
+            // 挂钩或工具产生的附加上下文消息必须追加在 ToolResult 之后，严禁插在 ToolUse 与 ToolResult 之间
+            if !pending_additional_messages.is_empty() {
+                for add_msg in &pending_additional_messages {
+                    let _ = crate::agent::session::append_event(
+                        &self.app,
+                        conversation_id,
+                        Some(&turn_id),
+                        &SessionEvent::ContextMessage {
+                            message: add_msg.clone(),
+                        },
+                    )
+                    .await;
+                }
+                current_messages.extend(pending_additional_messages);
             }
+
 
             if stop_for_user_interaction {
                 break;

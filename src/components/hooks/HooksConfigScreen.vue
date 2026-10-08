@@ -25,18 +25,11 @@ let uid = 0;
 // ---------------- 数据模型 ----------------
 
 const EVENTS: { value: string; label: string; toolEvent: boolean }[] = [
-  { value: "SessionStart", label: "会话开始（第一轮发送前）", toolEvent: false },
-  { value: "UserPromptSubmit", label: "用户每次发送消息时", toolEvent: false },
   { value: "PreToolUse", label: "工具执行前", toolEvent: true },
   { value: "PostToolUse", label: "工具执行成功后", toolEvent: true },
   { value: "PostToolUseFailure", label: "工具执行失败后", toolEvent: true },
-  { value: "PreCompact", label: "上下文压缩前", toolEvent: false },
-  { value: "PostCompact", label: "上下文压缩后", toolEvent: false },
   { value: "SubagentStart", label: "子智能体启动时", toolEvent: false },
   { value: "SubagentStop", label: "子智能体结束时", toolEvent: false },
-  { value: "Stop", label: "回合即将结束时", toolEvent: false },
-  { value: "SessionEnd", label: "会话正常完成时", toolEvent: false },
-  { value: "Error", label: "回合以错误结束时", toolEvent: false },
 ];
 
 const HANDLERS: { value: string; label: string }[] = [
@@ -45,8 +38,6 @@ const HANDLERS: { value: string; label: string }[] = [
   { value: "command", label: "执行外部命令" },
   { value: "stopWhen", label: "输出含关键词时停止" },
   { value: "stopOnError", label: "工具失败时停止" },
-  { value: "maxAssistantMessages", label: "限制消息数" },
-  { value: "appendStopReason", label: "附加结束原因" },
 ];
 
 interface HookCard {
@@ -58,15 +49,14 @@ interface HookCard {
   commandWindows: string;
   timeoutSec: string; // 空 = 默认 30 秒
   async: boolean;
-  text: string; // context / appendStopReason
+  text: string; // context
   reason: string; // block
   pattern: string; // stopWhen
-  limit: string; // maxAssistantMessages
 }
 
 const newCard = (partial?: Partial<HookCard>): HookCard => ({
   id: ++uid,
-  event: "UserPromptSubmit",
+  event: "PreToolUse",
   matcher: "",
   type: "context",
   command: "",
@@ -76,7 +66,6 @@ const newCard = (partial?: Partial<HookCard>): HookCard => ({
   text: "",
   reason: "",
   pattern: "",
-  limit: "",
   ...partial,
 });
 
@@ -131,7 +120,6 @@ function parseStructured(data: Record<string, unknown>): HookCard[] {
             text: typeof handler.text === "string" ? handler.text : "",
             reason: typeof handler.reason === "string" ? handler.reason : "",
             pattern: typeof handler.pattern === "string" ? handler.pattern : "",
-            limit: handler.limit != null ? String(handler.limit) : "",
           }),
         );
       }
@@ -155,7 +143,6 @@ function handlerToToml(card: HookCard): string {
       if (card.async) rows.push("  async = true");
       break;
     case "context":
-    case "appendStopReason":
       rows.push(`  text = ${tomlStr(card.text)}`);
       break;
     case "block":
@@ -163,9 +150,6 @@ function handlerToToml(card: HookCard): string {
       break;
     case "stopWhen":
       rows.push(`  pattern = ${tomlStr(card.pattern)}`);
-      break;
-    case "maxAssistantMessages":
-      rows.push(`  limit = ${Number(card.limit) || 12}`);
       break;
   }
   return [`  [[hooks.${card.event}.hooks]]`, ...rows].join("\n");
@@ -198,7 +182,6 @@ function validateCards(): string {
         if (!card.command.trim()) return `${where}：外部命令不能为空`;
         break;
       case "context":
-      case "appendStopReason":
         if (!card.text.trim()) return `${where}：消息文本不能为空`;
         break;
       case "block":
@@ -206,9 +189,6 @@ function validateCards(): string {
         break;
       case "stopWhen":
         if (!card.pattern.trim()) return `${where}：关键词不能为空`;
-        break;
-      case "maxAssistantMessages":
-        if (!(Number(card.limit) > 0)) return `${where}：消息数上限需为正数`;
         break;
     }
   }
@@ -265,12 +245,8 @@ const PRESETS: { title: string; partial: Partial<HookCard> }[] = [
     partial: { event: "PostToolUseFailure", type: "stopOnError" },
   },
   {
-    title: "回合结束前检查清单",
-    partial: { event: "Stop", type: "context", text: "在结束前请确认所有任务都已完成并验证" },
-  },
-  {
-    title: "限制单回合消息数",
-    partial: { event: "Stop", type: "maxAssistantMessages", limit: "12" },
+    title: "子智能体启动注入上下文",
+    partial: { event: "SubagentStart", type: "context", text: "子智能体 {subagent_name} 开始运行，请专注于子任务" },
   },
 ];
 
@@ -279,20 +255,9 @@ const PRESETS: { title: string; partial: Partial<HookCard> }[] = [
 /** 主流程节点（按回合执行顺序），点击节点直接新建对应事件的挂钩卡片；
  * branches 为该节点向下拉出的分支事件。 */
 const FLOW_NODES: { event: string; label: string; branches?: { event: string; label: string }[] }[] = [
-  { event: "SessionStart", label: "会话开始" },
-  {
-    event: "UserPromptSubmit",
-    label: "用户发送",
-    // 上下文过长时在发起模型调用前自动压缩，属于发送后的旁路。
-    branches: [
-      { event: "PreCompact", label: "压缩前" },
-      { event: "PostCompact", label: "压缩后" },
-    ],
-  },
   {
     event: "PreToolUse",
     label: "工具执行前",
-    // Task 工具内的子智能体生命周期。
     branches: [
       { event: "SubagentStart", label: "子智能体启动" },
       { event: "SubagentStop", label: "子智能体结束" },
@@ -301,11 +266,8 @@ const FLOW_NODES: { event: string; label: string; branches?: { event: string; la
   {
     event: "PostToolUse",
     label: "工具成功后",
-    // 工具执行的另一结果：失败旁路。
     branches: [{ event: "PostToolUseFailure", label: "工具失败后" }],
   },
-  { event: "Stop", label: "回合结束前" },
-  { event: "SessionEnd", label: "会话完成", branches: [{ event: "Error", label: "错误结束" }] },
 ];
 
 /** 某事件上已挂的挂钩数（流程图徽标用）。 */
@@ -459,9 +421,9 @@ onMounted(() => {
           </div>
 
           <!-- 动作参数：按类型动态渲染 -->
-          <div v-if="card.type === 'context' || card.type === 'appendStopReason'" class="space-y-1 sm:col-span-2">
+          <div v-if="card.type === 'context'" class="space-y-1 sm:col-span-2">
             <label class="text-[11px] font-medium text-[#64748b] dark:text-[#9ca3af]">
-              {{ card.type === 'context' ? '注入的消息内容（支持 {tool_name} {conversation_id} 占位符）' : '附加到结束原因的文本' }}
+              注入的消息内容（支持 {tool_name} {conversation_id} {subagent_name} 占位符）
             </label>
             <Textarea v-model="card.text" rows="2" class="resize-none text-[12.5px]" placeholder="要注入的文本…" />
           </div>
@@ -474,11 +436,6 @@ onMounted(() => {
           <div v-else-if="card.type === 'stopWhen'" class="space-y-1 sm:col-span-2">
             <label class="text-[11px] font-medium text-[#64748b] dark:text-[#9ca3af]">命中即停止的关键词</label>
             <Input v-model="card.pattern" class="h-8 text-[12.5px]" placeholder="如 FATAL" />
-          </div>
-
-          <div v-else-if="card.type === 'maxAssistantMessages'" class="space-y-1">
-            <label class="text-[11px] font-medium text-[#64748b] dark:text-[#9ca3af]">消息数上限</label>
-            <Input v-model="card.limit" type="number" min="1" class="h-8 text-[12.5px]" placeholder="12" />
           </div>
 
           <template v-else-if="card.type === 'command'">

@@ -28,10 +28,7 @@ pub async fn send_modern_agent_turn(
     let engine = engine::AgentEngine::new(app);
     let result = engine.execute_turn(&conversation_id, &prompt, cancel_token).await;
     crate::agent::cancellation::finish_turn(Some(&conversation_id));
-    crate::agent::lifecycle::live_turns::mark_terminal(
-        Some(&conversation_id),
-        if result.is_ok() { "completed" } else { "error" },
-    );
+    crate::agent::lifecycle::live_turns::finish_turn(Some(&conversation_id));
     result
 }
 

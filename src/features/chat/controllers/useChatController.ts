@@ -284,22 +284,6 @@ export function useChatController() {
         onToolCompleted: (callId, _toolName, output, isError, _durationMs, turnId) => {
           agentSessionStore.handleToolCompleted(callId, _toolName, output, isError, _durationMs, turnId);
         },
-        onVerificationStarted: (target) => {
-          emitToast({
-            variant: "info",
-            source: "verifier",
-            message: `[即时自愈] 正在对 ${target} 进行静态语法树分析...`,
-          });
-        },
-        onVerificationCompleted: (target, passed, feedback) => {
-          if (!passed) {
-            emitToast({
-              variant: "warning",
-              source: "verifier",
-              message: `[自愈拦截] ${target} 发生语法错误，已阻断写入并回灌模型: ${feedback || ""}`,
-            });
-          }
-        },
         onTokenUsage: (usage, turnId) => {
           agentSessionStore.handleTokenUsage(usage, turnId);
         },

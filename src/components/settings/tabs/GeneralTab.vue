@@ -18,12 +18,23 @@ import {
   type UiTheme,
 } from '@/lib/ui-preferences'
 
+interface TerminalInfo {
+  id: string
+  name: string
+  path: string
+  isAvailable: boolean
+  isRecommended: boolean
+  shellType: string
+}
+
 const theme = ref<UiTheme>(getStoredUiTheme())
 const language = ref<UiLanguage>(getStoredUiLanguage())
 const enableAppLog = ref(false)
 const approvalPolicy = ref<'always_ask' | 'on_request' | 'never'>('on_request')
 const progressiveToolDisclosure = ref(true)
 const permissionRules = ref<{ kind: string; signature: string; createdAtMs: number }[]>([])
+const availableTerminals = ref<TerminalInfo[]>([])
+const terminalShell = ref<string>('auto')
 const isSavingPreferences = ref(false)
 const cachedSettings = ref<Record<string, unknown> | null>(null)
 
@@ -34,6 +45,12 @@ const localeTexts = {
     themeLabel: '主题',
     languageTitle: '语言',
     languageDesc: '切换界面显示语言。',
+    terminalTitle: '终端与 Shell',
+    terminalDesc: '配置后台执行与终端面板所使用的默认 Shell。自动模式下优先匹配 PowerShell 7 或系统内置 Shell。',
+    terminalLabel: '终端 Shell',
+    terminalAuto: '自动探测（推荐）',
+    terminalNotAvailable: '（未检测到）',
+    terminalRecommended: '（推荐）',
     loggingTitle: '软件日志',
     loggingDesc: '控制是否将统一软件日志写入本地日志文件。',
     loggingSwitchLabel: '记录软件日志到本地文件',
@@ -61,6 +78,12 @@ const localeTexts = {
     themeLabel: 'Theme',
     languageTitle: 'Language',
     languageDesc: 'Change the interface language.',
+    terminalTitle: 'Terminal & Shell',
+    terminalDesc: 'Configure default shell for backend execution and terminal panel. Auto mode prioritizes PowerShell 7 or system shell.',
+    terminalLabel: 'Terminal Shell',
+    terminalAuto: 'Auto-detect (Recommended)',
+    terminalNotAvailable: ' (Not found)',
+    terminalRecommended: ' (Recommended)',
     loggingTitle: 'Application Logging',
     loggingDesc: 'Control whether the unified application log is written to local log files.',
     loggingSwitchLabel: 'Write application logs to local files',
@@ -102,6 +125,13 @@ const dispatchLanguageUpdated = () => {
 
 const loadSettings = async () => {
   try {
+    try {
+      const terminals = await invoke<TerminalInfo[]>('get_available_terminals')
+      availableTerminals.value = terminals
+    } catch (err) {
+      console.error('Failed to load available terminals:', err)
+    }
+
     const settings = await invoke<Record<string, unknown>>('get_settings')
     cachedSettings.value = settings
 
@@ -111,6 +141,12 @@ const loadSettings = async () => {
     language.value = nextLanguage
     theme.value = nextTheme
     enableAppLog.value = nextEnableAppLog
+
+    const currentTerminal =
+      typeof settings.terminalShell === 'string' && settings.terminalShell.trim() !== ''
+        ? (settings.terminalShell as string)
+        : 'auto'
+    terminalShell.value = currentTerminal
 
     const policy = settings.approvalPolicy
     approvalPolicy.value =
@@ -161,6 +197,7 @@ const persistPreferences = async () => {
       uiLanguage: language.value,
       uiTheme: theme.value,
       enableAppLog: enableAppLog.value,
+      terminalShell: terminalShell.value === 'auto' ? null : terminalShell.value,
       approvalPolicy: approvalPolicy.value,
       progressiveToolDisclosure: progressiveToolDisclosure.value,
     }
@@ -173,6 +210,11 @@ const persistPreferences = async () => {
   } finally {
     isSavingPreferences.value = false
   }
+}
+
+const onTerminalSelect = (value: string) => {
+  terminalShell.value = value
+  void persistPreferences()
 }
 
 const setTheme = (value: UiTheme) => {
@@ -258,6 +300,42 @@ onMounted(() => {
             <SelectContent>
               <SelectItem value="zh-CN">{{ t.languageChinese }}</SelectItem>
               <SelectItem value="en-US">{{ t.languageEnglish }}</SelectItem>
+            </SelectContent>
+          </Select>
+        </div>
+      </CardContent>
+    </Card>
+
+    <!-- 终端与 Shell -->
+    <Card class="rounded-xl border-[#e7e9ee] dark:border-[#343434]">
+      <CardHeader class="pb-1">
+        <CardTitle class="text-[0.9rem]">{{ t.terminalTitle }}</CardTitle>
+        <CardDescription>{{ t.terminalDesc }}</CardDescription>
+      </CardHeader>
+      <CardContent class="flex flex-col">
+        <div class="flex items-center justify-between gap-4 py-2.5">
+          <div class="min-w-0 pr-2">
+            <div class="text-[0.9rem] text-[#374151] dark:text-[#d7d7d7]">{{ t.terminalLabel }}</div>
+            <p v-if="terminalShell !== 'auto'" class="mt-0.5 truncate font-mono text-xs text-[#7b8494] dark:text-[#9ca3af]">
+              {{ availableTerminals.find(item => item.id === terminalShell)?.path || terminalShell }}
+            </p>
+          </div>
+          <Select :model-value="terminalShell" @update:model-value="(value) => onTerminalSelect(String(value))">
+            <SelectTrigger class="h-8 min-w-[200px] max-w-[280px] shrink-0">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="auto">{{ t.terminalAuto }}</SelectItem>
+              <SelectItem
+                v-for="item in availableTerminals"
+                :key="item.id"
+                :value="item.id"
+                :disabled="!item.isAvailable"
+              >
+                {{ item.name }}
+                <span v-if="item.isRecommended" class="text-xs text-emerald-600 dark:text-emerald-400">{{ t.terminalRecommended }}</span>
+                <span v-else-if="!item.isAvailable" class="text-xs text-muted-foreground">{{ t.terminalNotAvailable }}</span>
+              </SelectItem>
             </SelectContent>
           </Select>
         </div>

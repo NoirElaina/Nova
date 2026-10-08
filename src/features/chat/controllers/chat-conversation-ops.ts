@@ -6,6 +6,7 @@ import type {
   ConversationMeta,
 } from "../../../lib/chat-types";
 import {
+  appendPlainChatMessage,
   createConversation,
   deleteConversation,
   listSessionFiles,
@@ -111,11 +112,19 @@ export function createConversationOperations(deps: ConversationOpsDeps) {
     }
   }
 
-  async function persistMessage(_message?: ChatMessage, _conversationId = activeConversationId.value) {
+  async function persistMessage(message?: ChatMessage, conversationId = activeConversationId.value) {
+    if (!conversationId || !message) {
+      return;
+    }
     try {
+      await appendPlainChatMessage(
+        conversationId,
+        message.role === "assistant" ? "assistant" : "user",
+        message.content,
+      );
       await refreshConversations();
     } catch (err) {
-      console.error("Failed to refresh conversations:", err);
+      console.error("Failed to persist message:", err);
     }
   }
 

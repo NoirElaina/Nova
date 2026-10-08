@@ -125,26 +125,157 @@ fn nova_content_to_anthropic_content(
 fn nova_messages_to_anthropic_messages(
     messages: &[Message],
 ) -> Result<Vec<AnthropicMessage>, ProviderTurnError> {
-    messages
+    let raw: Vec<AnthropicMessage> = messages
         .iter()
-        .map(|message| {
+        .map(|message| -> Result<AnthropicMessage, ProviderTurnError> {
             Ok(AnthropicMessage {
                 role: nova_role_to_anthropic_role(&message.role),
                 content: nova_content_to_anthropic_content(&message.content)?,
             })
         })
-        .collect::<Result<Vec<_>, _>>()
+        .collect::<Result<Vec<AnthropicMessage>, ProviderTurnError>>()?
         // 剔除 signature 后可能剩下空块列表的消息（如纯 thinking 半截回复），
         // 空 content 对 Anthropic 系端点是非法报文。
-        .map(|converted| {
-            converted
-                .into_iter()
-                .filter(|message| match &message.content {
-                    AnthropicMessageContent::Blocks(blocks) => !blocks.is_empty(),
-                    AnthropicMessageContent::Text(_) => true,
-                })
-                .collect()
+        .into_iter()
+        .filter(|message| match &message.content {
+            AnthropicMessageContent::Blocks(blocks) => !blocks.is_empty(),
+            AnthropicMessageContent::Text(_) => true,
         })
+        .collect();
+
+    Ok(normalize_anthropic_messages(raw))
+}
+
+/// 对消息序列执行 Anthropic 协议严格规范化自愈：
+/// 1. 确保每一个 `tool_use` 在下一条消息中都有对应的 `tool_result`，
+///    若被中断/取消/异常导致缺失，自动合成一个错误 `tool_result` 补齐，杜绝 400 Bad Request；
+/// 2. 合并连续的同角色消息（Anthropic 强制要求 user 与 assistant 交替）；
+/// 3. 保证首条消息必须为 user。
+fn normalize_anthropic_messages(raw: Vec<AnthropicMessage>) -> Vec<AnthropicMessage> {
+    if raw.is_empty() {
+        return raw;
+    }
+
+    let mut out: Vec<AnthropicMessage> = Vec::with_capacity(raw.len() + 2);
+    let mut i = 0;
+
+    while i < raw.len() {
+        let msg = raw[i].clone();
+
+        if msg.role == "assistant" {
+            let mut expected_tool_ids = Vec::new();
+            if let AnthropicMessageContent::Blocks(blocks) = &msg.content {
+                for b in blocks {
+                    if let AnthropicContentBlock::ToolUse { id, .. } = b {
+                        expected_tool_ids.push(id.clone());
+                    }
+                }
+            }
+
+            out.push(msg);
+
+            if !expected_tool_ids.is_empty() {
+                let mut answered_ids = std::collections::HashSet::new();
+                let next_is_user = if i + 1 < raw.len() && raw[i + 1].role == "user" {
+                    if let AnthropicMessageContent::Blocks(next_blocks) = &raw[i + 1].content {
+                        for b in next_blocks {
+                            if let AnthropicContentBlock::ToolResult { tool_use_id, .. } = b {
+                                answered_ids.insert(tool_use_id.clone());
+                            }
+                        }
+                    }
+                    true
+                } else {
+                    false
+                };
+
+                let missing_ids: Vec<String> = expected_tool_ids
+                    .into_iter()
+                    .filter(|id| !answered_ids.contains(id))
+                    .collect();
+
+                if !missing_ids.is_empty() {
+                    let patch_blocks: Vec<AnthropicContentBlock> = missing_ids
+                        .into_iter()
+                        .map(|id| AnthropicContentBlock::ToolResult {
+                            tool_use_id: id,
+                            is_error: true,
+                            content: vec![AnthropicContentBlock::Text {
+                                text: "工具执行被中断、取消或未记录结果。".to_string(),
+                                cache_control: None,
+                            }],
+                            cache_control: None,
+                        })
+                        .collect();
+
+                    if next_is_user {
+                        let mut next_msg = raw[i + 1].clone();
+                        match &mut next_msg.content {
+                            AnthropicMessageContent::Blocks(b) => {
+                                let mut new_blocks = patch_blocks;
+                                new_blocks.append(b);
+                                *b = new_blocks;
+                            }
+                            AnthropicMessageContent::Text(t) => {
+                                let text_block = AnthropicContentBlock::Text {
+                                    text: std::mem::take(t),
+                                    cache_control: None,
+                                };
+                                let mut new_blocks = patch_blocks;
+                                new_blocks.push(text_block);
+                                next_msg.content = AnthropicMessageContent::Blocks(new_blocks);
+                            }
+                        }
+                        out.push(next_msg);
+                        i += 2;
+                        continue;
+                    } else {
+                        out.push(AnthropicMessage {
+                            role: "user".to_string(),
+                            content: AnthropicMessageContent::Blocks(patch_blocks),
+                        });
+                    }
+                }
+            }
+            i += 1;
+        } else {
+            out.push(msg);
+            i += 1;
+        }
+    }
+
+    // 合并相邻同角色消息
+    let mut merged: Vec<AnthropicMessage> = Vec::with_capacity(out.len());
+    for msg in out {
+        if let Some(last) = merged.last_mut() {
+            if last.role == msg.role {
+                let mut blocks_a = match std::mem::replace(&mut last.content, AnthropicMessageContent::Blocks(Vec::new())) {
+                    AnthropicMessageContent::Blocks(b) => b,
+                    AnthropicMessageContent::Text(t) => vec![AnthropicContentBlock::Text { text: t, cache_control: None }],
+                };
+                let blocks_b = match msg.content {
+                    AnthropicMessageContent::Blocks(b) => b,
+                    AnthropicMessageContent::Text(t) => vec![AnthropicContentBlock::Text { text: t, cache_control: None }],
+                };
+                blocks_a.extend(blocks_b);
+                last.content = AnthropicMessageContent::Blocks(blocks_a);
+                continue;
+            }
+        }
+        merged.push(msg);
+    }
+
+    // 确保首条消息必须是 user
+    if let Some(first) = merged.first() {
+        if first.role == "assistant" {
+            merged.insert(0, AnthropicMessage {
+                role: "user".to_string(),
+                content: AnthropicMessageContent::Text("继续".to_string()),
+            });
+        }
+    }
+
+    merged
 }
 
 fn nova_tools_to_anthropic_tools(tools: Vec<Tool>) -> Vec<AnthropicTool> {

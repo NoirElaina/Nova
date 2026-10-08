@@ -8,8 +8,6 @@ export interface ModernAgentCallbacks {
   onTextDelta?: (delta: string, turnId?: string) => void;
   onToolRequested?: (callId: string, toolName: string, args: Record<string, unknown>, turnId?: string) => void;
   onToolCompleted?: (callId: string, toolName: string, output: string, isError: boolean, durationMs: number, turnId?: string) => void;
-  onVerificationStarted?: (target: string) => void;
-  onVerificationCompleted?: (target: string, passed: boolean, feedback?: string) => void;
   onTokenUsage?: (usage: { input: number; output: number; cacheRead: number; cacheCreate: number }, turnId?: string) => void;
   onPermissionRequested?: (turnId: string, requestId: string, toolName: string, payload: string) => void;
   onTurnFinished?: (turnId: string, stopReason: string) => void;
@@ -60,18 +58,6 @@ export async function setupAgentEventListener(
           data.payload.is_error,
           data.payload.duration_ms,
           data.payload.turn_id
-        );
-        break;
-
-      case "verification_started":
-        callbacks.onVerificationStarted?.(data.payload.target);
-        break;
-
-      case "verification_completed":
-        callbacks.onVerificationCompleted?.(
-          data.payload.target,
-          data.payload.passed,
-          data.payload.feedback
         );
         break;
 

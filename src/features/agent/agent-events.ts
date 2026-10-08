@@ -58,22 +58,6 @@ export type AgentDomainEvent =
       };
     }
   | {
-      kind: "verification_started";
-      payload: {
-        turn_id: string;
-        target: string;
-      };
-    }
-  | {
-      kind: "verification_completed";
-      payload: {
-        turn_id: string;
-        target: string;
-        passed: boolean;
-        feedback?: string;
-      };
-    }
-  | {
       kind: "token_usage_update";
       payload: {
         turn_id: string;

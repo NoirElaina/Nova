@@ -18,7 +18,7 @@ pub struct HooksFile {
     pub hooks: HookEventsToml,
 }
 
-/// 12 个生命周期事件的挂钩分组表。
+/// 支持的生命周期与工具事件挂钩分组表。
 #[derive(Debug, Default, Clone, PartialEq, Serialize, Deserialize)]
 pub struct HookEventsToml {
     #[serde(rename = "PreToolUse", default)]
@@ -27,24 +27,10 @@ pub struct HookEventsToml {
     pub post_tool_use: Vec<MatcherGroup>,
     #[serde(rename = "PostToolUseFailure", default)]
     pub post_tool_use_failure: Vec<MatcherGroup>,
-    #[serde(rename = "SessionStart", default)]
-    pub session_start: Vec<MatcherGroup>,
-    #[serde(rename = "SessionEnd", default)]
-    pub session_end: Vec<MatcherGroup>,
-    #[serde(rename = "UserPromptSubmit", default)]
-    pub user_prompt_submit: Vec<MatcherGroup>,
     #[serde(rename = "SubagentStart", default)]
     pub subagent_start: Vec<MatcherGroup>,
     #[serde(rename = "SubagentStop", default)]
     pub subagent_stop: Vec<MatcherGroup>,
-    #[serde(rename = "PreCompact", default)]
-    pub pre_compact: Vec<MatcherGroup>,
-    #[serde(rename = "PostCompact", default)]
-    pub post_compact: Vec<MatcherGroup>,
-    #[serde(rename = "Stop", default)]
-    pub stop: Vec<MatcherGroup>,
-    #[serde(rename = "Error", default)]
-    pub error: Vec<MatcherGroup>,
 }
 
 impl HookEventsToml {
@@ -56,21 +42,14 @@ impl HookEventsToml {
             .sum()
     }
 
-    /// 借用视图：按 (事件名, 分组列表) 遍历全部事件。
-    pub fn all_groups(&self) -> [(&'static str, &Vec<MatcherGroup>); 12] {
+    /// 借用视图：按 (事件名, 分组列表) 遍历全部有效事件。
+    pub fn all_groups(&self) -> [(&'static str, &Vec<MatcherGroup>); 5] {
         [
             ("PreToolUse", &self.pre_tool_use),
             ("PostToolUse", &self.post_tool_use),
             ("PostToolUseFailure", &self.post_tool_use_failure),
-            ("SessionStart", &self.session_start),
-            ("SessionEnd", &self.session_end),
-            ("UserPromptSubmit", &self.user_prompt_submit),
             ("SubagentStart", &self.subagent_start),
             ("SubagentStop", &self.subagent_stop),
-            ("PreCompact", &self.pre_compact),
-            ("PostCompact", &self.post_compact),
-            ("Stop", &self.stop),
-            ("Error", &self.error),
         ]
     }
 
@@ -123,18 +102,12 @@ pub enum HookHandlerConfig {
     /// 拦截当前工具调用（仅 PreToolUse 语义）。
     #[serde(rename = "block")]
     Block { reason: String },
-    /// 输出/助手文本包含 pattern 时终止续跑。
+    /// 输出包含 pattern 时终止续跑（PostToolUse 语义）。
     #[serde(rename = "stopWhen")]
     StopWhen { pattern: String },
-    /// 工具失败时终止续跑（仅 PostToolUseFailure 语义）。
+    /// 工具失败时终止续跑（PostToolUseFailure 语义）。
     #[serde(rename = "stopOnError")]
     StopOnError,
-    /// 助手消息数超过 limit 时终止续跑（仅 Stop 语义）。
-    #[serde(rename = "maxAssistantMessages")]
-    MaxAssistantMessages { limit: usize },
-    /// 把文本附加到 stop_reason / 错误信息末尾（SessionEnd / Error 语义）。
-    #[serde(rename = "appendStopReason")]
-    AppendStopReason { text: String },
 }
 
 pub(crate) fn hooks_file_path(app: &AppHandle) -> Result<std::path::PathBuf, String> {
@@ -270,18 +243,13 @@ matcher = "bash"
   [[hooks.PostToolUse.hooks]]
   type = "stopWhen"
   pattern = "FATAL"
-
-[[hooks.Stop]]
-  [[hooks.Stop.hooks]]
-  type = "maxAssistantMessages"
-  limit = 12
 "#;
         let file: HooksFile = toml::from_str(raw).expect("parse");
         assert_eq!(file.description.as_deref(), Some("example"));
         assert_eq!(file.hooks.pre_tool_use.len(), 1);
         assert_eq!(file.hooks.pre_tool_use[0].matcher.as_deref(), Some("bash"));
         assert_eq!(file.hooks.pre_tool_use[0].hooks.len(), 3);
-        assert_eq!(file.hooks.handler_count(), 5);
+        assert_eq!(file.hooks.handler_count(), 4);
     }
 
     #[test]

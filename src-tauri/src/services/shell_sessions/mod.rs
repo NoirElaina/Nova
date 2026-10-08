@@ -16,8 +16,6 @@ use tracing::{info, warn};
 
 #[cfg(target_os = "windows")]
 const CREATE_NO_WINDOW: u32 = 0x0800_0000;
-#[cfg(target_os = "windows")]
-const PWSH_PATH: &str = "C:\\Program Files\\PowerShell\\7\\pwsh.exe";
 
 #[cfg(target_os = "windows")]
 use std::os::windows::process::CommandExt;
@@ -311,7 +309,8 @@ fn spawn_stream_reader<R>(
 
 #[cfg(target_os = "windows")]
 fn make_shell_command() -> Command {
-    let mut command = Command::new(PWSH_PATH);
+    let pwsh = crate::services::terminal_detector::resolve_powershell_path();
+    let mut command = Command::new(pwsh);
     command
         .args(["-NoProfile", "-NoLogo", "-NonInteractive", "-NoExit", "-Command", "-"])
         .creation_flags(CREATE_NO_WINDOW)
@@ -905,8 +904,9 @@ where
 
 #[cfg(target_os = "windows")]
 fn background_command(command: &str, cwd: Option<&str>) -> tokio::process::Command {
+    let pwsh = crate::services::terminal_detector::resolve_powershell_path();
     let encoded = encode_pwsh_command(command);
-    let mut cmd = tokio::process::Command::new(PWSH_PATH);
+    let mut cmd = tokio::process::Command::new(pwsh);
     cmd.args(["-NoLogo", "-NoProfile", "-NonInteractive", "-EncodedCommand", &encoded])
         .stdin(Stdio::null())
         .stdout(Stdio::piped())

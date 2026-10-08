@@ -44,9 +44,7 @@ sqlx = { version = "0.8.6", features = ["sqlite", "runtime-tokio", "macros"] }
 sqlite-vec = "0.1.9"
 libsqlite3-sys = "0.30.1"
 sha2 = "0.10"
-screenshots = "0.8.10"
 image = "0.24"
-enigo = "0.6.1"
 base64 = "0.22.1"
 lopdf = "0.34"
 aes-gcm = "0.10"
@@ -72,4 +70,3 @@ tree-sitter-bash = "0.23"
 # libc 用于 Unix 上的 setsid（创建新进程组）和 killpg（杀整个进程组）系统调用。
 # 避免通过 fork+exec 调用 kill 命令，直接系统调用更可靠且无额外进程开销。
 libc = "0.2"
-syn = { version = "2", default-features = false, features = ["parsing", "full"] }

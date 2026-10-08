@@ -43,18 +43,6 @@ pub enum AgentDomainEvent {
         output: String,
         duration_ms: u64,
     },
-    /// 触发代码验证自愈环节（如 syntax check / linter / compiler）
-    VerificationStarted {
-        turn_id: String,
-        target: String,
-    },
-    /// 代码验证完成
-    VerificationCompleted {
-        turn_id: String,
-        target: String,
-        passed: bool,
-        feedback: Option<String>,
-    },
     /// Token 用量与成本更新
     TokenUsageUpdate {
         turn_id: String,

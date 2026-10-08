@@ -68,31 +68,16 @@ fn pty_size(rows: Option<u16>, cols: Option<u16>) -> PtySize {
 }
 
 fn shell_command(root: &Path) -> CommandBuilder {
-    #[cfg(target_os = "windows")]
-    {
-        let preferred = Path::new(r"C:\Program Files\PowerShell\7\pwsh.exe");
-        let program = if preferred.exists() {
-            preferred.as_os_str()
-        } else {
-            std::ffi::OsStr::new("pwsh.exe")
-        };
-        let mut command = CommandBuilder::new(program);
+    let active = crate::services::terminal_detector::get_current_active_terminal();
+    let mut command = CommandBuilder::new(&active.path);
+    if active.shell_type == "powershell" {
         command.arg("-NoLogo");
-        command.cwd(std::ffi::OsString::from(
-            crate::command::workspace::display_path_string(root),
-        ));
-        command.env("TERM", "xterm-256color");
-        command
     }
-
-    #[cfg(not(target_os = "windows"))]
-    {
-        let shell = std::env::var("SHELL").unwrap_or_else(|_| "bash".to_string());
-        let mut command = CommandBuilder::new(shell);
-        command.cwd(root.as_os_str());
-        command.env("TERM", "xterm-256color");
-        command
-    }
+    command.cwd(std::ffi::OsString::from(
+        crate::command::workspace::display_path_string(root),
+    ));
+    command.env("TERM", "xterm-256color");
+    command
 }
 
 fn is_alive(session: &UserTerminalSession) -> bool {

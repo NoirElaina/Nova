@@ -2,7 +2,6 @@ pub mod agent_bundles;
 pub mod compact;
 pub mod mcp;
 pub mod mcp_tools;
-pub mod memory;
 pub mod memory_dir;
 pub mod plan_files;
 pub mod rag;

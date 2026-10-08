@@ -4,11 +4,32 @@ use tauri::{AppHandle, Manager};
 use tokio::sync::OnceCell;
 use uuid::Uuid;
 
-use crate::agent::capabilities::memory;
 use crate::agent::session::types::{
     ConversationMeta, HistoryMessage, HistoryToolExecution,
 };
 use crate::provider::types::{Content, Message, Role};
+
+/// 从首条用户消息派生会话标题：取首行、按字符截断到 24 字符。
+pub fn derive_title_from_message(content: &str) -> String {
+    let first_line = content.lines().next().unwrap_or("").trim();
+    let source = if first_line.is_empty() {
+        content.trim()
+    } else {
+        first_line
+    };
+    let max_chars = 24usize;
+    let mut out = String::new();
+    for ch in source.chars().take(max_chars) {
+        out.push(ch);
+    }
+    if source.chars().count() > max_chars {
+        format!("{}...", out)
+    } else if out.is_empty() {
+        "New chat".to_string()
+    } else {
+        out
+    }
+}
 
 // Build sqlite database URL under app data directory.
 // Format: sqlite:<path>?mode=rwc (read/write/create).
@@ -146,7 +167,7 @@ fn resolved_conversation_title(current_title: &str, first_user_message: Option<&
     }
 
     first_user_message
-        .map(memory::derive_title_from_message)
+        .map(derive_title_from_message)
         .unwrap_or_else(|| trimmed.to_string())
 }
 
@@ -652,7 +673,7 @@ pub async fn refresh_conversation_activity(
         return Ok(());
     }
 
-    let new_title = memory::derive_title_from_message(text);
+    let new_title = derive_title_from_message(text);
     sqlx::query("UPDATE conversations SET title = ? WHERE id = ?")
         .bind(&new_title)
         .bind(conversation_id)

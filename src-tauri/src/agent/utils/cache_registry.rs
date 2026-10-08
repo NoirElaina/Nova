@@ -12,8 +12,5 @@ pub fn clear_conversation_caches(conversation_id: Option<&str>) {
     crate::agent::tools::shared::todo_state::global_registry().clear_session(conversation_id);
     crate::command::workspace::evict_conversation_workspace(conversation_id);
     crate::agent::capabilities::agent_bundles::evict_conversation_agent_cache(conversation_id);
-    match conversation_id {
-        Some(id) => crate::agent::lifecycle::prompt_cache_break::forget_conversation(id),
-        None => crate::agent::lifecycle::prompt_cache_break::clear_all(),
-    }
+    crate::agent::lifecycle::live_turns::clear_turn_status(conversation_id);
 }

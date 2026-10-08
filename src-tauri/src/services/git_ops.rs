@@ -230,19 +230,60 @@ fn parse_unified_diff(text: &str) -> Vec<FileDiffLine> {
     out
 }
 
-fn read_file_diff(root: &Path, args: &[&str]) -> Vec<FileDiffLine> {
-    match run_git(root, args) {
-        Ok(s) => parse_unified_diff(&s),
-        Err(_) => Vec::new(),
+fn read_all_tracked_diffs(root: &Path) -> std::collections::HashMap<String, Vec<FileDiffLine>> {
+    let mut map = std::collections::HashMap::new();
+    let Ok(out) = run_git(
+        root,
+        &[
+            "diff",
+            "--src-prefix=a/",
+            "--dst-prefix=b/",
+            "--no-color",
+            "--unified=3",
+            "--no-textconv",
+            "--no-ext-diff",
+            "HEAD",
+        ],
+    ) else {
+        return map;
+    };
+
+    let mut current_path: Option<String> = None;
+    let mut current_lines = Vec::new();
+
+    for line in out.lines() {
+        if line.starts_with("diff --git ") {
+            if let Some(path) = current_path.take() {
+                map.insert(path, parse_unified_diff(&current_lines.join("\n")));
+                current_lines.clear();
+            }
+        }
+        if current_path.is_none() {
+            if let Some(p) = line.strip_prefix("+++ b/") {
+                current_path = Some(p.trim().to_string());
+            } else if let Some(p) = line.strip_prefix("--- a/") {
+                if !p.starts_with("/dev/null") {
+                    current_path = Some(p.trim().to_string());
+                }
+            }
+        }
+        current_lines.push(line);
     }
+
+    if let Some(path) = current_path {
+        map.insert(path, parse_unified_diff(&current_lines.join("\n")));
+    }
+
+    map
 }
 
 /// 收集工作区相对 HEAD 的全部改动（含 untracked 文件），按 codex 风格实现。
 ///
 /// 步骤：
 /// 1. `git diff HEAD --numstat` + `--name-status` 拿到已跟踪文件的改动（仓库尚无提交时跳过）。
-/// 2. `git ls-files --others --exclude-standard` 拿到 untracked 文件列表。
-/// 3. 对每个 untracked 文件直接读内容生成 diff（避免 Windows NUL 设备名问题）。
+/// 2. 单次 `git diff HEAD` 聚合解析全部文件的 unified diff，杜绝多文件下的子进程风暴。
+/// 3. `git ls-files --others --exclude-standard` 拿到 untracked 文件列表。
+/// 4. 对每个 untracked 文件直接读内容生成 diff（避免 Windows NUL 设备名问题）。
 pub fn collect_workspace_diff(root: &Path) -> Result<WorkspaceDiff, String> {
     if !is_repo_initialized(root) {
         return Ok(WorkspaceDiff {
@@ -262,6 +303,7 @@ pub fn collect_workspace_diff(root: &Path) -> Result<WorkspaceDiff, String> {
     if has_head {
         let numstat = read_numstat(root, &["diff", "HEAD", "--numstat", "--no-renames", "--no-color"])?;
         let name_status = read_name_status(root, &["diff", "HEAD", "--name-status", "--no-renames", "--no-color"])?;
+        let mut diff_cache = read_all_tracked_diffs(root);
 
         for (path, additions, deletions, is_binary) in &numstat {
             let status = name_status.get(path).cloned().unwrap_or_else(|| "M".to_string());
@@ -282,17 +324,7 @@ pub fn collect_workspace_diff(root: &Path) -> Result<WorkspaceDiff, String> {
                     text: "(二进制文件)".to_string(),
                 }]
             } else {
-                read_file_diff(root, &[
-                    "diff",
-                    "--no-prefix",
-                    "--no-color",
-                    "--unified=3",
-                    "--no-textconv",
-                    "--no-ext-diff",
-                    "HEAD",
-                    "--",
-                    path,
-                ])
+                diff_cache.remove(path).unwrap_or_default()
             };
 
             let abs = root.join(path).display().to_string();
@@ -471,58 +503,4 @@ pub fn compact_git_summary(root: &Path) -> Option<String> {
             String::new()
         }
     ))
-}
-
-/// 生成会话工作区的完整 git 状态摘要（分支 + dirty 列表 + 最近 5 条 commit）。
-/// 仓库未初始化时返回 None。
-pub fn workspace_git_status_summary(root: &Path) -> Option<String> {
-    if !is_repo_initialized(root) {
-        return None;
-    }
-
-    let branch = current_branch(root).unwrap_or_else(|| "HEAD".to_string());
-
-    // dirty 文件：用 porcelain 格式，轻量且包含 staged+unstaged+untracked。
-    // 输出形如 " M src/main.rs"、"?? new.txt"、"A  staged.txt"。
-    let dirty = run_git(root, &["status", "--porcelain"]).ok();
-    let dirty_lines: Vec<&str> = dirty
-        .as_ref()
-        .map(|s| s.lines().filter(|l| !l.trim().is_empty()).collect())
-        .unwrap_or_default();
-
-    // 最近 5 条 commit oneline。
-    let log = run_git(root, &["log", "--oneline", "-5", "--no-decorate"]).ok();
-    let log_lines: Vec<&str> = log
-        .as_ref()
-        .map(|s| s.lines().filter(|l| !l.trim().is_empty()).collect())
-        .unwrap_or_default();
-
-    let mut out = format!("Branch: {}\n", branch);
-
-    if dirty_lines.is_empty() {
-        out.push_str("Working tree: clean\n");
-    } else {
-        out.push_str(&format!("Working tree: {} changed file(s)\n", dirty_lines.len()));
-        // 限制注入条数，避免超大改动爆上下文。
-        let max_show = 30usize;
-        for line in dirty_lines.iter().take(max_show) {
-            // porcelain 行格式: "XY path"，保留原样以便 agent 看到变更类型。
-            out.push_str(&format!("  {}\n", line));
-        }
-        if dirty_lines.len() > max_show {
-            out.push_str(&format!(
-                "  ...and {} more\n",
-                dirty_lines.len() - max_show
-            ));
-        }
-    }
-
-    if !log_lines.is_empty() {
-        out.push_str("Recent commits:\n");
-        for line in &log_lines {
-            out.push_str(&format!("  {}\n", line));
-        }
-    }
-
-    Some(out)
 }

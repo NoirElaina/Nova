@@ -136,13 +136,12 @@ watch(
 );
 
 onMounted(() => {
-  // 轮询刷新 diff。仅在页面可见时执行，避免后台标签页无意义的后端调用。
-  // 此前无论页面是否可见都每 2.5s 调用 getWorkspaceDiff，在大型 diff 时浪费资源。
+  // 适度低频轮询刷新 diff（15s），仅在页面可见时执行，避免死循环消耗 CPU。
   refreshTimer = window.setInterval(() => {
     if (document.visibilityState === 'visible') {
       void loadChanges();
     }
-  }, 2500);
+  }, 15000);
   // 页面从后台切回前台时立即刷新一次，保证用户看到最新 diff。
   document.addEventListener('visibilitychange', handleVisibilityChange);
 });

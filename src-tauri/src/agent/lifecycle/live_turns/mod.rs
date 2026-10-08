@@ -116,13 +116,33 @@ pub fn get_status(conversation_id: Option<&str>) -> Option<LiveTurnStatus> {
         .cloned()
 }
 
+pub fn finish_turn(conversation_id: Option<&str>) {
+    let Some(key) = scope_key(conversation_id) else {
+        return;
+    };
+    let mut state = live_turns()
+        .lock()
+        .unwrap_or_else(|error| error.into_inner());
+    state.remove(&key);
+}
+
 pub fn ack_status(conversation_id: Option<&str>) -> bool {
     let Some(key) = scope_key(conversation_id) else {
         return false;
     };
-    live_turns()
+    let mut state = live_turns()
         .lock()
-        .unwrap_or_else(|error| error.into_inner())
-        .remove(&key)
-        .is_some()
+        .unwrap_or_else(|error| error.into_inner());
+    state.remove(&key).is_some()
+}
+
+pub fn clear_turn_status(conversation_id: Option<&str>) {
+    let mut state = live_turns()
+        .lock()
+        .unwrap_or_else(|error| error.into_inner());
+    if let Some(key) = scope_key(conversation_id) {
+        state.remove(&key);
+    } else {
+        state.clear();
+    }
 }

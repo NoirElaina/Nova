@@ -11,7 +11,7 @@ pub(crate) async fn ensure_server_visible(
     conversation_id: Option<&str>,
     server_name: &str,
 ) -> Result<(), ToolFailure> {
-    let statuses = crate::command::mcp::get_mcp_server_statuses(app.clone())
+    let statuses = crate::agent::capabilities::mcp::get_mcp_server_statuses(app.clone())
         .await
         .map_err(ToolFailure::mcp)?;
 

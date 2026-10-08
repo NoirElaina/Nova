@@ -62,12 +62,12 @@ pub fn tool() -> Tool {
                     "description": "Clear, concise description of what this command does in active voice"
                 },
                 "timeout": {
-                    "type": "integer",
+                    "type": "integer",  
                     "description": "Optional timeout in milliseconds (max 1800000)"
                 },
                 "run_in_background": {
                     "type": "boolean",
-                    "description": "Set to true to run this command in the background."
+                    "description": "Set to true to run this command in the background (dev servers, file watchers, browsers, or long tasks)."
                 },
                 "max_runtime_ms": {
                     "type": "integer",
@@ -104,10 +104,12 @@ async fn execute_async(
         .and_then(|value| value.as_bool())
         .unwrap_or(false);
     // 后台作业的最大存活时间，到期由巡检任务自动回收。
-    let ttl_ms = input.get("max_runtime_ms").and_then(|value| value.as_u64());
+    let ttl_ms = input
+        .get("max_runtime_ms")
+        .and_then(|value| value.as_u64());
 
     let workspace_root =
-        match crate::command::workspace::workspace_root_string_for_conversation(app, conversation_id)
+        match crate::services::workspace::workspace_root_string_for_conversation(app, conversation_id)
         {
             Ok(root) => root,
             Err(error) => {

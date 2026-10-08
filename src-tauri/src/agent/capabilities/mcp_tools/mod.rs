@@ -31,7 +31,7 @@ pub(crate) async fn execute_dynamic_with_app(
 ) -> Option<ToolExecResult> {
     let (server_name, tool_name) = parse_mcp_tool_name(name)?;
     Some(
-        match crate::command::mcp::call_mcp_tool(app.clone(), server_name, tool_name, arguments)
+        match crate::agent::capabilities::mcp::call_mcp_tool(app.clone(), server_name, tool_name, arguments)
             .await
         {
             Ok(v) if v.get("isError").and_then(|value| value.as_bool()) == Some(true) => {

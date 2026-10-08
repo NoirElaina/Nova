@@ -22,13 +22,17 @@ fn scope_key(conversation_id: Option<&str>) -> String {
         .to_string()
 }
 
-pub fn begin_turn(conversation_id: Option<&str>) {
+pub fn begin_turn(conversation_id: Option<&str>) -> bool {
     // 计算本轮会话作用域 key。
     let key = scope_key(conversation_id);
     // 获取全局状态锁；若锁中毒则提取内部值继续工作。
     let mut state = cancel_state().lock().unwrap_or_else(|e| e.into_inner());
+    if state.contains_key(&key) {
+        return false;
+    }
     // 本轮开始时插入一个新的 CancellationToken（初始未取消）。
     state.insert(key, CancellationToken::new());
+    true
 }
 
 pub fn finish_turn(conversation_id: Option<&str>) {

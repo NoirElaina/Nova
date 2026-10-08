@@ -144,22 +144,6 @@ pub async fn get_pool_with_schema(app: &AppHandle) -> Result<SqlitePool, String>
     get_pool(app).await
 }
 
-pub async fn list_memory_entries(app: &AppHandle) -> Result<Vec<String>, String> {
-    crate::agent::capabilities::memory_dir::memory_list(app).await
-}
-
-pub async fn add_memory_entry(app: &AppHandle, content: &str) -> Result<(), String> {
-    crate::agent::capabilities::memory_dir::memory_add(app, content).await
-}
-
-pub async fn remove_memory_entry(app: &AppHandle, old_text: &str) -> Result<(), String> {
-    crate::agent::capabilities::memory_dir::memory_remove(app, old_text).await
-}
-
-pub async fn clear_memory_entries(app: &AppHandle) -> Result<(), String> {
-    crate::agent::capabilities::memory_dir::memory_clear(app).await
-}
-
 fn resolved_conversation_title(current_title: &str, first_user_message: Option<&str>) -> String {
     let trimmed = current_title.trim();
     if !trimmed.is_empty() && trimmed != "New chat" {
@@ -372,13 +356,13 @@ pub async fn create_conversation(
     {
         Some(p) => p,
         None => {
-            let base = crate::command::workspace::default_workspace_root(app)?;
+            let base = crate::services::workspace::default_workspace_root(app)?;
             let conv_dir = base.join(&id);
             std::fs::create_dir_all(&conv_dir)
                 .map_err(|e| format!("创建对话工作区失败: {}", e))?;
             let canonical = conv_dir.canonicalize()
                 .map_err(|e| format!("无法解析对话工作区: {}", e))?;
-            crate::command::workspace::display_path_string(&canonical)
+            crate::services::workspace::display_path_string(&canonical)
         }
     };
 
@@ -396,7 +380,7 @@ pub async fn create_conversation(
     .map_err(|e| e.to_string())?;
 
     // 写入进程内缓存，供同步热路径读取。
-    crate::command::workspace::cache_conversation_workspace(&id, &ws_path);
+    crate::services::workspace::cache_conversation_workspace(&id, &ws_path);
 
     Ok(ConversationMeta {
         id,
@@ -457,7 +441,7 @@ pub async fn list_conversations(app: &AppHandle) -> Result<Vec<ConversationMeta>
         .iter()
         .map(|c| (c.id.clone(), c.workspace_path.clone()))
         .collect();
-    crate::command::workspace::refresh_workspace_cache(&cache_entries).await;
+    crate::services::workspace::refresh_workspace_cache(&cache_entries).await;
 
     // 会话级智能体缓存同样批量刷新（写穿透模式的兜底刷新点之一）。
     let agent_entries: Vec<(String, Option<String>)> = rows_agent_entries(&items);
@@ -792,7 +776,7 @@ pub async fn clear_history(app: &AppHandle, conversation_id: Option<String>) -> 
             .map_err(|e| e.to_string())?;
 
         tx.commit().await.map_err(|e| e.to_string())?;
-        crate::command::session_files::delete_all_session_files(app, &id).await?;
+        crate::agent::capabilities::session_files::delete_all_session_files(app, &id)?;
         let _ = crate::agent::capabilities::plan_files::delete_conversation_plan(app, Some(&id));
         crate::services::shell_sessions::close_session(Some(&id)).await;
         let _ = crate::services::user_terminal::stop_session(Some(&id));
@@ -813,7 +797,7 @@ pub async fn clear_history(app: &AppHandle, conversation_id: Option<String>) -> 
             .map_err(|e| e.to_string())?;
 
         tx.commit().await.map_err(|e| e.to_string())?;
-        crate::command::session_files::delete_all_session_files_all(app).await?;
+        crate::agent::capabilities::session_files::delete_all_session_files_all(app)?;
         crate::services::shell_sessions::close_all_sessions().await;
         crate::services::user_terminal::close_all_sessions();
         // 全量清除路径：所有会话级内存缓存一并清空。
@@ -836,10 +820,10 @@ pub async fn delete_conversation(app: &AppHandle, conversation_id: &str) -> Resu
         .flatten();
 
     if let Some(ws_path) = ws_path_opt {
-        if let Ok(default_root) = crate::command::workspace::default_workspace_root(app) {
+        if let Ok(default_root) = crate::services::workspace::default_workspace_root(app) {
             let auto_dir = default_root.join(conversation_id);
             if let Ok(canonical_auto) = auto_dir.canonicalize() {
-                if ws_path == crate::command::workspace::display_path_string(&canonical_auto) {
+                if ws_path == crate::services::workspace::display_path_string(&canonical_auto) {
                     let _ = std::fs::remove_dir_all(&auto_dir);
                 }
             }
@@ -864,7 +848,7 @@ pub async fn delete_conversation(app: &AppHandle, conversation_id: &str) -> Resu
         .await
         .map_err(|e| e.to_string())?;
 
-    crate::command::session_files::delete_all_session_files(app, conversation_id).await?;
+    crate::agent::capabilities::session_files::delete_all_session_files(app, conversation_id)?;
     let _ = crate::agent::capabilities::plan_files::delete_conversation_plan(app, Some(conversation_id));
     crate::services::shell_sessions::close_session(Some(conversation_id)).await;
     let _ = crate::services::user_terminal::stop_session(Some(conversation_id));

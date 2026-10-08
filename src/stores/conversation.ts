@@ -22,7 +22,10 @@ export const useConversationStore = defineStore("conversation", () => {
 
   async function loadConversations() {
     try {
-      conversations.value = await listConversations();
+      const items = await listConversations();
+      conversations.value = (items || []).filter(
+        (item) => !item.title.startsWith("Scheduled ["),
+      );
     } catch (err) {
       console.error("Failed to load conversations:", err);
       conversations.value = [];

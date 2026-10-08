@@ -93,7 +93,7 @@ async fn execute_with_app(
         .to_ascii_lowercase();
 
     match action.as_str() {
-        "status" => match crate::command::mcp::get_mcp_server_statuses(app.clone()).await {
+        "status" => match crate::agent::capabilities::mcp::get_mcp_server_statuses(app.clone()).await {
             Ok(statuses) => {
                 let statuses = filter_statuses_visible(
                     app,
@@ -110,10 +110,10 @@ async fn execute_with_app(
             Err(e) => Err(ToolFailure::mcp(e)),
         },
         "reload_all" => {
-            if let Err(e) = crate::command::mcp::reload_all_mcp_servers(app.clone()).await {
+            if let Err(e) = crate::agent::capabilities::mcp::reload_all_mcp_servers(app.clone()).await {
                 return Err(ToolFailure::mcp(e));
             }
-            match crate::command::mcp::get_mcp_server_statuses(app.clone()).await {
+            match crate::agent::capabilities::mcp::get_mcp_server_statuses(app.clone()).await {
                 Ok(statuses) => {
                     let statuses = filter_statuses_visible(
                         app,
@@ -145,7 +145,7 @@ async fn execute_with_app(
             // enabled: true 表示启用 server，false 表示禁用 server。
             let enabled = action == "enable";
             ensure_server_visible(app, conversation_id, server_name).await?;
-            match crate::command::mcp::set_mcp_server_enabled(
+            match crate::agent::capabilities::mcp::set_mcp_server_enabled(
                 app.clone(),
                 server_name.to_string(),
                 enabled,
@@ -174,7 +174,7 @@ async fn execute_with_app(
             };
 
             ensure_server_visible(app, conversation_id, server_name).await?;
-            match crate::command::mcp::list_mcp_tools(app.clone(), server_name.to_string()).await {
+            match crate::agent::capabilities::mcp::list_mcp_tools(app.clone(), server_name.to_string()).await {
                 Ok(tools) => Ok(ToolOutcome::json(json!({
                     "ok": true,
                     "action": "list_tools",

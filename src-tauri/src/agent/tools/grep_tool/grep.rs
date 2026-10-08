@@ -145,7 +145,7 @@ pub(crate) fn find_rg_path(app: &AppHandle) -> String {
         if bundled.exists() {
             // resource_dir 在 Windows 下是 \\?\ verbatim 形式，剥掉前缀：
             // 该路径会注入系统提示词（{{RG_PATH}}），普通形式对进程启动同样有效。
-            return crate::command::workspace::display_path_string(&bundled);
+            return crate::services::workspace::display_path_string(&bundled);
         }
     }
     "rg".to_string()
@@ -158,9 +158,9 @@ fn resolve_base_path(
 ) -> PathBuf {
     match input.get("path").and_then(Value::as_str) {
         Some(p) => PathBuf::from(p),
-        None => crate::command::workspace::workspace_root_for_conversation(app, conversation_id)
+        None => crate::services::workspace::workspace_root_for_conversation(app, conversation_id)
             .unwrap_or_else(|_| {
-                crate::command::workspace::default_workspace_root(app)
+                crate::services::workspace::default_workspace_root(app)
                     .unwrap_or_else(|_| PathBuf::from("."))
             }),
     }

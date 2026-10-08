@@ -1,8 +1,7 @@
 <script setup lang="ts">
 import { nextTick, onMounted, onUnmounted, ref, watch, computed } from 'vue';
-import { invoke } from '@tauri-apps/api/core';
-import type { PendingUploadFile } from '@/lib/chat-types';
 import { parseSlashCommand } from '@/lib/slash-commands';
+import { getRuntimeSettings } from '@/features/chat/services/chat-api';
 import { useConversationStore } from '@/stores/conversation';
 import { useAgentSessionStore } from '@/stores/agentSession';
 import { useComposerStore } from '@/stores/composer';
@@ -26,8 +25,6 @@ defineProps<{
 const emit = defineEmits<{
   (e: 'send', msg: string): void;
   (e: 'cancel'): void;
-  (e: 'upload-files', files: PendingUploadFile[]): void;
-  (e: 'remove-upload', index: number): void;
   (e: 'compact'): void;
   (e: 'remove-agent'): void;
 }>();
@@ -95,7 +92,7 @@ const canSend = computed(() => !!currentInput.value.trim() || hasPendingUploads.
 
 const loadSettings = async () => {
   try {
-    settings.value = await invoke('get_settings');
+    settings.value = await getRuntimeSettings();
   } catch (error) {
     console.error('Failed to load settings in InputArea:', error);
   }
@@ -123,8 +120,6 @@ const {
   handleRemoveUpload,
 } = useFileInput({
   isGenerating,
-  onUploadFiles: (files) => emit('upload-files', files),
-  onRemoveUpload: (index) => emit('remove-upload', index),
 });
 
 // 组合式斜杠命令

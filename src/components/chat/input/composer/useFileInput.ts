@@ -7,6 +7,7 @@ import {
   notifyRejectedUploads,
 } from '@/lib/upload-files';
 import { useComposerStore } from '@/stores/composer';
+import { emitToast } from '@/lib/toast';
 
 export interface UseFileInputOptions {
   isGenerating: Ref<boolean> | ComputedRef<boolean>;
@@ -37,6 +38,11 @@ export function useFileInput(options: UseFileInputOptions) {
 
     if (accepted.length > 0) {
       composerStore.addUploads(accepted);
+      emitToast({
+        variant: "success",
+        source: "upload",
+        message: `已添加 ${accepted.length} 个附件到待发送列表。`,
+      });
       onUploadFiles?.(accepted);
     }
 
@@ -70,6 +76,11 @@ export function useFileInput(options: UseFileInputOptions) {
     const { accepted, rejected } = await buildPendingUploadFiles(imageFiles);
     if (accepted.length > 0) {
       composerStore.addUploads(accepted);
+      emitToast({
+        variant: "success",
+        source: "upload",
+        message: `已添加 ${accepted.length} 个附件到待发送列表。`,
+      });
       onUploadFiles?.(accepted);
     }
     notifyRejectedUploads(rejected);

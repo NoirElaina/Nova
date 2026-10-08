@@ -23,14 +23,4 @@ dist-ssr
 *.sln
 *.sw?
 
-.github
-dose
-docs
-test
-/cc-switch-main
-/codex
-/opencode
-/hermes-agent
-/claude-code
-/.workbuddy
-project/
+/.workbuddy

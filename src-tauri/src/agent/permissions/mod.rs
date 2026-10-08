@@ -296,7 +296,7 @@ fn operation_from_input(app: &AppHandle, tool_name: &str, input: &Value) -> Opti
 
 /// 有效审批策略：读全局设置，非法值回落默认。
 pub fn effective_approval_policy(app: &AppHandle) -> ApprovalPolicy {
-    match crate::command::settings::load_settings(app) {
+    match crate::services::settings::load_settings(app) {
         Ok(settings) => ApprovalPolicy::parse(&settings.approval_policy).unwrap_or_default(),
         Err(_) => ApprovalPolicy::default(),
     }

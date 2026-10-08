@@ -1,29 +1,6 @@
-use std::sync::OnceLock;
+use serde::Serialize;
 
-use serde::{Deserialize, Serialize};
-
-static MODEL_DB_RAW: &str = include_str!("../windowTokens/models.json");
-
-#[derive(Debug, Clone, Deserialize)]
-struct ModelList {
-    data: Vec<ModelEntry>,
-}
-
-#[derive(Debug, Clone, Deserialize)]
-struct ModelEntry {
-    id: String,
-    pricing: ModelPricing,
-}
-
-#[derive(Debug, Clone, Deserialize)]
-pub struct ModelPricing {
-    pub prompt: String,
-    pub completion: String,
-    #[serde(default)]
-    pub input_cache_read: Option<String>,
-    #[serde(default)]
-    pub input_cache_write: Option<String>,
-}
+pub use crate::services::model_catalog::{get_model_pricing, ModelPricing};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CacheBilling {
@@ -55,29 +32,6 @@ pub struct TurnCostBreakdown {
     pub pricing_model: String,
 }
 
-fn models() -> &'static Vec<ModelEntry> {
-    static LIST: OnceLock<Vec<ModelEntry>> = OnceLock::new();
-    LIST.get_or_init(|| {
-        serde_json::from_str::<ModelList>(MODEL_DB_RAW)
-            .map(|list| list.data)
-            .unwrap_or_default()
-    })
-}
-
-pub fn get_model_pricing(model: &str) -> Option<(String, ModelPricing)> {
-    let key = model.trim().to_ascii_lowercase();
-    if key.is_empty() {
-        return None;
-    }
-
-    models()
-        .iter()
-        .find(|entry| {
-            let id = entry.id.trim().to_ascii_lowercase();
-            id == key || id.rsplit('/').next().is_some_and(|slug| slug == key)
-        })
-        .map(|entry| (entry.id.clone(), entry.pricing.clone()))
-}
 
 pub fn cache_billing_for_provider(provider_name: &str) -> CacheBilling {
     match provider_name {

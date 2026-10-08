@@ -24,7 +24,7 @@ pub struct SessionFileMeta {
 /// 手动工作区下：app_data/workspace/{conv_id}/session/（仍存独立目录，避免污染用户项目），
 ///   AI 通过绝对路径（见 [Session Files] 注入）用 Read/Bash 访问。
 pub(crate) fn session_files_dir(app: &AppHandle, conversation_id: &str) -> Result<PathBuf, String> {
-    let base = crate::command::workspace::default_workspace_root(app)?;
+    let base = crate::services::workspace::default_workspace_root(app)?;
     Ok(base.join(conversation_id).join("session"))
 }
 
@@ -333,7 +333,7 @@ fn read_pdf_text(path: &Path) -> Result<String, String> {
 /// 会话文件现在存于 workspace/{conv_id}/session/ 下，遍历 workspace 目录下的所有
 /// conv_id 子目录，删除其中的 session 子目录。
 pub fn delete_all_session_files_all(app: &AppHandle) -> Result<(), String> {
-    let base = crate::command::workspace::default_workspace_root(app)?;
+    let base = crate::services::workspace::default_workspace_root(app)?;
     if !base.exists() {
         return Ok(());
     }

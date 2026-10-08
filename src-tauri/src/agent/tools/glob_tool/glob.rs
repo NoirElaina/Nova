@@ -73,9 +73,9 @@ async fn execute_async(
 
     let base_path = match input.get("path").and_then(Value::as_str) {
         Some(p) => PathBuf::from(p),
-        None => crate::command::workspace::workspace_root_for_conversation(app, conversation_id)
+        None => crate::services::workspace::workspace_root_for_conversation(app, conversation_id)
             .unwrap_or_else(|_| {
-                crate::command::workspace::default_workspace_root(app)
+                crate::services::workspace::default_workspace_root(app)
                     .unwrap_or_else(|_| PathBuf::from("."))
             }),
     };
@@ -140,7 +140,7 @@ async fn execute_async(
         .into_iter()
         // 归一化 Windows verbatim 前缀（\\?\C:\...），否则同一目录会随参数形式不同
         // 返回两种路径格式，模型据此拼出的路径在后续工具里不可用。
-        .map(|(path, _)| crate::command::workspace::display_path_string(&path))
+        .map(|(path, _)| crate::services::workspace::display_path_string(&path))
         .collect();
 
     let mut output = paths.join("\n");

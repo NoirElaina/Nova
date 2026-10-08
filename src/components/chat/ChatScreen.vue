@@ -1,10 +1,9 @@
 <script setup lang="ts">
-import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch, shallowRef } from 'vue';
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch, shallowRef } from 'vue';
 import { useVirtualizer } from '@tanstack/vue-virtual';
 import type {
   AskUserAnswerSubmission,
   ChatMessage,
-  PendingUploadFile,
 } from '../../lib/chat-types';
 import InputArea from './input/InputArea.vue';
 import AskUserInputDialog from './AskUserInputDialog.vue';
@@ -20,10 +19,13 @@ import SubagentPanel from './SubagentPanel.vue';
 import UserMessageBubble from './messages/UserMessageBubble.vue';
 import { buildAssistantTranscriptSegments } from '../../features/chat/utils/assistant-transcript';
 import { estimateTextTokens } from '../../features/chat/services/chat-api';
-import { initBranchEvents, openBranch } from '../../features/branch/branch-chat';
-import { emitToast } from '../../lib/toast';
+import { initBranchEvents } from '../../features/branch/branch-chat';
+
 import { useConversationStore } from '@/stores/conversation';
 import { useAgentSessionStore } from '@/stores/agentSession';
+import { useSelectionPopover } from '@/composables/useSelectionPopover';
+import { useChatScroll } from '@/composables/useChatScroll';
+
 
 defineProps<{
   /** 当前对话挂载的智能体（会话级）。null = 默认 Nova（不展示）。 */
@@ -59,8 +61,6 @@ const emit = defineEmits<{
   (e: 'ask-submit', value: AskUserAnswerSubmission): void;
   (e: 'ask-skip'): void;
   (e: 'cancel'): void;
-  (e: 'upload-files', files: PendingUploadFile[]): void;
-  (e: 'remove-upload', index: number): void;
   (e: 'compact'): void;
   (e: 'dismiss-error'): void;
   (e: 'open-plan'): void;
@@ -71,99 +71,23 @@ const chatAreaRef = ref<HTMLElement | null>(null);
 const liveAssistantRef = ref<HTMLElement | null>(null);
 const inputAreaRef = ref<InstanceType<typeof InputArea> | null>(null);
 
-/** 选中文本浮动操作条状态（引用到对话 / 开分支提问）。 */
-const selectionPopover = reactive({
-  visible: false,
-  x: 0,
-  y: 0,
-  text: '',
+const {
+  selectionPopover,
+  hideSelectionPopover,
+  handleChatMouseUp,
+  handleQuoteToInput,
+  handleOpenBranch,
+} = useSelectionPopover({
+  chatAreaRef,
+  conversationId,
+  onQuote: (text) => inputAreaRef.value?.insertQuotedText(text),
 });
 
-const hideSelectionPopover = () => {
-  selectionPopover.visible = false;
-};
-
-/** mouseup 后读取选区：仅当选区落在助手消息气泡内时弹出操作条。 */
-const captureTextSelection = () => {
-  const container = chatAreaRef.value;
-  const selection = window.getSelection();
-  if (!container || !selection || selection.isCollapsed) {
-    hideSelectionPopover();
-    return;
-  }
-  const text = selection.toString().trim();
-  if (!text) {
-    hideSelectionPopover();
-    return;
-  }
-  const anchorEl =
-    selection.anchorNode instanceof Element
-      ? selection.anchorNode
-      : selection.anchorNode?.parentElement;
-  const row = anchorEl?.closest?.('[data-role="assistant"][data-message-index]');
-  if (!row || !container.contains(row)) {
-    hideSelectionPopover();
-    return;
-  }
-  if (selection.rangeCount === 0) {
-    hideSelectionPopover();
-    return;
-  }
-  const rect = selection.getRangeAt(0).getBoundingClientRect();
-  if (rect.width === 0 && rect.height === 0) {
-    hideSelectionPopover();
-    return;
-  }
-  selectionPopover.x = Math.min(Math.max(rect.left + rect.width / 2, 90), window.innerWidth - 90);
-  selectionPopover.y = Math.max(rect.top, 64);
-  selectionPopover.text = text.length > 2000 ? text.slice(0, 2000) : text;
-  selectionPopover.visible = true;
-};
-
-const handleChatMouseUp = () => {
-  // 等浏览器完成选区最终化（双击选词、拖动选择都在 mouseup 后才稳定）
-  window.setTimeout(captureTextSelection, 0);
-};
-
-/** 点击操作条以外区域时收起；若形成新选区，mouseup 会重新弹出。 */
-const handleDocumentMouseDown = (event: MouseEvent) => {
-  if (!selectionPopover.visible) return;
-  const target = event.target;
-  if (target instanceof Element && target.closest('[data-selection-popover]')) {
-    return;
-  }
-  hideSelectionPopover();
-};
-
-const handleSelectionEscape = (event: KeyboardEvent) => {
-  if (event.key === 'Escape') {
-    hideSelectionPopover();
-  }
-};
-
-const handleQuoteToInput = () => {
-  inputAreaRef.value?.insertQuotedText(selectionPopover.text);
-  hideSelectionPopover();
-  window.getSelection()?.removeAllRanges();
-};
-
-const handleOpenBranch = () => {
-  if (!conversationId.value) {
-    emitToast({ message: '请先开始当前对话，再使用分支提问', variant: 'warning' });
-    return;
-  }
-  openBranch(conversationId.value, selectionPopover.text);
-  hideSelectionPopover();
-  window.getSelection()?.removeAllRanges();
-};
 const reactionMap = ref<Record<number, 'up' | 'down' | undefined>>({});
 const copiedMap = ref<Record<string, boolean>>({});
-const showScrollToBottom = ref(false);
-/** 用户是否贴近底部；流式增高时只在 true 时跟滚，避免抢滚动 */
-const stickToBottom = ref(true);
-const activeUserMessageIndex = ref<number | null>(null);
 const copyTimers: Record<string, ReturnType<typeof setTimeout> | undefined> = {};
 let stickToBottomRaf = 0;
+
 
 /** 会话 token 前缀和：conversationTokenUsage(i) = prefix[i] */
 const tokenPrefixSums = shallowRef<number[]>([]);
@@ -310,105 +234,6 @@ const measureElement = (el: unknown) => {
   }
 };
 
-const scrollToBottom = async () => {
-  await nextTick();
-  stickToBottom.value = true;
-  const count = virtualRows.value.length;
-  if (count > 0 && chatAreaRef.value) {
-    chatAreaRef.value.scrollTop = chatAreaRef.value.scrollHeight;
-    // 再对齐一次，等 virtualizer 用真实高度算完 totalSize
-    requestAnimationFrame(() => {
-      if (chatAreaRef.value) {
-        chatAreaRef.value.scrollTop = chatAreaRef.value.scrollHeight;
-      }
-    });
-  } else if (chatAreaRef.value) {
-    chatAreaRef.value.scrollTop = chatAreaRef.value.scrollHeight;
-  }
-  updateScrollToBottomVisibility();
-};
-
-const scrollLastUserMessageToTop = async () => {
-  await nextTick();
-  let lastUser = -1;
-  for (let i = messages.value.length - 1; i >= 0; i -= 1) {
-    if (messages.value[i]?.role === 'user') {
-      lastUser = i;
-      break;
-    }
-  }
-  if (lastUser >= 0) {
-    rowVirtualizer.value.scrollToIndex(lastUser, { align: 'start' });
-  } else {
-    await scrollToBottom();
-  }
-};
-
-const scrollLastUserMessageToBottom = async () => {
-  await nextTick();
-  let lastUser = -1;
-  for (let i = messages.value.length - 1; i >= 0; i -= 1) {
-    if (messages.value[i]?.role === 'user') {
-      lastUser = i;
-      break;
-    }
-  }
-  if (lastUser >= 0) {
-    rowVirtualizer.value.scrollToIndex(lastUser, { align: 'end' });
-  } else {
-    await scrollToBottom();
-  }
-  updateScrollToBottomVisibility();
-};
-
-const scrollLiveAssistantIntoView = async () => {
-  await nextTick();
-  // 新一轮生成：贴底跟滚，不要 align:start（表格/长文增高时会把视口顶来顶去）
-  stickToBottom.value = true;
-  pinToBottomIfSticky();
-  updateScrollToBottomVisibility();
-};
-
-const distanceFromBottomPx = () => {
-  const el = chatAreaRef.value;
-  if (!el) return 0;
-  return el.scrollHeight - el.clientHeight - el.scrollTop;
-};
-
-const updateScrollToBottomVisibility = () => {
-  if (!chatAreaRef.value) {
-    showScrollToBottom.value = false;
-    return;
-  }
-  const distance = distanceFromBottomPx();
-  // 只有真正贴近底部才算"贴底"；阈值太大会在用户刚往上滚一点时
-  // 被流式跟滚反复拉回底部，产生"拉扯好几下才能上去"的体感。
-  stickToBottom.value = distance <= 40;
-  showScrollToBottom.value = distance > 120;
-};
-
-/** 滚轮手势感知：用户主动上滑时立刻解除贴底跟滚，避免流式内容把视口拽回去 */
-const handleChatWheel = (event: WheelEvent) => {
-  if (event.deltaY < 0) {
-    // 只解除跟滚；此刻滚动尚未生效，不能立刻重算距离，否则又会被判回贴底
-    stickToBottom.value = false;
-  } else if (event.deltaY > 0) {
-    // 下滑滚回底部附近时恢复跟滚
-    updateScrollToBottomVisibility();
-  }
-};
-
-/** 仅贴底时把视口钉在列表末尾；不调用 measure()，避免清空虚拟列表尺寸缓存导致狂抖 */
-const pinToBottomIfSticky = () => {
-  if (!stickToBottom.value || !chatAreaRef.value) return;
-  const count = virtualRows.value.length;
-  if (count <= 0) return;
-  // 直接改 scrollTop 比 scrollToIndex 更稳：不触发额外 layout 估算抖动
-  const el = chatAreaRef.value;
-  el.scrollTop = el.scrollHeight;
-  showScrollToBottom.value = false;
-};
-
 const summarizeUserMessage = (content: string) => {
   const normalized = content.replace(/\s+/g, ' ').trim();
   if (!normalized) return '空消息';
@@ -425,86 +250,38 @@ const userTimelineItems = computed(() =>
     })),
 );
 
-const updateActiveUserMessage = () => {
-  const container = chatAreaRef.value;
-  if (!container || userTimelineItems.value.length === 0) {
-    activeUserMessageIndex.value = null;
-    return;
-  }
-
-  const rows = Array.from(
-    container.querySelectorAll<HTMLElement>('[data-role="user"][data-message-index]'),
-  );
-  if (rows.length === 0) {
-    // 虚拟列表可能未挂载目标，按滚动比例估算
-    const items = userTimelineItems.value;
-    if (items.length === 0) {
-      activeUserMessageIndex.value = null;
-      return;
-    }
-    const maxScroll = Math.max(1, container.scrollHeight - container.clientHeight);
-    const ratio = container.scrollTop / maxScroll;
-    const approx = Math.min(items.length - 1, Math.floor(ratio * items.length));
-    activeUserMessageIndex.value = items[approx]?.index ?? null;
-    return;
-  }
-
-  const containerTop = container.getBoundingClientRect().top;
-  let closestIndex: number | null = null;
-  let closestDistance = Number.POSITIVE_INFINITY;
-
-  for (const row of rows) {
-    const rawIndex = row.dataset.messageIndex;
-    if (!rawIndex) continue;
-    const index = Number.parseInt(rawIndex, 10);
-    if (!Number.isFinite(index)) continue;
-
-    const distance = Math.abs(row.getBoundingClientRect().top - containerTop - 20);
-    if (distance < closestDistance) {
-      closestDistance = distance;
-      closestIndex = index;
-    }
-  }
-
-  activeUserMessageIndex.value = closestIndex;
-};
-
-const handleChatScroll = () => {
-  updateScrollToBottomVisibility();
-  updateActiveUserMessage();
-  hideSelectionPopover();
-};
-
-const scrollToBottomSmooth = async () => {
-  await nextTick();
-  stickToBottom.value = true;
-  if (chatAreaRef.value) {
-    chatAreaRef.value.scrollTo({
-      top: chatAreaRef.value.scrollHeight,
-      behavior: 'smooth',
-    });
-  }
-};
-
-const scrollToMessageIndex = async (index: number) => {
-  await nextTick();
-  if (index < 0 || index >= messages.value.length) return;
-  activeUserMessageIndex.value = index;
-  rowVirtualizer.value.scrollToIndex(index, { align: 'start', behavior: 'smooth' });
-};
+const {
+  showScrollToBottom,
+  stickToBottom,
+  activeUserMessageIndex,
+  updateScrollToBottomVisibility,
+  handleChatWheel,
+  pinToBottomIfSticky,
+  scrollToBottom,
+  scrollLastUserMessageToTop,
+  scrollLastUserMessageToBottom,
+  scrollLiveAssistantIntoView,
+  updateActiveUserMessage,
+  handleChatScroll,
+  scrollToBottomSmooth,
+  scrollToMessageIndex,
+} = useChatScroll({
+  chatAreaRef,
+  virtualRowsCount: computed(() => virtualRows.value.length),
+  rowVirtualizer,
+  messages,
+  userTimelineItems,
+  onScrolled: hideSelectionPopover,
+});
 
 onMounted(() => {
   stickToBottom.value = true;
   void scrollToBottom();
   void nextTick(updateActiveUserMessage);
   void initBranchEvents();
-  document.addEventListener('mousedown', handleDocumentMouseDown, true);
-  document.addEventListener('keydown', handleSelectionEscape);
 });
 
 onBeforeUnmount(() => {
-  document.removeEventListener('mousedown', handleDocumentMouseDown, true);
-  document.removeEventListener('keydown', handleSelectionEscape);
   if (stickToBottomRaf) {
     cancelAnimationFrame(stickToBottomRaf);
     stickToBottomRaf = 0;
@@ -562,14 +339,6 @@ watch(
 
 const handleSend = (msg: string) => {
   emit('send', msg);
-};
-
-const handleUploadFiles = (files: PendingUploadFile[]) => {
-  emit('upload-files', files);
-};
-
-const handleRemoveUpload = (index: number) => {
-  emit('remove-upload', index);
 };
 
 const conversationTokenUsage = (index: number): number => {
@@ -915,8 +684,6 @@ defineExpose({
           @send="handleSend"
           @cancel="emit('cancel')"
           @remove-agent="emit('remove-agent')"
-          @upload-files="handleUploadFiles"
-          @remove-upload="handleRemoveUpload"
           @compact="emit('compact')"
         />
       </div>

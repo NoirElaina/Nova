@@ -81,7 +81,7 @@ async fn build_session_files_block(
         SESSION_FILES_MARKER.to_string(),
         format!(
             "Uploaded files are stored at: {}",
-            crate::command::workspace::display_path_string(&dir)
+            crate::services::workspace::display_path_string(&dir)
         ),
         "Use Read/Bash/Grep/Glob tools to access them via the absolute paths below:".to_string(),
     ];
@@ -89,7 +89,7 @@ async fn build_session_files_block(
     let mut file_lines: Vec<String> = files
         .iter()
         .map(|file| {
-            crate::command::workspace::display_path_string(&dir.join(&file.filename))
+            crate::services::workspace::display_path_string(&dir.join(&file.filename))
         })
         .collect();
     file_lines.sort();

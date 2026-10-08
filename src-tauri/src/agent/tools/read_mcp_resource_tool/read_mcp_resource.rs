@@ -69,7 +69,7 @@ async fn execute_with_app(
     )
     .await?;
 
-    match crate::command::mcp::read_mcp_resource(app.clone(), server_name, uri).await {
+    match crate::agent::capabilities::mcp::read_mcp_resource(app.clone(), server_name, uri).await {
         Ok(v) => Ok(ToolOutcome::json(v)),
         Err(e) => Err(ToolFailure::mcp(e)),
     }

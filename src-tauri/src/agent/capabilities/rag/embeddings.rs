@@ -38,7 +38,7 @@ pub fn embedding_to_blob(values: &[f32]) -> Vec<u8> {
 }
 
 pub fn load_embedding_config(app: &AppHandle) -> Result<EmbeddingConfig, String> {
-    let settings = crate::command::settings::get_settings(app.clone())?;
+    let settings = crate::services::settings::load_settings(app)?;
     let model = settings.rag.embedding_model.trim().to_string();
     if model.is_empty() {
         return Err("RAG embedding model is not configured".to_string());

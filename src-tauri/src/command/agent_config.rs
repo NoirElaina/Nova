@@ -6,16 +6,8 @@ use crate::agent::utils::error_event::report_backend_result;
 use serde::Serialize;
 use tauri::AppHandle;
 
-/// 前端智能体配置页展示的可配置工具（勾选清单用）。
-#[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct ConfigurableTool {
-    pub name: String,
-    pub description: String,
-    pub read_only: bool,
-    /// 内核流程控制工具（不可移除）。
-    pub always_on: bool,
-}
+pub use crate::agent::capabilities::agent_bundles::ConfigurableTool;
+
 
 #[tauri::command]
 pub fn list_agent_bundles(app: AppHandle) -> Result<Vec<AgentBundle>, String> {

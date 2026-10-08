@@ -117,7 +117,7 @@ async fn execute_async(
     // 传入的 file_path 格式不一致，下游（含模型自己拼路径）要多做一层兼容。
     Ok(ToolOutcome::json(json!({
         "ok": true,
-        "file_path": crate::command::workspace::display_path_string(&target),
+        "file_path": crate::services::workspace::display_path_string(&target),
         "created": !existed,
     })))
 }

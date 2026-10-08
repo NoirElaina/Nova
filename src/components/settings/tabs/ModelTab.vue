@@ -1,12 +1,17 @@
 <script setup lang="ts">
 import { ref, onMounted, computed } from 'vue'
 import { invoke } from '@tauri-apps/api/core'
-import { Plus } from 'lucide-vue-next'
+
+import { Plus, Cpu, Sparkles } from 'lucide-vue-next'
 import { Button } from '@/components/ui/button'
 import { ConfirmDialog } from '@/components/ui/confirm-dialog'
 
 import ProviderCard from './ProviderCard.vue'
 import ProviderDialog, { type ProviderDraft, type ModelDraftItem } from './ProviderDialog.vue'
+import ModelCatalogViewer from './ModelCatalogViewer.vue'
+
+const currentSubTab = ref<'providers' | 'catalog'>('providers')
+
 
 type ProviderProfile = {
   displayName?: string
@@ -241,32 +246,64 @@ const deleteDialogDesc = computed(() => {
 
 <template>
   <div class="flex h-full flex-col px-6 py-6 overflow-y-auto">
-    <div class="mb-6 flex items-center justify-between">
-      <div class="flex flex-col gap-1">
-        <h2 class="text-xl font-bold tracking-tight text-foreground">模型配置</h2>
-        <p class="text-xs text-muted-foreground">
-          可为每个模型单独设置上下文窗口，避免新模型未收录时被压到默认值。
-        </p>
+    <!-- Sub-tab pill selector -->
+    <div class="mb-6 flex items-center justify-between border-b border-border/40 pb-4">
+      <div class="flex items-center gap-2">
+        <button
+          type="button"
+          class="flex items-center gap-1.5 px-3 py-1.5 text-xs rounded-lg font-medium transition-all"
+          :class="currentSubTab === 'providers' ? 'bg-primary text-primary-foreground shadow-sm' : 'bg-muted/50 text-muted-foreground hover:bg-muted hover:text-foreground'"
+          @click="currentSubTab = 'providers'"
+        >
+          <Cpu class="h-3.5 w-3.5" />
+          服务商配置
+        </button>
+
+        <button
+          type="button"
+          class="flex items-center gap-1.5 px-3 py-1.5 text-xs rounded-lg font-medium transition-all"
+          :class="currentSubTab === 'catalog' ? 'bg-primary text-primary-foreground shadow-sm' : 'bg-muted/50 text-muted-foreground hover:bg-muted hover:text-foreground'"
+          @click="currentSubTab = 'catalog'"
+        >
+          <Sparkles class="h-3.5 w-3.5" />
+          OpenRouter 模型库 (300+)
+        </button>
       </div>
-      <Button @click="handleCreate" class="gap-2">
-        <Plus class="h-4 w-4" /> 添加配置
+
+      <Button v-if="currentSubTab === 'providers'" @click="handleCreate" size="sm" class="gap-1.5">
+        <Plus class="h-3.5 w-3.5" /> 添加配置
       </Button>
     </div>
 
-    <div class="grid gap-4">
-      <ProviderCard
-        v-for="provider in providersList"
-        :key="provider.id"
-        :id="provider.id"
-        :label="provider.label"
-        :api-format="provider.apiFormat"
-        :model="provider.model"
-        :is-current="currentProviderId === provider.id"
-        @switch="handleSwitch"
-        @edit="handleEdit"
-        @delete="handleDelete"
-      />
-    </div>
+    <!-- Providers Tab -->
+    <template v-if="currentSubTab === 'providers'">
+      <div class="mb-4">
+        <p class="text-xs text-muted-foreground">
+          管理大模型 API 连接、密钥与上下文窗口设置。
+        </p>
+      </div>
+
+      <div class="grid gap-4">
+        <ProviderCard
+          v-for="provider in providersList"
+          :key="provider.id"
+          :id="provider.id"
+          :label="provider.label"
+          :api-format="provider.apiFormat"
+          :model="provider.model"
+          :is-current="currentProviderId === provider.id"
+          @switch="handleSwitch"
+          @edit="handleEdit"
+          @delete="handleDelete"
+        />
+      </div>
+    </template>
+
+    <!-- OpenRouter Model Catalog Tab -->
+    <template v-else>
+      <ModelCatalogViewer />
+    </template>
+
 
     <ProviderDialog
       v-model:open="dialogOpen"

@@ -65,7 +65,7 @@ async fn execute_with_app(app: &AppHandle, input: Value) -> Result<ToolOutcome, 
         ));
     }
 
-    let settings = match crate::command::settings::get_settings(app.clone()) {
+    let settings = match crate::services::settings::load_settings(app) {
         Ok(settings) => settings,
         Err(error) => return Err(ToolFailure::new(error)),
     };

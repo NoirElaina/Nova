@@ -1,16 +1,67 @@
-// 这是工具注册入口模块，定义了所有内置工具（Bash/PowerShell/File/Task/... 等）
-// 以及工具发现、执行、权限检查的统一接口。具体工具包由 build.rs 扫描
-// tools/*/mod.rs 中的 registrations() 后生成，避免中心模块手写工具清单。
-include!(concat!(env!("OUT_DIR"), "/builtin_tool_registry.rs"));
+mod ask_user_question_tool;
+mod bash_kill_tool;
+mod bash_output_tool;
+mod bash_tool;
+mod config_tool;
+mod edit_tool;
+mod glob_tool;
+pub(crate) mod grep_tool;
+mod list_mcp_resources_tool;
+mod load_tool_tool;
+mod mcp_auth_tool;
+mod multi_edit_tool;
+mod rag_tool;
+mod read_mcp_resource_tool;
+mod read_tool;
+mod remember_global_memory_tool;
+mod skill_tool;
+mod task_tool;
+mod todo_write_tool;
+mod web_fetch_tool;
+mod web_search_tool;
+mod write_plan_tool;
+mod write_tool;
 
+pub mod registry;
 pub mod shared;
+
+#[allow(unused_imports)]
+pub(crate) use registry::{CustomToolHandler, ToolRegistry};
+pub(crate) use registry::global_tool_registry;
+
+pub(crate) fn builtin_tool_registrations() -> Vec<ToolRegistration> {
+    let mut tools = Vec::with_capacity(32);
+    tools.extend(ask_user_question_tool::registrations());
+    tools.extend(bash_kill_tool::registrations());
+    tools.extend(bash_output_tool::registrations());
+    tools.extend(bash_tool::registrations());
+    tools.extend(config_tool::registrations());
+    tools.extend(edit_tool::registrations());
+    tools.extend(glob_tool::registrations());
+    tools.extend(grep_tool::registrations());
+    tools.extend(list_mcp_resources_tool::registrations());
+    tools.extend(load_tool_tool::registrations());
+    tools.extend(mcp_auth_tool::registrations());
+    tools.extend(multi_edit_tool::registrations());
+    tools.extend(rag_tool::registrations());
+    tools.extend(read_mcp_resource_tool::registrations());
+    tools.extend(read_tool::registrations());
+    tools.extend(remember_global_memory_tool::registrations());
+    tools.extend(skill_tool::registrations());
+    tools.extend(task_tool::registrations());
+    tools.extend(todo_write_tool::registrations());
+    tools.extend(web_fetch_tool::registrations());
+    tools.extend(web_search_tool::registrations());
+    tools.extend(write_plan_tool::registrations());
+    tools.extend(write_tool::registrations());
+    tools
+}
 
 use crate::provider::types::{Message, Tool};
 use serde_json::Value;
 use std::collections::{BTreeMap, VecDeque};
 use std::future::Future;
 use std::pin::Pin;
-use std::sync::OnceLock;
 use tauri::AppHandle;
 use tokio::task::JoinSet;
 
@@ -178,13 +229,6 @@ pub(crate) const fn app_tool(
         disclosure,
     }
 }
-fn registered_tools() -> &'static [ToolRegistration] {
-    static REGISTERED_TOOLS: OnceLock<Vec<ToolRegistration>> = OnceLock::new();
-    // REGISTERED_TOOLS: 进程级缓存，避免每次请求都重新构建注册表。
-    REGISTERED_TOOLS
-        .get_or_init(builtin_tool_registrations)
-        .as_slice()
-}
 
 #[derive(Debug, Clone)]
 pub struct ToolCallRequest {
@@ -206,21 +250,11 @@ pub struct ToolCallResult {
 }
 
 fn find_tool_definition(name: &str) -> Option<Tool> {
-    registered_tools().iter().find_map(|entry| {
-        let tool = (entry.tool)();
-        if tool.name.eq_ignore_ascii_case(name) {
-            Some(tool)
-        } else {
-            None
-        }
-    })
+    global_tool_registry().get_definition(name)
 }
 
-fn find_registered_tool(name: &str) -> Option<ToolRegistration> {
-    registered_tools().iter().copied().find(|entry| {
-        let tool = (entry.tool)();
-        tool.name.eq_ignore_ascii_case(name)
-    })
+fn find_registered_tool(name: &str) -> Option<registry::ToolEntry> {
+    global_tool_registry().get(name)
 }
 
 fn validate_tool_input(name: &str, input: &Value) -> Result<(), String> {
@@ -257,7 +291,7 @@ fn validate_tool_input(name: &str, input: &Value) -> Result<(), String> {
 
 pub(crate) fn is_read_only_tool(name: &str) -> bool {
     if let Some(entry) = find_registered_tool(name) {
-        return entry.read_only;
+        return entry.is_read_only();
     }
 
     if let Some(read_only) = crate::agent::capabilities::mcp_tools::dynamic_tool_read_only(name) {
@@ -661,30 +695,28 @@ pub(crate) fn permission_descriptor_for_tool(
     name: &str,
     input: &Value,
 ) -> Option<ToolPermissionDescriptor> {
-    find_registered_tool(name)
-        .and_then(|entry| entry.permission.and_then(|permission| permission(input)))
+    global_tool_registry().permission_descriptor(name, input)
 }
 
 // 取当前注册工具列表，用于在 LLM 提示里传给模型，告诉模型可调用哪些功能。
 pub fn get_available_tools() -> Vec<Tool> {
-    registered_tools()
-        .iter()
-        .map(|entry| (entry.tool)())
-        .collect()
+    global_tool_registry().list_all_tools()
 }
 
 /// 所有声明为 Deferred 的内置工具定义（LoadTool 目录与按需加载用）。
 pub(crate) fn deferred_tool_definitions() -> Vec<Tool> {
-    registered_tools()
-        .iter()
-        .filter(|entry| entry.disclosure == ToolDisclosure::Deferred)
-        .map(|entry| (entry.tool)())
+    global_tool_registry()
+        .list_all_tools()
+        .into_iter()
+        .filter(|tool| {
+            global_tool_registry().disclosure(&tool.name) == Some(ToolDisclosure::Deferred)
+        })
         .collect()
 }
 
 /// 按名字查披露分级（未注册工具返回 None）。
 fn disclosure_for_tool(name: &str) -> Option<ToolDisclosure> {
-    find_registered_tool(name).map(|entry| entry.disclosure)
+    global_tool_registry().disclosure(name)
 }
 
 /// 渐进披露入口工具名（系统提示词与目录过滤共用）。
@@ -726,7 +758,7 @@ pub fn get_available_tools_for_agent(app: &AppHandle, conversation_id: Option<&s
     };
 
     // 披露开关关闭：全量暴露（与重构前行为一致），并隐藏孤立的 LoadTool。
-    let disclosure_enabled = crate::command::settings::load_settings(app)
+    let disclosure_enabled = crate::services::settings::load_settings(app)
         .map(|settings| settings.progressive_tool_disclosure)
         .unwrap_or(true);
     if !disclosure_enabled {
@@ -755,23 +787,22 @@ pub fn get_available_tools_for_agent(app: &AppHandle, conversation_id: Option<&s
 /// 默认专属工具（memory）不进目录：专用智能体不允许写全局记忆。
 pub fn configurable_tool_catalog(
     app: &AppHandle,
-) -> Result<Vec<crate::command::agent_config::ConfigurableTool>, String> {
+) -> Result<Vec<crate::agent::capabilities::agent_bundles::ConfigurableTool>, String> {
     // 目录与当前激活 bundle 无关：配置的是任意 bundle 的勾选清单。
     let _ = app;
-    let catalog: Vec<crate::command::agent_config::ConfigurableTool> = registered_tools()
-        .iter()
-        .filter(|entry| {
-            let name = (entry.tool)().name;
-            // 记忆专属工具不进目录；LoadTool 是披露基础设施，不可被套件勾选。
-            !crate::agent::capabilities::agent_bundles::DEFAULT_ONLY_TOOLS.contains(&name.as_str())
-                && name != LOAD_TOOL_NAME
+    let catalog: Vec<crate::agent::capabilities::agent_bundles::ConfigurableTool> = global_tool_registry()
+        .list_all_tools()
+        .into_iter()
+        .filter(|tool| {
+            !crate::agent::capabilities::agent_bundles::DEFAULT_ONLY_TOOLS.contains(&tool.name.as_str())
+                && tool.name != LOAD_TOOL_NAME
         })
-        .map(|entry| {
-            let tool = (entry.tool)();
-            crate::command::agent_config::ConfigurableTool {
+        .map(|tool| {
+            let read_only = global_tool_registry().is_read_only(&tool.name).unwrap_or(false);
+            crate::agent::capabilities::agent_bundles::ConfigurableTool {
                 name: tool.name.clone(),
                 description: tool.description.clone(),
-                read_only: entry.read_only,
+                read_only,
                 always_on: crate::agent::capabilities::agent_bundles::ALWAYS_ON_TOOLS
                     .contains(&tool.name.as_str()),
             }
@@ -835,7 +866,8 @@ pub(crate) async fn execute_tool_with_app(
     }
 
     if let Some(entry) = find_registered_tool(name) {
-        return (entry.execute_with_app)(app.clone(), conversation_id.map(str::to_string), input)
+        return entry
+            .execute(app.clone(), conversation_id.map(str::to_string), input)
             .await;
     }
 

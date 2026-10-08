@@ -179,11 +179,11 @@ fn encrypt_headers(headers: &mut HashMap<String, String>) -> Result<(), String> 
     for (name, value) in headers.iter_mut() {
         let trimmed = value.trim();
         if trimmed.is_empty()
-            || crate::command::settings_secrets::is_encrypted_secret_value(trimmed)
+            || crate::services::settings_secrets::is_encrypted_secret_value(trimmed)
         {
             continue;
         }
-        *value = crate::command::settings_secrets::encrypt_secret_value(trimmed)
+        *value = crate::services::settings_secrets::encrypt_secret_value(trimmed)
             .map_err(|error| format!("Failed to encrypt MCP header '{}': {}", name, error))?;
     }
     Ok(())
@@ -192,10 +192,10 @@ fn encrypt_headers(headers: &mut HashMap<String, String>) -> Result<(), String> 
 fn decrypt_headers(headers: &mut HashMap<String, String>) {
     for value in headers.values_mut() {
         let trimmed = value.trim();
-        if !crate::command::settings_secrets::is_encrypted_secret_value(trimmed) {
+        if !crate::services::settings_secrets::is_encrypted_secret_value(trimmed) {
             continue;
         }
-        match crate::command::settings_secrets::decrypt_secret_value(trimmed) {
+        match crate::services::settings_secrets::decrypt_secret_value(trimmed) {
             Ok(plain) => *value = plain,
             Err(_) => value.clear(),
         }

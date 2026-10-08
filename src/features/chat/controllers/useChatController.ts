@@ -8,6 +8,7 @@ import type {
 } from "../../../lib/chat-types";
 import {
   getConversationUsage,
+  manualCompactConversation,
   type SessionFileMeta,
 } from "../services/chat-api";
 import {
@@ -53,13 +54,43 @@ export function useChatController() {
   const currentContextTokens = computed(() => activeSession.value.contextTokens);
   const chatError = computed(() => activeSession.value.chatError);
 
-  const activeWorkspacePath = ref<string>("");
-  const conversations = ref<ConversationMeta[]>([]);
-  const conversationFiles = ref<SessionFileMeta[]>([]);
+  const activeWorkspacePath = computed({
+    get: () => conversationStore.activeWorkspacePath,
+    set: (val: string) => {
+      conversationStore.activeWorkspacePath = val;
+    },
+  });
+  const conversations = computed({
+    get: () => conversationStore.conversations,
+    set: (val: ConversationMeta[]) => {
+      conversationStore.conversations = val;
+    },
+  });
+  const conversationFiles = computed({
+    get: () => conversationStore.conversationFiles,
+    set: (val: SessionFileMeta[]) => {
+      conversationStore.conversationFiles = val;
+    },
+  });
   const pendingUploads = computed(() => composerStore.pendingUploads);
-  const pendingAgentBundleId = ref<string | null>(null);
-  const mainView = ref<MainView>("chat");
-  const isSidebarOpen = ref(true);
+  const pendingAgentBundleId = computed({
+    get: () => conversationStore.pendingAgentBundleId,
+    set: (val: string | null) => {
+      conversationStore.pendingAgentBundleId = val;
+    },
+  });
+  const mainView = computed({
+    get: () => conversationStore.mainView,
+    set: (val: MainView) => {
+      conversationStore.mainView = val;
+    },
+  });
+  const isSidebarOpen = computed({
+    get: () => conversationStore.isSidebarOpen,
+    set: (val: boolean) => {
+      conversationStore.isSidebarOpen = val;
+    },
+  });
   const agentMode = ref<AgentMode>("agent");
   const chatScreenRef = ref<ChatScreenHandle | null>(null);
 
@@ -113,13 +144,7 @@ export function useChatController() {
     if (!conversationId || isCompacting.value) return;
     isCompacting.value = true;
     try {
-      const { invoke } = await import("@tauri-apps/api/core");
-      const outcome = await invoke<{
-        beforeTokens: number;
-        afterTokens: number;
-        savedTokens: number;
-        summary: string;
-      }>("manual_compact_conversation", { conversationId });
+      const outcome = await manualCompactConversation(conversationId);
       await conversationOps.loadConversation(conversationId);
       activeSession.value.contextTokens = outcome.afterTokens;
       emitToast({
@@ -171,10 +196,10 @@ export function useChatController() {
     pendingAgentBundleId,
     chatScreenRef,
     createNewConversation: conversationOps.createNewConversation,
-    persistMessage: conversationOps.persistMessage,
     refreshConversationFiles: conversationOps.refreshConversationFiles,
     finalizeActiveTurnOnError,
   });
+
 
   async function handleNewChat() {
     mainView.value = "chat";

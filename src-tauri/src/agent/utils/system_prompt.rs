@@ -64,7 +64,7 @@ fn append_on_demand_tools_section(
     app: &AppHandle,
     conversation_id: Option<&str>,
 ) -> String {
-    let disclosure_enabled = crate::command::settings::load_settings(app)
+    let disclosure_enabled = crate::services::settings::load_settings(app)
         .map(|settings| settings.progressive_tool_disclosure)
         .unwrap_or(true);
     if !disclosure_enabled {
@@ -126,7 +126,7 @@ pub fn load_system_prompt(
         let parent = conversation_id
             .map(crate::agent::orchestration::subagent::parent_conversation_id)
             .unwrap_or_default();
-        let ws = crate::command::workspace::workspace_root_for_conversation(app, Some(parent))?;
+        let ws = crate::services::workspace::workspace_root_for_conversation(app, Some(parent))?;
         let prompt = crate::agent::orchestration::subagent::system_prompt().replace(
             "Workspace root is provided in the first message.",
             &format!("Workspace root: {}.", ws.display()),
@@ -154,7 +154,7 @@ pub fn load_system_prompt(
     };
 
     // 将 workspace 路径注入提示词（bundle 提示词同样支持占位符）。
-    let ws = crate::command::workspace::workspace_root_for_conversation(app, conversation_id)?;
+    let ws = crate::services::workspace::workspace_root_for_conversation(app, conversation_id)?;
     let prompt = prompt.replace("{{NOVA_WORKSPACE}}", &ws.display().to_string());
 
     // 将平台信息注入提示词。

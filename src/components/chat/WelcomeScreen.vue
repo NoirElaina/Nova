@@ -1,7 +1,6 @@
 <script setup lang="ts">
 import InputArea from './input/InputArea.vue';
 import EnvironmentBar from './EnvironmentBar.vue';
-import type { PendingUploadFile } from '@/lib/chat-types';
 
 defineProps<{
   workspacePath?: string;
@@ -13,8 +12,6 @@ defineProps<{
 const emit = defineEmits<{
   (e: 'send', msg: string): void;
   (e: 'remove-agent'): void;
-  (e: 'upload-files', files: PendingUploadFile[]): void;
-  (e: 'remove-upload', index: number): void;
   (e: 'update:workspacePath', path: string): void;
 }>();
 
@@ -44,8 +41,6 @@ const handleSend = (msg: string) => {
         :activeAgent="activeAgent"
         @send="handleSend"
         @remove-agent="emit('remove-agent')"
-        @upload-files="emit('upload-files', $event)"
-        @remove-upload="emit('remove-upload', $event)"
       />
     </div>
   </div>

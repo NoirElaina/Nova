@@ -575,7 +575,6 @@ async fn process_delta(
             let is_branch_or_sub = crate::agent::orchestration::branch::is_branch_conversation(conversation_id)
                 || crate::agent::orchestration::subagent::is_subagent_conversation(conversation_id);
             if !is_branch_or_sub {
-                crate::agent::lifecycle::live_turns::append_text(conversation_id, &text);
                 let _ = app.emit(
                     "agent-event",
                     crate::agent::events::AgentDomainEvent::TextDelta {
@@ -609,7 +608,6 @@ async fn process_delta(
             let is_branch_or_sub = crate::agent::orchestration::branch::is_branch_conversation(conversation_id)
                 || crate::agent::orchestration::subagent::is_subagent_conversation(conversation_id);
             if !is_branch_or_sub {
-                crate::agent::lifecycle::live_turns::append_reasoning(conversation_id, &text);
                 let _ = app.emit(
                     "agent-event",
                     crate::agent::events::AgentDomainEvent::ThinkingDelta {

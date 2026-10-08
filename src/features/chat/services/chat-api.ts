@@ -111,14 +111,6 @@ export type UserTerminalOutputEvent = {
   error?: string | null;
 };
 
-export type LiveChatTurnStatus = {
-  conversationId: string;
-  state: "running" | "completed" | "needs_user_input" | "cancelled" | "stop_hook_prevented" | "error";
-  assistantResponse: string;
-  assistantReasoning: string;
-  startedAt: number;
-  updatedAt: number;
-};
 
 export type FileDiffLine = {
   kind: "context" | "add" | "remove";
@@ -393,19 +385,6 @@ export async function appendPlainChatMessage(
 }
 
 
-export async function getChatTurnStatus(
-  conversationId: string | null,
-): Promise<LiveChatTurnStatus | null> {
-  return invoke<LiveChatTurnStatus | null>("get_chat_turn_status", {
-    conversationId,
-  });
-}
-
-export async function ackChatTurnStatus(conversationId: string | null): Promise<boolean> {
-  return invoke<boolean>("ack_chat_turn_status", {
-    conversationId,
-  });
-}
 
 export async function saveSessionFile(
   conversationId: string,
@@ -446,6 +425,11 @@ export async function getConversationPlan(
   return invoke<ConversationPlan | null>("get_conversation_plan", {
     conversationId,
   });
+}
+
+export async function getRuntimeSettings(): Promise<RuntimeSettings> {
+  const settings = await invoke<RuntimeSettings>("get_settings");
+  return settings || {};
 }
 
 export async function getActiveModelRuntime(): Promise<ActiveModelRuntime> {
@@ -507,3 +491,17 @@ export async function createScheduledTask(payload: {
 export async function deleteScheduledTask(id: string): Promise<boolean> {
   return invoke<boolean>("delete_scheduled_task", { id });
 }
+
+export type CompactOutcome = {
+  beforeTokens: number;
+  afterTokens: number;
+  savedTokens: number;
+  summary: string;
+};
+
+export async function manualCompactConversation(
+  conversationId: string,
+): Promise<CompactOutcome> {
+  return invoke<CompactOutcome>("manual_compact_conversation", { conversationId });
+}
+

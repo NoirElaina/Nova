@@ -36,7 +36,6 @@ export type SendOpsDeps = {
   pendingAgentBundleId: Ref<string | null>;
   chatScreenRef: Ref<ChatScreenHandle | null>;
   createNewConversation: (seedTitle?: string) => Promise<string | null>;
-  persistMessage: (message: ChatMessage, conversationId?: string) => Promise<void>;
   refreshConversationFiles: (conversationId: string) => Promise<void>;
   finalizeActiveTurnOnError: () => Promise<void>;
 };
@@ -48,7 +47,6 @@ export function createSendOperations(deps: SendOpsDeps) {
     pendingAgentBundleId,
     chatScreenRef,
     createNewConversation,
-    persistMessage,
     refreshConversationFiles,
     finalizeActiveTurnOnError,
   } = deps;
@@ -224,8 +222,8 @@ export function createSendOperations(deps: SendOpsDeps) {
     }
 
     sessionStore.activeSession.messages = nextMessages;
-    await persistMessage(userMessage, sendingConversationId);
     await dispatchConversationMessages(sendingConversationId, nextMessages);
+
   }
 
   async function handleEditMessage(
@@ -275,8 +273,9 @@ export function createSendOperations(deps: SendOpsDeps) {
     ];
 
     try {
-      await replaceConversationHistory(conversationId, nextMessages);
+      await replaceConversationHistory(conversationId, currentMessages.slice(0, messageIndex));
       sessionStore.activeSession.messages = nextMessages;
+
       sessionStore.activeSession.toolExecutionLogs = [];
       composerStore.clearUploads();
       await dispatchConversationMessages(conversationId, nextMessages);

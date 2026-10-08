@@ -186,7 +186,7 @@ pub async fn list_memory_entries(app: AppHandle) -> Result<Vec<String>, String> 
     report_backend_result(
         &app,
         "command.history.list_memory_entries",
-        history::list_memory_entries(&app).await,
+        crate::agent::capabilities::memory_dir::memory_list(&app).await,
         None,
     )
 }
@@ -196,7 +196,7 @@ pub async fn add_memory_entry(app: AppHandle, content: String) -> Result<(), Str
     report_backend_result(
         &app,
         "command.history.add_memory_entry",
-        history::add_memory_entry(&app, &content).await,
+        crate::agent::capabilities::memory_dir::memory_add(&app, &content).await,
         None,
     )
 }
@@ -206,7 +206,7 @@ pub async fn remove_memory_entry(app: AppHandle, old_text: String) -> Result<(),
     report_backend_result(
         &app,
         "command.history.remove_memory_entry",
-        history::remove_memory_entry(&app, &old_text).await,
+        crate::agent::capabilities::memory_dir::memory_remove(&app, &old_text).await,
         None,
     )
 }
@@ -216,10 +216,11 @@ pub async fn clear_memory_entries(app: AppHandle) -> Result<(), String> {
     report_backend_result(
         &app,
         "command.history.clear_memory_entries",
-        history::clear_memory_entries(&app).await,
+        crate::agent::capabilities::memory_dir::memory_clear(&app).await,
         None,
     )
 }
+
 
 #[tauri::command]
 pub async fn manual_compact_conversation(

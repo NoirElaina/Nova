@@ -39,8 +39,6 @@ pub mod plan;
 pub mod hooks;
 // 持久化权限规则管理命令入口。
 pub mod permission_rules;
-// 实时轮次状态查询与确认命令入口。
-pub mod live_turns;
 
 use tauri::{AppHandle, Manager};
 

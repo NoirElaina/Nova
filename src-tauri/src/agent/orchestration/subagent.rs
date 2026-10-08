@@ -167,7 +167,7 @@ pub async fn run(
     let sub_id = derive_sub_id(parent_conversation_id);
     emit_status(app, parent_conversation_id, &sub_id, "start", task, None);
 
-    let workspace = crate::command::workspace::workspace_root_for_conversation(
+    let workspace = crate::services::workspace::workspace_root_for_conversation(
         app,
         Some(parent_conversation_id),
     )
@@ -341,7 +341,7 @@ async fn run_loop(
 
         // 每次请求前重新构建 client + 读配置：模型可能被用户切换。
         let mut provider = LlmClient::new(app)?;
-        let settings = crate::command::settings::load_settings(app)?;
+        let settings = crate::services::settings::load_settings(app)?;
         let model = settings.active_provider_profile().model;
         let window_tokens = settings.context_window_for_model(&model) as i64;
 

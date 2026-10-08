@@ -58,7 +58,7 @@ async fn execute_with_app(
         .to_ascii_lowercase();
 
     match action.as_str() {
-        "stats" => match crate::command::rag::rag_get_stats(app.clone()).await {
+        "stats" => match crate::agent::capabilities::rag::get_stats(app.clone()).await {
             Ok(stats) => Ok(ToolOutcome::json(json!({
                 "ok": true,
                 "action": "stats",
@@ -84,7 +84,7 @@ async fn execute_with_app(
                 .map(|v| v as usize);
 
             let result =
-                crate::command::rag::rag_search_documents(app.clone(), query.to_string(), limit)
+                crate::agent::capabilities::rag::search_documents(app.clone(), query.to_string(), limit)
                     .await;
 
             match result {
@@ -96,7 +96,7 @@ async fn execute_with_app(
                         "results": results
                     });
                     if results.is_empty() {
-                        if let Ok(stats) = crate::command::rag::rag_get_stats(app.clone()).await {
+                        if let Ok(stats) = crate::agent::capabilities::rag::get_stats(app.clone()).await {
                             if stats.document_count == 0 {
                                 payload["note"] = json!("知识库当前为空（documentCount: 0），未检索到任何内容。");
                             }
@@ -119,7 +119,7 @@ async fn execute_with_app(
                 ));
             };
 
-            match crate::command::rag::rag_read_document(
+            match crate::agent::capabilities::rag::read_document(
                 app.clone(),
                 document_id.to_string(),
             )
@@ -151,7 +151,7 @@ async fn execute_with_app(
                 ));
             };
 
-            let docs = crate::command::rag::rag_list_documents(app.clone()).await;
+            let docs = crate::agent::capabilities::rag::list_documents(app.clone()).await;
 
             let docs = match docs {
                 Ok(d) => d,
@@ -167,7 +167,7 @@ async fn execute_with_app(
                 })));
             };
 
-            match crate::command::rag::rag_read_document(
+            match crate::agent::capabilities::rag::read_document(
                 app.clone(),
                 meta.id.clone(),
             )

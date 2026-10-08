@@ -201,7 +201,7 @@ fn normalize_anthropic_url(base_url: &str) -> String {
 }
 
 async fn summarize_with_anthropic(app: &AppHandle, user_prompt: &str) -> Result<String, String> {
-    let settings = crate::command::settings::get_settings(app.clone())?;
+    let settings = crate::services::settings::load_settings(app)?;
     let profile = settings.active_provider_profile();
     let api_key = profile.api_key.clone();
     if api_key.is_empty() {
@@ -267,7 +267,7 @@ async fn summarize_with_anthropic(app: &AppHandle, user_prompt: &str) -> Result<
 }
 
 async fn summarize_with_openai(app: &AppHandle, user_prompt: &str) -> Result<String, String> {
-    let settings = crate::command::settings::get_settings(app.clone())?;
+    let settings = crate::services::settings::load_settings(app)?;
     let profile = settings.active_provider_profile();
     let request = OpenAiSummaryRequest {
         model: profile.model.clone(),
@@ -351,7 +351,7 @@ pub(crate) async fn summarize_messages_for_compact(
     app: &AppHandle,
     messages: &[Message],
 ) -> Result<String, String> {
-    let settings = crate::command::settings::get_settings(app.clone())?;
+    let settings = crate::services::settings::load_settings(app)?;
     let provider_protocol = settings.active_provider_api_format();
     let mut working_messages = strip_images_to_placeholders(messages);
 

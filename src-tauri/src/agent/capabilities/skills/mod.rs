@@ -171,7 +171,7 @@ pub(crate) fn load_skills_with_app(app: &AppHandle) -> Result<Vec<SkillEntry>, S
 
 // 从设置读取被停用的技能名集合（归一化小写）。
 fn disabled_skill_names(app: &AppHandle) -> HashSet<String> {
-    crate::command::settings::load_settings(app)
+    crate::services::settings::load_settings(app)
         .map(|settings| {
             settings
                 .disabled_skills

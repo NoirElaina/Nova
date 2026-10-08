@@ -108,7 +108,7 @@ pub(crate) async fn call_mcp_tool_with_nested_permission(
         }
     }
 
-    match crate::command::mcp::call_mcp_tool(app.clone(), server_name, tool_name, arguments).await {
+    match crate::agent::capabilities::mcp::call_mcp_tool(app.clone(), server_name, tool_name, arguments).await {
         Ok(v) if v.get("isError").and_then(|value| value.as_bool()) == Some(true) => {
             Err(ToolFailure::mcp(v.to_string()))
         }

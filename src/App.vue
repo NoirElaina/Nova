@@ -1,6 +1,5 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue';
-import { invoke } from '@tauri-apps/api/core';
+import { computed, onBeforeUnmount, onMounted, ref } from 'vue';
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { Button } from "@/components/ui/button";
 import Sidebar from "./components/layout/Sidebar.vue";
@@ -15,34 +14,21 @@ import ScheduleTaskScreen from "./components/schedule/ScheduleTaskScreen.vue";
 import SettingsScreen from "./components/settings/SettingsScreen.vue";
 import GlobalToastHost from "./components/layout/GlobalToastHost.vue";
 import { useChatController } from "./features/chat/controllers/useChatController";
+import { useLayoutStore } from "./stores/layout";
+import { useConversationAgentBinding } from "./features/agent/composables/useConversationAgentBinding";
+import { useConversationExport } from "./features/chat/composables/useConversationExport";
+import { useChatDropzone } from "./composables/useChatDropzone";
 import {
   BROWSER_ANNOTATION_SELECTED_EVENT,
   type BrowserAnnotationSelectedPayload,
 } from "./features/browser/browser-annotation";
 import type { PendingUploadFile } from "./lib/chat-types";
-import { buildPendingUploadFiles, notifyRejectedUploads } from "./lib/upload-files";
-import {
-  exportConversation,
-  exportRenderedConversationPdf,
-  loadConversationHistory,
-  type ConversationExportFormat,
-} from "./features/chat/services/chat-api";
-import { buildConversationExportHtml } from "./features/chat/utils/conversation-export-html";
-import { emitToast } from "./lib/toast";
-import {
-  getStoredSidebarWidth,
-  setStoredSidebarWidth,
-  SIDEBAR_MIN_WIDTH,
-  SIDEBAR_MAX_WIDTH,
-  getStoredDrawerWidth,
-  setStoredDrawerWidth,
-  clampDrawerWidth,
-} from "./lib/ui-preferences";
 
-type WorkspaceTabId = "files" | "diff" | "terminal" | "browser" | "trace";
 type BrowserOpenRequest = {
   conversationId?: string;
 };
+
+const layoutStore = useLayoutStore();
 
 const {
   messages,
@@ -62,7 +48,6 @@ const {
   clearPendingAgent,
   pendingAgentBundleId,
   handleUploadFiles,
-  handleRemovePendingUpload,
   handleCancelGeneration,
   handlePendingQuestionSubmit,
   handlePendingQuestionSkip,
@@ -75,84 +60,35 @@ const {
   dismissChatError,
 } = useChatController();
 
-void chatScreenRef;
-
-// ---------------- 会话级智能体（bundle）：输入框下方左侧标签展示，点 × 卸载 ----------------
-
-type ConversationAgent = { id: string; name: string; description?: string } | null;
-const conversationAgent = ref<ConversationAgent>(null);
-/** 暂存智能体的名称缓存：id -> bundle（跟随 controller 的 pendingAgentBundleId 生命周期）。 */
-const pendingAgentMeta = ref<ConversationAgent>(null);
-
-/** 展示用的智能体：已有会话取会话挂载值，否则取暂存值（欢迎页）。 */
-const displayAgent = computed<ConversationAgent>(() => {
-  if (conversationAgent.value) return conversationAgent.value;
-  // controller 暂存被清（新对话/发送完成/切换会话）时标签随之消失。
-  if (!pendingAgentBundleId.value) return null;
-  return pendingAgentMeta.value?.id === pendingAgentBundleId.value ? pendingAgentMeta.value : null;
+// 1. 会话绑定的智能体管理
+const {
+  displayAgent,
+  removeConversationAgent,
+  handleLaunchAgent,
+} = useConversationAgentBinding({
+  activeConversationId,
+  pendingAgentBundleId,
+  clearPendingAgent,
+  handleLaunchAgentConversation,
 });
 
-const refreshConversationAgent = async () => {
-  const convId = activeConversationId.value?.trim();
-  if (!convId) {
-    conversationAgent.value = null;
-    return;
-  }
-  try {
-    const bundle = await invoke<ConversationAgent>("get_conversation_agent", {
-      conversationId: convId,
-    });
-    conversationAgent.value = bundle ? { id: bundle.id, name: bundle.name, description: bundle.description } : null;
-  } catch {
-    conversationAgent.value = null;
-  }
-};
+// 2. 会话导出管理
+const {
+  exportingConversationId,
+  exportingFormat,
+  handleExportConversation,
+} = useConversationExport(conversations);
 
-const removeConversationAgent = async () => {
-  const convId = activeConversationId.value?.trim();
-  if (convId) {
-    try {
-      await invoke("set_conversation_agent", { conversationId: convId, bundleId: null });
-      conversationAgent.value = null;
-    } catch (err) {
-      console.error("Failed to remove conversation agent:", err);
-    }
-    return;
-  }
-  // 欢迎页（对话未创建）：清掉 controller 的暂存智能体即可。
-  clearPendingAgent();
-};
-
-/** 智能体页点「启用」：暂存智能体回到欢迎页（不建会话）；首次发送时才创建对话并挂载。 */
-const handleLaunchAgent = async (bundleId: string) => {
-  try {
-    const bundle = await invoke<ConversationAgent>("load_agent_bundle", {
-      bundleId,
-    });
-    pendingAgentMeta.value = bundle ? { id: bundle.id, name: bundle.name, description: bundle.description } : null;
-  } catch {
-    pendingAgentMeta.value = null;
-  }
-  await handleLaunchAgentConversation(bundleId);
-};
-
-const onAgentBundleChanged = () => {
-  // 挂载/卸载/首次发送后刷新会话挂载值；暂存标签由 displayAgent 依据
-  // pendingAgentBundleId 自动失效（发送成功后 controller 已清空暂存）。
-  void refreshConversationAgent();
-};
-
-watch(activeConversationId, () => {
-  void refreshConversationAgent();
-});
-
-onMounted(() => {
-  void refreshConversationAgent();
-  window.addEventListener("agent-bundle-changed", onAgentBundleChanged);
-});
-
-onBeforeUnmount(() => {
-  window.removeEventListener("agent-bundle-changed", onAgentBundleChanged);
+// 3. 文件拖拽投放
+const {
+  isDraggingFiles,
+  handleChatDragEnter,
+  handleChatDragOver,
+  handleChatDragLeave,
+  handleChatDrop,
+} = useChatDropzone({
+  mainView,
+  onFilesAccepted: handleUploadFiles,
 });
 
 const activeWorkspaceName = computed(() => {
@@ -160,137 +96,16 @@ const activeWorkspaceName = computed(() => {
   if (!path) return '';
   const parts = path.replace(/\\/g, '/').split('/');
   const last = parts[parts.length - 1] || '';
-  // 默认工作区目录名是会话 uuid，直接显示太长；换成友好名称。
   if (/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(last)) {
     return '默认工作区';
   }
   return last;
 });
 
-
-const isDrawerOpen = ref(false);
-const activeWorkspaceTab = ref<WorkspaceTabId>("files");
-/** 计划侧边面板：AI 产出计划后自动弹出，也可从输入框上方小框打开。 */
-const isPlanPanelOpen = ref(false);
-/** 后台任务侧边面板：只读查看后台作业状态与输出。 */
-const isBgJobsPanelOpen = ref(false);
 const browserOpenRequestKey = ref(0);
-
-// 侧边栏宽度：拖动时实时更新，松手后持久化到 localStorage。
-const sidebarWidth = ref(getStoredSidebarWidth());
-const handleSidebarResize = (width: number) => {
-  sidebarWidth.value = Math.min(Math.max(width, SIDEBAR_MIN_WIDTH), SIDEBAR_MAX_WIDTH);
-};
-const handleSidebarResizeEnd = () => {
-  setStoredSidebarWidth(sidebarWidth.value);
-};
-
-// 工作区抽屉宽度：同样拖动实时生效、松手持久化。
-const drawerWidth = ref(getStoredDrawerWidth());
-const handleDrawerResize = (width: number) => {
-  drawerWidth.value = clampDrawerWidth(width);
-};
-const handleDrawerResizeEnd = () => {
-  setStoredDrawerWidth(drawerWidth.value);
-};
-const exportingConversationId = ref<string | null>(null);
-const exportingFormat = ref<ConversationExportFormat | null>(null);
 let unlistenBrowserOpenRequest: UnlistenFn | null = null;
 let unlistenBrowserAnnotationSelected: UnlistenFn | null = null;
 let unlistenPlanUpdated: UnlistenFn | null = null;
-
-// 拖拽文件到聊天面板直接导入。dragenter/dragleave 会在子元素间频繁冒泡，
-// 用计数器而不是布尔值判断"是否仍在拖拽悬停"。
-const isDraggingFiles = ref(false);
-let dragDepth = 0;
-
-const hasDraggedFiles = (event: DragEvent) =>
-  Array.from(event.dataTransfer?.types ?? []).includes("Files");
-
-const handleChatDragEnter = (event: DragEvent) => {
-  if (mainView.value !== 'chat' || !hasDraggedFiles(event)) return;
-  dragDepth += 1;
-  isDraggingFiles.value = true;
-};
-
-const handleChatDragOver = (event: DragEvent) => {
-  if (!hasDraggedFiles(event)) return;
-  event.preventDefault();
-  if (event.dataTransfer) {
-    event.dataTransfer.dropEffect = "copy";
-  }
-};
-
-const handleChatDragLeave = (event: DragEvent) => {
-  if (!hasDraggedFiles(event)) return;
-  dragDepth = Math.max(0, dragDepth - 1);
-  if (dragDepth === 0) {
-    isDraggingFiles.value = false;
-  }
-};
-
-const handleChatDrop = async (event: DragEvent) => {
-  if (mainView.value !== 'chat' || !hasDraggedFiles(event)) return;
-  event.preventDefault();
-  dragDepth = 0;
-  isDraggingFiles.value = false;
-
-  const files = Array.from(event.dataTransfer?.files ?? []);
-  if (files.length === 0) return;
-
-  const { accepted, rejected } = await buildPendingUploadFiles(files);
-  if (accepted.length > 0) {
-    await handleUploadFiles(accepted);
-  }
-  notifyRejectedUploads(rejected);
-};
-
-const formatExportLabel = (format: ConversationExportFormat) => format.toUpperCase();
-
-const handleExportConversation = async (
-  conversationId: string,
-  format: ConversationExportFormat,
-) => {
-  if (exportingConversationId.value) {
-    return;
-  }
-
-  exportingConversationId.value = conversationId;
-  exportingFormat.value = format;
-
-  try {
-    const conversation = conversations.value.find((item) => item.id === conversationId);
-    const title = conversation?.title || "New chat";
-    const exportPath =
-      format === "pdf"
-        ? await exportRenderedConversationPdf(
-            conversationId,
-            title,
-            buildConversationExportHtml({
-              conversationId,
-              title,
-              exportedAt: new Date().toISOString(),
-              messages: await loadConversationHistory(conversationId),
-            }),
-          )
-        : await exportConversation(conversationId, "json");
-    emitToast({
-      variant: "success",
-      source: "conversation-export",
-      message: `${formatExportLabel(format)} 已导出到：${exportPath}`,
-    });
-  } catch (err) {
-    console.error("Failed to export conversation:", err);
-    emitToast({
-      variant: "error",
-      source: "conversation-export",
-      message: `导出 ${formatExportLabel(format)} 失败。`,
-    });
-  } finally {
-    exportingConversationId.value = null;
-    exportingFormat.value = null;
-  }
-};
 
 const handleBrowserOpenRequest = async (payload: BrowserOpenRequest) => {
   const requestedConversationId = payload.conversationId?.trim();
@@ -303,7 +118,7 @@ const handleBrowserOpenRequest = async (payload: BrowserOpenRequest) => {
   }
 
   handleChangeMainView("chat");
-  activeWorkspaceTab.value = "browser";
+  layoutStore.activeWorkspaceTab = "browser";
   browserOpenRequestKey.value += 1;
 };
 
@@ -333,10 +148,10 @@ const handleBrowserAnnotationSelected = async (payload: BrowserAnnotationSelecte
 };
 
 onMounted(() => {
-  // 阻止 webview 默认行为：在非拖拽区松手会直接导航打开该文件，把整个应用界面替换掉。
   const preventDefaultDrag = (event: DragEvent) => {
-    if (!hasDraggedFiles(event)) return;
-    event.preventDefault();
+    if (Array.from(event.dataTransfer?.types ?? []).includes("Files")) {
+      event.preventDefault();
+    }
   };
   window.addEventListener("dragover", preventDefaultDrag);
   window.addEventListener("drop", preventDefaultDrag);
@@ -348,6 +163,7 @@ onMounted(() => {
   }).catch((error) => {
     console.warn("Browser open request listener failed:", error);
   });
+
   void listen<BrowserAnnotationSelectedPayload>(BROWSER_ANNOTATION_SELECTED_EVENT, (event) => {
     void handleBrowserAnnotationSelected(event.payload);
   }).then((unlisten) => {
@@ -356,7 +172,6 @@ onMounted(() => {
     console.warn("Browser annotation listener failed:", error);
   });
 
-  // write_plan 保存 plan 后自动弹出计划侧边面板，让计划直接可见。
   void listen<{ conversationId?: string | null }>("plan-updated", (event) => {
     const payloadConversationId = event.payload?.conversationId?.trim();
     if (
@@ -367,7 +182,7 @@ onMounted(() => {
       return;
     }
     if (mainView.value !== "chat") return;
-    isPlanPanelOpen.value = true;
+    layoutStore.isPlanPanelOpen = true;
   }).then((unlisten) => {
     unlistenPlanUpdated = unlisten;
   }).catch((error) => {
@@ -399,7 +214,7 @@ onBeforeUnmount(() => {
         :activeMainView="mainView"
         :exportingConversationId="exportingConversationId"
         :exportingFormat="exportingFormat"
-        :width="sidebarWidth"
+        :width="layoutStore.sidebarWidth"
         @new-chat="handleNewChat"
         @select-conversation="handleSelectConversation"
         @delete-conversation="handleDeleteConversation"
@@ -407,159 +222,154 @@ onBeforeUnmount(() => {
         @export-conversation="handleExportConversation"
         @change-main-view="handleChangeMainView"
         @toggle-sidebar="isSidebarOpen = !isSidebarOpen"
-        @resize="handleSidebarResize"
-        @resize-end="handleSidebarResizeEnd"
+        @resize="layoutStore.handleSidebarResize"
+        @resize-end="layoutStore.handleSidebarResizeEnd"
       />
 
       <!-- Main Content Area -->
       <main class="relative flex h-full min-w-0 flex-1 overflow-hidden">
-      <section
-        class="app-chat-pane relative flex h-full min-w-0 flex-1 flex-col overflow-hidden"
-        @dragenter="handleChatDragEnter"
-        @dragover="handleChatDragOver"
-        @dragleave="handleChatDragLeave"
-        @drop="handleChatDrop"
-      >
-        <!-- Top Title Bar -->
-        <header class="h-14 flex items-center justify-between px-4 absolute top-0 w-full z-10 pointer-events-none">
-          <div class="flex items-center gap-2 pointer-events-auto">
-            <Button
-              variant="ghost"
-              size="icon-sm"
-              class="h-8 w-8 text-muted-foreground hover:bg-black/5 dark:hover:bg-white/5"
-              @click="isSidebarOpen = !isSidebarOpen"
-            >
-              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2" ry="2"/><line x1="9" y1="3" x2="9" y2="21"/></svg>
-            </Button>
-            <span
-              v-if="activeWorkspacePath"
-              class="text-[12px] text-[#64748b] dark:text-[#9ca3af] truncate max-w-[260px]"
-              :title="activeWorkspacePath"
-            >{{ activeWorkspaceName }}</span>
-          </div>
-
-          <div v-if="mainView === 'chat'" class="flex items-center gap-2 pointer-events-auto">
-            <Button
-              variant="ghost"
-              size="icon-sm"
-              class="h-8 w-8 rounded-md text-[#4f5f73] hover:bg-black/5 dark:text-[#d5dbe3] dark:hover:bg-white/5"
-              :class="{ 'bg-black/5 dark:bg-white/10': isDrawerOpen }"
-              title="工作区面板"
-              @click="isDrawerOpen = !isDrawerOpen"
-            >
-              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                <rect x="3" y="3" width="18" height="18" rx="2"/>
-                <line x1="15" y1="3" x2="15" y2="21"/>
-              </svg>
-            </Button>
-          </div>
-        </header>
-
-        <HooksConfigScreen
-          v-if="mainView === 'hooks'"
-          @change-main-view="handleChangeMainView"
-        />
-
-        <AgentConfigScreen
-          v-else-if="mainView === 'agent'"
-          :conversation-id="activeConversationId || null"
-          @change-main-view="handleChangeMainView"
-          @launch-agent="handleLaunchAgent"
-        />
-
-        <ScheduleTaskScreen
-          v-else-if="mainView === 'schedule'"
-          @change-main-view="handleChangeMainView"
-          @open-task-conversation="handleSelectConversation"
-        />
-
-        <template v-else>
-          <WelcomeScreen
-            v-if="messages.length === 0"
-            :workspacePath="activeWorkspacePath"
-            :conversationId="activeConversationId"
-            :activeAgent="displayAgent"
-            @update:workspacePath="activeWorkspacePath = $event"
-            @send="handleSendMessage"
-            @remove-agent="removeConversationAgent"
-            @upload-files="handleUploadFiles"
-            @remove-upload="handleRemovePendingUpload"
-          />
-
-          <ChatScreen
-            v-else
-            ref="chatScreenRef"
-            :activeAgent="displayAgent"
-            :drawerOpen="isDrawerOpen"
-            @open-plan="isPlanPanelOpen = true"
-            @open-background-jobs="isBgJobsPanelOpen = true"
-            @remove-agent="removeConversationAgent"
-            @send="handleSendMessage"
-            @save-user-edit="handleEditMessage($event)"
-            @cancel="handleCancelGeneration"
-            @upload-files="handleUploadFiles"
-            @remove-upload="handleRemovePendingUpload"
-            @ask-submit="handlePendingQuestionSubmit"
-            @ask-skip="handlePendingQuestionSkip"
-            @compact="handleCompactConversation"
-            @dismiss-error="dismissChatError"
-          />
-        </template>
-
-        <!-- 拖拽文件悬停提示层：pointer-events-none 保证 drop 仍落在面板上 -->
-        <div
-          v-if="isDraggingFiles && mainView === 'chat'"
-          class="pointer-events-none absolute inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-[2px]"
+        <section
+          class="app-chat-pane relative flex h-full min-w-0 flex-1 flex-col overflow-hidden"
+          @dragenter="handleChatDragEnter"
+          @dragover="handleChatDragOver"
+          @dragleave="handleChatDragLeave"
+          @drop="handleChatDrop"
         >
-          <div class="flex items-center gap-2.5 rounded-xl border-2 border-dashed border-white/80 px-6 py-4 text-[15px] font-medium text-white">
-            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-              <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
-              <polyline points="17 8 12 3 7 8" />
-              <line x1="12" y1="3" x2="12" y2="15" />
-            </svg>
-            松开以添加文件到对话
+          <!-- Top Title Bar -->
+          <header class="h-14 flex items-center justify-between px-4 absolute top-0 w-full z-10 pointer-events-none">
+            <div class="flex items-center gap-2 pointer-events-auto">
+              <Button
+                variant="ghost"
+                size="icon-sm"
+                class="h-8 w-8 text-muted-foreground hover:bg-black/5 dark:hover:bg-white/5"
+                @click="isSidebarOpen = !isSidebarOpen"
+              >
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2" ry="2"/><line x1="9" y1="3" x2="9" y2="21"/></svg>
+              </Button>
+              <span
+                v-if="activeWorkspacePath"
+                class="text-[12px] text-[#64748b] dark:text-[#9ca3af] truncate max-w-[260px]"
+                :title="activeWorkspacePath"
+              >{{ activeWorkspaceName }}</span>
+            </div>
+
+            <div v-if="mainView === 'chat'" class="flex items-center gap-2 pointer-events-auto">
+              <Button
+                variant="ghost"
+                size="icon-sm"
+                class="h-8 w-8 rounded-md text-[#4f5f73] hover:bg-black/5 dark:text-[#d5dbe3] dark:hover:bg-white/5"
+                :class="{ 'bg-black/5 dark:bg-white/10': layoutStore.isDrawerOpen }"
+                title="工作区面板"
+                @click="layoutStore.isDrawerOpen = !layoutStore.isDrawerOpen"
+              >
+                <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                  <rect x="3" y="3" width="18" height="18" rx="2"/>
+                  <line x1="15" y1="3" x2="15" y2="21"/>
+                </svg>
+              </Button>
+            </div>
+          </header>
+
+          <HooksConfigScreen
+            v-if="mainView === 'hooks'"
+            @change-main-view="handleChangeMainView"
+          />
+
+          <AgentConfigScreen
+            v-else-if="mainView === 'agent'"
+            :conversation-id="activeConversationId || null"
+            @change-main-view="handleChangeMainView"
+            @launch-agent="handleLaunchAgent"
+          />
+
+          <ScheduleTaskScreen
+            v-else-if="mainView === 'schedule'"
+            @change-main-view="handleChangeMainView"
+            @open-task-conversation="handleSelectConversation"
+          />
+
+          <template v-else>
+            <WelcomeScreen
+              v-if="messages.length === 0"
+              :workspacePath="activeWorkspacePath"
+              :conversationId="activeConversationId"
+              :activeAgent="displayAgent"
+              @update:workspacePath="activeWorkspacePath = $event"
+              @send="handleSendMessage"
+              @remove-agent="removeConversationAgent"
+            />
+
+            <ChatScreen
+              v-else
+              ref="chatScreenRef"
+              :activeAgent="displayAgent"
+              :drawerOpen="layoutStore.isDrawerOpen"
+              @open-plan="layoutStore.isPlanPanelOpen = true"
+              @open-background-jobs="layoutStore.isBgJobsPanelOpen = true"
+              @remove-agent="removeConversationAgent"
+              @send="handleSendMessage"
+              @save-user-edit="handleEditMessage($event)"
+              @cancel="handleCancelGeneration"
+              @ask-submit="handlePendingQuestionSubmit"
+              @ask-skip="handlePendingQuestionSkip"
+              @compact="handleCompactConversation"
+              @dismiss-error="dismissChatError"
+            />
+          </template>
+
+          <!-- 拖拽文件悬停提示层：pointer-events-none 保证 drop 仍落在面板上 -->
+          <div
+            v-if="isDraggingFiles && mainView === 'chat'"
+            class="pointer-events-none absolute inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-[2px]"
+          >
+            <div class="flex items-center gap-2.5 rounded-xl border-2 border-dashed border-white/80 px-6 py-4 text-[15px] font-medium text-white">
+              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
+                <polyline points="17 8 12 3 7 8" />
+                <line x1="12" y1="3" x2="12" y2="15" />
+              </svg>
+              松开以添加文件到对话
+            </div>
           </div>
-        </div>
-      </section>
+        </section>
 
-      <!-- 计划侧边面板：独立于工作区抽屉，只在有计划交互时弹出 -->
-      <PlanPanel
-        v-if="mainView === 'chat'"
-        :open="isPlanPanelOpen"
-        :conversationId="activeConversationId || null"
-        @close="isPlanPanelOpen = false"
-      />
+        <!-- 计划侧边面板：独立于工作区抽屉，只在有计划交互时弹出 -->
+        <PlanPanel
+          v-if="mainView === 'chat'"
+          :open="layoutStore.isPlanPanelOpen"
+          :conversationId="activeConversationId || null"
+          @close="layoutStore.isPlanPanelOpen = false"
+        />
 
-      <BackgroundJobsPanel
-        v-if="mainView === 'chat'"
-        :open="isBgJobsPanelOpen"
-        :conversationId="activeConversationId || null"
-        @close="isBgJobsPanelOpen = false"
-      />
+        <BackgroundJobsPanel
+          v-if="mainView === 'chat'"
+          :open="layoutStore.isBgJobsPanelOpen"
+          :conversationId="activeConversationId || null"
+          @close="layoutStore.isBgJobsPanelOpen = false"
+        />
 
-      <WorkspaceDrawer
-        v-if="mainView === 'chat'"
-        :open="isDrawerOpen"
-        :activeTab="activeWorkspaceTab"
-        :entries="toolExecutionLogs"
-        :currentTurnToolEntries="currentTurnToolExecutionLogs"
-        :messages="messages"
-        :files="conversationFiles"
-        :assistantTurnCost="assistantTurnCost"
-        :conversationId="activeConversationId || null"
-        :browserOpenRequestKey="browserOpenRequestKey"
-        :width="drawerWidth"
-        @close="isDrawerOpen = false"
-        @resize="handleDrawerResize"
-        @resize-end="handleDrawerResizeEnd"
-      />
-    </main>
+        <WorkspaceDrawer
+          v-if="mainView === 'chat'"
+          :open="layoutStore.isDrawerOpen"
+          :activeTab="layoutStore.activeWorkspaceTab"
+          :entries="toolExecutionLogs"
+          :currentTurnToolEntries="currentTurnToolExecutionLogs"
+          :messages="messages"
+          :files="conversationFiles"
+          :assistantTurnCost="assistantTurnCost"
+          :conversationId="activeConversationId || null"
+          :browserOpenRequestKey="browserOpenRequestKey"
+          :width="layoutStore.drawerWidth"
+          @close="layoutStore.isDrawerOpen = false"
+          @resize="layoutStore.handleDrawerResize"
+          @resize-end="layoutStore.handleDrawerResizeEnd"
+        />
+      </main>
     </template>
   </div>
 </template>
 
 <style>
-
 html, body, #app {
   margin: 0;
   padding: 0;

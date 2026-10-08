@@ -25,6 +25,17 @@ pub const ALWAYS_ON_TOOLS: &[&str] = &["EnterPlanMode", "ExitPlanMode", "ask_use
 /// 仅默认 Nova 可用的工具：专用智能体不允许写全局记忆，防止领域会话污染跨会话记忆。
 pub const DEFAULT_ONLY_TOOLS: &[&str] = &["memory"];
 
+/// 前端智能体配置页展示的可配置工具（勾选清单用）。
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ConfigurableTool {
+    pub name: String,
+    pub description: String,
+    pub read_only: bool,
+    /// 内核流程控制工具（不可移除）。
+    pub always_on: bool,
+}
+
 /// 智能体来源：手动创建 / 市场安装 / 导入。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "lowercase")]

@@ -2,7 +2,8 @@ import { createApp } from "vue";
 import { createPinia } from "pinia";
 import App from "./App.vue";
 import BrowserWindowShell from "./components/chat/workspace/BrowserWindowShell.vue";
-import "./main.css"
+import { router } from "./router";
+import "./main.css";
 import { installBackendErrorToastListener, installBackendWarningToastListener, installGlobalErrorToastHandlers } from "./lib/toast";
 import { applyUiTheme, getStoredUiTheme } from "./lib/ui-preferences";
 
@@ -19,5 +20,7 @@ if (params.get("novaBrowserWindow") === "1") {
   const pinia = createPinia();
   const app = createApp(App);
   app.use(pinia);
+  app.use(router);
   app.mount("#app");
 }
+

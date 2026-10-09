@@ -23,7 +23,7 @@ import { useConversationStore } from "@/stores/conversation";
 import { useAgentSessionStore } from "@/stores/agentSession";
 import { useComposerStore } from "@/stores/composer";
 
-export function useChatController() {
+function createChatController() {
   const conversationStore = useConversationStore();
   const agentSessionStore = useAgentSessionStore();
   const composerStore = useComposerStore();
@@ -399,3 +399,19 @@ export function useChatController() {
     handleCompactConversation,
   };
 }
+
+export type ChatController = ReturnType<typeof createChatController>;
+
+let singletonInstance: ChatController | null = null;
+
+export function useChatController(): ChatController {
+  if (!singletonInstance) {
+    singletonInstance = createChatController();
+  }
+  return singletonInstance;
+}
+
+export function resetChatControllerForTesting(): void {
+  singletonInstance = null;
+}
+

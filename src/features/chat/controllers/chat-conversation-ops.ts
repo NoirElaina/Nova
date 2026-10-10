@@ -16,6 +16,7 @@ import {
 } from "../services/chat-api";
 import { clearBrowserTabState } from "../../browser/browser-tab-state";
 import { clearSubagents } from "../services/subagents";
+import { isScheduledConversationTitle } from "./chat-controller-types";
 import { useAgentSessionStore } from "@/stores/agentSession";
 import { useComposerStore } from "@/stores/composer";
 
@@ -63,7 +64,7 @@ export function createConversationOperations(deps: ConversationOpsDeps) {
     try {
       const items = await listConversations();
       conversations.value = (items || []).filter(
-        (item) => !item.title.startsWith("Scheduled ["),
+        (item) => !isScheduledConversationTitle(item.title),
       );
     } catch (err) {
       console.error("Failed to list conversations:", err);

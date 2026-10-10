@@ -33,6 +33,10 @@ pub struct HistoryAttachment {
     pub media_type: Option<String>,
     // 图片 base64 数据（仅 image 附件）。
     pub data: Option<String>,
+    // 文本内容（可选，如纯文本或解析文本）。
+    pub content: Option<String>,
+    // 会话文件相对路径（可选）。
+    pub session_file_path: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]

@@ -1,5 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import type {
+  ChatAttachment,
   ChatMessage,
   ConversationMeta,
   ConversationUsageSummary,
@@ -368,10 +369,12 @@ export async function initGitRepo(
 export async function sendModernAgentTurn(
   conversationId: string,
   prompt: string,
+  attachments?: ChatAttachment[],
 ): Promise<void> {
   await invoke("send_modern_agent_turn", {
     conversationId,
     prompt,
+    attachments: attachments && attachments.length > 0 ? attachments : null,
   });
 }
 

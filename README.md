@@ -30,12 +30,12 @@ Nova 不依赖云端执行环境 —— 所有工具执行、文件操作和终�
 | 类别 | 能力 |
 |------|------|
 | 🤖 **多协议多模型** | Anthropic Claude / OpenAI Chat Completions / OpenAI Responses / 任意 OpenAI 兼容端点（DeepSeek、Kimi、智谱 GLM、硅基流动、OpenRouter 等），支持动态拉取模型列表 |
-| 🛠️ **30 个内置工具** | Shell 执行、文件读写/补丁、代码搜索（内置 ripgrep）、Web 搜索/抓取、浏览器自动化、桌面控制、定时任务、RAG、MCP 等 |
+| 🛠️ **内置工具套件** | Shell 执行、文件读写/补丁、代码搜索（内置 ripgrep）、Web 搜索/抓取、浏览器自动化、定时任务、RAG、MCP 等 |
 | 🤖 **智能体套件** | 自定义提示词 + 工具/技能/MCP 装备清单，完整替换默认系统提示词；按会话挂载，独立配置 |
 | 🧩 **技能系统** | 基于 SKILL.md 的可插拔技能包（30+ 内置），支持启用/停用，停用后对 AI 完全不可见 |
-| 🪝 **生命周期钩子** | 12 个钩子入口（会话开始/结束、工具调用前后、压缩前后、Stop 等），可注入消息或中断流程 |
+| 🪝 **生命周期钩子** | 支持工具执行前/后/失败拦截、子代理启动/停止等多生命周期钩子入口，可注入消息或中断流程 |
 | 🖥️ **对话作用域工作区** | 每个对话拥有独立持久化工作区、Shell 会话、浏览器状态、会话文件 |
-| 👁️ **人工干预流程** | 权限申请与审批，敏感操作不会静默执行；Bash 命令经 AST 解析做 fail-closed 权限判定 |
+| 👁️ **人工干预流程** | 权限申请与审批，敏感操作不会静默执行；敏感路径与高危命令静态权限判定 |
 | 🌐 **内置浏览器（Nova Browser）** | 独立窗口，支持导航、快照、点击、输入、元素标注 |
 | 🔌 **MCP 集成** | Model Context Protocol：stdio / SSE / Streamable HTTP 三种传输，动态工具桥接 |
 | 📚 **RAG 知识库** | 文档上传、分块、向量检索（sqlite-vec），检索增强生成 |
@@ -57,11 +57,11 @@ Nova 不依赖云端执行环境 —— 所有工具执行、文件操作和终�
 | 样式 | TailwindCSS 4.2 |
 | UI 组件 | reka-ui + shadcn/ui (Vue) + lucide-vue-next |
 | 终端模拟 | xterm 6.0 |
-| Markdown | markdown-it + marked + mermaid 11 |
+| Markdown | markdown-it + KaTeX + highlight.js |
 | 图表 | echarts 6 |
 | 数学公式 | KaTeX |
 | 代码高亮 | highlight.js |
-| 文档处理 | pdfjs-dist + docx + jszip |
+| 文档处理 | pdfjs-dist + jszip |
 
 ### 后端
 
@@ -71,11 +71,10 @@ Nova 不依赖云端执行环境 —— 所有工具执行、文件操作和终�
 | 异步运行时 | Tokio |
 | 数据存储 | SQLite (SQLx) + sqlite-vec（向量检索） |
 | 搜索引擎 | ripgrep（内置 rg 二进制 + grep-regex 内核） |
-| 进程管理 | portable-pty 持久化 Shell 会话 |
+| 进程管理 | portable-pty 持久化终端 |
 | Cron 调度 | croner 3 |
 | Token 计数 | tiktoken-rs（o200k_base BPE） |
-| Bash 权限判定 | tree-sitter-bash AST 解析（防 `-c`/`eval`/`$()` 绕过） |
-| 屏幕控制 | screenshots + enigo |
+| 命令权限判定 | 静态语义与路径约束检查 |
 | 加密 | aes-gcm（API Key 本地加密） |
 
 ---

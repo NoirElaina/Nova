@@ -57,6 +57,10 @@ export type ModelMessage = {
 
 export const SCHEDULED_CONVERSATION_TITLE_PREFIX = "Scheduled [";
 
+export function isScheduledConversationTitle(title?: string): boolean {
+  return Boolean(title && title.startsWith(SCHEDULED_CONVERSATION_TITLE_PREFIX));
+}
+
 export type ConversationTurnRuntimeState = {
   isGenerating: boolean;
   currentStage: LiveTurnStage;

@@ -19,8 +19,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use tauri::{AppHandle, Manager};
 
 /// 这些工具是内核流程控制所必需的（计划模式切换、用户问答），
-/// 不参与勾选清单——bundle 排除它们会破坏 agent 循环。
-pub const ALWAYS_ON_TOOLS: &[&str] = &["EnterPlanMode", "ExitPlanMode", "ask_user_question"];
+pub const ALWAYS_ON_TOOLS: &[&str] = &["ask_user_question", "WritePlan"];
 
 /// 仅默认 Nova 可用的工具：专用智能体不允许写全局记忆，防止领域会话污染跨会话记忆。
 pub const DEFAULT_ONLY_TOOLS: &[&str] = &["memory"];

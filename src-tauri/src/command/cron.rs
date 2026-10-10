@@ -76,6 +76,7 @@ async fn execute_scheduled_prompt_in_bound_conversation(
         app.clone(),
         conversation_id.to_string(),
         message_content,
+        None,
     )
     .await;
 

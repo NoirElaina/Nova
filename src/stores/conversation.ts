@@ -9,6 +9,8 @@ import {
   type SessionFileMeta,
 } from "@/features/chat/services/chat-api";
 
+import { isScheduledConversationTitle } from "@/features/chat/controllers/chat-controller-types";
+
 export type MainView = "chat" | "hooks" | "agent" | "schedule" | "settings";
 
 export const useConversationStore = defineStore("conversation", () => {
@@ -24,7 +26,7 @@ export const useConversationStore = defineStore("conversation", () => {
     try {
       const items = await listConversations();
       conversations.value = (items || []).filter(
-        (item) => !item.title.startsWith("Scheduled ["),
+        (item) => !isScheduledConversationTitle(item.title),
       );
     } catch (err) {
       console.error("Failed to load conversations:", err);

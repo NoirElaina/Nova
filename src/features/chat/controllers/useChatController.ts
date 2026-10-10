@@ -1,15 +1,14 @@
 import { ref, computed, onMounted, onUnmounted } from "vue";
+import { storeToRefs } from "pinia";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { emitToast, NOVA_CHAT_ERROR_EVENT, type ChatErrorPayload } from "../../../lib/toast";
 import type {
   AgentMode,
-  ConversationMeta,
   ContextUsage,
 } from "../../../lib/chat-types";
 import {
   getConversationUsage,
   manualCompactConversation,
-  type SessionFileMeta,
 } from "../services/chat-api";
 import {
   type ChatScreenHandle,
@@ -28,12 +27,17 @@ function createChatController() {
   const agentSessionStore = useAgentSessionStore();
   const composerStore = useComposerStore();
 
-  const activeConversationId = computed({
-    get: () => conversationStore.activeConversationId,
-    set: (val: string) => {
-      conversationStore.activeConversationId = val;
-    },
-  });
+  const {
+    activeConversationId,
+    activeWorkspacePath,
+    conversations,
+    conversationFiles,
+    pendingAgentBundleId,
+    mainView,
+    isSidebarOpen,
+  } = storeToRefs(conversationStore);
+
+  const { pendingUploads } = storeToRefs(composerStore);
 
   const activeSession = computed(() => agentSessionStore.activeSession);
   const messages = computed(() => activeSession.value.messages);
@@ -54,43 +58,6 @@ function createChatController() {
   const currentContextTokens = computed(() => activeSession.value.contextTokens);
   const chatError = computed(() => activeSession.value.chatError);
 
-  const activeWorkspacePath = computed({
-    get: () => conversationStore.activeWorkspacePath,
-    set: (val: string) => {
-      conversationStore.activeWorkspacePath = val;
-    },
-  });
-  const conversations = computed({
-    get: () => conversationStore.conversations,
-    set: (val: ConversationMeta[]) => {
-      conversationStore.conversations = val;
-    },
-  });
-  const conversationFiles = computed({
-    get: () => conversationStore.conversationFiles,
-    set: (val: SessionFileMeta[]) => {
-      conversationStore.conversationFiles = val;
-    },
-  });
-  const pendingUploads = computed(() => composerStore.pendingUploads);
-  const pendingAgentBundleId = computed({
-    get: () => conversationStore.pendingAgentBundleId,
-    set: (val: string | null) => {
-      conversationStore.pendingAgentBundleId = val;
-    },
-  });
-  const mainView = computed({
-    get: () => conversationStore.mainView,
-    set: (val: MainView) => {
-      conversationStore.mainView = val;
-    },
-  });
-  const isSidebarOpen = computed({
-    get: () => conversationStore.isSidebarOpen,
-    set: (val: boolean) => {
-      conversationStore.isSidebarOpen = val;
-    },
-  });
   const agentMode = ref<AgentMode>("agent");
   const chatScreenRef = ref<ChatScreenHandle | null>(null);
 

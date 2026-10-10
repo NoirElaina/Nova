@@ -199,15 +199,11 @@ type VirtualRow =
   | { kind: 'live' };
 
 const virtualRows = computed<VirtualRow[]>(() => {
-  const rows: VirtualRow[] = messages.value.map((message, index) => ({
+  return messages.value.map((message, index) => ({
     kind: 'message',
     index,
     message,
   }));
-  if (hasLiveAssistantTurn.value) {
-    rows.push({ kind: 'live' });
-  }
-  return rows;
 });
 
 const rowVirtualizer = useVirtualizer(
@@ -592,25 +588,27 @@ defineExpose({
               />
             </div>
           </template>
-
-          <div
-            v-else-if="virtualRows[vItem.index]?.kind === 'live'"
-            ref="liveAssistantRef"
-          >
-            <ChatActiveTurnBar
-              :contextCompacts="contextCompacts"
-              :streamingSegments="streamingSegments"
-              :currentTurnToolEntries="currentTurnToolEntries"
-              :isGenerating="isGenerating"
-              :liveWaitKind="liveWaitKind()"
-              :liveStatusText="liveStatusText"
-              :liveElapsedMs="liveElapsedMs"
-              :streamingTokenUsage="streamingTokenUsage()"
-              :streamingConversationTokenUsage="streamingConversationTokenUsage()"
-              :formatElapsedMs="formatElapsedMs"
-            />
-          </div>
         </div>
+      </div>
+
+      <!-- 流式 Live 消息独立挂载在虚拟列表下方：脱离虚拟列表高频尺寸重算，彻底消除滚动抖动 -->
+      <div
+        v-if="hasLiveAssistantTurn"
+        ref="liveAssistantRef"
+        class="w-full pb-6 pt-2"
+      >
+        <ChatActiveTurnBar
+          :contextCompacts="contextCompacts"
+          :streamingSegments="streamingSegments"
+          :currentTurnToolEntries="currentTurnToolEntries"
+          :isGenerating="isGenerating"
+          :liveWaitKind="liveWaitKind()"
+          :liveStatusText="liveStatusText"
+          :liveElapsedMs="liveElapsedMs"
+          :streamingTokenUsage="streamingTokenUsage()"
+          :streamingConversationTokenUsage="streamingConversationTokenUsage()"
+          :formatElapsedMs="formatElapsedMs"
+        />
       </div>
     </div>
 

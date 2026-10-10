@@ -21,10 +21,12 @@ impl AgentEngine {
     }
 
     /// 执行一轮完整的 Agent 认知闭环
+    /// 执行一轮完整的 Agent 认知闭环
     pub async fn execute_turn(
         &self,
         conversation_id: &str,
         user_prompt: &str,
+        attachments: Option<Vec<crate::agent::session::types::HistoryAttachment>>,
         cancel_token: CancellationToken,
     ) -> Result<(), String> {
         let turn_id = Uuid::new_v4().to_string();
@@ -48,10 +50,68 @@ impl AgentEngine {
         );
 
         // 2. 写入事件日志事实源（UserMessage & TurnStart）
-        let user_msg = Message {
-            role: Role::User,
-            content: Content::Text(user_prompt.to_string()),
+        let mut text_content = user_prompt.to_string();
+        let mut content_blocks = Vec::new();
+
+        if let Some(ref atts) = attachments {
+            for att in atts {
+                if att.kind.as_deref() == Some("image") {
+                    if let Some(ref data) = att.data {
+                        let media_type = att
+                            .media_type
+                            .clone()
+                            .or_else(|| att.mime_type.clone())
+                            .unwrap_or_else(|| "image/png".to_string());
+                        content_blocks.push(ContentBlock::Image {
+                            source: crate::provider::types::ImageSource {
+                                source_type: "base64".to_string(),
+                                media_type,
+                                data: data.clone(),
+                            },
+                        });
+                    }
+                } else if att.kind.as_deref() == Some("document") {
+                    let mut doc_text = None;
+                    if let Some(ref content) = att.content {
+                        if !content.trim().is_empty() {
+                            doc_text = Some(content.clone());
+                        }
+                    }
+                    if doc_text.is_none() {
+                        if let Some(ref file_path) = att.session_file_path {
+                            if let Ok(extracted) = crate::agent::capabilities::session_files::read_session_file(
+                                &self.app,
+                                conversation_id,
+                                file_path,
+                            ) {
+                                doc_text = Some(extracted);
+                            }
+                        }
+                    }
+                    if let Some(txt) = doc_text {
+                        text_content.push_str(&format!(
+                            "\n\n[Attached Document: {}]\n{}\n[End of Document]",
+                            att.source_name, txt
+                        ));
+                    }
+                }
+            }
+        }
+
+        let user_msg = if content_blocks.is_empty() {
+            Message {
+                role: Role::User,
+                content: Content::Text(text_content),
+            }
+        } else {
+            let mut all_blocks = vec![ContentBlock::Text { text: text_content }];
+            all_blocks.extend(content_blocks);
+            Message {
+                role: Role::User,
+                content: Content::Blocks(all_blocks),
+            }
         };
+
         let _ = crate::agent::session::append_event(
             &self.app,
             conversation_id,
@@ -67,7 +127,7 @@ impl AgentEngine {
             Some(&turn_id),
             &SessionEvent::UserMessage {
                 message: user_msg,
-                attachments: None,
+                attachments: attachments.clone(),
             },
         )
         .await;
@@ -119,6 +179,28 @@ impl AgentEngine {
                 return Ok(());
             }
 
+            // 自动上下文压缩检查 (Mid-Turn Compact)
+            if let Ok(settings) = crate::services::settings::load_settings(&self.app) {
+                let model = settings.active_provider_profile().model;
+                let window_tokens = settings.context_window_for_model(&model) as i64;
+                let compact_outcome = crate::agent::capabilities::compact::compact_messages_mid_turn(
+                    &self.app,
+                    Some(conversation_id),
+                    &mut current_messages,
+                    window_tokens,
+                )
+                .await;
+                if compact_outcome.applied {
+                    tracing::info!(
+                        turn_id = %turn_id,
+                        level = compact_outcome.level,
+                        tokens_before = compact_outcome.tokens_before,
+                        tokens_after = compact_outcome.tokens_after,
+                        "Context automatically compacted mid-turn"
+                    );
+                }
+            }
+
             // 发射模型推理状态事件
             let _ = self.app.emit(
                 "agent-event",
@@ -128,8 +210,8 @@ impl AgentEngine {
                 },
             );
 
-            // 发起模型流式请求
-            let (provider_result, _) = match client
+            // 发起模型流式请求（支持 prompt_too_long 自愈重试）
+            let provider_result = match client
                 .send_request(
                     &self.app,
                     &current_messages,
@@ -138,34 +220,52 @@ impl AgentEngine {
                 )
                 .await
             {
-                Ok(res) => res,
+                Ok((res, _)) => res,
                 Err(err) => {
                     let err_msg = err.message.clone();
-                    let _ = crate::agent::session::append_event(
-                        &self.app,
-                        conversation_id,
-                        Some(&turn_id),
-                        &SessionEvent::TurnEnd {
-                            turn_id: turn_id.clone(),
-                            stop_reason: Some("error".to_string()),
-                        },
-                    )
-                    .await;
-                    let _ = self.app.emit(
-                        "agent-event",
-                        AgentDomainEvent::StateChanged {
-                            turn_id: turn_id.clone(),
-                            state: CognitiveState::Failed,
-                        },
-                    );
-                    let _ = self.app.emit(
-                        "agent-event",
-                        AgentDomainEvent::TurnError {
-                            turn_id: turn_id.clone(),
-                            error: err_msg.clone(),
-                        },
-                    );
-                    return Err(err_msg);
+                    if crate::agent::capabilities::compact::is_prompt_too_long_error(&err_msg) {
+                        tracing::warn!(
+                            turn_id = %turn_id,
+                            "Prompt too long error encountered, attempting reactive compact retry"
+                        );
+                        if let Some(compacted) = crate::agent::capabilities::compact::reactive_compact_messages_for_retry(
+                            &self.app,
+                            Some(conversation_id),
+                            &current_messages,
+                        )
+                        .await
+                        {
+                            current_messages = compacted;
+                            match client
+                                .send_request(
+                                    &self.app,
+                                    &current_messages,
+                                    AgentMode::Agent,
+                                    Some(conversation_id),
+                                )
+                                .await
+                            {
+                                Ok((res, _)) => res,
+                                Err(retry_err) => {
+                                    return self
+                                        .handle_turn_error(
+                                            conversation_id,
+                                            &turn_id,
+                                            &retry_err.message,
+                                        )
+                                        .await;
+                                }
+                            }
+                        } else {
+                            return self
+                                .handle_turn_error(conversation_id, &turn_id, &err_msg)
+                                .await;
+                        }
+                    } else {
+                        return self
+                            .handle_turn_error(conversation_id, &turn_id, &err_msg)
+                            .await;
+                    }
                 }
             };
 
@@ -450,6 +550,39 @@ impl AgentEngine {
         );
 
         Ok(())
+    }
+
+    async fn handle_turn_error(
+        &self,
+        conversation_id: &str,
+        turn_id: &str,
+        err_msg: &str,
+    ) -> Result<(), String> {
+        let _ = crate::agent::session::append_event(
+            &self.app,
+            conversation_id,
+            Some(turn_id),
+            &SessionEvent::TurnEnd {
+                turn_id: turn_id.to_string(),
+                stop_reason: Some("error".to_string()),
+            },
+        )
+        .await;
+        let _ = self.app.emit(
+            "agent-event",
+            AgentDomainEvent::StateChanged {
+                turn_id: turn_id.to_string(),
+                state: CognitiveState::Failed,
+            },
+        );
+        let _ = self.app.emit(
+            "agent-event",
+            AgentDomainEvent::TurnError {
+                turn_id: turn_id.to_string(),
+                error: err_msg.to_string(),
+            },
+        );
+        Err(err_msg.to_string())
     }
 }
 

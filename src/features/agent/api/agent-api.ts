@@ -1,4 +1,4 @@
-import { IpcGateway } from "@/core/ipc/gateway";
+import { invoke } from "@tauri-apps/api/core";
 
 export interface ConversationAgentMeta {
   id: string;
@@ -8,7 +8,7 @@ export interface ConversationAgentMeta {
 
 export const agentApi = {
   getConversationAgent(conversationId: string): Promise<ConversationAgentMeta | null> {
-    return IpcGateway.call<ConversationAgentMeta | null>("get_conversation_agent", {
+    return invoke<ConversationAgentMeta | null>("get_conversation_agent", {
       conversationId,
     });
   },
@@ -17,14 +17,14 @@ export const agentApi = {
     conversationId: string,
     bundleId: string | null,
   ): Promise<void> {
-    return IpcGateway.call<void>("set_conversation_agent", {
+    return invoke<void>("set_conversation_agent", {
       conversationId,
       bundleId,
     });
   },
 
   loadAgentBundle(bundleId: string): Promise<ConversationAgentMeta | null> {
-    return IpcGateway.call<ConversationAgentMeta | null>("load_agent_bundle", {
+    return invoke<ConversationAgentMeta | null>("load_agent_bundle", {
       bundleId,
     });
   },

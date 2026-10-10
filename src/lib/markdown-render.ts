@@ -141,48 +141,7 @@ function renderTableCell(text: string): string {
  * 对末尾未完成的表块补齐分隔行与空单元格，尽量保持 table 结构稳定。
  */
 export function stabilizeStreamingMarkdown(content: string): string {
-  const source = content || "";
-  if (!source.includes("|")) return source;
-
-  const lines = source.split("\n");
-  let end = lines.length - 1;
-  while (end >= 0 && lines[end].trim() === "") end -= 1;
-  if (end < 0) return source;
-
-  let start = end;
-  while (start >= 0) {
-    const t = lines[start].trim();
-    if (t === "" || !t.includes("|")) break;
-    start -= 1;
-  }
-  start += 1;
-  if (start > end) return source;
-
-  const tableLines = lines.slice(start, end + 1).map((l) => l.trimEnd());
-  if (tableLines.length === 0 || !tableLines[0].includes("|")) return source;
-
-  let cols = splitTableCells(tableLines[0]).length;
-  if (cols < 1) return source;
-
-  if (tableLines.length === 1 || !TABLE_SEP_RE.test(tableLines[1] ?? "")) {
-    tableLines.splice(
-      1,
-      0,
-      `| ${Array.from({ length: cols }, () => "---").join(" | ")} |`,
-    );
-  } else {
-    cols = Math.max(cols, splitTableCells(tableLines[1]).length);
-  }
-
-  for (let i = 0; i < tableLines.length; i += 1) {
-    if (TABLE_SEP_RE.test(tableLines[i])) continue;
-    const cells = padCells(splitTableCells(tableLines[i]), cols);
-    tableLines[i] = `| ${cells.join(" | ")} |`;
-  }
-
-  const next = [...lines];
-  next.splice(start, end - start + 1, ...tableLines);
-  return next.join("\n");
+  return content || "";
 }
 
 /**

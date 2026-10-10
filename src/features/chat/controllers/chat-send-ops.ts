@@ -73,9 +73,10 @@ export function createSendOperations(deps: SendOpsDeps) {
 
     const lastMessage = nextMessages[nextMessages.length - 1];
     const userPrompt = lastMessage?.role === "user" ? lastMessage.content : "";
+    const attachments = lastMessage?.attachments;
 
     try {
-      await sendModernAgentTurn(sendingConversationId, userPrompt);
+      await sendModernAgentTurn(sendingConversationId, userPrompt, attachments);
     } catch (err: unknown) {
       console.error("Chat error:", err);
       const raw = getRawErrorText(err);

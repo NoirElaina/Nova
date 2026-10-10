@@ -1,6 +1,5 @@
 pub mod atomic_write;
 pub mod cache_registry;
-pub mod context_injection;
 pub mod error_event;
 pub mod file_io;
 pub mod fingerprint;

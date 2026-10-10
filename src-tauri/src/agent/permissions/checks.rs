@@ -111,6 +111,11 @@ pub(crate) fn check_command(command: &str) -> (RiskLevel, Option<String>) {
         return (RiskLevel::Forbidden, Some("命令为空".to_string()));
     }
 
+    #[cfg(target_os = "windows")]
+    if let Some(res) = check_windows_powershell_fallback(command) {
+        return res;
+    }
+
     // 1. AST 解析 + fail-closed allowlist
     let parsed = match parse_for_security(command) {
         crate::agent::permissions::bash_ast::types::ParseForSecurityResult::Simple { commands } => commands,

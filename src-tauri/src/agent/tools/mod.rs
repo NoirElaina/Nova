@@ -2,6 +2,7 @@ mod ask_user_question_tool;
 mod bash_kill_tool;
 mod bash_output_tool;
 mod bash_tool;
+mod browser_tool;
 mod config_tool;
 mod edit_tool;
 mod glob_tool;
@@ -35,6 +36,7 @@ pub(crate) fn builtin_tool_registrations() -> Vec<ToolRegistration> {
     tools.extend(bash_kill_tool::registrations());
     tools.extend(bash_output_tool::registrations());
     tools.extend(bash_tool::registrations());
+    tools.extend(browser_tool::registrations());
     tools.extend(config_tool::registrations());
     tools.extend(edit_tool::registrations());
     tools.extend(glob_tool::registrations());

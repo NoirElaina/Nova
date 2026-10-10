@@ -3,7 +3,7 @@ import type {
   UploadedDocumentFile,
   UploadedImageFile,
 } from "./chat-types";
-import { extensionOf, parseDocumentUploadFile } from "./document-upload";
+import { extensionOf } from "./document-upload";
 import { emitToast } from "./toast";
 
 export const MAX_UPLOAD_FILE_SIZE_BYTES = 100 * 1024 * 1024;
@@ -222,23 +222,11 @@ export async function buildPendingUploadFiles(files: File[]): Promise<{
         continue;
       }
 
-      let content: string | null = null;
-      if (ext === "docx" || ext === "pptx") {
-        try {
-          const parsed = await parseDocumentUploadFile(file);
-          content = parsed.content;
-        } catch (error) {
-          const message = error instanceof Error ? error.message : "文件解析失败";
-          rejected.push(`${file.name || `文件${i + 1}`}: ${message}`);
-          continue;
-        }
-      }
-
       const textItem: UploadedDocumentFile = {
         kind: "document",
         sourceName: file.name,
         mimeType: file.type || undefined,
-        content,
+        content: null,
         rawBytes,
         size: file.size,
       };

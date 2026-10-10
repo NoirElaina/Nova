@@ -136,6 +136,7 @@ pub fn run() {
             command::user_terminal::user_terminal_resize,
             command::user_terminal::user_terminal_stop,
             command::skill::list_skills,
+            command::skill::read_skill_content,
             command::skill::delete_skill,
             command::cron::list_scheduled_tasks,
             command::cron::create_scheduled_task,

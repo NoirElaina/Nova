@@ -92,3 +92,15 @@ fn agent_bundle_skills_dir(
 ) -> Result<PathBuf, String> {
     crate::agent::capabilities::agent_bundles::agent_skills_dir(app, bundle_id)
 }
+
+#[tauri::command]
+pub fn read_skill_content(app: AppHandle, path: String) -> Result<String, String> {
+    let result = (|| {
+        let skill_md = PathBuf::from(&path);
+        if !skill_md.exists() || !skill_md.is_file() {
+            return Err("技能文件不存在".to_string());
+        }
+        std::fs::read_to_string(&skill_md).map_err(|e| format!("读取技能内容失败: {}", e))
+    })();
+    report_backend_result(&app, "command.skill.read_skill_content", result, None)
+}

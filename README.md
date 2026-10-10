@@ -30,7 +30,7 @@ Nova 不依赖云端执行环境 —— 所有工具执行、文件操作和终�
 | 类别 | 能力 |
 |------|------|
 | 🤖 **多协议多模型** | Anthropic Claude / OpenAI Chat Completions / OpenAI Responses / 任意 OpenAI 兼容端点（DeepSeek、Kimi、智谱 GLM、硅基流动、OpenRouter 等），支持动态拉取模型列表 |
-| 🛠️ **内置工具套件** | Shell 执行、文件读写/补丁、代码搜索（内置 ripgrep）、Web 搜索/抓取、浏览器自动化、定时任务、RAG、MCP 等 |
+| 🛠️ **内置工具套件** | Shell 执行、文件读写/补丁、代码搜索（内置 ripgrep）、Web 搜索/抓取、浏览器自动化、定时任务、MCP 等 |
 | 🤖 **智能体套件** | 自定义提示词 + 工具/技能/MCP 装备清单，完整替换默认系统提示词；按会话挂载，独立配置 |
 | 🧩 **技能系统** | 基于 SKILL.md 的可插拔技能包（30+ 内置），支持启用/停用，停用后对 AI 完全不可见 |
 | 🪝 **生命周期钩子** | 支持工具执行前/后/失败拦截、子代理启动/停止等多生命周期钩子入口，可注入消息或中断流程 |
@@ -38,7 +38,6 @@ Nova 不依赖云端执行环境 —— 所有工具执行、文件操作和终�
 | 👁️ **人工干预流程** | 权限申请与审批，敏感操作不会静默执行；敏感路径与高危命令静态权限判定 |
 | 🌐 **内置浏览器（Nova Browser）** | 独立窗口，支持导航、快照、点击、输入、元素标注 |
 | 🔌 **MCP 集成** | Model Context Protocol：stdio / SSE / Streamable HTTP 三种传输，动态工具桥接 |
-| 📚 **RAG 知识库** | 文档上传、分块、向量检索（sqlite-vec），检索增强生成 |
 | ⏰ **定时任务** | Cron 调度（croner），持久化与会话级任务，日历式时间选择器 |
 | 🧠 **记忆系统** | 跨会话的偏好、规则和事实记忆，自动去重与冲突清理 |
 | 🔐 **本地加密** | API Key 通过 AES-GCM 加密存储，主密钥仅存于本机 |
@@ -69,7 +68,7 @@ Nova 不依赖云端执行环境 —— 所有工具执行、文件操作和终�
 |------|------|
 | 框架 | Tauri 2 (Rust 2021 Edition) |
 | 异步运行时 | Tokio |
-| 数据存储 | SQLite (SQLx) + sqlite-vec（向量检索） |
+| 数据存储 | SQLite (SQLx) |
 | 搜索引擎 | ripgrep（内置 rg 二进制 + grep-regex 内核） |
 | 进程管理 | portable-pty 持久化终端 |
 | Cron 调度 | croner 3 |
@@ -137,7 +136,7 @@ Nova/
 │   │   ├── agent/                #   智能体配置/市场页
 │   │   ├── chat/                 #   对话 UI（消息、工作区抽屉、导航等）
 │   │   ├── hooks/                #   钩子配置页
-│   │   ├── layout/               #   布局 + 设置页 Tab（模型/RAG/MCP/技能/记忆…）
+│   │   ├── layout/               #   布局 + 设置页 Tab（模型/MCP/技能/记忆…）
 │   │   ├── schedule/             #   定时任务页
 │   │   └── ui/                   #   基础 UI 组件 (shadcn/ui)
 │   ├── features/
@@ -151,7 +150,7 @@ Nova/
 │       ├── llm/
 │       │   ├── adapters/         #   API 协议适配（anthropic/openai/responses）
 │       │   ├── tools/            #   26 个工具模块（build.rs 自动注册）
-│       │   ├── services/         #   21 个服务（智能体/钩子/RAG/MCP/Cron…）
+│       │   ├── services/         #   21 个服务（智能体/钩子/MCP/Cron…）
 │       │   ├── commands/         #   内部命令（compact/memory/resume）
 │       │   ├── query/            #   Agent 模式状态机
 │       │   └── utils/            #   系统提示词、权限、token 计数等
@@ -193,7 +192,7 @@ Nova/
 ### 数据流
 
 ```
-用户消息 → 上下文组装（历史 + RAG + MCP + 记忆 + 会话文件）
+用户消息 → 上下文组装（历史 + MCP + 记忆 + 会话文件）
     → LLM 调用（协议适配器流式解析）
     → 工具执行循环（权限审批 + 钩子拦截）
     → 状态持久化（SQLite）
@@ -237,7 +236,7 @@ Nova/
 | 规划 | `enter_plan_mode` · `exit_plan_mode` · `TodoWrite` |
 | 交互 | `ask_user_question` |
 | 定时任务 | `CronCreate` · `CronDelete` · `CronList` |
-| 知识库 | `rag_tool` · `remember_global_memory` |
+| 记忆 | `remember_global_memory` |
 | 技能 | `Skill` |
 | MCP | `mcp_auth` · `list_mcp_resources` · `read_mcp_resource` |
 | 配置 | `config_tool` |

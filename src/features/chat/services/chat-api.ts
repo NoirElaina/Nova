@@ -29,42 +29,6 @@ export type ActiveModelRuntime = {
   windowTokens: number;
 };
 
-export type RagUploadDocumentInput = {
-  sourceName: string;
-  sourceType: string;
-  mimeType?: string;
-  content: string;
-};
-
-export type RagRejectedItem = {
-  sourceName: string;
-  reason: string;
-};
-
-export type RagUpsertResult = {
-  added: number;
-  updated: number;
-  rejected: RagRejectedItem[];
-  totalDocuments: number;
-  totalChars: number;
-};
-
-export type RagDocumentMeta = {
-  id: string;
-  sourceName: string;
-  sourceType: string;
-  mimeType?: string;
-  contentChars: number;
-  preview: string;
-  checksum: string;
-  createdAt: number;
-  updatedAt: number;
-};
-
-export type RagDocumentContent = RagDocumentMeta & {
-  content: string;
-};
-
 export type SessionFileMeta = {
   filename: string;
   size: number;

@@ -12,10 +12,6 @@ fn default_provider_profiles() -> HashMap<String, ProviderProfile> {
     HashMap::new()
 }
 
-fn default_rag_settings() -> RagSettings {
-    RagSettings::default()
-}
-
 fn default_ui_language() -> String {
     "zh-CN".to_string()
 }
@@ -103,14 +99,6 @@ pub struct ProviderProfile {
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 #[serde(rename_all = "camelCase")]
-#[derive(Default)]
-pub struct RagSettings {
-    #[serde(default)]
-    pub embedding_model: String,
-}
-
-#[derive(Debug, Serialize, Deserialize, Clone)]
-#[serde(rename_all = "camelCase")]
 pub struct AppSettings {
     pub provider: String,
     #[serde(default = "default_custom_models")]
@@ -123,8 +111,6 @@ pub struct AppSettings {
     pub model_context_windows: HashMap<String, u32>,
     #[serde(default)]
     pub disabled_skills: Vec<String>,
-    #[serde(default = "default_rag_settings")]
-    pub rag: RagSettings,
     #[serde(default = "default_ui_language")]
     pub ui_language: String,
     #[serde(default = "default_ui_theme")]
@@ -148,7 +134,6 @@ impl Default for AppSettings {
             provider_order: Vec::new(),
             model_context_windows: HashMap::new(),
             disabled_skills: Vec::new(),
-            rag: RagSettings::default(),
             ui_language: default_ui_language(),
             ui_theme: default_ui_theme(),
             enable_app_log: default_enable_app_log(),
@@ -210,8 +195,6 @@ impl AppSettings {
                 .collect();
         }
 
-        self.rag.embedding_model = self.rag.embedding_model.trim().to_string();
-
         const MIN_CTX: u32 = 1_024;
         const MAX_CTX: u32 = 16_000_000;
         let mut normalized_windows = HashMap::new();
@@ -254,14 +237,6 @@ pub fn get_settings_path(app: &AppHandle) -> Result<PathBuf, String> {
         .app_data_dir()
         .map(|dir| dir.join("settings.json"))
         .map_err(|e| format!("Failed to resolve app_data_dir for settings: {}", e))
-}
-
-pub fn validate_rag_settings(settings: &AppSettings) -> Result<(), String> {
-    let rag = &settings.rag;
-    if rag.embedding_model.chars().count() > 256 {
-        return Err("Invalid rag.embeddingModel: too long".to_string());
-    }
-    Ok(())
 }
 
 pub fn validate_provider_profiles(settings: &AppSettings) -> Result<(), String> {
@@ -367,7 +342,6 @@ pub fn save_settings_inner(app: &AppHandle, settings: AppSettings) -> Result<(),
     }
     let mut normalized = settings;
     normalized.normalize_for_runtime();
-    validate_rag_settings(&normalized)?;
     validate_provider_profiles(&normalized)?;
     crate::command::settings_secrets::encrypt_provider_api_keys(&mut normalized)?;
     let content = serde_json::to_string_pretty(&normalized).map_err(|e| e.to_string())?;

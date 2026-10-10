@@ -4,7 +4,6 @@ pub mod mcp;
 pub mod mcp_tools;
 pub mod memory_dir;
 pub mod plan_files;
-pub mod rag;
 pub mod search;
 pub mod session_files;
 pub mod skills;

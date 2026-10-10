@@ -11,7 +11,6 @@ mod list_mcp_resources_tool;
 mod load_tool_tool;
 mod mcp_auth_tool;
 mod multi_edit_tool;
-mod rag_tool;
 mod read_mcp_resource_tool;
 mod read_tool;
 mod remember_global_memory_tool;
@@ -45,7 +44,6 @@ pub(crate) fn builtin_tool_registrations() -> Vec<ToolRegistration> {
     tools.extend(load_tool_tool::registrations());
     tools.extend(mcp_auth_tool::registrations());
     tools.extend(multi_edit_tool::registrations());
-    tools.extend(rag_tool::registrations());
     tools.extend(read_mcp_resource_tool::registrations());
     tools.extend(read_tool::registrations());
     tools.extend(remember_global_memory_tool::registrations());

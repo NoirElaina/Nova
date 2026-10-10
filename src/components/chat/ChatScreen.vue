@@ -481,7 +481,6 @@ const liveStatusText = computed(() => {
     if (
       name.includes('read') ||
       name.includes('file') ||
-      name.includes('rag') ||
       name.includes('document')
     ) {
       return '正在读文件';

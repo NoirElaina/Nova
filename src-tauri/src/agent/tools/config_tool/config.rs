@@ -98,12 +98,6 @@ async fn execute_with_app(app: &AppHandle, input: Value) -> Result<ToolOutcome, 
             // 声明式挂钩（hooks.toml）当前配置的处理器总数。
             "handlerCount": crate::agent::lifecycle::hooks::config_handler_count(app)
         },
-        "rag": {
-            "embeddingModelConfigured": !settings.rag.embedding_model.trim().is_empty(),
-            "storage": "sqlite",
-            "textRetrieval": "sqlite_fts5",
-            "vectorRetrieval": "sqlite_vec"
-        },
         "ui": {
             "language": settings.ui_language,
             "theme": settings.ui_theme,

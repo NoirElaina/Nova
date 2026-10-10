@@ -240,4 +240,140 @@ impl LlmClient {
             ),
         }
     }
+
+    /// 执行一次不携带任何工具的纯净单次推理（用于会话压缩总结、元数据提炼等内部任务，直接使用当前 LLM）
+    pub async fn complete_text(
+        &mut self,
+        app: &AppHandle,
+        system_prompt: &str,
+        user_prompt: &str,
+    ) -> Result<String, String> {
+        let settings = crate::command::settings::get_settings(app.clone())
+            .map_err(|e| format!("加载配置失败: {}", e))?;
+        let profile = settings.active_provider_profile();
+        let provider_name = self.adapter.provider_name();
+
+        let mut url = self.base_url.trim_end_matches('/').to_string();
+        if provider_name == "openai" {
+            if !url.ends_with("/v1/chat/completions") && !url.ends_with("/chat/completions") {
+                if url.ends_with("/v1") {
+                    url = format!("{}/chat/completions", url);
+                } else {
+                    url = format!("{}/v1/chat/completions", url);
+                }
+            }
+        } else if provider_name == "responses" {
+            if !url.ends_with("/v1/responses") && !url.ends_with("/responses") {
+                if url.ends_with("/v1") {
+                    url = format!("{}/responses", url);
+                } else {
+                    url = format!("{}/v1/responses", url);
+                }
+            }
+        } else if provider_name == "anthropic" {
+            if !url.ends_with("/v1/messages") && !url.ends_with("/messages") {
+                if url.ends_with("/v1") {
+                    url = format!("{}/messages", url);
+                } else {
+                    url = format!("{}/v1/messages", url);
+                }
+            }
+        }
+
+        let mut req_builder = self.http_client.post(&url).header("content-type", "application/json");
+
+        let response = match provider_name {
+            "anthropic" => {
+                if !profile.api_key.is_empty() {
+                    req_builder = req_builder
+                        .header("x-api-key", &profile.api_key)
+                        .header("anthropic-version", "2023-06-01");
+                }
+                let body = serde_json::json!({
+                    "model": self.model,
+                    "max_tokens": 1500,
+                    "system": system_prompt,
+                    "messages": [
+                        { "role": "user", "content": user_prompt }
+                    ],
+                    "stream": false
+                });
+                let resp = req_builder.json(&body).send().await.map_err(|e| e.to_string())?;
+                if !resp.status().is_success() {
+                    let status = resp.status();
+                    let err = resp.text().await.unwrap_or_default();
+                    return Err(format!("API Error [{}] {} => {}", status, url, err));
+                }
+                let val: serde_json::Value = resp.json().await.map_err(|e| e.to_string())?;
+                let content_arr = val.get("content").and_then(|c| c.as_array());
+                content_arr
+                    .map(|arr| {
+                        arr.iter()
+                            .filter_map(|item| item.get("text").and_then(|t| t.as_str()))
+                            .collect::<Vec<_>>()
+                            .join("\n")
+                    })
+                    .unwrap_or_default()
+            }
+            "responses" => {
+                if !profile.api_key.is_empty() {
+                    req_builder = req_builder.header("Authorization", format!("Bearer {}", profile.api_key));
+                }
+                let body = serde_json::json!({
+                    "model": self.model,
+                    "instructions": system_prompt,
+                    "input": user_prompt,
+                    "max_output_tokens": 1500,
+                    "stream": false
+                });
+                let resp = req_builder.json(&body).send().await.map_err(|e| e.to_string())?;
+                if !resp.status().is_success() {
+                    let status = resp.status();
+                    let err = resp.text().await.unwrap_or_default();
+                    return Err(format!("API Error [{}] {} => {}", status, url, err));
+                }
+                let val: serde_json::Value = resp.json().await.map_err(|e| e.to_string())?;
+                val.get("output_text")
+                    .and_then(|t| t.as_str())
+                    .map(str::to_string)
+                    .unwrap_or_default()
+            }
+            _ => {
+                if !profile.api_key.is_empty() {
+                    req_builder = req_builder.header("Authorization", format!("Bearer {}", profile.api_key));
+                }
+                let body = serde_json::json!({
+                    "model": self.model,
+                    "max_tokens": 1500,
+                    "messages": [
+                        { "role": "system", "content": system_prompt },
+                        { "role": "user", "content": user_prompt }
+                    ],
+                    "stream": false
+                });
+                let resp = req_builder.json(&body).send().await.map_err(|e| e.to_string())?;
+                if !resp.status().is_success() {
+                    let status = resp.status();
+                    let err = resp.text().await.unwrap_or_default();
+                    return Err(format!("API Error [{}] {} => {}", status, url, err));
+                }
+                let val: serde_json::Value = resp.json().await.map_err(|e| e.to_string())?;
+                val.get("choices")
+                    .and_then(|c| c.as_array())
+                    .and_then(|arr| arr.first())
+                    .and_then(|choice| choice.get("message"))
+                    .and_then(|msg| msg.get("content"))
+                    .and_then(|cnt| cnt.as_str())
+                    .map(str::to_string)
+                    .unwrap_or_default()
+            }
+        };
+
+        let trimmed = response.trim();
+        if trimmed.is_empty() {
+            return Err("模型未返回有效文本内容".to_string());
+        }
+        Ok(trimmed.to_string())
+    }
 }
+

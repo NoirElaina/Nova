@@ -515,7 +515,7 @@ async fn apply_full_compact(
     app: &AppHandle,
     conversation_id: Option<&str>,
     messages: &[Message],
-) -> Vec<Message> {
+) -> (Vec<Message>, Option<String>) {
     apply_full_compact_with_limits(app, conversation_id, messages, 10).await
 }
 
@@ -523,7 +523,7 @@ async fn try_model_driven_full_compact(
     app: &AppHandle,
     messages: &[Message],
     recent_limit: i64,
-) -> Result<Option<Vec<Message>>, String> {
+) -> Result<Option<(Vec<Message>, String)>, String> {
     let keep_count = recent_limit.clamp(6, 30) as usize;
     if messages.len() <= keep_count + 1 {
         return Ok(None);
@@ -535,14 +535,18 @@ async fn try_model_driven_full_compact(
     }
 
     let messages_to_summarize = &messages[..split_index];
-    let recent_messages = messages[split_index..].to_vec();
+    let mut recent_messages = messages[split_index..].to_vec();
+
+    // 保留区孤儿工具块清理：防止截断 Assistant 的 ToolUse 与 User 的 ToolResult 导致上游 400
+    drop_orphan_tool_blocks(&mut recent_messages);
+
     let summary = summary::summarize_messages_for_compact(app, messages_to_summarize).await?;
     let compact_message = build_auto_compact_summary_message(&summary);
 
     let mut prepared = Vec::with_capacity(recent_messages.len() + 1);
     prepared.push(compact_message);
     prepared.extend(recent_messages);
-    Ok(Some(prepared))
+    Ok(Some((prepared, summary)))
 }
 
 async fn apply_full_compact_with_limits(
@@ -550,17 +554,17 @@ async fn apply_full_compact_with_limits(
     conversation_id: Option<&str>,
     messages: &[Message],
     recent_limit: i64,
-) -> Vec<Message> {
+) -> (Vec<Message>, Option<String>) {
     // 若 conversation_id 为空或仅空白则不做 Full 压缩，直接返回原消息
     let Some(conversation_id) = conversation_id.filter(|id| !id.trim().is_empty()) else {
-        return messages.to_vec();
+        return (messages.to_vec(), None);
     };
 
     if !state::is_auto_compact_circuit_open(Some(conversation_id)) {
         match try_model_driven_full_compact(app, messages, recent_limit).await {
-            Ok(Some(compacted)) => {
+            Ok(Some((compacted, summary))) => {
                 state::record_auto_compact_success(Some(conversation_id));
-                return compacted;
+                return (compacted, Some(summary));
             }
             Ok(None) => {}
             Err(error) => {
@@ -581,7 +585,7 @@ async fn apply_full_compact_with_limits(
                     ),
                     Some("model_driven_compact"),
                 );
-                return messages.to_vec();
+                return (messages.to_vec(), None);
             }
         }
     } else {
@@ -590,9 +594,9 @@ async fn apply_full_compact_with_limits(
             conversation_id = %conversation_id,
             "model-driven auto compact skipped because circuit breaker is open"
         );
-        return messages.to_vec();
+        return (messages.to_vec(), None);
     }
-    messages.to_vec()
+    (messages.to_vec(), None)
 }
 
 fn same_messages(left: &[Message], right: &[Message]) -> bool {
@@ -682,7 +686,7 @@ pub async fn reactive_compact_messages_for_retry(
     // 大结果在近期时重试无效，连败 3 次熔断后该会话永久降级为兜底截断。
     let micro_compacted = apply_micro_compact(messages);
 
-    let force_full = apply_full_compact_with_limits(
+    let (force_full, maybe_summary) = apply_full_compact_with_limits(
         app,
         conversation_id,
         &micro_compacted,
@@ -690,6 +694,16 @@ pub async fn reactive_compact_messages_for_retry(
     )
     .await;
     if !same_messages(&force_full, &micro_compacted) {
+        if let (Some(conv_id), Some(summary)) = (conversation_id, maybe_summary) {
+            let boundary = crate::agent::session::SessionEvent::CompactBoundary {
+                base_context: force_full.clone(),
+                summary,
+                level: "reactive_retry".to_string(),
+                tokens_before: token_counter::count_messages(&micro_compacted) as u32,
+                tokens_after: token_counter::count_messages(&force_full) as u32,
+            };
+            let _ = crate::agent::session::append_event(app, conv_id, None, &boundary).await;
+        }
         return Some(force_full);
     }
 
@@ -748,9 +762,22 @@ pub async fn compact_messages_mid_turn(
             // 熔断打开或摘要失败时 apply_full_compact 原样返回，退回 Micro 结果。
             let protected = latest_tool_round_use_ids(messages);
             let micro = apply_micro_compact_protected(messages, &protected);
-            let full = apply_full_compact(app, conversation_id, &micro).await;
+            let (full, maybe_summary) = apply_full_compact(app, conversation_id, &micro).await;
             if !same_messages(&full, &micro) {
                 *messages = full;
+                // 持久化写入 CompactBoundary，消除每轮重复压缩！
+                if let (Some(conv_id), Some(summary)) = (conversation_id, maybe_summary) {
+                    let boundary = crate::agent::session::SessionEvent::CompactBoundary {
+                        base_context: messages.clone(),
+                        summary,
+                        level: "auto_full".to_string(),
+                        tokens_before: tokens_before as u32,
+                        tokens_after: token_counter::count_messages(messages) as u32,
+                    };
+                    if let Err(error) = crate::agent::session::append_event(app, conv_id, None, &boundary).await {
+                        tracing::warn!(error = %error, conversation_id = %conv_id, "mid-turn auto compact boundary append failed");
+                    }
+                }
                 "full"
             } else if !same_messages(&micro, messages) {
                 *messages = micro;
@@ -804,7 +831,22 @@ pub async fn compact_messages_for_turn_with_report(
         CompactLevel::Full => {
             // Full 先做 Micro 级别的局部压缩，再拼接远端 compact 上下文
             let micro_compacted = apply_micro_compact(messages);
-            apply_full_compact(app, conversation_id, &micro_compacted).await
+            let (full, maybe_summary) = apply_full_compact(app, conversation_id, &micro_compacted).await;
+            if !same_messages(&full, &micro_compacted) {
+                if let (Some(conv_id), Some(summary)) = (conversation_id, maybe_summary) {
+                    let boundary = crate::agent::session::SessionEvent::CompactBoundary {
+                        base_context: full.clone(),
+                        summary,
+                        level: "turn_start_full".to_string(),
+                        tokens_before: decision.estimated_tokens as u32,
+                        tokens_after: token_counter::count_messages(&full) as u32,
+                    };
+                    let _ = crate::agent::session::append_event(app, conv_id, None, &boundary).await;
+                }
+                full
+            } else {
+                micro_compacted
+            }
         }
     };
 
@@ -825,8 +867,7 @@ pub async fn compact_messages_for_turn(
         .map(|outcome| outcome.messages)
 }
 
-// 手动压缩：把当前会话历史发给 AI 摘要，用摘要+最近几条消息替换数据库历史。
-// replace_history 会清除关联的工具日志/记忆/边界记录（旧消息已不存在，关联数据无意义）。
+// 手动压缩：把当前会话历史发给当前 AI 摘要，用摘要+最近几条消息替换上下文并写入事件边界。
 const MANUAL_COMPACT_RECENT_LIMIT: usize = 4;
 const MANUAL_COMPACT_MIN_MESSAGES: usize = 6;
 
@@ -865,18 +906,19 @@ pub async fn manual_compact(
         .len()
         .saturating_sub(MANUAL_COMPACT_RECENT_LIMIT);
     let messages_to_summarize = &messages[..split_index];
-    let recent_messages = &messages[split_index..];
+    let mut recent_messages = messages[split_index..].to_vec();
 
+    // 孤儿工具块清理：防止截断边界残留孤立工具结果导致 API 400
+    drop_orphan_tool_blocks(&mut recent_messages);
+
+    // 直接调用当前配置的 LLM 生成压缩摘要！
     let summary = summary::summarize_messages_for_compact(app, messages_to_summarize).await?;
     let compact_message = build_auto_compact_summary_message(&summary);
 
     let mut new_messages = vec![compact_message];
-    new_messages.extend(recent_messages.iter().cloned());
+    new_messages.extend(recent_messages);
 
     let after_tokens = token_counter::count_messages(&new_messages) as u32;
-
-    // 事件日志时代：UI 历史从事件流投影（压缩只影响模型上下文，不丢用户可见历史）；
-    // 模型上下文重建由下方的 CompactBoundary 检查点承担，不再需要快照。
 
     // 事件日志压缩检查点：重建模型上下文时丢弃旧事件，以压缩后上下文为新起点。
     let boundary = crate::agent::session::SessionEvent::CompactBoundary {

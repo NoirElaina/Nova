@@ -1,6 +1,8 @@
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue';
 import { invoke } from '@tauri-apps/api/core';
+import { onClickOutside } from '@vueuse/core';
+import { RotateCw, Sparkles } from 'lucide-vue-next';
 import type { ContextUsage } from '@/lib/chat-types';
 
 const props = defineProps<{
@@ -13,6 +15,22 @@ const props = defineProps<{
 const emit = defineEmits<{
   (e: 'compact'): void;
 }>();
+
+const rootRef = ref<HTMLElement | null>(null);
+const isOpen = ref(false);
+
+onClickOutside(rootRef, () => {
+  isOpen.value = false;
+});
+
+const togglePopover = () => {
+  isOpen.value = !isOpen.value;
+};
+
+const handleCompactClick = () => {
+  if (props.compacting) return;
+  emit('compact');
+};
 
 const DEFAULT_WINDOW_TOKENS = 200_000;
 
@@ -70,23 +88,34 @@ const formatTokens = (value: number) => {
   }
   return String(rounded);
 };
-
 </script>
 
 <template>
-  <div class="context-usage-root">
+  <div ref="rootRef" class="context-usage-root">
     <button
       type="button"
       class="context-usage-button"
+      :class="{ 'is-active': isOpen, 'is-compacting': compacting }"
       :aria-label="`上下文已用 ${formatTokens(usedTokens)} 个令牌`"
+      :title="`上下文窗口: ${formatTokens(usedTokens)} / ${formatTokens(windowTokens)} (${usedPercent}%)`"
+      @click="togglePopover"
     >
-      <svg class="context-usage-ring" width="18" height="18" viewBox="0 0 18 18" aria-hidden="true">
+      <svg
+        class="context-usage-ring"
+        :class="{ 'animate-spin': compacting }"
+        width="18"
+        height="18"
+        viewBox="0 0 18 18"
+        aria-hidden="true"
+      >
         <!-- 轨道圆 -->
         <circle class="ring-track" cx="9" cy="9" r="6.2" />
         <!-- 进度圆：从顶部 (-90°) 顺时针填充 -->
         <circle
           class="ring-progress"
-          cx="9" cy="9" r="6.2"
+          cx="9"
+          cy="9"
+          r="6.2"
           :stroke="ringColor"
           :stroke-dasharray="RING_CIRCUMFERENCE"
           :stroke-dashoffset="ringOffset"
@@ -94,12 +123,19 @@ const formatTokens = (value: number) => {
       </svg>
     </button>
 
-    <div class="context-usage-popover">
-      <div class="context-title">上下文窗口</div>
-      <div class="context-summary">
-        <span>{{ formatTokens(usedTokens) }}/{{ formatTokens(windowTokens) }} 个令牌</span>
-        <span>{{ usedPercent }}%</span>
+    <div
+      class="context-usage-popover"
+      :class="{ 'is-open': isOpen }"
+    >
+      <div class="context-title flex items-center justify-between">
+        <span>上下文窗口</span>
+        <span class="text-[11px] font-mono text-muted-foreground">{{ usedPercent }}%</span>
       </div>
+
+      <div class="context-summary">
+        <span>{{ formatTokens(usedTokens) }} / {{ formatTokens(windowTokens) }} 令牌</span>
+      </div>
+
       <div class="context-bar">
         <div class="context-bar-fill" :style="{ width: `${barPercent}%` }"></div>
         <div
@@ -108,18 +144,21 @@ const formatTokens = (value: number) => {
           :style="{ width: `${reservePercent}%` }"
         ></div>
       </div>
+
       <div class="reserve-row">
         <span class="reserve-mark"></span>
-        <span>保留用于响应</span>
+        <span>保留用于模型回复</span>
       </div>
 
       <button
         type="button"
-        class="compact-button"
+        class="compact-button flex items-center justify-center gap-1.5 cursor-pointer font-medium"
         :disabled="compacting"
-        @click="emit('compact')"
+        @click="handleCompactClick"
       >
-        {{ compacting ? '正在压缩…' : '压缩对话' }}
+        <RotateCw v-if="compacting" class="w-3.5 h-3.5 animate-spin text-blue-600 dark:text-blue-400" />
+        <Sparkles v-else class="w-3.5 h-3.5 text-amber-500" />
+        <span>{{ compacting ? '正在压缩上下文…' : '立即压缩对话历史' }}</span>
       </button>
     </div>
   </div>
@@ -141,9 +180,11 @@ const formatTokens = (value: number) => {
   border-radius: 999px;
   color: #8b929d;
   transition: background-color 160ms ease, color 160ms ease;
+  cursor: pointer;
 }
 
-.context-usage-button:hover {
+.context-usage-button:hover,
+.context-usage-button.is-active {
   background: rgba(15, 23, 42, 0.055);
   color: #596273;
 }
@@ -152,7 +193,8 @@ const formatTokens = (value: number) => {
   color: #a7a19a;
 }
 
-.dark .context-usage-button:hover {
+.dark .context-usage-button:hover,
+.dark .context-usage-button.is-active {
   background: rgba(255, 255, 255, 0.08);
   color: #d8d3ca;
 }
@@ -181,19 +223,25 @@ const formatTokens = (value: number) => {
 .context-usage-popover {
   position: absolute;
   right: -18px;
-  bottom: 32px;
+  bottom: 34px;
   z-index: 50;
-  width: 242px;
-  padding: 11px 11px 10px;
-  border-radius: 13px;
+  width: 250px;
+  padding: 12px;
+  border-radius: 14px;
   border: 1px solid rgba(229, 231, 235, 0.96);
   background: rgba(255, 255, 255, 0.98);
   color: #667085;
-  box-shadow: 0 16px 36px rgba(15, 23, 42, 0.1);
+  box-shadow: 0 16px 36px rgba(15, 23, 42, 0.12);
   opacity: 0;
   transform: translateY(4px);
   pointer-events: none;
-  transition: opacity 120ms ease, transform 120ms ease;
+  transition: opacity 150ms ease, transform 150ms ease;
+}
+
+.context-usage-popover.is-open {
+  opacity: 1;
+  transform: translateY(0);
+  pointer-events: auto;
 }
 
 .context-usage-popover::after {
@@ -209,35 +257,28 @@ const formatTokens = (value: number) => {
   transform: rotate(45deg);
 }
 
-.context-usage-root:hover .context-usage-popover,
-.context-usage-root:focus-within .context-usage-popover {
-  opacity: 1;
-  transform: translateY(0);
-  pointer-events: auto;
-}
-
 .context-title {
   font-size: 13px;
   font-weight: 650;
-  color: #475467;
+  color: #334155;
   line-height: 1.2;
 }
 
 .context-summary {
-  margin-top: 8px;
+  margin-top: 6px;
   display: flex;
   align-items: center;
   justify-content: space-between;
   font-size: 12px;
   line-height: 1.2;
-  color: #596273;
+  color: #64748b;
   font-variant-numeric: tabular-nums;
 }
 
 .context-bar {
   position: relative;
-  margin-top: 7px;
-  height: 4px;
+  margin-top: 8px;
+  height: 5px;
   overflow: hidden;
   border-radius: 999px;
   background: rgba(229, 231, 235, 0.84);
@@ -246,7 +287,8 @@ const formatTokens = (value: number) => {
 .context-bar-fill {
   height: 100%;
   border-radius: inherit;
-  background: #c98264;
+  background: #3b82f6;
+  transition: width 300ms ease;
 }
 
 .context-bar-reserve {
@@ -257,30 +299,30 @@ const formatTokens = (value: number) => {
   border-radius: inherit;
   background: repeating-linear-gradient(
     135deg,
-    #c98264 0,
-    #c98264 3px,
+    #93c5fa 0,
+    #93c5fa 3px,
     transparent 3px,
     transparent 6px
   );
 }
 
 .reserve-row {
-  margin-top: 9px;
+  margin-top: 8px;
   display: flex;
   align-items: center;
   gap: 8px;
-  color: #98a2b3;
+  color: #94a3b8;
   font-size: 11px;
 }
 
 .reserve-mark {
-  width: 15px;
-  height: 10px;
+  width: 14px;
+  height: 8px;
   border-radius: 2px;
   background: repeating-linear-gradient(
     135deg,
-    #c98264 0,
-    #c98264 3px,
+    #93c5fa 0,
+    #93c5fa 3px,
     transparent 3px,
     transparent 6px
   );
@@ -289,18 +331,19 @@ const formatTokens = (value: number) => {
 .compact-button {
   width: 100%;
   margin-top: 12px;
-  height: 30px;
+  height: 32px;
   border-radius: 9px;
-  border: 1px solid rgba(229, 231, 235, 0.96);
-  color: #596273;
-  background: #f7f7f7;
+  border: 1px solid rgba(226, 232, 240, 0.96);
+  color: #334155;
+  background: #f8fafc;
   font-size: 12px;
-  transition: background-color 140ms ease, border-color 140ms ease;
+  transition: background-color 140ms ease, border-color 140ms ease, transform 100ms ease;
 }
 
-.compact-button:hover {
-  background: #f2f4f7;
-  border-color: rgba(208, 213, 221, 0.96);
+.compact-button:hover:not(:disabled) {
+  background: #f1f5f9;
+  border-color: rgba(203, 213, 225, 0.96);
+  transform: translateY(-0.5px);
 }
 
 .compact-button:disabled {
@@ -309,38 +352,41 @@ const formatTokens = (value: number) => {
 }
 
 .dark .context-usage-popover {
-  border-color: rgba(71, 66, 58, 0.98);
-  background: rgba(43, 42, 39, 0.98);
-  color: #c8c0b4;
-  box-shadow: 0 18px 42px rgba(0, 0, 0, 0.28);
+  border-color: rgba(63, 63, 70, 0.98);
+  background: rgba(24, 24, 27, 0.98);
+  color: #d4d4d8;
+  box-shadow: 0 18px 42px rgba(0, 0, 0, 0.4);
 }
 
 .dark .context-usage-popover::after {
-  border-color: rgba(71, 66, 58, 0.98);
-  background: rgba(43, 42, 39, 0.98);
+  border-color: rgba(63, 63, 70, 0.98);
+  background: rgba(24, 24, 27, 0.98);
 }
 
-.dark .context-title,
+.dark .context-title {
+  color: #f4f4f5;
+}
+
 .dark .context-summary {
-  color: #ddd5c7;
+  color: #a1a1aa;
 }
 
 .dark .reserve-row {
-  color: #a79f92;
+  color: #71717a;
 }
 
 .dark .context-bar {
-  background: rgba(81, 76, 68, 0.8);
+  background: rgba(63, 63, 70, 0.8);
 }
 
 .dark .compact-button {
-  color: #ddd5c7;
-  border-color: rgba(74, 69, 61, 0.95);
-  background: rgba(52, 50, 46, 0.85);
+  color: #f4f4f5;
+  border-color: rgba(63, 63, 70, 0.95);
+  background: rgba(39, 39, 42, 0.85);
 }
 
-.dark .compact-button:hover {
-  background: rgba(62, 59, 54, 0.95);
-  border-color: rgba(89, 82, 72, 0.95);
+.dark .compact-button:hover:not(:disabled) {
+  background: rgba(63, 63, 70, 0.95);
+  border-color: rgba(82, 82, 91, 0.95);
 }
 </style>

@@ -23,7 +23,7 @@ export type SlashParamOption = {
 // 内置斜杠命令列表。所有命令都有二级匹配项（args=options）。
 export const SLASH_COMMANDS: SlashCommandEntry[] = [
   { name: 'skill', description: '使用指定技能', type: 'skill', args: 'options' },
-  { name: 'compact', description: '压缩当前对话', type: 'local', args: 'options' },
+  { name: 'compact', description: '压缩当前对话', type: 'local', args: 'none' },
   { name: 'memory', description: '查看全局记忆', type: 'local', args: 'options' },
   { name: 'review', description: '审查工作区改动', type: 'prompt', args: 'options' },
   { name: 'init', description: '生成 AGENTS.md 项目说明', type: 'prompt', args: 'options' },

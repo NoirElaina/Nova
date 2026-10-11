@@ -77,6 +77,10 @@ fn shell_command(root: &Path) -> CommandBuilder {
         crate::command::workspace::display_path_string(root),
     ));
     command.env("TERM", "xterm-256color");
+    command.env("COLORTERM", "truecolor");
+    command.env("LANG", "zh_CN.UTF-8");
+    command.env("LC_ALL", "zh_CN.UTF-8");
+    command.env("PYTHONIOENCODING", "utf-8");
     command
 }
 
@@ -107,22 +111,55 @@ fn spawn_reader(
 ) {
     std::thread::spawn(move || {
         let mut buffer = [0_u8; 8192];
+        let mut pending = Vec::new();
+
         loop {
             match reader.read(&mut buffer) {
                 Ok(0) => break,
                 Ok(read) => {
-                    let data = String::from_utf8_lossy(&buffer[..read]).to_string();
-                    emit_event(
-                        &app,
-                        UserTerminalEvent {
-                            conversation_id: conversation_id.clone(),
-                            session_id: session_id.clone(),
-                            kind: "output".to_string(),
-                            data: Some(data),
-                            exit_code: None,
-                            error: None,
-                        },
-                    );
+                    pending.extend_from_slice(&buffer[..read]);
+                    match std::str::from_utf8(&pending) {
+                        Ok(valid_str) => {
+                            emit_event(
+                                &app,
+                                UserTerminalEvent {
+                                    conversation_id: conversation_id.clone(),
+                                    session_id: session_id.clone(),
+                                    kind: "output".to_string(),
+                                    data: Some(valid_str.to_string()),
+                                    exit_code: None,
+                                    error: None,
+                                },
+                            );
+                            pending.clear();
+                        }
+                        Err(err) => {
+                            let valid_up_to = err.valid_up_to();
+                            if valid_up_to > 0 {
+                                let valid_str = match std::str::from_utf8(&pending[..valid_up_to]) {
+                                    Ok(s) => s.to_string(),
+                                    Err(_) => String::from_utf8_lossy(&pending[..valid_up_to]).to_string(),
+                                };
+                                emit_event(
+                                    &app,
+                                    UserTerminalEvent {
+                                       conversation_id: conversation_id.clone(),
+                                       session_id: session_id.clone(),
+                                       kind: "output".to_string(),
+                                       data: Some(valid_str),
+                                       exit_code: None,
+                                       error: None,
+                                    },
+                                );
+                            }
+
+                            if let Some(error_len) = err.error_len() {
+                                pending = pending[valid_up_to + error_len..].to_vec();
+                            } else {
+                                pending = pending[valid_up_to..].to_vec();
+                            }
+                        }
+                    }
                 }
                 Err(error) => {
                     emit_event(
@@ -139,6 +176,21 @@ fn spawn_reader(
                     break;
                 }
             }
+        }
+
+        if !pending.is_empty() {
+            let remaining = String::from_utf8_lossy(&pending).to_string();
+            emit_event(
+                &app,
+                UserTerminalEvent {
+                    conversation_id: conversation_id.clone(),
+                    session_id: session_id.clone(),
+                    kind: "output".to_string(),
+                    data: Some(remaining),
+                    exit_code: None,
+                    error: None,
+                },
+            );
         }
 
         emit_event(

@@ -16,6 +16,54 @@ import { emitToast } from "../../../lib/toast";
 
 const USER_TERMINAL_EVENT = "user-terminal-output";
 
+const LIGHT_THEME = {
+  background: "#ffffff",
+  foreground: "#0f172a",
+  cursor: "#0f172a",
+  cursorAccent: "#ffffff",
+  selectionBackground: "#cbd5e1",
+  black: "#0f172a",
+  blue: "#2563eb",
+  cyan: "#0891b2",
+  green: "#059669",
+  magenta: "#7c3aed",
+  red: "#dc2626",
+  white: "#f1f5f9",
+  yellow: "#d97706",
+  brightBlack: "#64748b",
+  brightBlue: "#3b82f6",
+  brightCyan: "#06b6d4",
+  brightGreen: "#10b981",
+  brightMagenta: "#8b5cf6",
+  brightRed: "#ef4444",
+  brightWhite: "#0f172a",
+  brightYellow: "#f59e0b",
+};
+
+const DARK_THEME = {
+  background: "#18181b",
+  foreground: "#f4f4f5",
+  cursor: "#f4f4f5",
+  cursorAccent: "#18181b",
+  selectionBackground: "#3f3f46",
+  black: "#27272a",
+  blue: "#60a5fa",
+  cyan: "#38bdf8",
+  green: "#34d399",
+  magenta: "#a78bfa",
+  red: "#f87171",
+  white: "#e4e4e7",
+  yellow: "#fbbf24",
+  brightBlack: "#71717a",
+  brightBlue: "#93c5fd",
+  brightCyan: "#7dd3fc",
+  brightGreen: "#6ee7b7",
+  brightMagenta: "#c4b5fd",
+  brightRed: "#fca5a5",
+  brightWhite: "#ffffff",
+  brightYellow: "#fde68a",
+};
+
 const props = defineProps<{
   conversationId: string | null;
   visible: boolean;
@@ -32,6 +80,7 @@ let terminal: Terminal | null = null;
 let fitAddon: FitAddon | null = null;
 let unlistenTerminal: UnlistenFn | null = null;
 let resizeObserver: ResizeObserver | null = null;
+let themeObserver: MutationObserver | null = null;
 let inputDisposable: { dispose: () => void } | null = null;
 let resizeTimer: number | null = null;
 
@@ -41,7 +90,26 @@ const tabTitle = computed(() => {
   return tail || cwd.value || "workspace";
 });
 
+const isDark = () => document.documentElement.classList.contains("dark");
+const getTerminalTheme = () => (isDark() ? DARK_THEME : LIGHT_THEME);
+
 const normalizedConversationId = () => props.conversationId?.trim() || null;
+
+const pasteFromClipboard = async () => {
+  try {
+    const text = await navigator.clipboard.readText();
+    if (text && sessionId.value) {
+      await writeUserTerminal(normalizedConversationId(), text);
+    }
+  } catch (err) {
+    console.warn("无法读取剪贴板:", err);
+  }
+};
+
+const handleContextMenu = async (event: MouseEvent) => {
+  event.preventDefault();
+  await pasteFromClipboard();
+};
 
 const createTerminal = async () => {
   if (terminal || !terminalHostRef.value) return;
@@ -50,31 +118,30 @@ const createTerminal = async () => {
     cursorBlink: true,
     fontFamily: '"Cascadia Mono", "JetBrains Mono", Consolas, monospace',
     fontSize: 13,
-    lineHeight: 1.18,
-    scrollback: 6000,
+    lineHeight: 1.2,
+    scrollback: 8000,
     convertEol: false,
-    theme: {
-      background: "#ffffff",
-      foreground: "#111827",
-      cursor: "#111827",
-      selectionBackground: "#dbeafe",
-      black: "#111827",
-      blue: "#2563eb",
-      cyan: "#0891b2",
-      green: "#059669",
-      magenta: "#7c3aed",
-      red: "#dc2626",
-      white: "#e5e7eb",
-      yellow: "#92400e",
-      brightBlack: "#64748b",
-      brightBlue: "#1d4ed8",
-      brightCyan: "#0e7490",
-      brightGreen: "#047857",
-      brightMagenta: "#6d28d9",
-      brightRed: "#b91c1c",
-      brightWhite: "#111827",
-      brightYellow: "#78350f",
-    },
+    theme: getTerminalTheme(),
+  });
+
+  // 支持智能复制 (Ctrl+C 在有选区时复制文本，无选区时发送中断)
+  terminal.attachCustomKeyEventHandler((event) => {
+    if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "c" && event.type === "keydown") {
+      if (terminal?.hasSelection()) {
+        const selection = terminal.getSelection();
+        if (selection) {
+          void navigator.clipboard.writeText(selection);
+          terminal.clearSelection();
+          return false;
+        }
+      }
+    }
+    // Ctrl+V 粘贴
+    if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "v" && event.type === "keydown") {
+      void pasteFromClipboard();
+      return false;
+    }
+    return true;
   });
 
   fitAddon = new FitAddon();
@@ -90,6 +157,18 @@ const createTerminal = async () => {
 
   resizeObserver = new ResizeObserver(() => scheduleResize());
   resizeObserver.observe(terminalHostRef.value);
+
+  // 监听主题变化并动态切换 xterm 配色
+  themeObserver = new MutationObserver(() => {
+    if (terminal) {
+      terminal.options.theme = getTerminalTheme();
+    }
+  });
+  themeObserver.observe(document.documentElement, {
+    attributes: true,
+    attributeFilter: ["class"],
+  });
+
   await nextTick();
   scheduleResize();
 };
@@ -235,6 +314,7 @@ onBeforeUnmount(() => {
     window.clearTimeout(resizeTimer);
   }
   resizeObserver?.disconnect();
+  themeObserver?.disconnect();
   inputDisposable?.dispose();
   terminal?.dispose();
   if (unlistenTerminal) {
@@ -246,12 +326,12 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <div class="flex h-full min-h-0 flex-col text-black dark:text-[#f3f3f3]">
+  <div class="flex h-full min-h-0 flex-col bg-white text-[#111827] dark:bg-[#18181b] dark:text-[#f3f3f3]">
     <!-- 工具栏：左侧终端标签，右侧快捷操作 -->
-    <div class="flex h-10 shrink-0 items-center justify-between border-b border-[#eef0f3] px-2.5 dark:border-[#2c2c2c]">
+    <div class="flex h-10 shrink-0 items-center justify-between border-b border-[#eef0f3] px-2.5 dark:border-[#27272a]">
       <div class="flex min-w-0 items-center gap-1.5">
-        <div class="flex h-7 items-center gap-1.5 rounded-md bg-[#eef2f7] px-2 text-[12px] font-medium text-[#111827] dark:bg-white/10 dark:text-[#ececec]">
-          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" class="text-[#64748b] dark:text-[#9ca3af]">
+        <div class="flex h-7 items-center gap-1.5 rounded-md bg-[#f1f5f9] px-2 text-[12px] font-medium text-[#111827] dark:bg-[#27272a] dark:text-[#ececec]">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" class="text-[#64748b] dark:text-[#a1a1aa]">
             <path d="M4 5h16a1 1 0 0 1 1 1v12a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V6a1 1 0 0 1 1-1Z" />
             <path d="m7 9 3 3-3 3" />
             <path d="M12 15h5" />
@@ -265,7 +345,7 @@ onBeforeUnmount(() => {
           type="button"
           variant="ghost"
           size="icon-sm"
-          class="h-7 w-7 rounded-md text-[#6b7280] hover:bg-[#f7f7f8] dark:hover:bg-[#2d2d2d]"
+          class="h-7 w-7 rounded-md text-[#64748b] hover:bg-[#f1f5f9] dark:text-[#a1a1aa] dark:hover:bg-[#27272a]"
           title="重启终端"
           :disabled="isStarting"
           @click="restartTerminal"
@@ -279,7 +359,7 @@ onBeforeUnmount(() => {
           type="button"
           variant="ghost"
           size="icon-sm"
-          class="h-7 w-7 rounded-md text-[#6b7280] hover:bg-[#f7f7f8] dark:hover:bg-[#2d2d2d]"
+          class="h-7 w-7 rounded-md text-[#64748b] hover:bg-[#f1f5f9] dark:text-[#a1a1aa] dark:hover:bg-[#27272a]"
           title="滚动到底部"
           @click="terminal?.scrollToBottom()"
         >
@@ -292,7 +372,7 @@ onBeforeUnmount(() => {
           type="button"
           variant="ghost"
           size="icon-sm"
-          class="h-7 w-7 rounded-md text-[#6b7280] hover:bg-[#f7f7f8] dark:hover:bg-[#2d2d2d]"
+          class="h-7 w-7 rounded-md text-[#64748b] hover:bg-[#f1f5f9] dark:text-[#a1a1aa] dark:hover:bg-[#27272a]"
           title="适配尺寸"
           @click="scheduleResize"
         >
@@ -310,10 +390,12 @@ onBeforeUnmount(() => {
       {{ error }}
     </div>
 
+    <!-- 终端挂载容器：右键智能粘贴，点击聚焦，背景主题自适应 -->
     <div
       ref="terminalHostRef"
-      class="min-h-0 flex-1 overflow-hidden px-2 py-1"
+      class="min-h-0 flex-1 overflow-hidden bg-white px-2 py-1 dark:bg-[#18181b]"
       @click="terminal?.focus()"
+      @contextmenu="handleContextMenu"
     />
   </div>
 </template>

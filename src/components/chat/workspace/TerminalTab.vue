@@ -12,7 +12,6 @@ import {
   writeUserTerminal,
   type UserTerminalOutputEvent,
 } from "../../../features/chat/services/chat-api";
-import type { ToolExecutionEntry } from "../../../lib/chat-types";
 import { emitToast } from "../../../lib/toast";
 
 const USER_TERMINAL_EVENT = "user-terminal-output";
@@ -20,11 +19,7 @@ const USER_TERMINAL_EVENT = "user-terminal-output";
 const props = defineProps<{
   conversationId: string | null;
   visible: boolean;
-  entries: ToolExecutionEntry[];
-  currentTurnToolEntries?: ToolExecutionEntry[];
 }>();
-
-type TerminalPane = "user" | "agent";
 
 const terminalHostRef = ref<HTMLDivElement | null>(null);
 const sessionId = ref<string | null>(null);
@@ -32,7 +27,6 @@ const cwd = ref("workspace");
 const isStarting = ref(false);
 const error = ref("");
 const activeConversationKey = ref<string | null>(null);
-const activePane = ref<TerminalPane>("user");
 
 let terminal: Terminal | null = null;
 let fitAddon: FitAddon | null = null;
@@ -48,82 +42,6 @@ const tabTitle = computed(() => {
 });
 
 const normalizedConversationId = () => props.conversationId?.trim() || null;
-
-const isShellToolName = (toolName: string) => {
-  const normalized = toolName.trim().toLowerCase();
-  return (
-    normalized === "bash"
-  );
-};
-
-const extractShellCommand = (entry: ToolExecutionEntry) => {
-  const input = entry.input.trim();
-  if (!input) return entry.toolName;
-
-  try {
-    const parsed = JSON.parse(input) as { command?: unknown; cmd?: unknown; script?: unknown };
-    const command = parsed.command ?? parsed.cmd ?? parsed.script;
-    if (typeof command === "string" && command.trim()) {
-      return command.trim();
-    }
-  } catch {
-    // Tool input is sometimes already a plain command string.
-  }
-
-  return input;
-};
-
-const formatShellResult = (entry: ToolExecutionEntry) => {
-  if (entry.status === "running") return "running...";
-  if (entry.status === "cancelled") return "cancelled";
-
-  const raw = entry.result.trim();
-  if (!raw) return "";
-
-  try {
-    const parsed = JSON.parse(raw) as {
-      stdout?: unknown;
-      stderr?: unknown;
-      output?: unknown;
-      error?: unknown;
-    };
-    const stderr = typeof parsed.stderr === "string" ? parsed.stderr.trim() : "";
-    const stdout =
-      typeof parsed.stdout === "string"
-        ? parsed.stdout.trim()
-        : typeof parsed.output === "string"
-          ? parsed.output.trim()
-          : "";
-    const error = typeof parsed.error === "string" ? parsed.error.trim() : "";
-    return [stderr, stdout, error].filter(Boolean).join("\n");
-  } catch {
-    return raw;
-  }
-};
-
-const aiTerminalEntries = computed(() => {
-  const byId = new Map<string, ToolExecutionEntry>();
-  for (const entry of props.entries) {
-    if (isShellToolName(entry.toolName)) byId.set(entry.id, entry);
-  }
-  for (const entry of props.currentTurnToolEntries ?? []) {
-    if (isShellToolName(entry.toolName)) byId.set(entry.id, entry);
-  }
-  return Array.from(byId.values()).sort((a, b) => a.startedAt - b.startedAt);
-});
-
-const aiTerminalCount = computed(() => aiTerminalEntries.value.length);
-
-const switchPane = (pane: TerminalPane) => {
-  activePane.value = pane;
-  if (pane === "user") {
-    void startOrAttach();
-    void nextTick(() => {
-      scheduleResize();
-      terminal?.focus();
-    });
-  }
-};
 
 const createTerminal = async () => {
   if (terminal || !terminalHostRef.value) return;
@@ -182,7 +100,7 @@ const terminalSize = () => ({
 });
 
 const fitTerminal = () => {
-  if (!terminal || !fitAddon || !terminalHostRef.value || !props.visible || activePane.value !== "user") return;
+  if (!terminal || !fitAddon || !terminalHostRef.value || !props.visible) return;
   try {
     fitAddon.fit();
     terminal.scrollToBottom();
@@ -244,7 +162,7 @@ const ensureEventListener = async () => {
 };
 
 const startOrAttach = async () => {
-  if (!props.visible || activePane.value !== "user" || isStarting.value) return;
+  if (!props.visible || isStarting.value) return;
   isStarting.value = true;
   error.value = "";
 
@@ -304,21 +222,13 @@ watch(
 watch(
   () => props.visible,
   async (visible) => {
-    if (!visible || activePane.value !== "user") return;
+    if (!visible) return;
     await nextTick();
     scheduleResize();
     terminal?.scrollToBottom();
     terminal?.focus();
   },
 );
-
-watch(activePane, async (pane) => {
-  if (pane !== "user" || !props.visible) return;
-  await nextTick();
-  await startOrAttach();
-  scheduleResize();
-  terminal?.scrollToBottom();
-});
 
 onBeforeUnmount(() => {
   if (resizeTimer !== null) {
@@ -337,43 +247,20 @@ onBeforeUnmount(() => {
 
 <template>
   <div class="flex h-full min-h-0 flex-col text-black dark:text-[#f3f3f3]">
-    <!-- 页签栏：用户终端 / AI 终端，右侧工具按钮 -->
-    <div class="flex h-10 shrink-0 items-center justify-between border-b border-[#eef0f3] px-2 dark:border-[#2c2c2c]">
-      <div class="flex min-w-0 items-center gap-0.5">
-        <button
-          type="button"
-          class="flex h-7 items-center gap-1.5 rounded-lg px-2 text-[12px] transition-colors"
-          :class="activePane === 'user'
-            ? 'bg-[#eef2f7] font-medium text-[#111827] dark:bg-white/10 dark:text-[#ececec]'
-            : 'text-[#64748b] hover:bg-[#f5f6f8] hover:text-[#334155] dark:text-[#8a8a8a] dark:hover:bg-white/5 dark:hover:text-[#ccc]'"
-          @click="switchPane('user')"
-        >
-          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+    <!-- 工具栏：左侧终端标签，右侧快捷操作 -->
+    <div class="flex h-10 shrink-0 items-center justify-between border-b border-[#eef0f3] px-2.5 dark:border-[#2c2c2c]">
+      <div class="flex min-w-0 items-center gap-1.5">
+        <div class="flex h-7 items-center gap-1.5 rounded-md bg-[#eef2f7] px-2 text-[12px] font-medium text-[#111827] dark:bg-white/10 dark:text-[#ececec]">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" class="text-[#64748b] dark:text-[#9ca3af]">
             <path d="M4 5h16a1 1 0 0 1 1 1v12a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V6a1 1 0 0 1 1-1Z" />
             <path d="m7 9 3 3-3 3" />
             <path d="M12 15h5" />
           </svg>
-          <span class="max-w-[180px] truncate">{{ tabTitle }}</span>
-        </button>
-        <button
-          type="button"
-          class="flex h-7 items-center gap-1.5 rounded-lg px-2 text-[12px] transition-colors"
-          :class="activePane === 'agent'
-            ? 'bg-[#eef2f7] font-medium text-[#111827] dark:bg-white/10 dark:text-[#ececec]'
-            : 'text-[#64748b] hover:bg-[#f5f6f8] hover:text-[#334155] dark:text-[#8a8a8a] dark:hover:bg-white/5 dark:hover:text-[#ccc]'"
-          @click="switchPane('agent')"
-        >
-          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
-            <path d="M7 8h10" />
-            <path d="M7 12h6" />
-            <path d="M5 4h14a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2H8l-4 3v-3H5a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2Z" />
-          </svg>
-          <span>AI 终端</span>
-          <span class="rounded-full bg-black/5 px-1.5 py-0.5 text-[10px] text-[#64748b] dark:bg-white/10 dark:text-[#cbd5e1]">{{ aiTerminalCount }}</span>
-        </button>
+          <span class="max-w-[200px] truncate font-mono text-[11px]">{{ tabTitle }}</span>
+        </div>
       </div>
 
-      <div v-if="activePane === 'user'" class="flex items-center gap-1">
+      <div class="flex items-center gap-1">
         <Button
           type="button"
           variant="ghost"
@@ -425,41 +312,8 @@ onBeforeUnmount(() => {
 
     <div
       ref="terminalHostRef"
-      v-show="activePane === 'user'"
       class="min-h-0 flex-1 overflow-hidden px-2 py-1"
       @click="terminal?.focus()"
     />
-
-    <div
-      v-show="activePane === 'agent'"
-      class="min-h-0 flex-1 overflow-y-auto px-4 py-3 font-mono text-[13px] leading-[1.5] text-[#111827] dark:text-[#f3f3f3]"
-    >
-      <div v-if="aiTerminalEntries.length === 0" class="flex h-full items-center justify-center text-center font-sans text-sm text-[#64748b] dark:text-[#94a3b8]">
-        AI 还没有执行终端命令。
-      </div>
-      <div v-else class="space-y-5">
-        <section
-          v-for="entry in aiTerminalEntries"
-          :key="entry.id"
-          class="whitespace-pre-wrap break-words"
-        >
-          <div class="flex items-center gap-2 font-sans text-xs text-[#64748b] dark:text-[#94a3b8]">
-            <span class="rounded-md bg-[#f4f5f7] px-1.5 py-0.5 dark:bg-[#2a2a2a]">{{ entry.toolName }}</span>
-            <span>{{ entry.status === 'running' ? '执行中' : entry.status === 'completed' ? '已完成' : entry.status === 'cancelled' ? '已取消' : '失败' }}</span>
-          </div>
-          <div class="mt-1">
-            <span class="text-[#64748b] dark:text-[#9ca3af]">AI&gt;</span>
-            <span>{{ extractShellCommand(entry) }}</span>
-          </div>
-          <div
-            v-if="formatShellResult(entry)"
-            class="mt-1 border-l border-[#e5e7eb] pl-3 dark:border-[#333]"
-            :class="entry.status === 'error' ? 'text-[#b91c1c] dark:text-[#fca5a5]' : 'text-[#111827] dark:text-[#f3f3f3]'"
-          >
-            {{ formatShellResult(entry) }}
-          </div>
-        </section>
-      </div>
-    </div>
   </div>
 </template>

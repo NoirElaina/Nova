@@ -50,17 +50,6 @@ export type ShellSessionStatus = {
   backgroundCount: number;
 };
 
-export type ShellCommandResult = {
-  stdout: string;
-  stderr: string;
-  exitCode?: number | null;
-  cwd?: string | null;
-  timedOut: boolean;
-  cancelled: boolean;
-  background: boolean;
-  pid?: number | null;
-};
-
 export type UserTerminalInfo = {
   conversationId?: string | null;
   sessionId: string;
@@ -227,22 +216,6 @@ export async function getShellSessionStatus(
 ): Promise<ShellSessionStatus> {
   return invoke<ShellSessionStatus>("get_shell_session_status", {
     conversationId,
-  });
-}
-
-export async function executeShellCommandForConversation(
-  conversationId: string | null,
-  command: string,
-  options?: {
-    timeoutMs?: number;
-    background?: boolean;
-  },
-): Promise<ShellCommandResult> {
-  return invoke<ShellCommandResult>("execute_shell_command_for_conversation", {
-    conversationId,
-    command,
-    timeoutMs: options?.timeoutMs,
-    background: options?.background,
   });
 }
 

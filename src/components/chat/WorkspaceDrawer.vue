@@ -182,8 +182,6 @@ onBeforeUnmount(() => {
             v-show="activeTab === 'terminal'"
             :conversationId="conversationId ?? null"
             :visible="open && activeTab === 'terminal'"
-            :entries="entries"
-            :currentTurnToolEntries="currentTurnToolEntries"
           />
 
           <BrowserTab

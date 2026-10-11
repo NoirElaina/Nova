@@ -53,6 +53,7 @@ pub(crate) struct AnthropicRequest {
 
 #[derive(Debug, Deserialize)]
 pub(crate) struct AnthropicResponse {
+    #[allow(dead_code)]
     pub(crate) content: Vec<AnthropicContentBlock>,
     pub(crate) usage: AnthropicUsage,
 }

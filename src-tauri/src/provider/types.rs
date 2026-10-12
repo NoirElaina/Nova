@@ -29,7 +29,7 @@ pub enum AgentMode {
 // - Text: 纯文本
 // - Blocks: 结构化块（文本、工具调用、工具结果）
 // 这里使用 untagged 以兼容不同 provider 对 content 的不同 JSON 形态。
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum Content {
     Text(String),
@@ -37,7 +37,7 @@ pub enum Content {
 }
 
 // 图片源（当前仅支持 base64）。
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ImageSource {
     #[serde(rename = "type")]
     pub source_type: String,
@@ -47,7 +47,7 @@ pub struct ImageSource {
 
 // Nova 结构化内容块。
 // 这里的 tag 是 Nova 内部持久化标签；各 provider adapter 负责翻译成上游协议字段。
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type")]
 pub enum ContentBlock {
     // 普通文本块。
@@ -84,7 +84,7 @@ pub enum ContentBlock {
 }
 
 // 一条对话消息（role + content）。
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Message {
     pub role: Role,
     pub content: Content,

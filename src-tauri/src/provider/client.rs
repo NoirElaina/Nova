@@ -80,37 +80,8 @@ impl LlmClient {
         agent_mode: AgentMode,
         conversation_id: Option<&str>,
     ) -> Result<(ProviderTurnResult, ProviderPromptEstimate), ProviderTurnError> {
-        let mut url = self.base_url.trim_end_matches('/').to_string();
-
         let provider_name = self.adapter.provider_name();
-        if provider_name == "openai"
-            && !url.ends_with("/v1/chat/completions")
-            && !url.ends_with("/chat/completions")
-        {
-            if url.ends_with("/v1") {
-                url = format!("{}/chat/completions", url);
-            } else {
-                url = format!("{}/v1/chat/completions", url);
-            }
-        } else if provider_name == "responses"
-            && !url.ends_with("/v1/responses")
-            && !url.ends_with("/responses")
-        {
-            if url.ends_with("/v1") {
-                url = format!("{}/responses", url);
-            } else {
-                url = format!("{}/v1/responses", url);
-            }
-        } else if provider_name == "anthropic"
-            && !url.ends_with("/v1/messages")
-            && !url.ends_with("/messages")
-        {
-            if url.ends_with("/v1") {
-                url = format!("{}/messages", url);
-            } else {
-                url = format!("{}/v1/messages", url);
-            }
-        }
+        let url = resolve_provider_url(&self.base_url, provider_name)?;
 
         let builder = self.http_client.post(&url);
         let (req_builder, estimate) =
@@ -253,32 +224,8 @@ impl LlmClient {
         let profile = settings.active_provider_profile();
         let provider_name = self.adapter.provider_name();
 
-        let mut url = self.base_url.trim_end_matches('/').to_string();
-        if provider_name == "openai" {
-            if !url.ends_with("/v1/chat/completions") && !url.ends_with("/chat/completions") {
-                if url.ends_with("/v1") {
-                    url = format!("{}/chat/completions", url);
-                } else {
-                    url = format!("{}/v1/chat/completions", url);
-                }
-            }
-        } else if provider_name == "responses" {
-            if !url.ends_with("/v1/responses") && !url.ends_with("/responses") {
-                if url.ends_with("/v1") {
-                    url = format!("{}/responses", url);
-                } else {
-                    url = format!("{}/v1/responses", url);
-                }
-            }
-        } else if provider_name == "anthropic" {
-            if !url.ends_with("/v1/messages") && !url.ends_with("/messages") {
-                if url.ends_with("/v1") {
-                    url = format!("{}/messages", url);
-                } else {
-                    url = format!("{}/v1/messages", url);
-                }
-            }
-        }
+        let url = resolve_provider_url(&self.base_url, provider_name)
+            .map_err(|e| e.message)?;
 
         let mut req_builder = self.http_client.post(&url).header("content-type", "application/json");
 
@@ -374,6 +321,108 @@ impl LlmClient {
             return Err("模型未返回有效文本内容".to_string());
         }
         Ok(trimmed.to_string())
+    }
+}
+
+/// 基于 RFC 3986 标准规范化 Provider API Endpoint，解决网关二级路径与 Query 参数被粗暴截断/重叠的 Bug。
+pub(crate) fn resolve_provider_url(
+    base_url: &str,
+    provider_name: &str,
+) -> Result<String, ProviderTurnError> {
+    let trimmed = base_url.trim();
+    if trimmed.is_empty() {
+        return Err(ProviderTurnError::new("Provider base_url cannot be empty".to_string()));
+    }
+
+    let mut parsed = url::Url::parse(trimmed).map_err(|e| {
+        ProviderTurnError::new(format!("Invalid provider base_url '{}': {}", trimmed, e))
+    })?;
+
+    let target_endpoint = match provider_name {
+        "openai" => "chat/completions",
+        "responses" => "responses",
+        "anthropic" => "messages",
+        _ => return Ok(trimmed.to_string()),
+    };
+
+    let path = parsed.path().trim_end_matches('/').to_string();
+
+    // 若已经以目标端点结尾（例如 .../chat/completions 或 Azure 完整地址），保留原样
+    if path.ends_with(target_endpoint) {
+        return Ok(parsed.to_string());
+    }
+
+    let new_path = if path.ends_with("/v1") {
+        format!("{}/{}", path, target_endpoint)
+    } else if path.is_empty() || path == "/" {
+        format!("/v1/{}", target_endpoint)
+    } else {
+        format!("{}/v1/{}", path, target_endpoint)
+    };
+
+    parsed.set_path(&new_path);
+    Ok(parsed.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_resolve_openai_urls() {
+        assert_eq!(
+            resolve_provider_url("https://api.openai.com", "openai").unwrap(),
+            "https://api.openai.com/v1/chat/completions"
+        );
+        assert_eq!(
+            resolve_provider_url("https://api.openai.com/", "openai").unwrap(),
+            "https://api.openai.com/v1/chat/completions"
+        );
+        assert_eq!(
+            resolve_provider_url("https://api.openai.com/v1", "openai").unwrap(),
+            "https://api.openai.com/v1/chat/completions"
+        );
+        assert_eq!(
+            resolve_provider_url("https://api.openai.com/v1/", "openai").unwrap(),
+            "https://api.openai.com/v1/chat/completions"
+        );
+        assert_eq!(
+            resolve_provider_url("https://api.openai.com/v1/chat/completions", "openai").unwrap(),
+            "https://api.openai.com/v1/chat/completions"
+        );
+        // Azure OpenAI 带 query string
+        assert_eq!(
+            resolve_provider_url(
+                "https://my-res.openai.azure.com/openai/deployments/gpt-4o/chat/completions?api-version=2024-02",
+                "openai"
+            ).unwrap(),
+            "https://my-res.openai.azure.com/openai/deployments/gpt-4o/chat/completions?api-version=2024-02"
+        );
+        // 自定义中转子路径
+        assert_eq!(
+            resolve_provider_url("https://gateway.internal/ai/proxy/v1", "openai").unwrap(),
+            "https://gateway.internal/ai/proxy/v1/chat/completions"
+        );
+        assert_eq!(
+            resolve_provider_url("https://gateway.internal/ai/proxy", "openai").unwrap(),
+            "https://gateway.internal/ai/proxy/v1/chat/completions"
+        );
+    }
+
+    #[test]
+    fn test_resolve_anthropic_urls() {
+        assert_eq!(
+            resolve_provider_url("https://api.anthropic.com", "anthropic").unwrap(),
+            "https://api.anthropic.com/v1/messages"
+        );
+        assert_eq!(
+            resolve_provider_url("https://api.anthropic.com/v1", "anthropic").unwrap(),
+            "https://api.anthropic.com/v1/messages"
+        );
+        assert_eq!(
+            resolve_provider_url("https://api.anthropic.com/v1/messages", "anthropic").unwrap(),
+            "https://api.anthropic.com/v1/messages"
+        );
     }
 }
 

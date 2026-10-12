@@ -9,6 +9,110 @@ use crate::provider::LlmClient;
 use crate::agent::session::SessionEvent;
 use crate::provider::types::{AgentMode, Content, ContentBlock, Message, Role};
 
+/// 轮次执行交付结果
+#[derive(Debug, Clone, Default)]
+pub struct TurnOutcome {
+    pub turn_id: String,
+    pub stop_reason: String,
+    pub total_tokens: u32,
+    pub assistant_text: String,
+}
+
+/// 工具调用循环熔断动作
+enum CircuitAction {
+    None,
+    InjectWarning(String),
+    TripAndHalt(String),
+}
+
+/// 工具调用死循环熔断器
+/// 针对连续相同参数且执行报错/无意义重复的调用进行即时警示或截断，杜绝无脑试错 30 步烧穿 token
+#[derive(Default)]
+struct ToolLoopBreaker {
+    last_signature: Option<String>,
+    consecutive_same_call_count: usize,
+    consecutive_failure_count: usize,
+}
+
+impl ToolLoopBreaker {
+    fn new() -> Self {
+        Self::default()
+    }
+
+    fn signature(name: &str, input: &serde_json::Value) -> String {
+        format!("{}:{}", name, input)
+    }
+
+    fn record_and_evaluate(
+        &mut self,
+        tool_name: &str,
+        input: &serde_json::Value,
+        is_error: bool,
+    ) -> CircuitAction {
+        let sig = Self::signature(tool_name, input);
+        if self.last_signature.as_deref() == Some(&sig) {
+            self.consecutive_same_call_count += 1;
+            if is_error {
+                self.consecutive_failure_count += 1;
+            } else {
+                self.consecutive_failure_count = 0;
+            }
+        } else {
+            self.last_signature = Some(sig);
+            self.consecutive_same_call_count = 1;
+            self.consecutive_failure_count = if is_error { 1 } else { 0 };
+        }
+
+        if self.consecutive_failure_count >= 5 {
+            CircuitAction::TripAndHalt(format!(
+                "[Circuit Breaker Tripped]: Tool '{}' has failed 5 consecutive times with identical parameters. Halting execution to prevent infinite loop.",
+                tool_name
+            ))
+        } else if self.consecutive_failure_count >= 3 {
+            CircuitAction::InjectWarning(format!(
+                "\n\n[Nova Circuit Breaker Warning]: Tool '{}' has failed {} consecutive times with the exact same input. You MUST try a different approach, verify path/arguments, or explain the difficulty to the user instead of retrying this call.",
+                tool_name, self.consecutive_failure_count
+            ))
+        } else if self.consecutive_same_call_count >= 6 {
+            CircuitAction::InjectWarning(format!(
+                "\n\n[Nova Circuit Breaker Warning]: Tool '{}' has been invoked {} consecutive times with identical parameters. Please progress to the next step or synthesize results.",
+                tool_name, self.consecutive_same_call_count
+            ))
+        } else {
+            CircuitAction::None
+        }
+    }
+}
+
+/// 从 Assistant 消息中提取纯文本交付物
+fn extract_assistant_text(messages: &[Message]) -> String {
+    let mut text = String::new();
+    for msg in messages {
+        if msg.role != Role::Assistant {
+            continue;
+        }
+        match &msg.content {
+            Content::Text(t) => {
+                if !t.trim().is_empty() {
+                    text.push_str(t);
+                    text.push('\n');
+                }
+            }
+            Content::Blocks(blocks) => {
+                for block in blocks {
+                    if let ContentBlock::Text { text: t, .. } = block {
+                        if !t.trim().is_empty() {
+                            text.push_str(t);
+                            text.push('\n');
+                        }
+                    }
+                }
+            }
+        }
+    }
+    text.trim().to_string()
+}
+
 /// 现代化 Agent 核心引擎（Modern Cognitive Engine）
 /// 严格践行单真实信源（Single Source of Truth），实现完整的 ReAct 状态流转与即时自愈验证。
 pub struct AgentEngine {
@@ -21,14 +125,13 @@ impl AgentEngine {
     }
 
     /// 执行一轮完整的 Agent 认知闭环
-    /// 执行一轮完整的 Agent 认知闭环
     pub async fn execute_turn(
         &self,
         conversation_id: &str,
         user_prompt: &str,
         attachments: Option<Vec<crate::agent::session::types::HistoryAttachment>>,
         cancel_token: CancellationToken,
-    ) -> Result<(), String> {
+    ) -> Result<TurnOutcome, String> {
         let turn_id = Uuid::new_v4().to_string();
         let timestamp = chrono::Utc::now().timestamp_millis();
 
@@ -152,6 +255,9 @@ impl AgentEngine {
         let mut loop_count = 0;
         const MAX_STEPS: usize = 30;
         let mut total_turn_tokens = 0u32;
+        let mut last_assistant_text = String::new();
+        let mut all_assistant_text = String::new();
+        let mut loop_breaker = ToolLoopBreaker::new();
 
         // 5. ReAct 核心认知循环 (Thought -> Action -> Observation -> Reaction)
         while loop_count < MAX_STEPS {
@@ -176,7 +282,17 @@ impl AgentEngine {
                         total_tokens: total_turn_tokens,
                     },
                 );
-                return Ok(());
+                let deliverable = if !last_assistant_text.trim().is_empty() {
+                    last_assistant_text.trim().to_string()
+                } else {
+                    all_assistant_text.trim().to_string()
+                };
+                return Ok(TurnOutcome {
+                    turn_id,
+                    stop_reason: "cancelled".to_string(),
+                    total_tokens: total_turn_tokens,
+                    assistant_text: deliverable,
+                });
             }
 
             // 自动上下文压缩检查 (Mid-Turn Compact)
@@ -290,7 +406,17 @@ impl AgentEngine {
                         total_tokens: total_turn_tokens,
                     },
                 );
-                return Ok(());
+                let deliverable = if !last_assistant_text.trim().is_empty() {
+                    last_assistant_text.trim().to_string()
+                } else {
+                    all_assistant_text.trim().to_string()
+                };
+                return Ok(TurnOutcome {
+                    turn_id,
+                    stop_reason: "cancelled".to_string(),
+                    total_tokens: total_turn_tokens,
+                    assistant_text: deliverable,
+                });
             }
 
             // 发射用量事件
@@ -310,6 +436,40 @@ impl AgentEngine {
                     cache_creation_tokens: cache_create,
                 },
             );
+
+            // 提取本轮模型生成的 assistant 纯文本
+            let round_assistant_text = extract_assistant_text(&provider_result.messages);
+            if !round_assistant_text.is_empty() {
+                last_assistant_text = round_assistant_text.clone();
+                all_assistant_text.push_str(&round_assistant_text);
+                all_assistant_text.push('\n');
+            }
+
+            // 统一记账到 token_usage_log 流水表（主代理与子代理一致）
+            if let Ok(settings) = crate::services::settings::load_settings(&self.app) {
+                let model = settings.active_provider_profile().model;
+                let provider_name = settings.provider.clone();
+                let is_sub = crate::agent::orchestration::subagent::is_subagent_conversation(Some(conversation_id));
+                let actual_conv_id = if is_sub {
+                    crate::agent::orchestration::subagent::parent_conversation_id(conversation_id)
+                } else {
+                    conversation_id
+                };
+                let source = if is_sub { Some("subagent") } else { Some("agent") };
+                let _ = crate::provider::token_usage_log::log_token_usage(
+                    &self.app,
+                    Some(actual_conv_id),
+                    &model,
+                    Some(&provider_name),
+                    input_tok,
+                    output_tok,
+                    cache_read,
+                    cache_create,
+                    provider_result.cost.as_ref().map(|c| c.total_cost_usd.as_str()),
+                    source,
+                )
+                .await;
+            }
 
             // 将本轮模型生成的 Assistant 消息记入单事实源事件日志并加入上下文
             for msg in &provider_result.messages {
@@ -400,22 +560,59 @@ impl AgentEngine {
                             total_tokens: total_turn_tokens,
                         },
                     );
-                    return Ok(());
+                    let deliverable = if !last_assistant_text.trim().is_empty() {
+                        last_assistant_text.trim().to_string()
+                    } else {
+                        all_assistant_text.trim().to_string()
+                    };
+                    return Ok(TurnOutcome {
+                        turn_id,
+                        stop_reason: "cancelled".to_string(),
+                        total_tokens: total_turn_tokens,
+                        assistant_text: deliverable,
+                    });
                 }
                 calls = crate::agent::tools::execute_tool_calls_with_app(
                     &self.app,
                     Some(conversation_id),
-                    tool_calls,
+                    tool_calls.clone(),
                 ) => calls,
             };
             let duration_ms = exec_start.elapsed().as_millis() as u64;
 
             let mut tool_result_blocks = Vec::new();
             let mut stop_for_user_interaction = false;
-
             let mut pending_additional_messages = Vec::new();
 
-            for executed in executed_calls {
+            for mut executed in executed_calls {
+                // 提取本次工具调用原始入参以计算特征指纹
+                let call_input = tool_calls
+                    .iter()
+                    .find(|c| c.id == executed.id)
+                    .map(|c| c.input.clone())
+                    .unwrap_or_default();
+
+                // 接入工具死循环熔断器
+                match loop_breaker.record_and_evaluate(&executed.name, &call_input, executed.is_error) {
+                    CircuitAction::None => {}
+                    CircuitAction::InjectWarning(warning) => {
+                        tracing::warn!(
+                            tool = %executed.name,
+                            "ToolLoopBreaker injected warning for repeated execution"
+                        );
+                        executed.output.push_str(&warning);
+                    }
+                    CircuitAction::TripAndHalt(halt_msg) => {
+                        tracing::error!(
+                            tool = %executed.name,
+                            "ToolLoopBreaker tripped and halted execution"
+                        );
+                        executed.output = halt_msg;
+                        executed.is_error = true;
+                        stop_for_user_interaction = true;
+                    }
+                }
+
                 let now_ms = chrono::Utc::now().timestamp_millis();
                 let _ = crate::agent::session::append_event(
                     &self.app,
@@ -497,7 +694,6 @@ impl AgentEngine {
                 current_messages.extend(pending_additional_messages);
             }
 
-
             if stop_for_user_interaction {
                 break;
             }
@@ -506,6 +702,8 @@ impl AgentEngine {
         // 6. 认知循环收尾：终结事件记录与会话元信息同步
         let final_stop_reason = if cancel_token.is_cancelled() {
             "cancelled".to_string()
+        } else if loop_count >= MAX_STEPS {
+            "max_steps".to_string()
         } else {
             "end_turn".to_string()
         };
@@ -521,12 +719,14 @@ impl AgentEngine {
         )
         .await;
 
-        let _ = crate::agent::session::history::refresh_conversation_activity(
-            &self.app,
-            conversation_id,
-            Some(user_prompt),
-        )
-        .await;
+        if !crate::agent::orchestration::subagent::is_subagent_conversation(Some(conversation_id)) {
+            let _ = crate::agent::session::history::refresh_conversation_activity(
+                &self.app,
+                conversation_id,
+                Some(user_prompt),
+            )
+            .await;
+        }
 
         let _ = self.app.emit(
             "agent-event",
@@ -544,12 +744,23 @@ impl AgentEngine {
             "agent-event",
             AgentDomainEvent::TurnFinished {
                 turn_id: turn_id.clone(),
-                stop_reason: final_stop_reason,
+                stop_reason: final_stop_reason.clone(),
                 total_tokens: total_turn_tokens,
             },
         );
 
-        Ok(())
+        let deliverable = if !last_assistant_text.trim().is_empty() {
+            last_assistant_text.trim().to_string()
+        } else {
+            all_assistant_text.trim().to_string()
+        };
+
+        Ok(TurnOutcome {
+            turn_id,
+            stop_reason: final_stop_reason,
+            total_tokens: total_turn_tokens,
+            assistant_text: deliverable,
+        })
     }
 
     async fn handle_turn_error(
@@ -557,7 +768,7 @@ impl AgentEngine {
         conversation_id: &str,
         turn_id: &str,
         err_msg: &str,
-    ) -> Result<(), String> {
+    ) -> Result<TurnOutcome, String> {
         let _ = crate::agent::session::append_event(
             &self.app,
             conversation_id,
@@ -583,6 +794,104 @@ impl AgentEngine {
             },
         );
         Err(err_msg.to_string())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn test_tool_loop_breaker_injects_warning_at_3_failures() {
+        let mut breaker = ToolLoopBreaker::new();
+        let input = json!({ "path": "not_found.rs" });
+
+        // 1st failure: None
+        assert!(matches!(
+            breaker.record_and_evaluate("Read", &input, true),
+            CircuitAction::None
+        ));
+
+        // 2nd failure: None
+        assert!(matches!(
+            breaker.record_and_evaluate("Read", &input, true),
+            CircuitAction::None
+        ));
+
+        // 3rd failure: InjectWarning
+        match breaker.record_and_evaluate("Read", &input, true) {
+            CircuitAction::InjectWarning(warn) => {
+                assert!(warn.contains("failed 3 consecutive times"));
+                assert!(warn.contains("Nova Circuit Breaker Warning"));
+            }
+            _ => panic!("Expected InjectWarning on 3rd failure"),
+        }
+    }
+
+    #[test]
+    fn test_tool_loop_breaker_halts_at_5_failures() {
+        let mut breaker = ToolLoopBreaker::new();
+        let input = json!({ "path": "not_found.rs" });
+
+        for _ in 0..4 {
+            breaker.record_and_evaluate("Read", &input, true);
+        }
+
+        // 5th failure: TripAndHalt
+        match breaker.record_and_evaluate("Read", &input, true) {
+            CircuitAction::TripAndHalt(halt) => {
+                assert!(halt.contains("Circuit Breaker Tripped"));
+                assert!(halt.contains("failed 5 consecutive times"));
+            }
+            _ => panic!("Expected TripAndHalt on 5th failure"),
+        }
+    }
+
+    #[test]
+    fn test_tool_loop_breaker_resets_on_success_or_different_params() {
+        let mut breaker = ToolLoopBreaker::new();
+        let input1 = json!({ "path": "file1.rs" });
+        let input2 = json!({ "path": "file2.rs" });
+
+        breaker.record_and_evaluate("Read", &input1, true);
+        breaker.record_and_evaluate("Read", &input1, true);
+
+        // Different parameter resets failure count for the new signature
+        assert!(matches!(
+            breaker.record_and_evaluate("Read", &input2, true),
+            CircuitAction::None
+        ));
+
+        // Success resets failure count
+        breaker.record_and_evaluate("Read", &input2, false);
+        assert_eq!(breaker.consecutive_failure_count, 0);
+    }
+
+    #[test]
+    fn test_extract_assistant_text_merges_blocks() {
+        let msgs = vec![
+            Message {
+                role: Role::User,
+                content: Content::Text("user message".to_string()),
+            },
+            Message {
+                role: Role::Assistant,
+                content: Content::Blocks(vec![
+                    ContentBlock::Text {
+                        text: "Thinking done.".to_string(),
+                    },
+                    ContentBlock::Text {
+                        text: "Here is the result.".to_string(),
+                    },
+                ]),
+            },
+        ];
+
+        let extracted = extract_assistant_text(&msgs);
+        assert!(extracted.contains("Thinking done."));
+        assert!(extracted.contains("Here is the result."));
+        assert!(!extracted.contains("user message"));
     }
 }
 

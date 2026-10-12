@@ -1,11 +1,18 @@
 <script setup lang="ts">
-// 后台任务右侧面板：与执行计划（PlanPanel）同款抽屉外观。
-// 只读：查看每个后台作业的命令、状态与最近输出，不提供终止操作（终止走 BashKill）。
+// 后台任务右侧面板：轻量现代化白净卡片风格（与智能体套件/子代理统一）。
+// 只读：查看每个后台作业的命令、状态与最近输出。
 // 打开期间轮询：列表 3s，选中作业的输出 2s。
 import { computed, ref, watch, onBeforeUnmount } from "vue";
 import { invoke } from "@tauri-apps/api/core";
 import { Button } from "@/components/ui/button";
-import { SquareTerminal, X } from "lucide-vue-next";
+import {
+  SquareTerminal,
+  X,
+  Copy,
+  Check,
+  Folder,
+  Terminal,
+} from "lucide-vue-next";
 import type { BackgroundJob } from "./BackgroundJobsChip.vue";
 
 const props = defineProps<{
@@ -23,13 +30,13 @@ let listTimer: ReturnType<typeof setInterval> | null = null;
 let outputTimer: ReturnType<typeof setInterval> | null = null;
 
 const selected = computed(() => jobs.value.find((j) => j.id === selectedId.value) ?? null);
+const runningCount = computed(() => jobs.value.filter((j) => j.running).length);
 
-interface JobOutput extends BackgroundJob {
-  // 输出经 read_background_job_output 拉取，结构同 BackgroundJob
-}
+interface JobOutput extends BackgroundJob {}
 
 const output = ref<JobOutput | null>(null);
 const outputEl = ref<HTMLElement | null>(null);
+const autoScroll = ref(true);
 
 async function fetchJobs() {
   try {
@@ -79,15 +86,21 @@ function stopPolling() {
   if (outputTimer) { clearInterval(outputTimer); outputTimer = null; }
 }
 
-// 输出更新后贴底，方便盯着 tail；用户往上翻了就不打扰。
 function scrollToBottom() {
   const el = outputEl.value;
-  if (!el) return;
-  const nearBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 80;
-  if (nearBottom) el.scrollTop = el.scrollHeight;
+  if (!el || !autoScroll.value) return;
+  el.scrollTop = el.scrollHeight;
 }
 
-function fmtMs(ms: number): string {
+function handleOutputScroll() {
+  const el = outputEl.value;
+  if (!el) return;
+  const isNearBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 60;
+  autoScroll.value = isNearBottom;
+}
+
+function fmtMs(ms?: number): string {
+  if (typeof ms !== "number") return "";
   if (ms < 1000) return `${ms}ms`;
   const s = Math.floor(ms / 1000);
   if (s < 60) return `${s}s`;
@@ -95,17 +108,55 @@ function fmtMs(ms: number): string {
   return `${m}m ${s % 60}s`;
 }
 
-/** 状态徽标的文案与配色。 */
-function statusOf(job: BackgroundJob): { text: string; cls: string } {
-  if (job.timedOut) return { text: "超时回收", cls: "bg-[#fef3c7] text-[#92400e] dark:bg-[#78350f]/40 dark:text-[#fcd34d]" };
-  if (job.killed) return { text: "已终止", cls: "bg-[#fcebeb] text-[#a32d2d] dark:bg-[#7f1d1d]/40 dark:text-[#fca5a5]" };
-  if (job.running) return { text: "运行中", cls: "bg-[#e6f1fb] text-[#185fa5] dark:bg-[#0c447c]/40 dark:text-[#93c5fd]" };
+/** 状态徽标的文案与配色（轻量胶囊 Pill 规范）。 */
+function statusOf(job: BackgroundJob): { text: string; type: "running" | "done" | "error" | "warn" } {
+  if (job.timedOut) return { text: "超时回收", type: "warn" };
+  if (job.killed) return { text: "已终止", type: "error" };
+  if (job.running) return { text: "运行中", type: "running" };
   if (job.finished) {
     return job.exitCode === 0
-      ? { text: "已结束 · 0", cls: "bg-[#eaf3de] text-[#3b6d11] dark:bg-[#27500a]/40 dark:text-[#bef264]" }
-      : { text: `退出码 ${job.exitCode ?? "?"}`, cls: "bg-[#fcebeb] text-[#a32d2d] dark:bg-[#7f1d1d]/40 dark:text-[#fca5a5]" };
+      ? { text: "已完成 · 0", type: "done" }
+      : { text: `退出码 ${job.exitCode ?? "?"}`, type: "error" };
   }
-  return { text: "未知", cls: "bg-[#f1efe8] text-[#5f5e5a] dark:bg-white/10 dark:text-[#9ca3af]" };
+  return { text: "未知", type: "warn" };
+}
+
+// 复制交互状态
+const copiedOutput = ref(false);
+async function copyOutputText() {
+  if (!output.value) return;
+  const text = (output.value.stdout || "") + (output.value.stderr ? `\n[STDERR]\n${output.value.stderr}` : "");
+  if (!text) return;
+  try {
+    await navigator.clipboard.writeText(text);
+    copiedOutput.value = true;
+    setTimeout(() => { copiedOutput.value = false; }, 1500);
+  } catch {
+    // ignore
+  }
+}
+
+const copiedCommand = ref<string | null>(null);
+async function copyCommandText(cmd: string, id: string) {
+  try {
+    await navigator.clipboard.writeText(cmd);
+    copiedCommand.value = id;
+    setTimeout(() => { copiedCommand.value = null; }, 1500);
+  } catch {
+    // ignore
+  }
+}
+
+const copiedCwd = ref(false);
+async function copyCwdText(cwd?: string | null) {
+  if (!cwd) return;
+  try {
+    await navigator.clipboard.writeText(cwd);
+    copiedCwd.value = true;
+    setTimeout(() => { copiedCwd.value = false; }, 1500);
+  } catch {
+    // ignore
+  }
 }
 
 watch(
@@ -138,20 +189,45 @@ onBeforeUnmount(stopPolling);
 
 <template>
   <Transition name="slide-right">
-    <aside v-show="open" class="relative z-20 h-full w-[440px] shrink-0 py-2 pl-1.5">
+    <aside
+      v-show="open"
+      class="relative z-20 h-full w-[480px] shrink-0 py-2 pl-2"
+      role="complementary"
+      aria-label="后台任务面板"
+    >
+      <!-- 主容器：悬浮现代轻量卡片外壳 -->
       <div
-        class="flex h-full flex-col overflow-hidden rounded-2xl border border-[#e7e9ee] bg-white shadow-[0_8px_30px_rgba(15,23,42,0.08)] dark:border-[#343434] dark:bg-[#1e1e1e] dark:shadow-[0_8px_30px_rgba(0,0,0,0.4)]"
+        class="flex h-full flex-col overflow-hidden rounded-2xl border border-[#e5e7eb] bg-white shadow-[0_16px_40px_rgba(15,23,42,0.08)] dark:border-[#26282e] dark:bg-[#151619] dark:shadow-[0_20px_50px_rgba(0,0,0,0.5)]"
       >
-        <div class="flex h-11 shrink-0 items-center justify-between border-b border-[#eef0f3] px-3 dark:border-[#2c2c2c]">
-          <div class="flex min-w-0 items-center gap-1.5 text-[13px] font-medium text-[#111827] dark:text-[#ececec]">
-            <SquareTerminal class="h-3.5 w-3.5 shrink-0 text-[#64748b] dark:text-[#9ca3af]" />
-            后台任务
+        <!-- 顶部 Header -->
+        <div class="flex h-12 shrink-0 items-center justify-between border-b border-[#f1f5f9] px-4 dark:border-[#202227]">
+          <div class="flex min-w-0 items-center gap-2.5">
+            <div class="flex h-7 w-7 items-center justify-center rounded-lg bg-[#eff6ff] text-[#2563eb] dark:bg-[#1e293b] dark:text-[#60a5fa]">
+              <SquareTerminal class="h-4 w-4" />
+            </div>
+            <span class="text-[14px] font-semibold tracking-tight text-[#0f172a] dark:text-[#f8fafc]">
+              后台任务
+            </span>
+            <span
+              v-if="runningCount > 0"
+              class="inline-flex items-center gap-1.5 rounded-full border border-[#bbf7d0] bg-[#dcfce7] px-2 py-0.5 text-[11px] font-semibold text-[#15803d] dark:border-[#166534] dark:bg-emerald-950/40 dark:text-[#86efac]"
+            >
+              <span class="h-1.5 w-1.5 animate-pulse rounded-full bg-[#22c55e]" />
+              {{ runningCount }} 运行中
+            </span>
+            <span
+              v-else-if="jobs.length > 0"
+              class="rounded-full border border-[#e2e8f0] bg-[#f8fafc] px-2 py-0.5 text-[11px] font-medium text-[#64748b] dark:border-[#282a30] dark:bg-[#1c1d22] dark:text-[#94a3b8]"
+            >
+              {{ jobs.length }} 个任务
+            </span>
           </div>
+
           <Button
             type="button"
             variant="ghost"
             size="icon-sm"
-            class="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg text-muted-foreground transition-colors hover:bg-black/5 dark:hover:bg-white/5"
+            class="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg text-[#64748b] transition-colors hover:bg-black/5 hover:text-[#0f172a] dark:text-[#94a3b8] dark:hover:bg-white/5 dark:hover:text-[#ffffff]"
             title="关闭后台任务面板"
             @click="emit('close')"
           >
@@ -159,63 +235,190 @@ onBeforeUnmount(stopPolling);
           </Button>
         </div>
 
-        <!-- 任务列表 -->
-        <div class="max-h-[38%] shrink-0 overflow-y-auto border-b border-[#eef0f3] px-2 py-1.5 dark:border-[#2c2c2c]">
-          <div v-if="jobs.length === 0" class="px-1.5 py-4 text-[12px] text-[#94a3b8] dark:text-[#9b9489]">
-            当前会话没有后台作业。用 Bash(run_in_background: true) 启动后会出现在这里。
-          </div>
-          <button
-            v-for="job in jobs"
-            :key="job.id"
-            type="button"
-            class="flex w-full items-start gap-2 rounded-lg px-1.5 py-1.5 text-left transition-colors"
-            :class="job.id === selectedId
-              ? 'bg-[#f3f5f8] dark:bg-white/10'
-              : 'hover:bg-[#f8fafc] dark:hover:bg-white/5'"
-            @click="select(job.id)"
+        <!-- 任务卡片列表区 -->
+        <div class="max-h-[38%] shrink-0 overflow-y-auto border-b border-[#f1f5f9] p-3 custom-scrollbar dark:border-[#202227]">
+          <div
+            v-if="jobs.length === 0"
+            class="flex flex-col items-center justify-center py-6 text-center"
           >
-            <span
-              v-if="job.running"
-              class="mt-1.5 h-1.5 w-1.5 shrink-0 animate-pulse rounded-full bg-[#3b82f6]"
-            />
-            <span v-else class="mt-1.5 h-1.5 w-1.5 shrink-0 rounded-full bg-[#cbd5e1] dark:bg-[#4b5563]" />
-            <span class="min-w-0 flex-1">
-              <span class="flex items-center gap-1.5">
-                <span class="shrink-0 font-mono text-[11px] text-[#64748b] dark:text-[#9ca3af]">{{ job.id }}</span>
-                <span class="shrink-0 rounded px-1 py-px text-[10px]" :class="statusOf(job).cls">{{ statusOf(job).text }}</span>
-              </span>
-              <span class="mt-0.5 block truncate font-mono text-[11px] text-[#374151] dark:text-[#d1d5db]" :title="job.command">{{ job.command }}</span>
-            </span>
-          </button>
+            <div class="flex h-10 w-10 items-center justify-center rounded-xl bg-[#f1f5f9] text-[#94a3b8] dark:bg-[#1e2025] dark:text-[#64748b] mb-2">
+              <Terminal class="h-5 w-5" />
+            </div>
+            <p class="text-[13px] font-medium text-[#475569] dark:text-[#cbd5e1]">当前会话暂无后台作业</p>
+            <p class="mt-0.5 max-w-[280px] text-[11.5px] text-[#94a3b8] dark:text-[#64748b]">
+              使用 Bash(run_in_background: true) 启动命令后会实时出现在此处。
+            </p>
+          </div>
+
+          <div v-else class="flex flex-col gap-2">
+            <div
+              v-for="job in jobs"
+              :key="job.id"
+              role="button"
+              tabindex="0"
+              class="group relative flex cursor-pointer flex-col gap-2 rounded-xl border p-2.5 transition-all"
+              :class="job.id === selectedId
+                ? 'border-[#3b82f6] bg-white shadow-sm ring-1 ring-[#3b82f6]/20 dark:border-[#60a5fa] dark:bg-[#1a1c22] dark:ring-[#60a5fa]/20'
+                : 'border-[#e2e8f0] bg-[#fafbfc] hover:border-[#cbd5e1] hover:bg-[#f8fafc] dark:border-[#22242a] dark:bg-[#18191d] dark:hover:border-[#2d3038] dark:hover:bg-[#1e2025]'"
+              @click="select(job.id)"
+              @keydown.enter="select(job.id)"
+            >
+              <!-- 卡片首行：ID + 状态 Badge + 耗时/PID -->
+              <div class="flex items-center justify-between">
+                <div class="flex items-center gap-2">
+                  <span class="rounded bg-black/5 px-1.5 py-0.5 font-mono text-[11px] font-semibold text-[#0f172a] dark:bg-white/10 dark:text-[#f8fafc]">
+                    {{ job.id }}
+                  </span>
+
+                  <!-- 状态 Pill -->
+                  <span
+                    class="inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[10.5px] font-semibold"
+                    :class="{
+                      'border border-[#bbf7d0] bg-[#dcfce7] text-[#15803d] dark:border-[#166534] dark:bg-emerald-950/40 dark:text-[#86efac]': statusOf(job).type === 'running',
+                      'border border-[#e2e8f0] bg-[#f1f5f9] text-[#475569] dark:border-[#282a30] dark:bg-[#1e2126] dark:text-[#94a3b8]': statusOf(job).type === 'done',
+                      'border border-[#fecaca] bg-[#fee2e2] text-[#b91c1c] dark:border-[#991b1b] dark:bg-red-950/40 dark:text-[#fca5a5]': statusOf(job).type === 'error',
+                      'border border-[#fde68a] bg-[#fef3c7] text-[#92400e] dark:border-[#854d0e] dark:bg-amber-950/40 dark:text-[#fcd34d]': statusOf(job).type === 'warn',
+                    }"
+                  >
+                    <span
+                      class="h-1.5 w-1.5 rounded-full"
+                      :class="{
+                        'animate-pulse bg-[#22c55e]': statusOf(job).type === 'running',
+                        'bg-[#64748b] dark:bg-[#94a3b8]': statusOf(job).type === 'done',
+                        'bg-[#ef4444]': statusOf(job).type === 'error',
+                        'bg-[#f59e0b]': statusOf(job).type === 'warn',
+                      }"
+                    />
+                    {{ statusOf(job).text }}
+                  </span>
+                </div>
+
+                <div class="flex items-center gap-2 text-[11px] font-mono text-[#64748b] dark:text-[#94a3b8]">
+                  <span>pid {{ job.pid }}</span>
+                  <span v-if="fmtMs(job.elapsedMs)">· {{ fmtMs(job.elapsedMs) }}</span>
+                </div>
+              </div>
+
+              <!-- 卡片第二行：命令内容小代码块 -->
+              <div class="flex items-center justify-between gap-2 rounded-lg border border-[#e5e7eb] bg-white px-2 py-1 font-mono text-[11px] text-[#334155] dark:border-[#222429] dark:bg-[#121316] dark:text-[#cbd5e1]">
+                <span class="truncate" :title="job.command">{{ job.command }}</span>
+                <button
+                  type="button"
+                  class="shrink-0 p-0.5 text-[#94a3b8] opacity-60 transition-opacity hover:opacity-100 dark:text-[#64748b]"
+                  :title="copiedCommand === job.id ? '已复制命令' : '复制命令'"
+                  @click.stop="copyCommandText(job.command, job.id)"
+                >
+                  <Check v-if="copiedCommand === job.id" class="h-3 w-3 text-emerald-500" />
+                  <Copy v-else class="h-3 w-3" />
+                </button>
+              </div>
+            </div>
+          </div>
         </div>
 
         <!-- 选中作业的详情与输出 -->
-        <div class="flex min-h-0 flex-1 flex-col">
+        <div class="flex min-h-0 flex-1 flex-col p-3">
           <template v-if="selected">
-            <div class="shrink-0 space-y-1 px-3 py-2 text-[11px] text-[#64748b] dark:text-[#9ca3af]">
-              <div class="flex items-center gap-2">
-                <span class="font-mono">{{ selected.id }}</span>
-                <span>pid {{ selected.pid }}</span>
-                <span>已运行 {{ fmtMs(selected.elapsedMs) }}</span>
-                <span v-if="selected.running">剩余 {{ fmtMs(selected.remainingMs) }}</span>
+            <!-- 元数据小卡片 -->
+            <div class="mb-2.5 flex flex-col gap-1.5 rounded-xl border border-[#e5e7eb] bg-[#fafbfc] p-2.5 text-[11.5px] dark:border-[#22242a] dark:bg-[#17181c]">
+              <div class="flex flex-wrap items-center justify-between gap-2">
+                <div class="flex items-center gap-3 text-[#64748b] dark:text-[#94a3b8]">
+                  <span class="font-mono font-semibold text-[#0f172a] dark:text-[#f8fafc]">{{ selected.id }}</span>
+                  <span>PID <strong class="font-mono text-[#334155] dark:text-[#cbd5e1]">{{ selected.pid }}</strong></span>
+                  <span>已运行 <strong class="font-mono text-[#334155] dark:text-[#cbd5e1]">{{ fmtMs(selected.elapsedMs) }}</strong></span>
+                  <span v-if="selected.running">剩余 TTL <strong class="font-mono text-[#334155] dark:text-[#cbd5e1]">{{ fmtMs(selected.remainingMs) }}</strong></span>
+                </div>
               </div>
-              <div v-if="selected.cwd" class="truncate" :title="selected.cwd">{{ selected.cwd }}</div>
+
+              <!-- 工作目录 -->
+              <div
+                v-if="selected.cwd"
+                class="flex items-center justify-between gap-1.5 rounded bg-black/5 px-2 py-1 font-mono text-[11px] text-[#475569] dark:bg-white/5 dark:text-[#94a3b8]"
+              >
+                <div class="flex min-w-0 items-center gap-1.5">
+                  <Folder class="h-3 w-3 shrink-0 text-[#64748b] dark:text-[#94a3b8]" />
+                  <span class="truncate" :title="selected.cwd">{{ selected.cwd }}</span>
+                </div>
+                <button
+                  type="button"
+                  class="shrink-0 p-0.5 text-[#94a3b8] opacity-70 transition-opacity hover:opacity-100 dark:text-[#64748b]"
+                  :title="copiedCwd ? '已复制路径' : '复制工作目录'"
+                  @click="copyCwdText(selected.cwd)"
+                >
+                  <Check v-if="copiedCwd" class="h-3 w-3 text-emerald-500" />
+                  <Copy v-else class="h-3 w-3" />
+                </button>
+              </div>
             </div>
-            <div
-              ref="outputEl"
-              class="min-h-0 flex-1 overflow-y-auto border-t border-[#eef0f3] px-3 py-2 dark:border-[#2c2c2c]"
-            >
-              <pre
-                v-if="output && (output.stdout || output.stderr)"
-                class="whitespace-pre-wrap break-words font-mono text-[11px] leading-relaxed text-[#111827] dark:text-[#e5e5e5]"
-              >{{ output.stdout }}<span v-if="output.stderr" class="text-[#b91c1c] dark:text-[#f87171]">{{ output.stderr }}</span></pre>
-              <div v-else class="py-4 text-[12px] text-[#94a3b8] dark:text-[#9b9489]">
-                {{ selected.running ? "还没有输出。" : "没有输出。" }}
+
+            <!-- 终端输出视窗卡片 -->
+            <div class="flex min-h-0 flex-1 flex-col overflow-hidden rounded-xl border border-[#cbd5e1] bg-[#0e0f12] shadow-inner dark:border-[#23252c]">
+              <!-- 终端 Header 栏 -->
+              <div class="flex h-8 shrink-0 items-center justify-between border-b border-[#202227] bg-[#141519] px-3">
+                <div class="flex items-center gap-1.5">
+                  <span class="h-2 w-2 rounded-full bg-[#ef4444]" />
+                  <span class="h-2 w-2 rounded-full bg-[#f59e0b]" />
+                  <span class="h-2 w-2 rounded-full bg-[#10b981]" />
+                  <span class="ml-1.5 font-mono text-[11px] font-medium text-[#94a3b8]">标准输出 (stdout / stderr)</span>
+                </div>
+
+                <div class="flex items-center gap-2">
+                  <button
+                    type="button"
+                    class="rounded px-1.5 py-0.5 text-[10.5px] font-medium transition-colors"
+                    :class="autoScroll ? 'bg-white/10 text-white' : 'text-[#64748b] hover:text-[#94a3b8]'"
+                    @click="autoScroll = !autoScroll; scrollToBottom()"
+                  >
+                    {{ autoScroll ? '贴底锁定' : '自由浏览' }}
+                  </button>
+
+                  <button
+                    v-if="output && (output.stdout || output.stderr)"
+                    type="button"
+                    class="flex items-center gap-1 rounded bg-white/10 px-1.5 py-0.5 text-[10.5px] font-medium text-white transition-colors hover:bg-white/15"
+                    @click="copyOutputText"
+                  >
+                    <Check v-if="copiedOutput" class="h-3 w-3 text-emerald-400" />
+                    <Copy v-else class="h-3 w-3" />
+                    <span>{{ copiedOutput ? '已复制' : '复制' }}</span>
+                  </button>
+                </div>
+              </div>
+
+              <!-- 终端输出主体 -->
+              <div
+                ref="outputEl"
+                class="min-h-0 flex-1 overflow-y-auto p-3 custom-scrollbar"
+                @scroll="handleOutputScroll"
+              >
+                <pre
+                  v-if="output && (output.stdout || output.stderr)"
+                  class="whitespace-pre-wrap break-words font-mono text-[11.5px] leading-relaxed text-[#e5e5e5]"
+                >{{ output.stdout }}<span v-if="output.stderr" class="text-[#f87171]">{{ output.stderr }}</span></pre>
+
+                <!-- 无输出等待状态 -->
+                <div
+                  v-else
+                  class="flex h-full flex-col items-center justify-center py-8 text-center text-[#64748b]"
+                >
+                  <div v-if="selected.running" class="flex items-center gap-2 text-[12px]">
+                    <div class="h-2.5 w-2.5 animate-spin rounded-full border border-solid border-current border-r-transparent text-emerald-400" />
+                    <span>正在执行，等待输出产生…</span>
+                  </div>
+                  <div v-else class="text-[12px]">
+                    作业已结束，未捕获到输出内容。
+                  </div>
+                </div>
               </div>
             </div>
           </template>
-          <div v-else class="flex flex-1 items-center justify-center text-[12px] text-[#94a3b8] dark:text-[#9b9489]">
-            选择一个作业查看输出
+
+          <div
+            v-else
+            class="flex flex-1 flex-col items-center justify-center text-center text-[#94a3b8] dark:text-[#64748b]"
+          >
+            <SquareTerminal class="h-8 w-8 stroke-1 opacity-50 mb-1.5" />
+            <p class="text-[12.5px]">请在上方选择一个作业查看详情与输出</p>
           </div>
         </div>
       </div>

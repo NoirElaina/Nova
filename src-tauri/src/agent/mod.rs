@@ -30,7 +30,7 @@ pub async fn send_modern_agent_turn(
         .execute_turn(&conversation_id, &prompt, attachments, cancel_token)
         .await;
     crate::agent::cancellation::finish_turn(Some(&conversation_id));
-    result
+    result.map(|_| ())
 }
 
 /// 现代化 Agent 外部取消统一调用入口

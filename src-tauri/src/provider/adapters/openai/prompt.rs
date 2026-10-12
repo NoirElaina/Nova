@@ -46,6 +46,12 @@ fn build_openai_image_part(source: &ImageSource) -> Option<Value> {
     }))
 }
 
+struct ExtractedToolResult {
+    tool_call_id: String,
+    text: String,
+    images: Vec<Value>,
+}
+
 fn messages_to_openai_messages(
     messages: &[Message],
 ) -> Result<Vec<OpenAiMessage>, ProviderTurnError> {
@@ -70,7 +76,7 @@ fn messages_to_openai_messages(
                 let mut text_parts = Vec::new();
                 let mut image_parts = Vec::new();
                 let mut tool_calls = Vec::new();
-                let mut tool_results = Vec::new();
+                let mut tool_results: Vec<ExtractedToolResult> = Vec::new();
 
                 for block in blocks {
                     match block {
@@ -101,21 +107,46 @@ fn messages_to_openai_messages(
                         }
                         ContentBlock::ToolResult {
                             tool_use_id,
+                            is_error,
                             content,
-                            ..
                         } => {
-                            let text = content
-                                .iter()
-                                .filter_map(|block| {
-                                    if let ContentBlock::Text { text } = block {
-                                        Some(text.as_str())
-                                    } else {
-                                        None
+                            let mut texts = Vec::new();
+                            let mut images = Vec::new();
+                            for sub_block in content {
+                                match sub_block {
+                                    ContentBlock::Text { text } => {
+                                        if !text.trim().is_empty() {
+                                            texts.push(text.as_str());
+                                        }
                                     }
-                                })
-                                .collect::<Vec<_>>()
-                                .join("\n");
-                            tool_results.push((tool_use_id.clone(), text));
+                                    ContentBlock::Image { source } => {
+                                        if let Some(part) = build_openai_image_part(source) {
+                                            images.push(part);
+                                        }
+                                    }
+                                    _ => {}
+                                }
+                            }
+
+                            let mut result_text = texts.join("\n");
+                            if result_text.trim().is_empty() {
+                                if !images.is_empty() {
+                                    result_text = format!(
+                                        "[Tool executed successfully with {} image output(s). Image content attached in follow-up message.]",
+                                        images.len()
+                                    );
+                                } else if *is_error {
+                                    result_text = "[Tool execution failed with empty output]".to_string();
+                                } else {
+                                    result_text = "[Tool execution completed with empty output]".to_string();
+                                }
+                            }
+
+                            tool_results.push(ExtractedToolResult {
+                                tool_call_id: tool_use_id.clone(),
+                                text: result_text,
+                                images,
+                            });
                         }
                     }
                 }
@@ -140,15 +171,35 @@ fn messages_to_openai_messages(
                     continue;
                 }
 
-                for (tool_call_id, result_text) in tool_results {
+                // 1. 先输出符合 OpenAI 规范的标准 tool 结果消息（严格保证 content 为 String）
+                for res in &tool_results {
                     oai_messages.push(OpenAiMessage {
                         role: "tool".into(),
-                        content: Some(Value::String(result_text)),
+                        content: Some(Value::String(res.text.clone())),
                         tool_calls: None,
-                        tool_call_id: Some(tool_call_id),
+                        tool_call_id: Some(res.tool_call_id.clone()),
                     });
                 }
 
+                // 2. 紧随其后生成关联的多模态用户消息，供视觉模型消费工具生成的图像
+                for res in &tool_results {
+                    if !res.images.is_empty() {
+                        let mut attached_parts = Vec::new();
+                        attached_parts.push(serde_json::json!({
+                            "type": "text",
+                            "text": format!("Attached visual output from tool call '{}':", res.tool_call_id)
+                        }));
+                        attached_parts.extend(res.images.clone());
+                        oai_messages.push(OpenAiMessage {
+                            role: "user".into(),
+                            content: Some(Value::Array(attached_parts)),
+                            tool_calls: None,
+                            tool_call_id: None,
+                        });
+                    }
+                }
+
+                // 3. 用户本身的普通文本与多模态图片输入
                 if !image_parts.is_empty() {
                     let mut content_parts = Vec::new();
                     if !text_parts.is_empty() {
@@ -243,4 +294,82 @@ pub(crate) fn build_request(
             tool_count,
         },
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_tool_result_with_image() {
+        let tool_msg = Message {
+            role: Role::User,
+            content: Content::Blocks(vec![ContentBlock::ToolResult {
+                tool_use_id: "call_screenshot_1".to_string(),
+                is_error: false,
+                content: vec![
+                    ContentBlock::Text {
+                        text: "Captured webpage screenshot".to_string(),
+                    },
+                    ContentBlock::Image {
+                        source: ImageSource {
+                            source_type: "base64".to_string(),
+                            media_type: "image/png".to_string(),
+                            data: "iVBORw0KGgoAAAANSUhEUgAA".to_string(),
+                        },
+                    },
+                ],
+            }]),
+        };
+
+        let result = messages_to_openai_messages(&[tool_msg]).unwrap();
+        assert_eq!(result.len(), 2);
+
+        // 验证第 1 条为合规的标准 tool 纯文本响应
+        assert_eq!(result[0].role, "tool");
+        assert_eq!(result[0].tool_call_id.as_deref(), Some("call_screenshot_1"));
+        assert_eq!(
+            result[0].content,
+            Some(Value::String("Captured webpage screenshot".to_string()))
+        );
+
+        // 验证第 2 条为紧随其后的多模态附件消息
+        assert_eq!(result[1].role, "user");
+        let content_arr = result[1].content.as_ref().unwrap().as_array().unwrap();
+        assert_eq!(content_arr.len(), 2);
+        assert_eq!(content_arr[0]["type"], "text");
+        assert_eq!(content_arr[1]["type"], "image_url");
+        assert_eq!(
+            content_arr[1]["image_url"]["url"],
+            "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAA"
+        );
+    }
+
+    #[test]
+    fn test_tool_result_pure_image_generates_descriptive_placeholder() {
+        let tool_msg = Message {
+            role: Role::User,
+            content: Content::Blocks(vec![ContentBlock::ToolResult {
+                tool_use_id: "call_pure_img".to_string(),
+                is_error: false,
+                content: vec![ContentBlock::Image {
+                    source: ImageSource {
+                        source_type: "base64".to_string(),
+                        media_type: "image/jpeg".to_string(),
+                        data: "abc123xyz".to_string(),
+                    },
+                }],
+            }]),
+        };
+
+        let result = messages_to_openai_messages(&[tool_msg]).unwrap();
+        assert_eq!(result.len(), 2);
+        assert_eq!(result[0].role, "tool");
+        let tool_text = result[0].content.as_ref().unwrap().as_str().unwrap();
+        assert!(tool_text.contains("1 image output"));
+
+        assert_eq!(result[1].role, "user");
+        let content_arr = result[1].content.as_ref().unwrap().as_array().unwrap();
+        assert_eq!(content_arr[1]["image_url"]["url"], "data:image/jpeg;base64,abc123xyz");
+    }
 }

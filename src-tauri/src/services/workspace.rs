@@ -111,10 +111,15 @@ pub fn workspace_root_for_conversation(
         return default_workspace_root(app);
     };
 
+    let lookup_id = match conversation_id.split_once(":sub:") {
+        Some((parent, _)) => parent,
+        None => &conversation_id,
+    };
+
     let cached = conversation_workspace_cache()
         .read()
         .ok()
-        .and_then(|cache| cache.get(&conversation_id).cloned());
+        .and_then(|cache| cache.get(lookup_id).cloned());
 
     let Some(root) = cached else {
         return default_workspace_root(app);

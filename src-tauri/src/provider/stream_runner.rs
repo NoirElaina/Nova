@@ -134,22 +134,33 @@ pub trait StreamParser: Send {
 /// 保证最终 snapshot 与模型实际输出顺序一致。
 #[derive(Debug, Default)]
 struct AssistantOutputBuilder {
+    pending_reasoning: String,
     pending_text: String,
     full_text: String,
     blocks: Vec<ContentBlock>,
 }
 
 impl AssistantOutputBuilder {
+    fn append_reasoning(&mut self, text: &str) {
+        self.flush_pending_text();
+        self.pending_reasoning.push_str(text);
+    }
+
     fn append_text(&mut self, text: &str) {
+        self.flush_pending_reasoning();
         self.pending_text.push_str(text);
         self.full_text.push_str(text);
     }
 
     fn push_tool_use(&mut self, id: String, name: String, input: serde_json::Value) {
+        self.flush_pending_reasoning();
+        self.flush_pending_text();
         self.push_block(ContentBlock::ToolUse { id, name, input });
     }
 
     fn push_thinking(&mut self, thinking: String, signature: String) {
+        self.flush_pending_reasoning();
+        self.flush_pending_text();
         self.push_block(ContentBlock::Thinking {
             thinking,
             signature,
@@ -160,14 +171,34 @@ impl AssistantOutputBuilder {
         &self.full_text
     }
 
+    fn has_content(&self) -> bool {
+        !self.full_text.is_empty()
+            || !self.pending_reasoning.is_empty()
+            || !self.pending_text.is_empty()
+            || !self.blocks.is_empty()
+    }
+
     fn take_blocks(&mut self) -> Vec<ContentBlock> {
+        self.flush_pending_reasoning();
         self.flush_pending_text();
         std::mem::take(&mut self.blocks)
     }
 
     fn push_block(&mut self, block: ContentBlock) {
+        self.flush_pending_reasoning();
         self.flush_pending_text();
         self.blocks.push(block);
+    }
+
+    fn flush_pending_reasoning(&mut self) {
+        if self.pending_reasoning.is_empty() {
+            return;
+        }
+        let thinking = std::mem::take(&mut self.pending_reasoning);
+        self.blocks.push(ContentBlock::Thinking {
+            thinking,
+            signature: String::new(),
+        });
     }
 
     fn flush_pending_text(&mut self) {
@@ -260,6 +291,23 @@ pub async fn run_streaming<P: StreamParser>(
         let bytes = match chunk {
             Ok(v) => v,
             Err(e) => {
+                let err_str = e.to_string();
+                let is_decode_or_eof = err_str.contains("error decoding response body")
+                    || err_str.contains("unexpected EOF")
+                    || err_str.contains("connection closed")
+                    || err_str.contains("connection reset");
+
+                // 容错机制：若模型已成功产出内容（文本、思考或工具调用），且流末端因对端粗暴切断产生 decode/EOF 异常，
+                // 视为流自然终止，保全已生成内容与思考块，杜绝因对端未发送 0-chunk 导致整轮对话失败与思考块丢失。
+                if is_decode_or_eof && assistant_output.has_content() {
+                    tracing::warn!(
+                        provider = %provider,
+                        error = %err_str,
+                        "Stream socket closed with decode/EOF after content received; treating as graceful stream termination"
+                    );
+                    break;
+                }
+
                 let msg = format!("{} stream chunk error: {}", provider, e);
                 emit_backend_error(
                     app,
@@ -605,6 +653,7 @@ async fn process_delta(
         }
 
         Delta::Reasoning(text) => {
+            assistant_output.append_reasoning(&text);
             let is_branch_or_sub = crate::agent::orchestration::branch::is_branch_conversation(conversation_id)
                 || crate::agent::orchestration::subagent::is_subagent_conversation(conversation_id);
             if !is_branch_or_sub {

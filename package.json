@@ -8,10 +8,11 @@
     "build": "vue-tsc --noEmit && vite build",
     "preview": "vite preview",
     "tauri": "tauri dev",
-    "tauri:build": "tauri build",
+    "tauri:build": "tauri build --ignore-version-mismatches",
     "tauri:win:build": "tauri build --target x86_64-pc-windows-msvc",
     "tauri:mac:build": "tauri build --target x86_64-apple-darwin",
-    "tauri:linux:build": "tauri build --target x86_64-unknown-linux-gnu"
+    "tauri:linux:build": "tauri build --target x86_64-unknown-linux-gnu",
+    "build:cli": "cargo build -p nova-cli --release"
   },
   "dependencies": {
     "@tanstack/vue-virtual": "^3.13.35",

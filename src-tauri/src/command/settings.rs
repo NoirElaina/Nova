@@ -1,63 +1,61 @@
-use tauri::AppHandle;
-use crate::agent::utils::error_event::report_backend_result;
+//! 桌面薄壳 IPC：转发至 nova daemon（方法名 settings.* 与内核分发器一一对应）。
 
-// Re-export all domain types and functions from the core settings service
-pub use crate::services::settings::*;
+pub use nova_protocol::settings::*;
 
 #[tauri::command]
-pub fn get_settings(app: AppHandle) -> Result<AppSettings, String> {
-    let result = load_settings(&app);
-    report_backend_result(&app, "command.settings.get_settings", result, None)
+pub async fn get_settings() -> Result<AppSettings, String> {
+    crate::daemon::invoke("get_settings", serde_json::json!({})).await
+        .and_then(|v| serde_json::from_value(v).map_err(|e| e.to_string()))
 }
 
 #[tauri::command]
-pub fn save_settings(app: AppHandle, settings: AppSettings) -> Result<(), String> {
-    let result = save_settings_inner(&app, settings);
-    report_backend_result(&app, "command.settings.save_settings", result, None)
+pub async fn save_settings(settings: AppSettings) -> Result<(), String> {
+    crate::daemon::invoke("save_settings", serde_json::json!({"settings": settings})).await
+        .and_then(|v| serde_json::from_value(v).map_err(|e| e.to_string()))
 }
 
-/// 返回指定模型名对应的上下文窗口大小（token 数）。
-/// 优先级：用户设置覆盖 > 内置 models.json > 默认 200K。
-/// 前端在无活跃对话时用此命令初始化 ContextUsageIndicator 的分母。
 #[tauri::command]
-pub fn get_model_window_tokens(app: AppHandle, model: String) -> u32 {
-    match load_settings(&app) {
-        Ok(settings) => settings.context_window_for_model(&model),
-        Err(_) => crate::agent::utils::model_context::get_context_window_tokens(&model),
+pub async fn get_model_window_tokens(model: String) -> u32 {
+    match crate::daemon::invoke("get_model_window_tokens", serde_json::json!({"model": model})).await {
+        Ok(v) => serde_json::from_value(v).unwrap_or_default(),
+        Err(_) => Default::default(),
     }
 }
 
-/// 文本 token 数：全项目标准计数器（o200k_base BPE 分词器）。
-/// 不区分协议/模型——分词是模型能力而非协议差异，统一基准即可。
 #[tauri::command]
-pub fn estimate_text_tokens(text: String) -> u32 {
-    crate::provider::token_counter::count_text(&text).clamp(0, u32::MAX as i64) as u32
+pub async fn estimate_text_tokens(text: String) -> u32 {
+    match crate::daemon::invoke("estimate_text_tokens", serde_json::json!({"text": text})).await {
+        Ok(v) => serde_json::from_value(v).unwrap_or_default(),
+        Err(_) => Default::default(),
+    }
 }
 
-/// 查询本机已探测到的可用终端与 Shell 列表
 #[tauri::command]
-pub fn get_available_terminals() -> Vec<crate::services::terminal_detector::TerminalInfo> {
-    crate::services::terminal_detector::list_available_terminals()
+pub async fn get_available_terminals() -> Vec<nova_protocol::misc::TerminalInfo> {
+    match crate::daemon::invoke("get_available_terminals", serde_json::json!({})).await {
+        Ok(v) => serde_json::from_value(v).unwrap_or_default(),
+        Err(_) => Default::default(),
+    }
 }
 
-/// 立即从 OpenRouter 刷新模型元数据与定价数据库
 #[tauri::command]
-pub async fn refresh_model_catalog(app: AppHandle) -> Result<crate::services::model_catalog::ModelCatalogStats, String> {
-    crate::services::model_catalog::force_refresh(&app).await
+pub async fn refresh_model_catalog() -> Result<nova_protocol::misc::ModelCatalogStats, String> {
+    crate::daemon::invoke("refresh_model_catalog", serde_json::json!({})).await
+        .and_then(|v| serde_json::from_value(v).map_err(|e| e.to_string()))
 }
 
-/// 获取当前模型元数据数据库的状态统计
 #[tauri::command]
-pub fn get_model_catalog_stats(app: AppHandle) -> crate::services::model_catalog::ModelCatalogStats {
-    crate::services::model_catalog::get_catalog_stats(&app)
+pub async fn get_model_catalog_stats() -> nova_protocol::misc::ModelCatalogStats {
+    match crate::daemon::invoke("get_model_catalog_stats", serde_json::json!({})).await {
+        Ok(v) => serde_json::from_value(v).unwrap_or_default(),
+        Err(_) => Default::default(),
+    }
 }
 
-/// 查询模型列表（支持关键字搜索与模态过滤）
 #[tauri::command]
-pub fn get_model_catalog(
-    search: Option<String>,
-    modality: Option<String>,
-) -> Vec<crate::services::model_catalog::ModelCatalogSummary> {
-    crate::services::model_catalog::list_models(search.as_deref(), modality.as_deref())
+pub async fn get_model_catalog(search: Option<String>, modality: Option<String>) -> Vec<nova_protocol::misc::ModelCatalogSummary> {
+    match crate::daemon::invoke("get_model_catalog", serde_json::json!({"search": search, "modality": modality})).await {
+        Ok(v) => serde_json::from_value(v).unwrap_or_default(),
+        Err(_) => Default::default(),
+    }
 }
-

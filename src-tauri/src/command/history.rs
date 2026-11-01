@@ -1,236 +1,107 @@
-use tauri::AppHandle;
+//! 桌面薄壳 IPC：转发至 nova daemon（方法名 history.* 与内核分发器一一对应）。
 
-use crate::agent::session::history;
-use crate::agent::utils::error_event::report_backend_result;
-// 对外复用 llm/commands 公共类型。
-pub use crate::agent::session::types::{
+pub use nova_protocol::session::{
     ConversationMeta, HistoryMessage, HistoryToolExecution,
 };
 
 #[tauri::command]
-pub async fn create_conversation(
-    app: AppHandle,
-    title: Option<String>,
-    workspace_path: Option<String>,
-) -> Result<ConversationMeta, String> {
-    // 直接转发到 history 服务创建会话；workspace_path 为空时由 history 用内置默认工作区。
-    report_backend_result(
-        &app,
-        "command.history.create_conversation",
-        history::create_conversation(&app, title, workspace_path).await,
-        None,
-    )
+pub async fn create_conversation(title: Option<String>, workspace_path: Option<String>) -> Result<ConversationMeta, String> {
+    crate::daemon::invoke("create_conversation", serde_json::json!({"title": title, "workspacePath": workspace_path})).await
+        .and_then(|v| serde_json::from_value(v).map_err(|e| e.to_string()))
 }
 
 #[tauri::command]
-pub async fn list_conversations(app: AppHandle) -> Result<Vec<ConversationMeta>, String> {
-    // 拉取会话列表。
-    report_backend_result(
-        &app,
-        "command.history.list_conversations",
-        history::list_conversations(&app).await,
-        None,
-    )
+pub async fn list_conversations() -> Result<Vec<ConversationMeta>, String> {
+    crate::daemon::invoke("list_conversations", serde_json::json!({})).await
+        .and_then(|v| serde_json::from_value(v).map_err(|e| e.to_string()))
 }
 
 #[tauri::command]
-pub async fn set_conversation_pinned(
-    app: AppHandle,
-    conversation_id: String,
-    pinned: bool,
-) -> Result<(), String> {
-    report_backend_result(
-        &app,
-        "command.history.set_conversation_pinned",
-        history::set_conversation_pinned(&app, &conversation_id, pinned).await,
-        None,
-    )
+pub async fn set_conversation_pinned(conversation_id: String, pinned: bool) -> Result<(), String> {
+    crate::daemon::invoke("set_conversation_pinned", serde_json::json!({"conversationId": conversation_id, "pinned": pinned})).await
+        .and_then(|v| serde_json::from_value(v).map_err(|e| e.to_string()))
 }
 
 #[tauri::command]
-pub async fn export_conversation(
-    app: AppHandle,
-    conversation_id: String,
-    format: String,
-) -> Result<String, String> {
-    report_backend_result(
-        &app,
-        "command.history.export_conversation",
-        history::export_conversation(&app, &conversation_id, &format).await,
-        None,
-    )
+pub async fn export_conversation(conversation_id: String, format: String) -> Result<String, String> {
+    crate::daemon::invoke("export_conversation", serde_json::json!({"conversationId": conversation_id, "format": format})).await
+        .and_then(|v| serde_json::from_value(v).map_err(|e| e.to_string()))
 }
 
 #[tauri::command]
-pub async fn export_rendered_conversation_pdf(
-    app: AppHandle,
-    conversation_id: String,
-    title: String,
-    html: String,
-) -> Result<String, String> {
-    report_backend_result(
-        &app,
-        "command.history.export_rendered_conversation_pdf",
-        history::export_rendered_conversation_pdf(&app, &conversation_id, &title, &html).await,
-        None,
-    )
+pub async fn export_rendered_conversation_pdf(conversation_id: String, title: String, html: String) -> Result<String, String> {
+    crate::daemon::invoke("export_rendered_conversation_pdf", serde_json::json!({"conversationId": conversation_id, "title": title, "html": html})).await
+        .and_then(|v| serde_json::from_value(v).map_err(|e| e.to_string()))
 }
 
 #[tauri::command]
-pub async fn load_history(
-    app: AppHandle,
-    conversation_id: String,
-) -> Result<Vec<HistoryMessage>, String> {
-    // 加载指定会话历史。
-    report_backend_result(
-        &app,
-        "command.history.load_history",
-        history::load_history(&app, &conversation_id).await,
-        None,
-    )
+pub async fn load_history(conversation_id: String) -> Result<Vec<HistoryMessage>, String> {
+    crate::daemon::invoke("load_history", serde_json::json!({"conversationId": conversation_id})).await
+        .and_then(|v| serde_json::from_value(v).map_err(|e| e.to_string()))
 }
 
 #[tauri::command]
-pub async fn replace_history(
-    app: AppHandle,
-    conversation_id: String,
-    messages: Vec<HistoryMessage>,
-) -> Result<(), String> {
-    // 事件日志时代：重置该会话事件流为传入的消息序列（编辑消息重发用）。
-    report_backend_result(
-        &app,
-        "command.history.replace_history",
-        history::reset_conversation_messages(&app, &conversation_id, &messages).await,
-        None,
-    )
+pub async fn replace_history(conversation_id: String, messages: Vec<HistoryMessage>) -> Result<(), String> {
+    crate::daemon::invoke("replace_history", serde_json::json!({"conversationId": conversation_id, "messages": messages})).await
+        .and_then(|v| serde_json::from_value(v).map_err(|e| e.to_string()))
 }
 
 #[tauri::command]
-pub async fn append_plain_chat_message(
-    app: AppHandle,
-    conversation_id: String,
-    role: String,
-    content: String,
-) -> Result<(), String> {
-    // 事件日志入口：追加一条纯文本消息（分支转存等场景）。
-    report_backend_result(
-        &app,
-        "command.history.append_plain_chat_message",
-        history::append_plain_chat_message(&app, &conversation_id, &role, &content).await,
-        None,
-    )
-}
-
-
-#[tauri::command]
-pub async fn load_conversation_tool_logs(
-    app: AppHandle,
-    conversation_id: String,
-) -> Result<Vec<HistoryToolExecution>, String> {
-    report_backend_result(
-        &app,
-        "command.history.load_conversation_tool_logs",
-        history::load_conversation_tool_logs(&app, &conversation_id).await,
-        None,
-    )
+pub async fn append_plain_chat_message(conversation_id: String, role: String, content: String) -> Result<(), String> {
+    crate::daemon::invoke("append_plain_chat_message", serde_json::json!({"conversationId": conversation_id, "role": role, "content": content})).await
+        .and_then(|v| serde_json::from_value(v).map_err(|e| e.to_string()))
 }
 
 #[tauri::command]
-pub async fn get_conversation_turn_traces(
-    app: AppHandle,
-    conversation_id: String,
-) -> Result<Vec<crate::agent::session::projection::TurnTrace>, String> {
-    // 调试面板：从事件流投影出按回合分组的完整交互轨迹。
-    let result = async {
-        let events = crate::agent::session::load_events(&app, &conversation_id).await?;
-        Ok(crate::agent::session::projection::render_turn_traces(&events))
-    }
-    .await;
-    report_backend_result(
-        &app,
-        "command.history.get_conversation_turn_traces",
-        result,
-        None,
-    )
+pub async fn load_conversation_tool_logs(conversation_id: String) -> Result<Vec<HistoryToolExecution>, String> {
+    crate::daemon::invoke("load_conversation_tool_logs", serde_json::json!({"conversationId": conversation_id})).await
+        .and_then(|v| serde_json::from_value(v).map_err(|e| e.to_string()))
 }
 
 #[tauri::command]
-pub async fn clear_history(app: AppHandle, conversation_id: Option<String>) -> Result<(), String> {
-    // 清理指定会话或全部会话历史。
-    report_backend_result(
-        &app,
-        "command.history.clear_history",
-        history::clear_history(&app, conversation_id).await,
-        None,
-    )
+pub async fn get_conversation_turn_traces(conversation_id: String) -> Result<Vec<nova_protocol::misc::TurnTrace>, String> {
+    crate::daemon::invoke("get_conversation_turn_traces", serde_json::json!({"conversationId": conversation_id})).await
+        .and_then(|v| serde_json::from_value(v).map_err(|e| e.to_string()))
 }
 
 #[tauri::command]
-pub async fn delete_conversation(app: AppHandle, conversation_id: String) -> Result<(), String> {
-    // 删除指定会话及其附属数据。
-    let result = report_backend_result(
-        &app,
-        "command.history.delete_conversation",
-        history::delete_conversation(&app, &conversation_id).await,
-        None,
-    );
-    if result.is_ok() {
-        // 联动清理该会话的渐进式工具披露状态（内存缓存 + 磁盘记录）。
-        crate::agent::capabilities::tool_disclosure::forget_conversation(&app, Some(&conversation_id));
-    }
-    result
+pub async fn clear_history(conversation_id: Option<String>) -> Result<(), String> {
+    crate::daemon::invoke("clear_history", serde_json::json!({"conversationId": conversation_id})).await
+        .and_then(|v| serde_json::from_value(v).map_err(|e| e.to_string()))
 }
 
 #[tauri::command]
-pub async fn list_memory_entries(app: AppHandle) -> Result<Vec<String>, String> {
-    report_backend_result(
-        &app,
-        "command.history.list_memory_entries",
-        crate::agent::capabilities::memory_dir::memory_list(&app).await,
-        None,
-    )
+pub async fn delete_conversation(conversation_id: String) -> Result<(), String> {
+    crate::daemon::invoke("delete_conversation", serde_json::json!({"conversationId": conversation_id})).await
+        .and_then(|v| serde_json::from_value(v).map_err(|e| e.to_string()))
 }
 
 #[tauri::command]
-pub async fn add_memory_entry(app: AppHandle, content: String) -> Result<(), String> {
-    report_backend_result(
-        &app,
-        "command.history.add_memory_entry",
-        crate::agent::capabilities::memory_dir::memory_add(&app, &content).await,
-        None,
-    )
+pub async fn list_memory_entries() -> Result<Vec<String>, String> {
+    crate::daemon::invoke("list_memory_entries", serde_json::json!({})).await
+        .and_then(|v| serde_json::from_value(v).map_err(|e| e.to_string()))
 }
 
 #[tauri::command]
-pub async fn remove_memory_entry(app: AppHandle, old_text: String) -> Result<(), String> {
-    report_backend_result(
-        &app,
-        "command.history.remove_memory_entry",
-        crate::agent::capabilities::memory_dir::memory_remove(&app, &old_text).await,
-        None,
-    )
+pub async fn add_memory_entry(content: String) -> Result<(), String> {
+    crate::daemon::invoke("add_memory_entry", serde_json::json!({"content": content})).await
+        .and_then(|v| serde_json::from_value(v).map_err(|e| e.to_string()))
 }
 
 #[tauri::command]
-pub async fn clear_memory_entries(app: AppHandle) -> Result<(), String> {
-    report_backend_result(
-        &app,
-        "command.history.clear_memory_entries",
-        crate::agent::capabilities::memory_dir::memory_clear(&app).await,
-        None,
-    )
+pub async fn remove_memory_entry(old_text: String) -> Result<(), String> {
+    crate::daemon::invoke("remove_memory_entry", serde_json::json!({"oldText": old_text})).await
+        .and_then(|v| serde_json::from_value(v).map_err(|e| e.to_string()))
 }
 
+#[tauri::command]
+pub async fn clear_memory_entries() -> Result<(), String> {
+    crate::daemon::invoke("clear_memory_entries", serde_json::json!({})).await
+        .and_then(|v| serde_json::from_value(v).map_err(|e| e.to_string()))
+}
 
 #[tauri::command]
-pub async fn manual_compact_conversation(
-    app: AppHandle,
-    conversation_id: String,
-) -> Result<crate::agent::capabilities::compact::ManualCompactOutcome, String> {
-    report_backend_result(
-        &app,
-        "command.history.manual_compact_conversation",
-        crate::agent::capabilities::compact::manual_compact(&app, &conversation_id).await,
-        None,
-    )
+pub async fn manual_compact_conversation(conversation_id: String) -> Result<nova_protocol::misc::ManualCompactOutcome, String> {
+    crate::daemon::invoke("manual_compact_conversation", serde_json::json!({"conversationId": conversation_id})).await
+        .and_then(|v| serde_json::from_value(v).map_err(|e| e.to_string()))
 }

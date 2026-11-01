@@ -1,0 +1,54 @@
+//! 声明式挂钩配置（hooks.toml）读写命令。
+
+
+use crate::agent::lifecycle::hooks;
+
+/// 读取 hooks.toml 原文；文件不存在返回空串。
+pub fn get_hooks_toml(core: &crate::core::Core) -> Result<String, String> {
+    let path = hooks::hooks_file_path(&core)?;
+    if !path.exists() {
+        return Ok(String::new());
+    }
+    std::fs::read_to_string(&path)
+        .map_err(|e| format!("Failed to read {}: {}", path.display(), e))
+}
+
+/// 读取 hooks.toml 的结构化 JSON（表单式配置页用）；
+/// 文件不存在返回空配置。解析失败时返回错误，不静默吞掉。
+pub fn get_hooks_structured(core: &crate::core::Core) -> Result<serde_json::Value, String> {
+    let path = hooks::hooks_file_path(&core)?;
+    if !path.exists() {
+        let empty = hooks::HooksFile::default();
+        return serde_json::to_value(&empty).map_err(|e| e.to_string());
+    }
+    let raw = std::fs::read_to_string(&path)
+        .map_err(|e| format!("Failed to read {}: {}", path.display(), e))?;
+    let parsed: hooks::HooksFile =
+        toml::from_str(&raw).map_err(|e| format!("Failed to parse hooks.toml: {e}"))?;
+    serde_json::to_value(&parsed).map_err(|e| e.to_string())
+}
+
+/// 校验并保存 hooks.toml。解析失败直接返回错误，不落盘。
+/// 空内容视为清空（删除文件）。
+pub fn save_hooks_toml(core: &crate::core::Core, content: String) -> Result<usize, String> {
+    let handler_count = hooks::validate_hooks_toml(&content)?;
+    let path = hooks::hooks_file_path(&core)?;
+
+    if content.trim().is_empty() {
+        if path.exists() {
+            std::fs::remove_file(&path)
+                .map_err(|e| format!("Failed to remove {}: {}", path.display(), e))?;
+        }
+        hooks::invalidate_hooks_cache();
+        return Ok(0);
+    }
+
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)
+            .map_err(|e| format!("Failed to create {}: {}", parent.display(), e))?;
+    }
+    crate::agent::utils::atomic_write::write_str(&path, &content)
+        .map_err(|e| format!("Failed to write {}: {}", path.display(), e))?;
+    hooks::invalidate_hooks_cache();
+    Ok(handler_count)
+}

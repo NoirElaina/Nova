@@ -1,0 +1,100 @@
+use crate::agent::capabilities::skills::{list_skill_summaries_with_app, SkillSummary};
+use crate::agent::utils::error_event::report_backend_result;
+use std::path::PathBuf;
+
+pub fn list_skills(core: &crate::core::Core) -> Result<Vec<SkillSummary>, String> {
+    // 返回技能摘要列表。
+    report_backend_result(
+        &core,
+        "command.skill.list_skills",
+        list_skill_summaries_with_app(&core),
+        None,
+    )
+}
+
+pub fn delete_skill(core: &crate::core::Core, path: String) -> Result<(), String> {
+    let result = (|| {
+        // `path` 是 SKILL.md 的绝对路径，技能目录是其父目录。
+        let skill_md = PathBuf::from(&path);
+        let skill_dir = skill_md
+            .parent()
+            .ok_or_else(|| "无法解析技能目录".to_string())?
+            .to_path_buf();
+
+        // 安全校验：目录必须位于全局 skills 根目录或某个智能体的私有技能目录下，
+        // 防止路径穿越。
+        let app_data = core
+            .config()
+            .data_dir();
+        let skills_root = app_data.join("skills");
+
+        let allowed = skill_dir.starts_with(&skills_root)
+            || crate::agent::capabilities::agent_bundles::list_bundles(&core)
+                .map(|bundles| {
+                    bundles.iter().any(|b| {
+                        agent_bundle_skills_dir(&core, &b.id)
+                            .map(|dir| skill_dir.starts_with(&dir))
+                            .unwrap_or(false)
+                    })
+                })
+                .unwrap_or(false);
+        if !allowed {
+            return Err("拒绝删除 skills 目录之外的路径".to_string());
+        }
+
+        if !skill_dir.exists() {
+            return Err("技能目录不存在".to_string());
+        }
+
+        // 删除前解析技能名（与列表展示口径一致：frontmatter name，缺省用目录名），
+        // 用于删除后清理 disabledSkills 中的残留条目。
+        let skill_name = std::fs::read_to_string(&skill_md)
+            .ok()
+            .map(|raw| crate::agent::capabilities::skills::pick_skill_name(&skill_md, &raw))
+            .or_else(|| {
+                skill_dir
+                    .file_name()
+                    .and_then(|n| n.to_str())
+                    .map(str::to_string)
+            });
+
+        std::fs::remove_dir_all(&skill_dir).map_err(|e| format!("删除技能目录失败: {}", e))?;
+
+        // 从停用名单移除该技能名（残留无害但顺手清干净）。
+        if let Some(name) = skill_name {
+            if let Ok(mut settings) = crate::api::settings::load_settings(&core) {
+                let target = crate::agent::capabilities::skills::normalize_skill_name(&name);
+                let before = settings.disabled_skills.len();
+                settings
+                    .disabled_skills
+                    .retain(|existing| {
+                        crate::agent::capabilities::skills::normalize_skill_name(existing) != target
+                    });
+                if settings.disabled_skills.len() != before {
+                    let _ = crate::api::settings::save_settings_inner(&core, settings);
+                }
+            }
+        }
+
+        Ok(())
+    })();
+    report_backend_result(&core, "command.skill.delete_skill", result, None)
+}
+
+fn agent_bundle_skills_dir(
+    core: &crate::core::Core,
+    bundle_id: &str,
+) -> Result<PathBuf, String> {
+    crate::agent::capabilities::agent_bundles::agent_skills_dir(core, bundle_id)
+}
+
+pub fn read_skill_content(core: &crate::core::Core, path: String) -> Result<String, String> {
+    let result = (|| {
+        let skill_md = PathBuf::from(&path);
+        if !skill_md.exists() || !skill_md.is_file() {
+            return Err("技能文件不存在".to_string());
+        }
+        std::fs::read_to_string(&skill_md).map_err(|e| format!("读取技能内容失败: {}", e))
+    })();
+    report_backend_result(&core, "command.skill.read_skill_content", result, None)
+}

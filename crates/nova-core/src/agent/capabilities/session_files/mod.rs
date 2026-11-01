@@ -1,0 +1,340 @@
+use std::path::{Component, Path, PathBuf};
+use crate::core::Core;
+
+/// 会话文件元信息，返回给前端展示。
+///
+/// 安全设计：不再暴露 `read_path`（绝对路径）给前端。
+/// 前端/AI 只能拿到 `filename`，读取时通过 `conversation_id + filename` 让后端推导路径。
+/// 这样前端永远拿不到绝对路径，无法构造 `../../../etc/passwd` 等路径遍历攻击。
+pub use nova_protocol::misc::SessionFileMeta;
+
+/// 会话文件存储目录：{workspace_root}/{conversation_id}/session/
+///
+/// 独立工作区下：app_data/workspace/{conv_id}/session/，AI 可直接用 Read/Bash 访问。
+/// 手动工作区下：app_data/workspace/{conv_id}/session/（仍存独立目录，避免污染用户项目），
+///   AI 通过绝对路径（见 [Session Files] 注入）用 Read/Bash 访问。
+pub(crate) fn session_files_dir(core: &Core, conversation_id: &str) -> Result<PathBuf, String> {
+    let base = crate::services::workspace::default_workspace_root(core)?;
+    Ok(base.join(conversation_id).join("session"))
+}
+
+/// 对用户提供的 filename 做严格 sanitize，防止路径遍历攻击（Zip Slip 类）。
+///
+/// 拒绝以下情况：
+/// - 含路径分隔符（`/` 或 `\`）
+/// - 含 `..`（任何位置的 ParentDir 组件）
+/// - 绝对路径前缀（Unix `/` 或 Windows `C:\`）
+/// - 空字符串或全空白
+/// - 含空字节
+///
+/// 通过则返回 sanitized 后的文件名（仅文件名部分，不含目录）。
+/// 这相当于把 filename 当作"单一 key"，后端根据 `conversation_id + filename` 推导实际路径。
+fn sanitize_filename(filename: &str) -> Result<String, String> {
+    if filename.contains('\0') {
+        return Err("文件名不能含空字节".to_string());
+    }
+    let trimmed = filename.trim();
+    if trimmed.is_empty() {
+        return Err("文件名不能为空".to_string());
+    }
+    // 统一反斜杠为正斜杠后做组件级检查
+    let normalized = trimmed.replace('\\', "/");
+    let candidate = Path::new(&normalized);
+    if candidate.is_absolute() {
+        return Err("文件名不能是绝对路径".to_string());
+    }
+    // 逐组件检查：只允许 Normal 组件，拒绝 ParentDir/RootDir/Prefix
+    let mut clean_parts: Vec<String> = Vec::new();
+    for component in candidate.components() {
+        match component {
+            Component::Normal(part) => {
+                let s = part.to_string_lossy().to_string();
+                if s.contains("..") {
+                    return Err("文件名不能含 '..'".to_string());
+                }
+                clean_parts.push(s);
+            }
+            Component::CurDir => {} // 忽略 "."
+            Component::ParentDir | Component::RootDir | Component::Prefix(_) => {
+                return Err("文件名不能含路径分隔符或目录穿越".to_string());
+            }
+        }
+    }
+    if clean_parts.is_empty() {
+        return Err("文件名 sanitize 后为空".to_string());
+    }
+    // 多级路径（如 "sub/file.txt"）只取最后一段作为文件名
+    // 这样即使绕过组件检查传入多级路径，也只保留文件名部分
+    let final_name = clean_parts.last().unwrap().clone();
+    if final_name.is_empty() {
+        return Err("文件名 sanitize 后为空".to_string());
+    }
+    Ok(final_name)
+}
+
+/// 根据 conversation_id + filename 推导实际存储路径，并验证路径在 session_files 目录内。
+/// 这是"文件名→路径映射"的核心：前端只给 filename，后端推导出绝对路径。
+fn resolve_session_file_path(
+    core: &Core,
+    conversation_id: &str,
+    filename: &str,
+) -> Result<PathBuf, String> {
+    let dir = session_files_dir(core, conversation_id)?;
+    let sanitized = sanitize_filename(filename)?;
+    // 可能是 docx/pptx（子目录 + content.txt），也可能是普通文件
+    // 先尝试普通文件路径，再尝试子目录的 content.txt
+    let direct = dir.join(&sanitized);
+    if direct.is_file() {
+        // canonicalize 验证路径未逃逸 session_files 目录
+        let canon = direct.canonicalize().map_err(|e| format!("路径解析失败: {}", e))?;
+        let dir_canon = dir.canonicalize().map_err(|e| format!("目录解析失败: {}", e))?;
+        if !canon.starts_with(&dir_canon) {
+            return Err("路径逃逸 session_files 目录".to_string());
+        }
+        return Ok(canon);
+    }
+    // 尝试 docx/pptx 子目录
+    let sub_content = dir.join(&sanitized).join("content.txt");
+    if sub_content.is_file() {
+        let canon = sub_content
+            .canonicalize()
+            .map_err(|e| format!("路径解析失败: {}", e))?;
+        let dir_canon = dir.canonicalize().map_err(|e| format!("目录解析失败: {}", e))?;
+        if !canon.starts_with(&dir_canon) {
+            return Err("路径逃逸 session_files 目录".to_string());
+        }
+        return Ok(canon);
+    }
+    Err(format!("文件不存在: {}", sanitized))
+}
+
+/// 保存会话文件（仅二进制文档：docx/pptx/pdf）。纯文本文件由前端直接注入对话上下文，不存盘。
+///
+/// - docx/pptx：创建同名子文件夹，存 original.{ext} + content.txt（解析后的文本）。
+/// - pdf：直接写入根目录。
+///
+/// 安全：filename 经过 sanitize_filename 严格清洗，拒绝路径遍历输入。
+pub fn save_session_file(
+    core: &Core,
+    conversation_id: &str,
+    filename: &str,
+    content: Option<&str>,
+    raw_bytes: Option<&[u8]>,
+) -> Result<SessionFileMeta, String> {
+    let dir = session_files_dir(core, conversation_id)?;
+    std::fs::create_dir_all(&dir).map_err(|e| format!("Failed to create session_files dir: {}", e))?;
+
+    // sanitize：拒绝含路径分隔符、..、绝对路径前缀的输入
+    let safe_name = sanitize_filename(filename)?;
+    let ext = safe_name
+        .rsplit('.')
+        .next()
+        .unwrap_or("")
+        .to_ascii_lowercase();
+    let is_zip_doc = matches!(ext.as_str(), "docx" | "pptx");
+
+    let size = if is_zip_doc {
+        let sub_dir = dir.join(&safe_name);
+        std::fs::create_dir_all(&sub_dir)
+            .map_err(|e| format!("Failed to create file sub-dir: {}", e))?;
+
+        if let Some(bytes) = raw_bytes {
+            let original_name = format!("original.{}", ext);
+            std::fs::write(sub_dir.join(&original_name), bytes)
+                .map_err(|e| format!("Failed to write original file: {}", e))?;
+        }
+
+        let content_path = sub_dir.join("content.txt");
+        if let Some(text) = content {
+            std::fs::write(&content_path, text)
+                .map_err(|e| format!("Failed to write content.txt: {}", e))?;
+        }
+
+        content
+            .map(|t| t.len() as u64)
+            .unwrap_or_else(|| std::fs::metadata(&content_path).map(|m| m.len()).unwrap_or(0))
+    } else {
+        // 纯文本/代码/PDF/图片：直接写入根目录
+        let file_path = dir.join(&safe_name);
+
+        if let Some(bytes) = raw_bytes {
+            std::fs::write(&file_path, bytes)
+                .map_err(|e| format!("Failed to write file: {}", e))?;
+        } else if let Some(text) = content {
+            std::fs::write(&file_path, text)
+                .map_err(|e| format!("Failed to write file: {}", e))?;
+        }
+
+        std::fs::metadata(&file_path)
+            .map(|m| m.len())
+            .unwrap_or(0)
+    };
+
+    Ok(SessionFileMeta {
+        filename: safe_name,
+        size,
+        created_at: chrono::Utc::now().timestamp(),
+    })
+}
+
+/// 列出会话的所有文件。
+///
+/// 安全：不再返回 read_path（绝对路径），只返回 filename 作为读取 key。
+pub fn list_session_files(
+    core: &Core,
+    conversation_id: &str,
+) -> Result<Vec<SessionFileMeta>, String> {
+    let dir = session_files_dir(core, conversation_id)?;
+    if !dir.exists() {
+        return Ok(Vec::new());
+    }
+
+    let mut files = Vec::new();
+
+    for entry in std::fs::read_dir(&dir).map_err(|e| format!("Failed to read dir: {}", e))? {
+        let entry = entry.map_err(|e| format!("Failed to read entry: {}", e))?;
+        let path = entry.path();
+        let name = entry.file_name().to_string_lossy().to_string();
+
+        if path.is_dir() {
+            // docx/pptx 子文件夹
+            let content_path = path.join("content.txt");
+            if content_path.exists() {
+                let size = std::fs::metadata(&content_path)
+                    .map(|m| m.len())
+                    .unwrap_or(0);
+                let created_at = entry
+                    .metadata()
+                    .ok()
+                    .and_then(|m| m.created().ok())
+                    .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                    .map(|d| d.as_secs() as i64)
+                    .unwrap_or_else(|| chrono::Utc::now().timestamp());
+                files.push(SessionFileMeta {
+                    filename: name,
+                    size,
+                    created_at,
+                });
+            }
+        } else {
+            // 根目录下的普通文件
+            let size = std::fs::metadata(&path)
+                .map(|m| m.len())
+                .unwrap_or(0);
+            let created_at = entry
+                .metadata()
+                .ok()
+                .and_then(|m| m.created().ok())
+                .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                .map(|d| d.as_secs() as i64)
+                .unwrap_or_else(|| chrono::Utc::now().timestamp());
+            files.push(SessionFileMeta {
+                filename: name,
+                size,
+                created_at,
+            });
+        }
+    }
+
+    files.sort_by(|a, b| b.created_at.cmp(&a.created_at));
+    Ok(files)
+}
+
+/// 删除会话的所有文件。
+pub fn delete_all_session_files(core: &Core, conversation_id: &str) -> Result<(), String> {
+    let dir = session_files_dir(core, conversation_id)?;
+    if dir.exists() {
+        std::fs::remove_dir_all(&dir).map_err(|e| format!("Failed to remove session files: {}", e))?;
+    }
+    Ok(())
+}
+
+/// 读取会话文件文本内容（供前端 FilesTab 展示）。
+///
+/// 安全：不再接受任意 read_path，改为接受 conversation_id + filename。
+/// 后端通过 resolve_session_file_path 推导实际路径，并 canonicalize 验证路径
+/// 在 session_files 目录内。前端永远拿不到绝对路径，无法构造路径遍历攻击。
+///
+/// PDF 文件用 lopdf 解析文本，避免 read_to_string 遇到二进制报 UTF-8 错误。
+pub fn read_session_file(
+    core: &Core,
+    conversation_id: &str,
+    filename: &str,
+) -> Result<String, String> {
+    let path = resolve_session_file_path(core, conversation_id, filename)?;
+    let ext = path
+        .extension()
+        .and_then(|e| e.to_str())
+        .map(|e| e.to_ascii_lowercase())
+        .unwrap_or_default();
+
+    if ext == "pdf" {
+        return read_pdf_text(&path);
+    }
+
+    std::fs::read_to_string(&path).map_err(|e| format!("读取文件失败: {}", e))
+}
+
+/// 用 lopdf 解析 PDF 文本。超过 10 页时只读前 10 页并提示剩余页数。
+fn read_pdf_text(path: &Path) -> Result<String, String> {
+    let bytes = std::fs::read(path).map_err(|e| format!("读取 PDF 失败: {}", e))?;
+    let doc = lopdf::Document::load_mem(&bytes)
+        .map_err(|e| format!("解析 PDF 失败: {}", e))?;
+
+    let total_pages = doc.max_id as u32;
+    if total_pages == 0 {
+        return Ok("[PDF 无可读页面]".to_string());
+    }
+
+    let end = total_pages.min(10);
+    let mut output = String::new();
+    for page_num in 1..=end {
+        output.push_str(&format!("\n--- Page {} ---\n", page_num));
+        match doc.extract_text(&[page_num]) {
+            Ok(text) => {
+                let trimmed = text.trim();
+                if trimmed.is_empty() {
+                    output.push_str("[本页无可提取文本]\n");
+                } else {
+                    output.push_str(trimmed);
+                    output.push('\n');
+                }
+            }
+            Err(_) => {
+                output.push_str("[无法提取本页文本]\n");
+            }
+        }
+    }
+
+    if end < total_pages {
+        output.push_str(&format!(
+            "\n... (共 {} 页，已读前 {} 页，剩余 {} 页)\n",
+            total_pages,
+            end,
+            total_pages - end
+        ));
+    }
+
+    Ok(output)
+}
+
+/// 删除所有会话的文件（清空历史时调用）。
+///
+/// 会话文件现在存于 workspace/{conv_id}/session/ 下，遍历 workspace 目录下的所有
+/// conv_id 子目录，删除其中的 session 子目录。
+pub fn delete_all_session_files_all(core: &Core) -> Result<(), String> {
+    let base = crate::services::workspace::default_workspace_root(core)?;
+    if !base.exists() {
+        return Ok(());
+    }
+
+    for entry in std::fs::read_dir(&base).map_err(|e| format!("读取 workspace 目录失败: {}", e))? {
+        let entry = entry.map_err(|e| format!("读取目录项失败: {}", e))?;
+        let session_dir = entry.path().join("session");
+        if session_dir.is_dir() {
+            std::fs::remove_dir_all(&session_dir)
+                .map_err(|e| format!("删除 session 目录失败: {}", e))?;
+        }
+    }
+    Ok(())
+}

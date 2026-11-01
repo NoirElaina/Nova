@@ -67,14 +67,13 @@ fn pty_size(rows: Option<u16>, cols: Option<u16>) -> PtySize {
     }
 }
 
-fn shell_command(root: &Path) -> CommandBuilder {
-    let active = crate::services::terminal_detector::get_current_active_terminal();
+fn shell_command(root: &Path, active: &nova_protocol::misc::TerminalInfo) -> CommandBuilder {
     let mut command = CommandBuilder::new(&active.path);
     if active.shell_type == "powershell" {
         command.arg("-NoLogo");
     }
     command.cwd(std::ffi::OsString::from(
-        crate::command::workspace::display_path_string(root),
+        nova_protocol::path_display::display_path_string(root),
     ));
     command.env("TERM", "xterm-256color");
     command.env("COLORTERM", "truecolor");
@@ -211,6 +210,7 @@ pub fn start_session(
     app: AppHandle,
     conversation_id: Option<&str>,
     root: &Path,
+    active_terminal: &nova_protocol::misc::TerminalInfo,
     rows: Option<u16>,
     cols: Option<u16>,
 ) -> Result<UserTerminalInfo, String> {
@@ -246,7 +246,7 @@ pub fn start_session(
     let pair = pty_system
         .openpty(size)
         .map_err(|error| format!("创建 PTY 失败: {}", error))?;
-    let command = shell_command(root);
+    let command = shell_command(root, active_terminal);
     let child = pair
         .slave
         .spawn_command(command)
@@ -264,7 +264,7 @@ pub fn start_session(
     let session = Arc::new(UserTerminalSession {
         conversation_id: conversation_id.clone(),
         session_id: Uuid::new_v4().to_string(),
-        cwd: crate::command::workspace::display_path_string(root),
+        cwd: nova_protocol::path_display::display_path_string(root),
         master: Mutex::new(pair.master),
         writer: Mutex::new(writer),
         child: Mutex::new(child),

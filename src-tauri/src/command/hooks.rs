@@ -1,58 +1,21 @@
-//! 声明式挂钩配置（hooks.toml）读写命令。
+//! 桌面薄壳 IPC：转发至 nova daemon（方法名 hooks.* 与内核分发器一一对应）。
 
-use tauri::AppHandle;
 
-use crate::agent::lifecycle::hooks;
 
-/// 读取 hooks.toml 原文；文件不存在返回空串。
 #[tauri::command]
-pub fn get_hooks_toml(app: AppHandle) -> Result<String, String> {
-    let path = hooks::hooks_file_path(&app)?;
-    if !path.exists() {
-        return Ok(String::new());
-    }
-    std::fs::read_to_string(&path)
-        .map_err(|e| format!("Failed to read {}: {}", path.display(), e))
+pub async fn get_hooks_toml() -> Result<String, String> {
+    crate::daemon::invoke("get_hooks_toml", serde_json::json!({})).await
+        .and_then(|v| serde_json::from_value(v).map_err(|e| e.to_string()))
 }
 
-/// 读取 hooks.toml 的结构化 JSON（表单式配置页用）；
-/// 文件不存在返回空配置。解析失败时返回错误，不静默吞掉。
 #[tauri::command]
-pub fn get_hooks_structured(app: AppHandle) -> Result<serde_json::Value, String> {
-    let path = hooks::hooks_file_path(&app)?;
-    if !path.exists() {
-        let empty = hooks::HooksFile::default();
-        return serde_json::to_value(&empty).map_err(|e| e.to_string());
-    }
-    let raw = std::fs::read_to_string(&path)
-        .map_err(|e| format!("Failed to read {}: {}", path.display(), e))?;
-    let parsed: hooks::HooksFile =
-        toml::from_str(&raw).map_err(|e| format!("Failed to parse hooks.toml: {e}"))?;
-    serde_json::to_value(&parsed).map_err(|e| e.to_string())
+pub async fn get_hooks_structured() -> Result<serde_json::Value, String> {
+    crate::daemon::invoke("get_hooks_structured", serde_json::json!({})).await
+        .and_then(|v| serde_json::from_value(v).map_err(|e| e.to_string()))
 }
 
-/// 校验并保存 hooks.toml。解析失败直接返回错误，不落盘。
-/// 空内容视为清空（删除文件）。
 #[tauri::command]
-pub fn save_hooks_toml(app: AppHandle, content: String) -> Result<usize, String> {
-    let handler_count = hooks::validate_hooks_toml(&content)?;
-    let path = hooks::hooks_file_path(&app)?;
-
-    if content.trim().is_empty() {
-        if path.exists() {
-            std::fs::remove_file(&path)
-                .map_err(|e| format!("Failed to remove {}: {}", path.display(), e))?;
-        }
-        hooks::invalidate_hooks_cache();
-        return Ok(0);
-    }
-
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)
-            .map_err(|e| format!("Failed to create {}: {}", parent.display(), e))?;
-    }
-    crate::agent::utils::atomic_write::write_str(&path, &content)
-        .map_err(|e| format!("Failed to write {}: {}", path.display(), e))?;
-    hooks::invalidate_hooks_cache();
-    Ok(handler_count)
+pub async fn save_hooks_toml(content: String) -> Result<usize, String> {
+    crate::daemon::invoke("save_hooks_toml", serde_json::json!({"content": content})).await
+        .and_then(|v| serde_json::from_value(v).map_err(|e| e.to_string()))
 }

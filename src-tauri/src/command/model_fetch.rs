@@ -1,46 +1,9 @@
-use serde::Serialize;
-use tauri::AppHandle;
+//! 桌面薄壳 IPC：转发至 nova daemon（方法名 model_fetch.* 与内核分发器一一对应）。
 
-use crate::agent::utils::error_event::report_backend_result;
-
-#[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct FetchedModel {
-    pub id: String,
-    pub owned_by: Option<String>,
-}
+use nova_protocol::misc::*;
 
 #[tauri::command]
-pub async fn fetch_available_models(
-    app: AppHandle,
-    base_url: String,
-    api_key: String,
-    is_full_url: Option<bool>,
-    models_url_override: Option<String>,
-    api_format: Option<String>,
-) -> Result<Vec<FetchedModel>, String> {
-    let result = crate::provider::model_fetch::fetch_models(
-        &base_url,
-        &api_key,
-        is_full_url.unwrap_or(false),
-        models_url_override.as_deref(),
-        api_format.as_deref(),
-    )
-    .await
-    .map(|models| {
-        models
-            .into_iter()
-            .map(|m| FetchedModel {
-                id: m.id,
-                owned_by: m.owned_by,
-            })
-            .collect()
-    });
-
-    report_backend_result(
-        &app,
-        "command.model_fetch.fetch_available_models",
-        result,
-        None,
-    )
+pub async fn fetch_available_models(base_url: String, api_key: String, is_full_url: Option<bool>, models_url_override: Option<String>, api_format: Option<String>) -> Result<Vec<FetchedModel>, String> {
+    crate::daemon::invoke("fetch_available_models", serde_json::json!({"baseUrl": base_url, "apiKey": api_key, "isFullUrl": is_full_url, "modelsUrlOverride": models_url_override, "apiFormat": api_format})).await
+        .and_then(|v| serde_json::from_value(v).map_err(|e| e.to_string()))
 }

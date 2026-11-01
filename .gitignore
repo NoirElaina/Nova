@@ -24,3 +24,8 @@ dist-ssr
 *.sw?
 test/
 /.workbuddy
+
+# Rust build artifacts
+/target
+target/
+src-tauri/target/

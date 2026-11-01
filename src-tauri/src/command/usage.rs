@@ -1,32 +1,23 @@
-pub use crate::provider::token_usage_log::{
+//! 桌面薄壳 IPC：转发至 nova daemon（方法名 usage.* 与内核分发器一一对应）。
+
+pub use nova_protocol::misc::{
     ConversationUsageSummary, TokenUsageRecord, UsageStats,
 };
 
-use tauri::AppHandle;
-
-use crate::agent::utils::error_event::report_backend_result;
-
 #[tauri::command]
-pub async fn get_usage_stats(app: AppHandle) -> Result<UsageStats, String> {
-    let result = crate::provider::token_usage_log::get_usage_stats(&app).await;
-    report_backend_result(&app, "command.usage.get_usage_stats", result, None)
+pub async fn get_usage_stats() -> Result<UsageStats, String> {
+    crate::daemon::invoke("get_usage_stats", serde_json::json!({})).await
+        .and_then(|v| serde_json::from_value(v).map_err(|e| e.to_string()))
 }
 
 #[tauri::command]
-pub async fn list_token_usage(
-    app: AppHandle,
-    limit: Option<i64>,
-) -> Result<Vec<TokenUsageRecord>, String> {
-    let result = crate::provider::token_usage_log::list_token_usage(&app, limit).await;
-    report_backend_result(&app, "command.usage.list_token_usage", result, None)
+pub async fn list_token_usage(limit: Option<i64>) -> Result<Vec<TokenUsageRecord>, String> {
+    crate::daemon::invoke("list_token_usage", serde_json::json!({"limit": limit})).await
+        .and_then(|v| serde_json::from_value(v).map_err(|e| e.to_string()))
 }
 
 #[tauri::command]
-pub async fn get_conversation_usage(
-    app: AppHandle,
-    conversation_id: String,
-) -> Result<ConversationUsageSummary, String> {
-    let result =
-        crate::provider::token_usage_log::get_conversation_usage(&app, &conversation_id).await;
-    report_backend_result(&app, "command.usage.get_conversation_usage", result, None)
+pub async fn get_conversation_usage(conversation_id: String) -> Result<ConversationUsageSummary, String> {
+    crate::daemon::invoke("get_conversation_usage", serde_json::json!({"conversationId": conversation_id})).await
+        .and_then(|v| serde_json::from_value(v).map_err(|e| e.to_string()))
 }

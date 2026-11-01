@@ -1,18 +1,17 @@
 [package]
 name = "nova"
 version = "0.1.0"
-description = "A Tauri App"
+description = "Nova 桌面薄壳：窗口 + daemon 客户端 + 桌面能力服务端（不含 Agent 内核）"
 authors = ["you"]
 edition = "2021"
 
-# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
-
 [lib]
-# The `_lib` suffix may seem redundant but it is necessary
-# to make the lib name unique and wouldn't conflict with the bin name.
-# This seems to be only an issue on Windows, see https://github.com/rust-lang/cargo/issues/8519
 name = "nova_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
+
+[[bin]]
+name = "nova-desktop"
+path = "src/main.rs"
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
@@ -21,48 +20,26 @@ tauri-build = { version = "2", features = [] }
 tauri = { version = "2", features = ["unstable"] }
 tauri-plugin-dialog = "2"
 tauri-plugin-opener = "2"
-webview2-com = "0.38.2"
+webview2-com = "0.39.1"
+
+nova-protocol = { path = "../crates/nova-protocol" }
+
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-# toml 用于解析声明式挂钩配置 hooks.toml。
-toml = "0.8"
-jsonschema = { version = "0.46.5", default-features = false }
-ignore = "0.4"
-glob = "0.3"
-globset = "0.4"
-grep-regex = "0.1"
-grep-searcher = "0.1"
-regex = "1"
-similar = "2.7"
-reqwest = { version = "0.13.2", features = ["json", "stream"] }
 tokio = { version = "1.50.0", features = ["full"] }
-tokio-util = { version = "0.7", features = ["rt"] }
+tokio-tungstenite = "0.28"
 futures-util = "0.3.32"
-sqlx = { version = "0.8.6", features = ["sqlite", "runtime-tokio", "macros"] }
-sha2 = "0.10"
-image = "0.24"
-base64 = "0.22.1"
-lopdf = "0.34"
-aes-gcm = "0.10"
-rand = "0.8"
-uuid = { version = "1.23.0", features = ["v4"] }
-chrono = { version = "0.4.44", features = ["serde"] }
-anyhow = "1.0.102"
+async-trait = "0.1"
 tracing = "0.1.44"
 tracing-appender = "0.2.3"
 tracing-subscriber = { version = "0.3.23", features = ["env-filter", "fmt"] }
 portable-pty = "0.9.0"
-url = "2.5.8"
-urlencoding = "2"
-croner = "3.0.1"
-tiktoken-rs = "0.12.0"
 once_cell = "1.21.4"
-tempfile = "3"
-# tree-sitter 用于把 bash/sh 命令解析成 AST，做 fail-closed 权限判定。
-# 任何无法静态分析的节点（命令替换、子 shell、控制流、算术展开等）都标为
-# too-complex 直接 ask 用户，避免字符串黑名单被 -c/eval/$()/wrapper 绕过。
-tree-sitter = "0.25"
-tree-sitter-bash = "0.23"
-# libc 用于 Unix 上的 setsid（创建新进程组）和 killpg（杀整个进程组）系统调用。
-# 避免通过 fork+exec 调用 kill 命令，直接系统调用更可靠且无额外进程开销。
-libc = "0.2"
+uuid = { version = "1.23.0", features = ["v4"] }
+chrono = { version = "0.4.44", features = ["serde"] }
+url = "2.5.8"
+base64 = "0.22.1"
+image = "0.24"
+
+[target.'cfg(windows)'.dependencies]
+winreg = "0.10"

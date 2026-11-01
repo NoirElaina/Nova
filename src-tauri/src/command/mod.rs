@@ -1,7 +1,7 @@
+// Agent 回合与分支问答命令入口（转发内核）。
+pub mod agent;
 // 设置相关 tauri 命令入口。
 pub mod settings;
-// 设置中的敏感字段加密/解密。
-pub mod settings_secrets;
 // 动态模型获取相关命令入口。
 pub mod model_fetch;
 // 会话历史与 compact 相关命令入口。

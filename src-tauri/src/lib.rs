@@ -1,18 +1,18 @@
-pub mod agent;
 pub mod command;
+pub mod daemon;
 pub mod logging;
-pub mod provider;
 pub mod services;
+pub mod supervisor;
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::OnceLock;
-use tracing::{info, warn};
+use tracing::info;
 
-
-
+/// Nova 桌面薄壳：窗口 + daemon 客户端 + 桌面能力服务端。
+/// Agent 内核完全由 nova-cli 守护进程承载，本进程不含任何内核实现。
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    static SHELL_CLEANUP_ON_EXIT: OnceLock<AtomicBool> = OnceLock::new();
+    static TERMINAL_CLEANUP_ON_EXIT: OnceLock<AtomicBool> = OnceLock::new();
 
     let app = tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
@@ -22,53 +22,21 @@ pub fn run() {
                 eprintln!("[logging.init] {}", error);
             }
 
-            // 初始化加密主密钥，必须在其他命令之前完成。
-            if let Err(error) = crate::command::settings_secrets::init_master_key(app.handle()) {
-                warn!(error = %error, "failed to initialize master encryption key");
-            }
+            info!("desktop shell setup started");
 
-            info!("application setup started");
+            // 部署并拉起 nova daemon（CLI 内核宿主），随后建立协议通道（自动重连）。
+            crate::supervisor::init_desktop_supervisor(app.handle());
+            crate::daemon::init(app.handle());
 
-            // 启动时自动创建默认 workspace 目录，确保 AI 有默认工作区。
-            match crate::command::workspace::default_workspace_root(app.handle()) {
-                Ok(ws) => info!(path = %ws.display(), "default workspace directory ready"),
-                Err(error) => {
-                    warn!(error = %error, "failed to prepare default workspace directory")
-                }
-            }
-
-            let app_handle = app.handle().clone();
-            tauri::async_runtime::spawn(async move {
-                match crate::command::mcp::warmup_runtime(app_handle).await {
-                    Ok(()) => info!("mcp runtime warmup completed"),
-                    Err(error) => warn!(error = %error, "mcp runtime warmup failed"),
-                }
-            });
-
-            // 后台预热 BPE 词表（约几百毫秒），避免首次 token 计算时同步加载。
-            tauri::async_runtime::spawn_blocking(crate::provider::token_counter::warmup);
-
-            // 模型库初始化：加载运行时缓存 + 每 24h 从 OpenRouter 自动拉新。
-            crate::agent::utils::model_context::init(app.handle());
-
-            // 预加载设置并初始化当前终端
-            let _ = crate::command::settings::load_settings(app.handle());
-
-            let scheduler_handle = app.handle().clone();
-            tauri::async_runtime::spawn(async move {
-                info!("scheduler loop starting");
-                crate::command::cron::run_scheduler_loop(scheduler_handle).await;
-            });
-
-            info!("application setup completed");
+            info!("desktop shell setup completed");
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
             command::settings::get_available_terminals,
-            agent::send_modern_agent_turn,
-            agent::cancel_modern_agent_turn,
-            agent::orchestration::branch::send_branch_message,
-            agent::orchestration::branch::cancel_branch_message,
+            command::agent::send_modern_agent_turn,
+            command::agent::cancel_modern_agent_turn,
+            command::agent::send_branch_message,
+            command::agent::cancel_branch_message,
             command::permission_rules::submit_permission_decision,
             command::settings::get_settings,
             command::settings::save_settings,
@@ -170,13 +138,11 @@ pub fn run() {
 
     app.run(|_app_handle, event| {
         if matches!(event, tauri::RunEvent::Exit) {
-            let already_cleaned = SHELL_CLEANUP_ON_EXIT
+            crate::supervisor::on_desktop_exit();
+            let already_cleaned = TERMINAL_CLEANUP_ON_EXIT
                 .get_or_init(|| AtomicBool::new(false))
                 .swap(true, Ordering::Relaxed);
             if !already_cleaned {
-                tauri::async_runtime::block_on(
-                    crate::services::shell_sessions::close_all_sessions(),
-                );
                 crate::services::user_terminal::close_all_sessions();
             }
         }

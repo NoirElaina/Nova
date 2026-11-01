@@ -2,17 +2,32 @@ use crate::services::user_terminal::{self, UserTerminalInfo};
 use tauri::AppHandle;
 
 #[tauri::command]
-pub fn user_terminal_start(
+pub async fn user_terminal_start(
     app: AppHandle,
     conversation_id: Option<String>,
     rows: Option<u16>,
     cols: Option<u16>,
 ) -> Result<UserTerminalInfo, String> {
-    let workspace_root = crate::command::workspace::workspace_root_for_conversation(
-        &app,
+    let workspace_root = crate::daemon::invoke(
+        "get_workspace_root",
+        serde_json::json!({ "conversationId": conversation_id }),
+    )
+    .await
+    .and_then(|v| serde_json::from_value::<String>(v).map_err(|e| e.to_string()))?;
+    let active_terminal = crate::daemon::invoke("get_active_terminal", serde_json::json!({}))
+        .await
+        .and_then(|v| {
+            serde_json::from_value::<nova_protocol::misc::TerminalInfo>(v)
+                .map_err(|e| e.to_string())
+        })?;
+    user_terminal::start_session(
+        app,
         conversation_id.as_deref(),
-    )?;
-    user_terminal::start_session(app, conversation_id.as_deref(), &workspace_root, rows, cols)
+        std::path::Path::new(&workspace_root),
+        &active_terminal,
+        rows,
+        cols,
+    )
 }
 
 #[tauri::command]

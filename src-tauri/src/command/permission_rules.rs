@@ -1,32 +1,21 @@
-//! 持久化权限规则与审批裁决管理命令。
+//! 桌面薄壳 IPC：转发至 nova daemon（方法名 permission_rules.* 与内核分发器一一对应）。
 
-use tauri::AppHandle;
-
-use crate::agent::permissions::rules::{self, PermissionRule};
+use nova_protocol::misc::PermissionRule;
 
 #[tauri::command]
-pub fn list_permission_rules(app: AppHandle) -> Result<Vec<PermissionRule>, String> {
-    Ok(rules::load_rules(&app))
+pub async fn list_permission_rules() -> Result<Vec<PermissionRule>, String> {
+    crate::daemon::invoke("list_permission_rules", serde_json::json!({})).await
+        .and_then(|v| serde_json::from_value(v).map_err(|e| e.to_string()))
 }
 
 #[tauri::command]
-pub fn delete_permission_rule(app: AppHandle, signature: String) -> Result<bool, String> {
-    rules::remove_rule(&app, &signature)
+pub async fn delete_permission_rule(signature: String) -> Result<bool, String> {
+    crate::daemon::invoke("delete_permission_rule", serde_json::json!({"signature": signature})).await
+        .and_then(|v| serde_json::from_value(v).map_err(|e| e.to_string()))
 }
 
 #[tauri::command]
-pub fn submit_permission_decision(
-    app: AppHandle,
-    conversation_id: Option<String>,
-    request_id: String,
-    action: String,
-) -> Result<bool, String> {
-    let action_enum = crate::agent::permissions::parse_permission_action_name(&action)
-        .ok_or_else(|| format!("Unknown permission action: {}", action))?;
-    crate::agent::permissions::submit_permission_decision(
-        &app,
-        conversation_id.as_deref(),
-        &request_id,
-        action_enum,
-    )
+pub async fn submit_permission_decision(conversation_id: Option<String>, request_id: String, action: String) -> Result<bool, String> {
+    crate::daemon::invoke("submit_permission_decision", serde_json::json!({"conversationId": conversation_id, "requestId": request_id, "action": action})).await
+        .and_then(|v| serde_json::from_value(v).map_err(|e| e.to_string()))
 }

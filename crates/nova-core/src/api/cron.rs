@@ -1,0 +1,274 @@
+use crate::services::cron_schedule;
+use crate::agent::tools::shared::cron_store::{add_job, list_jobs, remove_job, remove_job_with_cleanup, CronJob};
+use chrono::{Local, Utc};
+use serde::Serialize;
+use std::collections::{HashMap, HashSet};
+use tokio::time::{self, Duration};
+use tracing::{error, warn};
+use uuid::Uuid;
+
+use crate::agent::utils::error_event::report_backend_result;
+
+const SCHEDULER_TICK_SECONDS: u64 = 15;
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ScheduledTaskTriggerEvent {
+    pub id: String,
+    pub conversation_id: Option<String>,
+    pub cron: String,
+    pub prompt: String,
+    pub recurring: bool,
+    pub durable: bool,
+    pub created_at: String,
+    pub triggered_at: String,
+}
+
+fn build_scheduled_conversation_title(cron: &str, prompt: &str) -> String {
+    let mut title_seed = prompt
+        .lines()
+        .find(|line| !line.trim().is_empty())
+        .map(str::trim)
+        .unwrap_or("Scheduled Task")
+        .to_string();
+
+    if title_seed.chars().count() > 48 {
+        title_seed = title_seed.chars().take(48).collect::<String>();
+    }
+
+    format!("Scheduled [{}] {}", cron, title_seed)
+}
+
+async fn create_bound_conversation_for_task(
+    core: &crate::core::Core,
+    cron: &str,
+    prompt: &str,
+) -> Result<String, String> {
+    let title = build_scheduled_conversation_title(cron, prompt);
+    let conversation = crate::agent::session::history::create_conversation(&core, Some(title), None).await?;
+    Ok(conversation.id)
+}
+
+fn build_scheduled_trigger_user_content(job: &CronJob, triggered_at: &str) -> String {
+    format!(
+        "[Scheduled Task Trigger]\nTask ID: {}\nCron: {}\nTriggered At: {}\n\n{}",
+        job.id, job.cron, triggered_at, job.prompt
+    )
+}
+
+async fn execute_scheduled_prompt_in_bound_conversation(
+    core: &crate::core::Core,
+    job: &CronJob,
+    triggered_at: &str,
+) -> Result<(), String> {
+    let Some(conversation_id) = job
+        .conversation_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|id| !id.is_empty())
+    else {
+        return Ok(());
+    };
+
+    let message_content = build_scheduled_trigger_user_content(job, triggered_at);
+    let result = crate::agent::send_modern_agent_turn(
+        core.clone(),
+        conversation_id.to_string(),
+        message_content,
+        None,
+    )
+    .await;
+
+    result.map_err(|e| {
+        format!(
+            "Failed to execute scheduled prompt for task {} in conversation {}: {}",
+            job.id, conversation_id, e
+        )
+    })
+}
+
+pub async fn run_scheduler_loop(core: &crate::core::Core) {
+    let mut ticker = time::interval(Duration::from_secs(SCHEDULER_TICK_SECONDS));
+    let mut fired_minute_by_id: HashMap<String, String> = HashMap::new();
+
+    loop {
+        ticker.tick().await;
+
+        let now_local = Local::now();
+        let now_utc = Utc::now().to_rfc3339();
+        let minute_key = now_local.format("%Y-%m-%d %H:%M").to_string();
+
+        let jobs = match list_jobs(&core) {
+            Ok(v) => v,
+            Err(e) => {
+                error!(operation = "command.cron.run_scheduler_loop", error = %e, "failed to list scheduled jobs");
+                continue;
+            }
+        };
+
+        let mut existing_ids = HashSet::new();
+
+        for job in jobs {
+            existing_ids.insert(job.id.clone());
+
+            if !cron_schedule::matches_local_minute(&job.cron, &now_local) {
+                continue;
+            }
+
+            if fired_minute_by_id
+                .get(&job.id)
+                .map(|key| key == &minute_key)
+                .unwrap_or(false)
+            {
+                continue;
+            }
+
+            // 触发提示由发送流程随事件流落盘，不再预写，避免重复记录。
+            let app_for_turn = core.clone();
+            let job_for_turn = job.clone();
+            let triggered_at_for_turn = now_utc.clone();
+            tokio::spawn(async move {
+                if let Err(e) = execute_scheduled_prompt_in_bound_conversation(
+                    &app_for_turn,
+                    &job_for_turn,
+                    &triggered_at_for_turn,
+                )
+                .await
+                {
+                    error!(
+                        operation = "command.cron.execute_scheduled_prompt_in_bound_conversation",
+                        job_id = %job_for_turn.id,
+                        error = %e,
+                        "failed to execute scheduled prompt"
+                    );
+                }
+            });
+
+            let conversation_id = job
+                .conversation_id
+                .as_deref()
+                .map(str::trim)
+                .filter(|id| !id.is_empty())
+                .map(str::to_string);
+
+            let payload = ScheduledTaskTriggerEvent {
+                id: job.id.clone(),
+                conversation_id,
+                cron: job.cron.clone(),
+                prompt: job.prompt.clone(),
+                recurring: job.recurring,
+                durable: job.durable,
+                created_at: job.created_at.clone(),
+                triggered_at: now_utc.clone(),
+            };
+
+            core.emit(crate::events::NovaEvent::ScheduledTaskTrigger(serde_json::to_value(&payload).unwrap_or_default()));
+            fired_minute_by_id.insert(job.id.clone(), minute_key.clone());
+            if !job.recurring {
+                match remove_job(&core, &job.id) {
+                    Ok(true) => {
+                        fired_minute_by_id.remove(&job.id);
+                    }
+                    Ok(false) => {
+                        warn!(
+                            operation = "command.cron.run_scheduler_loop",
+                            job_id = %job.id,
+                            minute_key = %minute_key,
+                            "one-shot job was not removed after trigger; keeping minute guard"
+                        );
+                    }
+                    Err(e) => {
+                        error!(
+                            operation = "command.cron.run_scheduler_loop",
+                            job_id = %job.id,
+                            minute_key = %minute_key,
+                            error = %e,
+                            "failed to remove one-shot job after trigger"
+                        );
+                    }
+                }
+            }
+        }
+
+        fired_minute_by_id.retain(|id, _| existing_ids.contains(id));
+    }
+}
+
+pub fn list_scheduled_tasks(core: &crate::core::Core) -> Result<Vec<CronJob>, String> {
+    report_backend_result(
+        &core,
+        "command.cron.list_scheduled_tasks",
+        list_jobs(&core),
+        None,
+    )
+}
+
+pub async fn create_scheduled_task(
+    core: &crate::core::Core,
+    cron: String,
+    prompt: String,
+    recurring: Option<bool>,
+    durable: Option<bool>,
+) -> Result<CronJob, String> {
+    let result = async {
+        let cron_value = cron.trim();
+        if cron_value.is_empty() {
+            return Err("cron is required".to_string());
+        }
+        cron_schedule::validate_expression(cron_value)?;
+
+        let prompt_value = prompt.trim();
+        if prompt_value.is_empty() {
+            return Err("prompt is required".to_string());
+        }
+
+        let raw_uuid = Uuid::new_v4().simple().to_string();
+        let id = format!("cron-{}", &raw_uuid[..12]);
+
+        let conversation_id =
+            create_bound_conversation_for_task(&core, cron_value, prompt_value).await?;
+
+        let job = CronJob {
+            id,
+            cron: cron_value.to_string(),
+            prompt: prompt_value.to_string(),
+            conversation_id: Some(conversation_id.clone()),
+            recurring: recurring.unwrap_or(true),
+            durable: durable.unwrap_or(false),
+            created_at: Utc::now().to_rfc3339(),
+        };
+
+        match add_job(&core, job) {
+            Ok(saved) => Ok(saved),
+            Err(e) => {
+                if let Err(cleanup_error) =
+                    crate::agent::session::history::delete_conversation(&core, &conversation_id).await
+                {
+                    error!(
+                        operation = "command.cron.create_scheduled_task.cleanup",
+                        conversation_id = %conversation_id,
+                        error = %cleanup_error,
+                        "failed to cleanup conversation after add_job error"
+                    );
+                }
+                Err(e)
+            }
+        }
+    }
+    .await;
+    report_backend_result(&core, "command.cron.create_scheduled_task", result, None)
+}
+
+pub async fn delete_scheduled_task(core: &crate::core::Core, id: String) -> Result<bool, String> {
+    let result = async {
+        let task_id = id.trim();
+        if task_id.is_empty() {
+            return Err("id is required".to_string());
+        }
+
+        // 删除任务并同步清理其绑定会话（避免 "Scheduled [...]" 孤儿会话堆积）。
+        remove_job_with_cleanup(&core, task_id).await
+    }
+    .await;
+    report_backend_result(&core, "command.cron.delete_scheduled_task", result, None)
+}

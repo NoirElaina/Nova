@@ -1,24 +1,17 @@
-use tauri::AppHandle;
+//! 桌面薄壳 IPC：转发至 nova daemon（方法名 workspace.* 与内核分发器一一对应）。
 
-// Re-export all domain types and functions from the core workspace service
-pub use crate::services::workspace::*;
+use nova_protocol::misc::*;
+
+
 
 #[tauri::command]
-pub fn workspace_list_directory(
-    app: AppHandle,
-    conversation_id: Option<String>,
-    path: Option<String>,
-) -> Result<WorkspaceDirectoryListing, String> {
-    let root = workspace_root_for_conversation(&app, conversation_id.as_deref())?;
-    list_directory_for_root(root, path)
+pub async fn workspace_list_directory(conversation_id: Option<String>, path: Option<String>) -> Result<WorkspaceDirectoryListing, String> {
+    crate::daemon::invoke("workspace_list_directory", serde_json::json!({"conversationId": conversation_id, "path": path})).await
+        .and_then(|v| serde_json::from_value(v).map_err(|e| e.to_string()))
 }
 
 #[tauri::command]
-pub fn workspace_read_text_file(
-    app: AppHandle,
-    conversation_id: Option<String>,
-    path: String,
-) -> Result<WorkspaceFileContent, String> {
-    let root = workspace_root_for_conversation(&app, conversation_id.as_deref())?;
-    read_text_file(root, path)
+pub async fn workspace_read_text_file(conversation_id: Option<String>, path: String) -> Result<WorkspaceFileContent, String> {
+    crate::daemon::invoke("workspace_read_text_file", serde_json::json!({"conversationId": conversation_id, "path": path})).await
+        .and_then(|v| serde_json::from_value(v).map_err(|e| e.to_string()))
 }

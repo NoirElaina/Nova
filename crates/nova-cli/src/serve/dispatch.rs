@@ -1,0 +1,129 @@
+//! 唯一 RPC 命令分发器：方法名与前端 IPC 命令一一对应。
+//!
+//! 本文件由 api 签名机械生成，禁止手工维护业务分支——
+//! 新增/变更应用操作时只改 nova_core::api，重新生成即可。
+
+use nova_core::Core;
+use serde::de::DeserializeOwned;
+use serde::Serialize;
+use serde_json::Value;
+
+pub async fn dispatch(core: &Core, method: &str, params: Value) -> Result<Value, String> {
+    match method {
+        "send_modern_agent_turn" => result(nova_core::agent::send_modern_agent_turn(
+            core.clone(),
+            arg(&params, "conversationId")?,
+            arg(&params, "prompt")?,
+            arg(&params, "attachments")?,
+        ).await),
+        "cancel_modern_agent_turn" => result(nova_core::agent::cancel_modern_agent_turn(
+            arg(&params, "conversationId")?,
+        ).await),
+        "send_branch_message" => result(nova_core::agent::orchestration::branch::send_branch_message(
+            core.clone(),
+            arg(&params, "parentConversationId")?,
+            arg(&params, "branchId")?,
+            arg(&params, "messages")?,
+        ).await),
+        "cancel_branch_message" => result(nova_core::agent::orchestration::branch::cancel_branch_message(
+            arg(&params, "parentConversationId")?,
+            arg(&params, "branchId")?,
+        ).await),
+        "list_agent_bundles" => result(nova_core::api::agent_config::list_agent_bundles(core)),
+        "create_agent_bundle" => result(nova_core::api::agent_config::create_agent_bundle(core, arg(&params, "name")?)),
+        "load_agent_bundle" => result(nova_core::api::agent_config::load_agent_bundle(core, arg(&params, "bundleId")?)),
+        "save_agent_bundle" => result(nova_core::api::agent_config::save_agent_bundle(core, arg(&params, "bundle")?)),
+        "delete_agent_bundle" => result(nova_core::api::agent_config::delete_agent_bundle(core, arg(&params, "bundleId")?).await),
+        "get_conversation_agent" => result(nova_core::api::agent_config::get_conversation_agent(core, arg(&params, "conversationId")?).await),
+        "set_conversation_agent" => result(nova_core::api::agent_config::set_conversation_agent(core, arg(&params, "conversationId")?, arg(&params, "bundleId")?).await),
+        "list_configurable_tools" => result(nova_core::api::agent_config::list_configurable_tools(core)),
+        "list_agent_private_skills" => result(nova_core::api::agent_config::list_agent_private_skills(core, arg(&params, "bundleId")?)),
+        "list_agent_files" => result(nova_core::api::agent_config::list_agent_files(core, arg(&params, "bundleId")?)),
+        "import_agent_file" => result(nova_core::api::agent_config::import_agent_file(core, arg(&params, "bundleId")?, arg(&params, "srcPath")?)),
+        "delete_agent_file" => result(nova_core::api::agent_config::delete_agent_file(core, arg(&params, "bundleId")?, arg(&params, "name")?)),
+        "reveal_agent_dir" => result(nova_core::api::agent_config::reveal_agent_dir(core, arg(&params, "bundleId")?)),
+        "list_scheduled_tasks" => result(nova_core::api::cron::list_scheduled_tasks(core)),
+        "create_scheduled_task" => result(nova_core::api::cron::create_scheduled_task(core, arg(&params, "cron")?, arg(&params, "prompt")?, arg(&params, "recurring")?, arg(&params, "durable")?).await),
+        "delete_scheduled_task" => result(nova_core::api::cron::delete_scheduled_task(core, arg(&params, "id")?).await),
+        "get_workspace_diff" => result(nova_core::api::file_changes::get_workspace_diff(core, arg(&params, "conversationId")?).await),
+        "get_git_repo_status" => result(nova_core::api::file_changes::get_git_repo_status(core, arg(&params, "conversationId")?).await),
+        "get_workspace_git_status" => result(nova_core::api::file_changes::get_workspace_git_status(arg(&params, "workspacePath")?).await),
+        "init_git_repo" => result(nova_core::api::file_changes::init_git_repo(core, arg(&params, "conversationId")?).await),
+        "create_conversation" => result(nova_core::api::history::create_conversation(core, arg(&params, "title")?, arg(&params, "workspacePath")?).await),
+        "list_conversations" => result(nova_core::api::history::list_conversations(core).await),
+        "set_conversation_pinned" => result(nova_core::api::history::set_conversation_pinned(core, arg(&params, "conversationId")?, arg(&params, "pinned")?).await),
+        "export_conversation" => result(nova_core::api::history::export_conversation(core, arg(&params, "conversationId")?, arg(&params, "format")?).await),
+        "export_rendered_conversation_pdf" => result(nova_core::api::history::export_rendered_conversation_pdf(core, arg(&params, "conversationId")?, arg(&params, "title")?, arg(&params, "html")?).await),
+        "load_history" => result(nova_core::api::history::load_history(core, arg(&params, "conversationId")?).await),
+        "replace_history" => result(nova_core::api::history::replace_history(core, arg(&params, "conversationId")?, arg(&params, "messages")?).await),
+        "append_plain_chat_message" => result(nova_core::api::history::append_plain_chat_message(core, arg(&params, "conversationId")?, arg(&params, "role")?, arg(&params, "content")?).await),
+        "load_conversation_tool_logs" => result(nova_core::api::history::load_conversation_tool_logs(core, arg(&params, "conversationId")?).await),
+        "get_conversation_turn_traces" => result(nova_core::api::history::get_conversation_turn_traces(core, arg(&params, "conversationId")?).await),
+        "clear_history" => result(nova_core::api::history::clear_history(core, arg(&params, "conversationId")?).await),
+        "delete_conversation" => result(nova_core::api::history::delete_conversation(core, arg(&params, "conversationId")?).await),
+        "list_memory_entries" => result(nova_core::api::history::list_memory_entries(core).await),
+        "add_memory_entry" => result(nova_core::api::history::add_memory_entry(core, arg(&params, "content")?).await),
+        "remove_memory_entry" => result(nova_core::api::history::remove_memory_entry(core, arg(&params, "oldText")?).await),
+        "clear_memory_entries" => result(nova_core::api::history::clear_memory_entries(core).await),
+        "manual_compact_conversation" => result(nova_core::api::history::manual_compact_conversation(core, arg(&params, "conversationId")?).await),
+        "get_hooks_toml" => result(nova_core::api::hooks::get_hooks_toml(core)),
+        "get_hooks_structured" => result(nova_core::api::hooks::get_hooks_structured(core)),
+        "save_hooks_toml" => result(nova_core::api::hooks::save_hooks_toml(core, arg(&params, "content")?)),
+        "add_mcp_server" => result(nova_core::api::mcp::add_mcp_server(core, arg(&params, "name")?, arg(&params, "config")?, arg(&params, "sourceAgent")?).await),
+        "get_mcp_server" => result(nova_core::api::mcp::get_mcp_server(core, arg(&params, "name")?).await),
+        "update_mcp_server" => result(nova_core::api::mcp::update_mcp_server(core, arg(&params, "oldName")?, arg(&params, "newName")?, arg(&params, "config")?).await),
+        "remove_mcp_server" => result(nova_core::api::mcp::remove_mcp_server(core, arg(&params, "name")?).await),
+        "get_mcp_server_statuses" => result(nova_core::api::mcp::get_mcp_server_statuses(core).await),
+        "reload_all_mcp_servers" => result(nova_core::api::mcp::reload_all_mcp_servers(core).await),
+        "set_mcp_server_enabled" => result(nova_core::api::mcp::set_mcp_server_enabled(core, arg(&params, "name")?, arg(&params, "enabled")?).await),
+        "list_mcp_tools" => result(nova_core::api::mcp::list_mcp_tools(core, arg(&params, "serverName")?).await),
+        "list_mcp_resources" => result(nova_core::api::mcp::list_mcp_resources(core, arg(&params, "serverName")?).await),
+        "read_mcp_resource" => result(nova_core::api::mcp::read_mcp_resource(core, arg(&params, "serverName")?, arg(&params, "uri")?).await),
+        "call_mcp_tool" => result(nova_core::api::mcp::call_mcp_tool(core, arg(&params, "serverName")?, arg(&params, "toolName")?, arg(&params, "arguments")?).await),
+        "fetch_available_models" => result(nova_core::api::model_fetch::fetch_available_models(core, arg(&params, "baseUrl")?, arg(&params, "apiKey")?, arg(&params, "isFullUrl")?, arg(&params, "modelsUrlOverride")?, arg(&params, "apiFormat")?).await),
+        "list_permission_rules" => result(nova_core::api::permission_rules::list_permission_rules(core)),
+        "delete_permission_rule" => result(nova_core::api::permission_rules::delete_permission_rule(core, arg(&params, "signature")?)),
+        "submit_permission_decision" => result(nova_core::api::permission_rules::submit_permission_decision(core, arg(&params, "conversationId")?, arg(&params, "requestId")?, arg(&params, "action")?)),
+        "get_conversation_plan" => result(nova_core::api::plan::get_conversation_plan(core, arg(&params, "conversationId")?).await),
+        "save_session_file" => result(nova_core::api::session_files::save_session_file(core, arg(&params, "conversationId")?, arg(&params, "filename")?, arg(&params, "content")?, arg(&params, "rawBytes")?).await),
+        "list_session_files" => result(nova_core::api::session_files::list_session_files(core, arg(&params, "conversationId")?).await),
+        "read_session_file" => result(nova_core::api::session_files::read_session_file(core, arg(&params, "conversationId")?, arg(&params, "filename")?).await),
+        "get_settings" => result(nova_core::api::settings::get_settings(core)),
+        "save_settings" => result(nova_core::api::settings::save_settings(core, arg(&params, "settings")?)),
+        "get_model_window_tokens" => to_json(nova_core::api::settings::get_model_window_tokens(core, arg(&params, "model")?)),
+        "estimate_text_tokens" => to_json(nova_core::api::settings::estimate_text_tokens(arg(&params, "text")?)),
+        "get_available_terminals" => to_json(nova_core::api::settings::get_available_terminals()),
+        "get_active_terminal" => to_json(nova_core::api::settings::get_active_terminal()),
+        "refresh_model_catalog" => result(nova_core::api::settings::refresh_model_catalog(core).await),
+        "get_model_catalog_stats" => to_json(nova_core::api::settings::get_model_catalog_stats(core)),
+        "get_model_catalog" => to_json(nova_core::api::settings::get_model_catalog(arg(&params, "search")?, arg(&params, "modality")?)),
+        "get_shell_session_status" => result(nova_core::api::shell::get_shell_session_status(core, arg(&params, "conversationId")?).await),
+        "list_background_jobs" => result(nova_core::api::shell::list_background_jobs(arg(&params, "conversationId")?).await),
+        "read_background_job_output" => result(nova_core::api::shell::read_background_job_output(arg(&params, "conversationId")?, arg(&params, "id")?, arg(&params, "tailLines")?).await),
+        "list_skills" => result(nova_core::api::skill::list_skills(core)),
+        "delete_skill" => result(nova_core::api::skill::delete_skill(core, arg(&params, "path")?)),
+        "read_skill_content" => result(nova_core::api::skill::read_skill_content(core, arg(&params, "path")?)),
+        "list_todos" => result(nova_core::api::todo::list_todos(core, arg(&params, "conversationId")?).await),
+        "get_usage_stats" => result(nova_core::api::usage::get_usage_stats(core).await),
+        "list_token_usage" => result(nova_core::api::usage::list_token_usage(core, arg(&params, "limit")?).await),
+        "get_conversation_usage" => result(nova_core::api::usage::get_conversation_usage(core, arg(&params, "conversationId")?).await),
+        "workspace_list_directory" => result(nova_core::api::workspace::workspace_list_directory(core, arg(&params, "conversationId")?, arg(&params, "path")?)),
+        "workspace_read_text_file" => result(nova_core::api::workspace::workspace_read_text_file(core, arg(&params, "conversationId")?, arg(&params, "path")?)),
+        "get_workspace_root" => result(nova_core::api::workspace::get_workspace_root(core, arg(&params, "conversationId")?)),
+        _ => Err(format!("unknown method: {}", method)),
+    }
+}
+
+/// 按 camelCase 键名提取并反序列化参数（与 Tauri 前端参数约定一致）。
+fn arg<T: DeserializeOwned>(params: &Value, key: &str) -> Result<T, String> {
+    let raw = params.get(key).cloned().unwrap_or(Value::Null);
+    serde_json::from_value(raw).map_err(|e| format!("参数 {} 解析失败: {}", key, e))
+}
+
+fn result<T: Serialize>(value: Result<T, String>) -> Result<Value, String> {
+    value.and_then(|v| serde_json::to_value(v).map_err(|e| e.to_string()))
+}
+
+fn to_json<T: Serialize>(value: T) -> Result<Value, String> {
+    serde_json::to_value(value).map_err(|e| e.to_string())
+}

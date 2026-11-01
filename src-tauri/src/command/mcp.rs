@@ -1,148 +1,72 @@
-use crate::agent::utils::error_event::report_backend_result;
-use serde_json::Value;
-use tauri::AppHandle;
+//! 桌面薄壳 IPC：转发至 nova daemon（方法名 mcp.* 与内核分发器一一对应）。
 
-// 复用 services 层的 MCP 对外类型。
-pub use crate::agent::capabilities::mcp::{
+use serde_json::Value;
+pub use nova_protocol::mcp::{
     McpResourceInfo, McpServerConfig, McpServerEntry, McpServerStatus, McpToolInfo,
 };
 
 #[tauri::command]
-pub async fn add_mcp_server(
-    app: AppHandle,
-    name: String,
-    config: McpServerConfig,
-    source_agent: Option<String>,
-) -> Result<(), String> {
-    // 将 tauri 命令直接转发到 MCP service；source_agent 用于标注来源智能体。
-    let app_handle = app.clone();
-    let result =
-        crate::agent::capabilities::mcp::add_mcp_server(app, name, config, source_agent).await;
-    report_backend_result(&app_handle, "command.mcp.add_mcp_server", result, None)
+pub async fn add_mcp_server(name: String, config: McpServerConfig, source_agent: Option<String>) -> Result<(), String> {
+    crate::daemon::invoke("add_mcp_server", serde_json::json!({"name": name, "config": config, "sourceAgent": source_agent})).await
+        .and_then(|v| serde_json::from_value(v).map_err(|e| e.to_string()))
 }
 
 #[tauri::command]
-pub async fn get_mcp_server(app: AppHandle, name: String) -> Result<McpServerEntry, String> {
-    // 读取指定 MCP server 的完整配置。
-    let app_handle = app.clone();
-    let result = crate::agent::capabilities::mcp::get_mcp_server(app, name).await;
-    report_backend_result(&app_handle, "command.mcp.get_mcp_server", result, None)
+pub async fn get_mcp_server(name: String) -> Result<McpServerEntry, String> {
+    crate::daemon::invoke("get_mcp_server", serde_json::json!({"name": name})).await
+        .and_then(|v| serde_json::from_value(v).map_err(|e| e.to_string()))
 }
 
 #[tauri::command]
-pub async fn update_mcp_server(
-    app: AppHandle,
-    old_name: String,
-    new_name: String,
-    config: McpServerConfig,
-) -> Result<(), String> {
-    // 更新指定 MCP server，必要时允许改名并重连。
-    let app_handle = app.clone();
-    let result =
-        crate::agent::capabilities::mcp::update_mcp_server(app, old_name, new_name, config).await;
-    report_backend_result(&app_handle, "command.mcp.update_mcp_server", result, None)
+pub async fn update_mcp_server(old_name: String, new_name: String, config: McpServerConfig) -> Result<(), String> {
+    crate::daemon::invoke("update_mcp_server", serde_json::json!({"oldName": old_name, "newName": new_name, "config": config})).await
+        .and_then(|v| serde_json::from_value(v).map_err(|e| e.to_string()))
 }
 
 #[tauri::command]
-pub async fn remove_mcp_server(app: AppHandle, name: String) -> Result<(), String> {
-    // 删除指定 MCP server 配置与运行态。
-    let app_handle = app.clone();
-    let result = crate::agent::capabilities::mcp::remove_mcp_server(app, name).await;
-    report_backend_result(&app_handle, "command.mcp.remove_mcp_server", result, None)
+pub async fn remove_mcp_server(name: String) -> Result<(), String> {
+    crate::daemon::invoke("remove_mcp_server", serde_json::json!({"name": name})).await
+        .and_then(|v| serde_json::from_value(v).map_err(|e| e.to_string()))
 }
 
 #[tauri::command]
-pub async fn get_mcp_server_statuses(app: AppHandle) -> Result<Vec<McpServerStatus>, String> {
-    // 获取所有 MCP server 当前状态。
-    let app_handle = app.clone();
-    let result = crate::agent::capabilities::mcp::get_mcp_server_statuses(app).await;
-    report_backend_result(
-        &app_handle,
-        "command.mcp.get_mcp_server_statuses",
-        result,
-        None,
-    )
+pub async fn get_mcp_server_statuses() -> Result<Vec<McpServerStatus>, String> {
+    crate::daemon::invoke("get_mcp_server_statuses", serde_json::json!({})).await
+        .and_then(|v| serde_json::from_value(v).map_err(|e| e.to_string()))
 }
 
 #[tauri::command]
-pub async fn reload_all_mcp_servers(app: AppHandle) -> Result<(), String> {
-    // 触发所有 MCP server 重载。
-    let app_handle = app.clone();
-    let result = crate::agent::capabilities::mcp::reload_all_mcp_servers(app).await;
-    report_backend_result(
-        &app_handle,
-        "command.mcp.reload_all_mcp_servers",
-        result,
-        None,
-    )
+pub async fn reload_all_mcp_servers() -> Result<(), String> {
+    crate::daemon::invoke("reload_all_mcp_servers", serde_json::json!({})).await
+        .and_then(|v| serde_json::from_value(v).map_err(|e| e.to_string()))
 }
 
 #[tauri::command]
-pub async fn set_mcp_server_enabled(
-    app: AppHandle,
-    name: String,
-    enabled: bool,
-) -> Result<(), String> {
-    // 启用或禁用指定 MCP server。
-    let app_handle = app.clone();
-    let result = crate::agent::capabilities::mcp::set_mcp_server_enabled(app, name, enabled).await;
-    report_backend_result(
-        &app_handle,
-        "command.mcp.set_mcp_server_enabled",
-        result,
-        None,
-    )
+pub async fn set_mcp_server_enabled(name: String, enabled: bool) -> Result<(), String> {
+    crate::daemon::invoke("set_mcp_server_enabled", serde_json::json!({"name": name, "enabled": enabled})).await
+        .and_then(|v| serde_json::from_value(v).map_err(|e| e.to_string()))
 }
 
 #[tauri::command]
-pub async fn list_mcp_tools(
-    app: AppHandle,
-    server_name: String,
-) -> Result<Vec<McpToolInfo>, String> {
-    // 列出指定 server 的工具。
-    let app_handle = app.clone();
-    let result = crate::agent::capabilities::mcp::list_mcp_tools(app, server_name).await;
-    report_backend_result(&app_handle, "command.mcp.list_mcp_tools", result, None)
+pub async fn list_mcp_tools(server_name: String) -> Result<Vec<McpToolInfo>, String> {
+    crate::daemon::invoke("list_mcp_tools", serde_json::json!({"serverName": server_name})).await
+        .and_then(|v| serde_json::from_value(v).map_err(|e| e.to_string()))
 }
 
 #[tauri::command]
-pub async fn list_mcp_resources(
-    app: AppHandle,
-    server_name: String,
-) -> Result<Vec<McpResourceInfo>, String> {
-    // 列出指定 server 的资源。
-    let app_handle = app.clone();
-    let result = crate::agent::capabilities::mcp::list_mcp_resources(app, server_name).await;
-    report_backend_result(&app_handle, "command.mcp.list_mcp_resources", result, None)
+pub async fn list_mcp_resources(server_name: String) -> Result<Vec<McpResourceInfo>, String> {
+    crate::daemon::invoke("list_mcp_resources", serde_json::json!({"serverName": server_name})).await
+        .and_then(|v| serde_json::from_value(v).map_err(|e| e.to_string()))
 }
 
 #[tauri::command]
-pub async fn read_mcp_resource(
-    app: AppHandle,
-    server_name: String,
-    uri: String,
-) -> Result<Value, String> {
-    // 读取指定资源 URI 的内容。
-    let app_handle = app.clone();
-    let result = crate::agent::capabilities::mcp::read_mcp_resource(app, server_name, uri).await;
-    report_backend_result(&app_handle, "command.mcp.read_mcp_resource", result, None)
+pub async fn read_mcp_resource(server_name: String, uri: String) -> Result<Value, String> {
+    crate::daemon::invoke("read_mcp_resource", serde_json::json!({"serverName": server_name, "uri": uri})).await
+        .and_then(|v| serde_json::from_value(v).map_err(|e| e.to_string()))
 }
 
 #[tauri::command]
-pub async fn call_mcp_tool(
-    app: AppHandle,
-    server_name: String,
-    tool_name: String,
-    arguments: Value,
-) -> Result<Value, String> {
-    // 调用指定 MCP 工具并返回原始结果 JSON。
-    let app_handle = app.clone();
-    let result =
-        crate::agent::capabilities::mcp::call_mcp_tool(app, server_name, tool_name, arguments).await;
-    report_backend_result(&app_handle, "command.mcp.call_mcp_tool", result, None)
-}
-
-pub async fn warmup_runtime(app: AppHandle) -> Result<(), String> {
-    // 应用启动时预热 MCP runtime（非 tauri command）。
-    crate::agent::capabilities::mcp::warmup_runtime(app).await
+pub async fn call_mcp_tool(server_name: String, tool_name: String, arguments: Value) -> Result<Value, String> {
+    crate::daemon::invoke("call_mcp_tool", serde_json::json!({"serverName": server_name, "toolName": tool_name, "arguments": arguments})).await
+        .and_then(|v| serde_json::from_value(v).map_err(|e| e.to_string()))
 }

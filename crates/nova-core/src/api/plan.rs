@@ -1,0 +1,17 @@
+// 会话 plan 查询命令入口。
+//
+// plan 文件由 write_plan 工具写入 {app_data_dir}/plans/{conversation_id}.md，
+// 每会话仅一份。前端加载会话时通过此命令读取，用于渲染结构化 Plan 面板。
+
+
+use crate::agent::capabilities::plan_files::{self, ConversationPlan};
+use crate::agent::utils::error_event::report_backend_result;
+
+/// 读取当前会话的 plan；会话没有 plan 时返回 null。
+pub async fn get_conversation_plan(
+    core: &crate::core::Core,
+    conversation_id: Option<String>,
+) -> Result<Option<ConversationPlan>, String> {
+    let result = plan_files::load_conversation_plan(&core, conversation_id.as_deref());
+    report_backend_result(&core, "command.plan.get_conversation_plan", result, None)
+}

@@ -1,0 +1,45 @@
+
+use crate::agent::capabilities::session_files::{self, SessionFileMeta};
+use crate::agent::utils::error_event::report_backend_result;
+
+pub async fn save_session_file(
+    core: &crate::core::Core,
+    conversation_id: String,
+    filename: String,
+    content: Option<String>,
+    raw_bytes: Option<Vec<u8>>,
+) -> Result<SessionFileMeta, String> {
+    let result = session_files::save_session_file(
+        &core,
+        &conversation_id,
+        &filename,
+        content.as_deref(),
+        raw_bytes.as_deref(),
+    );
+    report_backend_result(&core, "command.session_files.save_session_file", result, None)
+}
+
+pub async fn list_session_files(
+    core: &crate::core::Core,
+    conversation_id: String,
+) -> Result<Vec<SessionFileMeta>, String> {
+    let result = session_files::list_session_files(&core, &conversation_id);
+    report_backend_result(&core, "command.session_files.list_session_files", result, None)
+}
+
+pub async fn read_session_file(
+    core: &crate::core::Core,
+    conversation_id: String,
+    filename: String,
+) -> Result<String, String> {
+    let result = session_files::read_session_file(&core, &conversation_id, &filename);
+    report_backend_result(&core, "command.session_files.read_session_file", result, None)
+}
+
+pub async fn delete_all_session_files(core: &crate::core::Core, conversation_id: &str) -> Result<(), String> {
+    session_files::delete_all_session_files(&core, conversation_id)
+}
+
+pub async fn delete_all_session_files_all(core: &crate::core::Core) -> Result<(), String> {
+    session_files::delete_all_session_files_all(&core)
+}

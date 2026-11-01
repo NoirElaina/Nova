@@ -1,49 +1,23 @@
-use tauri::AppHandle;
+//! 桌面薄壳 IPC：转发至 nova daemon（方法名 session_files.* 与内核分发器一一对应）。
 
-use crate::agent::capabilities::session_files::{self, SessionFileMeta};
-use crate::agent::utils::error_event::report_backend_result;
+use nova_protocol::misc::*;
+
+
 
 #[tauri::command]
-pub async fn save_session_file(
-    app: AppHandle,
-    conversation_id: String,
-    filename: String,
-    content: Option<String>,
-    raw_bytes: Option<Vec<u8>>,
-) -> Result<SessionFileMeta, String> {
-    let result = session_files::save_session_file(
-        &app,
-        &conversation_id,
-        &filename,
-        content.as_deref(),
-        raw_bytes.as_deref(),
-    );
-    report_backend_result(&app, "command.session_files.save_session_file", result, None)
+pub async fn save_session_file(conversation_id: String, filename: String, content: Option<String>, raw_bytes: Option<Vec<u8>>) -> Result<SessionFileMeta, String> {
+    crate::daemon::invoke("save_session_file", serde_json::json!({"conversationId": conversation_id, "filename": filename, "content": content, "rawBytes": raw_bytes})).await
+        .and_then(|v| serde_json::from_value(v).map_err(|e| e.to_string()))
 }
 
 #[tauri::command]
-pub async fn list_session_files(
-    app: AppHandle,
-    conversation_id: String,
-) -> Result<Vec<SessionFileMeta>, String> {
-    let result = session_files::list_session_files(&app, &conversation_id);
-    report_backend_result(&app, "command.session_files.list_session_files", result, None)
+pub async fn list_session_files(conversation_id: String) -> Result<Vec<SessionFileMeta>, String> {
+    crate::daemon::invoke("list_session_files", serde_json::json!({"conversationId": conversation_id})).await
+        .and_then(|v| serde_json::from_value(v).map_err(|e| e.to_string()))
 }
 
 #[tauri::command]
-pub async fn read_session_file(
-    app: AppHandle,
-    conversation_id: String,
-    filename: String,
-) -> Result<String, String> {
-    let result = session_files::read_session_file(&app, &conversation_id, &filename);
-    report_backend_result(&app, "command.session_files.read_session_file", result, None)
-}
-
-pub async fn delete_all_session_files(app: &AppHandle, conversation_id: &str) -> Result<(), String> {
-    session_files::delete_all_session_files(app, conversation_id)
-}
-
-pub async fn delete_all_session_files_all(app: &AppHandle) -> Result<(), String> {
-    session_files::delete_all_session_files_all(app)
+pub async fn read_session_file(conversation_id: String, filename: String) -> Result<String, String> {
+    crate::daemon::invoke("read_session_file", serde_json::json!({"conversationId": conversation_id, "filename": filename})).await
+        .and_then(|v| serde_json::from_value(v).map_err(|e| e.to_string()))
 }

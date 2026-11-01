@@ -1,40 +1,23 @@
-use crate::services::shell_sessions::{self, BackgroundOutput, ShellSessionStatus};
-use tauri::AppHandle;
+//! 桌面薄壳 IPC：转发至 nova daemon（方法名 shell.* 与内核分发器一一对应）。
+
+use nova_protocol::misc::*;
+
+
 
 #[tauri::command]
-pub async fn get_shell_session_status(
-    app: AppHandle,
-    conversation_id: Option<String>,
-) -> Result<ShellSessionStatus, String> {
-    let mut status = shell_sessions::session_status(conversation_id.as_deref()).await;
-    if status.cwd.is_none() {
-        status.cwd = Some(
-            crate::command::workspace::workspace_root_string_for_conversation(
-                &app,
-                conversation_id.as_deref(),
-            )?,
-        );
-    }
-    Ok(status)
+pub async fn get_shell_session_status(conversation_id: Option<String>) -> Result<ShellSessionStatus, String> {
+    crate::daemon::invoke("get_shell_session_status", serde_json::json!({"conversationId": conversation_id})).await
+        .and_then(|v| serde_json::from_value(v).map_err(|e| e.to_string()))
 }
 
-/// 列出会话的后台作业（不含输出内容），供输入框上方的"后台任务"小框与右侧面板使用。
 #[tauri::command]
-pub async fn list_background_jobs(
-    conversation_id: Option<String>,
-) -> Result<Vec<BackgroundOutput>, String> {
-    Ok(shell_sessions::list_background_jobs_for_conversation(
-        conversation_id.as_deref(),
-    ))
+pub async fn list_background_jobs(conversation_id: Option<String>) -> Result<Vec<BackgroundOutput>, String> {
+    crate::daemon::invoke("list_background_jobs", serde_json::json!({"conversationId": conversation_id})).await
+        .and_then(|v| serde_json::from_value(v).map_err(|e| e.to_string()))
 }
 
-/// 读取单个后台作业的状态与最近输出。id 全局唯一；conversation_id 只用于错误提示。
 #[tauri::command]
-pub async fn read_background_job_output(
-    conversation_id: Option<String>,
-    id: String,
-    tail_lines: Option<usize>,
-) -> Result<BackgroundOutput, String> {
-    let _ = &conversation_id;
-    shell_sessions::read_background_output(id.trim(), None, tail_lines)
+pub async fn read_background_job_output(conversation_id: Option<String>, id: String, tail_lines: Option<usize>) -> Result<BackgroundOutput, String> {
+    crate::daemon::invoke("read_background_job_output", serde_json::json!({"conversationId": conversation_id, "id": id, "tailLines": tail_lines})).await
+        .and_then(|v| serde_json::from_value(v).map_err(|e| e.to_string()))
 }

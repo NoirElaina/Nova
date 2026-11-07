@@ -195,6 +195,7 @@ async fn run_connection(mut child: Child, app: AppHandle) {
                 "version": env!("CARGO_PKG_VERSION"),
             },
             "capabilities": ["browser"],
+            "protocolVersion": nova_protocol::rpc::PROTOCOL_VERSION,
         },
     }));
 
@@ -335,6 +336,16 @@ async fn dispatch_incoming(
                 // 握手回包：比对内核版本，不一致时显式告警，
                 // 替代「每次启动强制覆写二进制」那种隐式兜底。
                 if id == "initialize" {
+                    if let Some(error) = envelope.get("error") {
+                        let message = error
+                            .get("message")
+                            .and_then(Value::as_str)
+                            .unwrap_or("initialize failed");
+                        warn!(message, "内核握手失败（协议不兼容）");
+                        let _ = app.emit("kernel-handshake-failed", json!({ "message": message }));
+                        return;
+                    }
+
                     let server = envelope
                         .pointer("/result/serverInfo/version")
                         .and_then(Value::as_str)

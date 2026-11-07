@@ -8,7 +8,18 @@ use serde::de::DeserializeOwned;
 use serde::Serialize;
 use serde_json::Value;
 
-pub async fn dispatch(core: &Core, method: &str, params: Value) -> Result<Value, String> {
+/// 分发错误：JSON-RPC 标准错误码 + 人类可读信息。
+///
+/// - `-32601` 方法不存在
+/// - `-32602` 参数非法
+/// - `-32603` 内核内部错误
+pub type DispatchError = (i32, String);
+
+pub const METHOD_NOT_FOUND: i32 = -32601;
+pub const INVALID_PARAMS: i32 = -32602;
+pub const INTERNAL_ERROR: i32 = -32603;
+
+pub async fn dispatch(core: &Core, method: &str, params: Value) -> Result<Value, DispatchError> {
     match method {
         "send_modern_agent_turn" => result(nova_core::agent::send_modern_agent_turn(
             core.clone(),
@@ -110,20 +121,23 @@ pub async fn dispatch(core: &Core, method: &str, params: Value) -> Result<Value,
         "workspace_list_directory" => result(nova_core::api::workspace::workspace_list_directory(core, arg(&params, "conversationId")?, arg(&params, "path")?)),
         "workspace_read_text_file" => result(nova_core::api::workspace::workspace_read_text_file(core, arg(&params, "conversationId")?, arg(&params, "path")?)),
         "get_workspace_root" => result(nova_core::api::workspace::get_workspace_root(core, arg(&params, "conversationId")?)),
-        _ => Err(format!("unknown method: {}", method)),
+        _ => Err((METHOD_NOT_FOUND, format!("unknown method: {}", method))),
     }
 }
 
 /// 按 camelCase 键名提取并反序列化参数（与 Tauri 前端参数约定一致）。
-fn arg<T: DeserializeOwned>(params: &Value, key: &str) -> Result<T, String> {
+fn arg<T: DeserializeOwned>(params: &Value, key: &str) -> Result<T, DispatchError> {
     let raw = params.get(key).cloned().unwrap_or(Value::Null);
-    serde_json::from_value(raw).map_err(|e| format!("参数 {} 解析失败: {}", key, e))
+    serde_json::from_value(raw).map_err(|e| (INVALID_PARAMS, format!("参数 {} 解析失败: {}", key, e)))
 }
 
-fn result<T: Serialize>(value: Result<T, String>) -> Result<Value, String> {
-    value.and_then(|v| serde_json::to_value(v).map_err(|e| e.to_string()))
+fn result<T: Serialize>(value: Result<T, String>) -> Result<Value, DispatchError> {
+    match value {
+        Ok(v) => serde_json::to_value(v).map_err(|e| (INTERNAL_ERROR, e.to_string())),
+        Err(e) => Err((INTERNAL_ERROR, e)),
+    }
 }
 
-fn to_json<T: Serialize>(value: T) -> Result<Value, String> {
-    serde_json::to_value(value).map_err(|e| e.to_string())
+fn to_json<T: Serialize>(value: T) -> Result<Value, DispatchError> {
+    serde_json::to_value(value).map_err(|e| (INTERNAL_ERROR, e.to_string()))
 }

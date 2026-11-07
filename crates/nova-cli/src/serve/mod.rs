@@ -27,10 +27,16 @@ use futures_util::{SinkExt, StreamExt};
 use nova_core::{BrowserCapability, Core, HostHooks};
 use serde_json::{json, Value};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
-use tokio::sync::{mpsc, oneshot};
+use tokio::sync::{mpsc, oneshot, Semaphore};
 use tracing::{info, warn};
 
 use crate::host;
+
+/// 单连接并发请求上限；超限返回 JSON-RPC -32001（与 Codex App Server 同语义）。
+const MAX_INFLIGHT_REQUESTS: usize = 32;
+
+/// 出站队列容量。写满说明客户端消费不过来，丢弃并告警，而不是无限占用内存。
+const OUTBOUND_QUEUE_CAPACITY: usize = 1024;
 
 // ─────────────────────────────────────────────
 // 启动引导（两种传输共用）
@@ -106,6 +112,7 @@ fn acquire_instance_lock(core: &Core) -> Result<File, String> {
 struct ServerState {
     core: Core,
     hub: ClientHub,
+    inflight: Arc<Semaphore>,
 }
 
 // ─────────────────────────────────────────────
@@ -119,13 +126,13 @@ struct ClientHub {
 
 #[derive(Default)]
 struct HubInner {
-    desktop: Option<mpsc::UnboundedSender<Value>>,
+    desktop: Option<mpsc::Sender<Value>>,
     pending: HashMap<String, oneshot::Sender<Value>>,
     counter: u64,
 }
 
 impl ClientHub {
-    fn register_desktop(&self, sender: mpsc::UnboundedSender<Value>) {
+    fn register_desktop(&self, sender: mpsc::Sender<Value>) {
         self.inner.lock().unwrap().desktop = Some(sender);
     }
 
@@ -155,8 +162,8 @@ impl ClientHub {
             .desktop
             .as_ref()
             .ok_or_else(|| "no desktop client connected".to_string())?
-            .send(message)
-            .map_err(|_| "desktop client channel closed".to_string())
+            .try_send(message)
+            .map_err(|_| "desktop client channel closed or full".to_string())
     }
 }
 
@@ -238,7 +245,7 @@ impl HostHooks for RemoteHooks {
 // ─────────────────────────────────────────────
 
 /// 内核事件扇出：把领域事件转成稳定的前端通知，写入给定通道。
-async fn event_pump(core: Core, out_tx: mpsc::UnboundedSender<Value>) {
+async fn event_pump(core: Core, out_tx: mpsc::Sender<Value>) {
     let mut events = core.subscribe();
     loop {
         match events.recv().await {
@@ -249,8 +256,13 @@ async fn event_pump(core: Core, out_tx: mpsc::UnboundedSender<Value>) {
                     "method": "event",
                     "params": { "name": name, "payload": payload },
                 });
-                if out_tx.send(notification).is_err() {
-                    break;
+                match out_tx.try_send(notification) {
+                    Ok(()) => {}
+                    // 客户端消费不过来：丢这一条，不阻塞内核事件循环。
+                    Err(mpsc::error::TrySendError::Full(_)) => {
+                        warn!("出站队列已满，丢弃一条内核事件");
+                    }
+                    Err(mpsc::error::TrySendError::Closed(_)) => break,
                 }
             }
             Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
@@ -263,7 +275,7 @@ async fn event_pump(core: Core, out_tx: mpsc::UnboundedSender<Value>) {
 async fn handle_message(
     state: &Arc<ServerState>,
     envelope: Value,
-    out_tx: &mpsc::UnboundedSender<Value>,
+    out_tx: &mpsc::Sender<Value>,
 ) {
     // 能力请求响应（无 method，携带 id + result/error）。
     if envelope.get("method").is_none() {
@@ -300,6 +312,29 @@ async fn handle_message(
                 "initialize"
             );
 
+            // 协议版本不兼容时明确拒绝，而不是带着未知语义继续跑。
+            let client_protocol = params
+                .get("protocolVersion")
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+            if !client_protocol.is_empty()
+                && client_protocol != nova_protocol::rpc::PROTOCOL_VERSION
+            {
+                let _ = out_tx.try_send(json!({
+                    "jsonrpc": "2.0",
+                    "id": id,
+                    "error": {
+                        "code": -32600,
+                        "message": format!(
+                            "protocol version mismatch: client={}, server={}",
+                            client_protocol,
+                            nova_protocol::rpc::PROTOCOL_VERSION
+                        ),
+                    },
+                }));
+                return;
+            }
+
             let result = serde_json::to_value(nova_protocol::rpc::InitializeResult {
                 server_info: nova_protocol::rpc::ClientInfo {
                     name: "nova".to_string(),
@@ -311,7 +346,7 @@ async fn handle_message(
             })
             .unwrap_or(Value::Null);
 
-            let _ = out_tx.send(json!({
+            let _ = out_tx.try_send(json!({
                 "jsonrpc": "2.0",
                 "id": id,
                 "result": result,
@@ -332,19 +367,39 @@ async fn handle_message(
                 "id": id,
                 "result": { "ok": true },
             });
-            let _ = out_tx.send(response);
+            let _ = out_tx.try_send(response);
         }
         _ => {
-            let result = dispatch::dispatch(&state.core, method, params).await;
-            let response = match result {
-                Ok(value) => json!({ "jsonrpc": "2.0", "id": id, "result": value }),
-                Err(error) => json!({
-                    "jsonrpc": "2.0",
-                    "id": id,
-                    "error": { "code": -32000, "message": error },
-                }),
+            // 每个请求独立 spawn：一个长 turn 不得阻塞读循环，
+            // 否则取消、权限审批与后续消息全部堵死（Codex 的 submission 模型同此）。
+            let permit = match state.inflight.clone().try_acquire_owned() {
+                Ok(permit) => permit,
+                Err(_) => {
+                    let _ = out_tx.try_send(json!({
+                        "jsonrpc": "2.0",
+                        "id": id,
+                        "error": { "code": -32001, "message": "Server overloaded; retry later." },
+                    }));
+                    return;
+                }
             };
-            let _ = out_tx.send(response);
+
+            let state = Arc::clone(state);
+            let out_tx = out_tx.clone();
+            let method = method.to_string();
+            tokio::spawn(async move {
+                let _permit = permit;
+                let result = dispatch::dispatch(&state.core, method.as_str(), params).await;
+                let response = match result {
+                    Ok(value) => json!({ "jsonrpc": "2.0", "id": id, "result": value }),
+                    Err((code, message)) => json!({
+                        "jsonrpc": "2.0",
+                        "id": id,
+                        "error": { "code": code, "message": message },
+                    }),
+                };
+                let _ = out_tx.try_send(response);
+            });
         }
     }
 }
@@ -359,9 +414,13 @@ async fn handle_message(
 /// 保证不会留下孤儿进程继续占用 SQLite 与 MCP 连接。
 pub async fn run_stdio() -> anyhow::Result<()> {
     let (core, hub, _instance_lock) = bootstrap().await?;
-    let state = Arc::new(ServerState { core, hub });
+    let state = Arc::new(ServerState {
+        core,
+        hub,
+        inflight: Arc::new(Semaphore::new(MAX_INFLIGHT_REQUESTS)),
+    });
 
-    let (out_tx, mut out_rx) = mpsc::unbounded_channel::<Value>();
+    let (out_tx, mut out_rx) = mpsc::channel::<Value>(OUTBOUND_QUEUE_CAPACITY);
 
     let writer = tokio::spawn(async move {
         let mut stdout = tokio::io::stdout();
@@ -421,7 +480,11 @@ pub async fn run_stdio() -> anyhow::Result<()> {
 
 pub async fn run(host_addr: &str, port: u16) -> anyhow::Result<()> {
     let (core, hub, _instance_lock) = bootstrap().await?;
-    let state = Arc::new(ServerState { core, hub });
+    let state = Arc::new(ServerState {
+        core,
+        hub,
+        inflight: Arc::new(Semaphore::new(MAX_INFLIGHT_REQUESTS)),
+    });
 
     let app = Router::new()
         .route("/health", get(|| async { "OK" }))
@@ -449,7 +512,7 @@ async fn handle_socket(socket: WebSocket, state: Arc<ServerState>) {
     let (mut sink, mut stream) = socket.split();
 
     // 出站消息通道：事件扇出、RPC 响应、能力请求统一走这里。
-    let (out_tx, mut out_rx) = mpsc::unbounded_channel::<Value>();
+    let (out_tx, mut out_rx) = mpsc::channel::<Value>(OUTBOUND_QUEUE_CAPACITY);
     let writer = tokio::spawn(async move {
         while let Some(message) = out_rx.recv().await {
             let text = serde_json::to_string(&message).unwrap_or_default();

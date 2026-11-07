@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { nextTick, onMounted, onUnmounted, ref, watch, computed } from 'vue';
+import { listen, type UnlistenFn } from '@tauri-apps/api/event';
 import { parseSlashCommand } from '@/lib/slash-commands';
 import { getRuntimeSettings } from '@/features/chat/services/chat-api';
 import { useConversationStore } from '@/stores/conversation';
@@ -36,8 +37,37 @@ const composerStore = useComposerStore();
 const isGenerating = computed(() => sessionStore.activeSession.isGenerating);
 const compacting = computed(() => sessionStore.activeSession.isCompacting);
 const conversationId = computed(() => conversationStore.activeConversationId);
-const contextUsage = computed(() => sessionStore.activeSession.contextUsage);
-const contextTokens = computed(() => sessionStore.activeSession.contextTokens);
+const latestPromptTokens = computed(() => {
+  if ((sessionStore.activeSession.contextTokens ?? 0) > 0) {
+    return sessionStore.activeSession.contextTokens;
+  }
+  if ((sessionStore.activeSession.contextUsage?.usedTokens ?? 0) > 0) {
+    return sessionStore.activeSession.contextUsage!.usedTokens;
+  }
+  const msgs = sessionStore.activeSession.messages || [];
+  for (let i = msgs.length - 1; i >= 0; i--) {
+    const m = msgs[i];
+    if (m.role === 'assistant') {
+      const t = (m.cost?.inputTokens ?? 0) || (m.tokenUsage ?? 0);
+      if (t > 0) return t;
+    }
+  }
+  return 0;
+});
+
+const contextUsage = computed(() => {
+  if (sessionStore.activeSession.contextUsage) {
+    return sessionStore.activeSession.contextUsage;
+  }
+  if (latestPromptTokens.value > 0) {
+    return {
+      usedTokens: latestPromptTokens.value,
+      source: 'actual',
+    };
+  }
+  return undefined;
+});
+const contextTokens = computed(() => latestPromptTokens.value);
 const conversationUsage = computed(() => sessionStore.activeSession.conversationUsage);
 const pendingUploads = computed(() => composerStore.pendingUploads);
 
@@ -295,11 +325,20 @@ const handleDocumentClick = (e: MouseEvent) => {
   }
 };
 
-onMounted(() => {
+let unlistenDaemonConnected: UnlistenFn | null = null;
+
+onMounted(async () => {
   void initSubagentEvents();
-  loadSettings();
+  void loadSettings();
   window.addEventListener('settings-updated', handleSettingsUpdate);
   document.addEventListener('click', handleDocumentClick, true);
+  try {
+    unlistenDaemonConnected = await listen('daemon-connected', () => {
+      void loadSettings();
+    });
+  } catch (err) {
+    console.warn('Failed to listen to daemon-connected:', err);
+  }
   nextTick(() => {
     autoResize();
     focusTextarea();
@@ -307,6 +346,10 @@ onMounted(() => {
 });
 
 onUnmounted(() => {
+  if (unlistenDaemonConnected) {
+    unlistenDaemonConnected();
+    unlistenDaemonConnected = null;
+  }
   window.removeEventListener('settings-updated', handleSettingsUpdate);
   document.removeEventListener('click', handleDocumentClick, true);
 });

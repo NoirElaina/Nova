@@ -14,11 +14,9 @@ use std::time::Duration;
 use futures_util::{SinkExt, StreamExt};
 use serde_json::{json, Value};
 use tauri::{AppHandle, Emitter};
-use tokio::sync::{mpsc, oneshot};
+use tokio::sync::{mpsc, oneshot, watch};
 use tokio_tungstenite::connect_async;
 use tracing::{info, warn};
-
-static CLIENT: OnceLock<DaemonClient> = OnceLock::new();
 
 type PendingMap = Arc<Mutex<HashMap<String, oneshot::Sender<Result<Value, String>>>>>;
 
@@ -28,35 +26,85 @@ pub struct DaemonClient {
     counter: AtomicU64,
 }
 
+struct DaemonChannelState {
+    tx: watch::Sender<Option<Arc<DaemonClient>>>,
+    rx: watch::Receiver<Option<Arc<DaemonClient>>>,
+}
+
+static DAEMON_STATE: OnceLock<DaemonChannelState> = OnceLock::new();
+
+fn get_daemon_state() -> &'static DaemonChannelState {
+    DAEMON_STATE.get_or_init(|| {
+        let (tx, rx) = watch::channel(None);
+        DaemonChannelState { tx, rx }
+    })
+}
+
+fn set_active_client(client: Option<Arc<DaemonClient>>) {
+    get_daemon_state().tx.send_replace(client);
+}
+
 impl DaemonClient {
-    pub fn get() -> &'static DaemonClient {
-        CLIENT.get().expect("daemon::init must run before invoke")
+    pub fn get() -> Option<Arc<DaemonClient>> {
+        get_daemon_state().rx.borrow().clone()
     }
+}
+
+/// 获取当前连接客户端，若未就绪则在指定超时内异步等待守护进程就绪
+pub async fn get_or_wait_client(timeout: Duration) -> Result<Arc<DaemonClient>, String> {
+    let state = get_daemon_state();
+    if let Some(client) = state.rx.borrow().clone() {
+        return Ok(client);
+    }
+
+    let mut rx = state.rx.clone();
+    tokio::time::timeout(timeout, async {
+        if let Some(client) = rx.borrow().clone() {
+            return Ok(client);
+        }
+        while rx.changed().await.is_ok() {
+            if let Some(client) = rx.borrow().clone() {
+                return Ok(client);
+            }
+        }
+        Err("Nova 守护进程连接通道已关闭".to_string())
+    })
+    .await
+    .map_err(|_| "等待 Nova 后台服务启动就绪超时，请检查后台守护进程状态".to_string())?
 }
 
 /// 启动连接管理循环：自动重连直到 daemon 可用，断线后继续重连。
 pub fn init(app: &AppHandle) {
     let app = app.clone();
     tauri::async_runtime::spawn(async move {
+        let mut attempt: u32 = 0;
         loop {
             match connect_async("ws://127.0.0.1:3080/ws").await {
                 Ok((socket, _)) => {
                     info!("connected to nova daemon");
+                    attempt = 0;
                     run_connection(socket, app.clone()).await;
                     warn!("nova daemon connection lost, retrying...");
                 }
                 Err(error) => {
                     warn!(%error, "nova daemon unavailable, retrying...");
+                    attempt = attempt.saturating_add(1);
                 }
             }
-            tokio::time::sleep(Duration::from_millis(800)).await;
+            // 启动前 20 次尝试以 100ms 快速探测，缩短就绪等待时间；后续保持 500ms 探测
+            let delay = if attempt < 20 {
+                Duration::from_millis(100)
+            } else {
+                Duration::from_millis(500)
+            };
+            tokio::time::sleep(delay).await;
         }
     });
 }
 
 /// 转发一条 IPC 命令到 daemon 并等待结果。
 pub async fn invoke(method: &str, params: Value) -> Result<Value, String> {
-    let client = DaemonClient::get();
+    let client = get_or_wait_client(Duration::from_secs(10)).await?;
     let id = format!("rpc-{}", client.counter.fetch_add(1, Ordering::Relaxed));
     let (tx, rx) = oneshot::channel();
     client.pending.lock().unwrap().insert(id.clone(), tx);
@@ -86,13 +134,14 @@ async fn run_connection(
     let (out_tx, mut out_rx) = mpsc::unbounded_channel::<Value>();
     let pending: PendingMap = Arc::new(Mutex::new(HashMap::new()));
 
-    let client = DaemonClient {
+    let client = Arc::new(DaemonClient {
         out: out_tx.clone(),
         pending: pending.clone(),
         counter: AtomicU64::new(0),
-    };
-    // 每次重连替换全局客户端；旧连接的 pending 请求随旧通道关闭而失败。
-    let _ = CLIENT.set(client);
+    });
+    // 每次重连更新全局客户端并通知前端
+    set_active_client(Some(client));
+    let _ = app.emit("daemon-connected", ());
 
     // 注册桌面能力（browser）→ daemon 将把浏览器能力请求路由到本进程。
     let hello = json!({
@@ -116,6 +165,7 @@ async fn run_connection(
         }
     });
 
+    let reader_app = app.clone();
     let reader = tokio::spawn(async move {
         while let Some(Ok(message)) = stream.next().await {
             let tokio_tungstenite::tungstenite::Message::Text(text) = message else {
@@ -138,14 +188,14 @@ async fn run_connection(
                         .cloned()
                         .unwrap_or(Value::Null);
                     if !name.is_empty() {
-                        let _ = app.emit(name, payload);
+                        let _ = reader_app.emit(name, payload);
                     }
                 }
                 // 浏览器能力请求：本地窗口执行后回包。
                 "capability/browser" => {
                     let id = envelope.get("id").cloned();
                     let params = envelope.get("params").cloned().unwrap_or(Value::Null);
-                    let app = app.clone();
+                    let app = reader_app.clone();
                     let out_tx = out_tx.clone();
                     tauri::async_runtime::spawn(async move {
                         let result = crate::services::browser_sessions::run_command(
@@ -215,4 +265,7 @@ async fn run_connection(
         _ = writer => {},
         _ = reader => {},
     }
+
+    set_active_client(None);
+    let _ = app.emit("daemon-disconnected", ());
 }

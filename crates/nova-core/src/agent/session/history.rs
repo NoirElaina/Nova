@@ -145,13 +145,13 @@ pub async fn get_pool_with_schema(core: &Core) -> Result<SqlitePool, String> {
 
 fn resolved_conversation_title(current_title: &str, first_user_message: Option<&str>) -> String {
     let trimmed = current_title.trim();
-    if !trimmed.is_empty() && trimmed != "New chat" {
+    if !trimmed.is_empty() && trimmed != "New chat" && trimmed != "CLI session" && trimmed != "CLI headless" {
         return trimmed.to_string();
     }
 
     first_user_message
         .map(derive_title_from_message)
-        .unwrap_or_else(|| trimmed.to_string())
+        .unwrap_or_else(|| "新对话".to_string())
 }
 
 fn sanitize_export_file_name(value: &str) -> String {
@@ -641,7 +641,7 @@ pub async fn refresh_conversation_activity(
         .as_deref()
         .map(|title| {
             let trimmed = title.trim();
-            trimmed.is_empty() || trimmed == "New chat"
+            trimmed.is_empty() || trimmed == "New chat" || trimmed == "新对话" || trimmed == "CLI session" || trimmed == "CLI headless"
         })
         .unwrap_or(false);
     if !should_update {

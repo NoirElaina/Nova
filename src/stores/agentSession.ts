@@ -136,6 +136,22 @@ export const useAgentSessionStore = defineStore("agentSession", () => {
       } catch {
         // non-blocking
       }
+
+      // 从最近一条 assistant 消息恢复上下文窗口已用令牌
+      for (let i = session.messages.length - 1; i >= 0; i--) {
+        const msg = session.messages[i];
+        if (msg.role === "assistant") {
+          const promptTokens = (msg.cost?.inputTokens ?? 0) || (msg.tokenUsage ?? 0);
+          if (promptTokens > 0) {
+            session.contextTokens = promptTokens;
+            session.contextUsage = {
+              usedTokens: promptTokens,
+              source: "actual",
+            };
+            break;
+          }
+        }
+      }
     } catch (err) {
       console.error(`Failed to load history for conversation ${conversationId}:`, err);
     }
@@ -216,6 +232,13 @@ export const useAgentSessionStore = defineStore("agentSession", () => {
   function handleTokenUsage(usage: { input: number; output: number }, turnOrConvId?: string) {
     const session = getSessionByTurnOrConv(turnOrConvId);
     session.assistantTokenUsage = usage.input + usage.output;
+    if (usage.input > 0) {
+      session.contextTokens = usage.input;
+      session.contextUsage = {
+        usedTokens: usage.input,
+        source: "actual",
+      };
+    }
   }
 
   async function handleTurnFinished(turnId: string, _stopReason: string, turnOrConvId?: string) {

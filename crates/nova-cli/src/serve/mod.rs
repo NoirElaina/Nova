@@ -27,13 +27,12 @@ use tracing::{info, warn};
 use crate::host;
 
 pub async fn run(host_addr: &str, port: u16) -> anyhow::Result<()> {
-    let core = host::build_core()?;
-    host::init_kernel(&core).await;
-
     let hub = ClientHub::default();
-    let core = core
+    let core = host::build_core()?
         .with_browser(Arc::new(RemoteBrowser { hub: hub.clone() }))
         .with_hooks(Arc::new(RemoteHooks { hub: hub.clone() }));
+
+    host::init_kernel(&core).await;
 
     // 后台子系统：MCP 预热 + 定时任务调度（与桌面端同源）。
     let warmup = core.clone();

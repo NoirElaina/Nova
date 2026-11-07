@@ -28,7 +28,7 @@ struct Cli {
 enum Commands {
     /// 启动后台守护服务（桌面端与远程客户端经 WebSocket JSON-RPC 接入）。
     Serve {
-        #[arg(short, long, default_value = "127.0.0.1")]
+        #[arg(long, default_value = "127.0.0.1")]
         host: String,
 
         #[arg(short, long, default_value_t = 3080)]

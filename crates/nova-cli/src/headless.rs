@@ -21,7 +21,7 @@ pub async fn run(core: Core, options: HeadlessOptions) -> anyhow::Result<()> {
                 .unwrap_or_default();
             nova_core::api::history::create_conversation(
                 &core,
-                Some("CLI headless".to_string()),
+                None,
                 Some(cwd),
             )
             .await

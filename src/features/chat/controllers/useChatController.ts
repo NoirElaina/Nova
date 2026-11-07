@@ -97,6 +97,7 @@ function createChatController() {
 
   let unlistenScheduledTaskTrigger: UnlistenFn | null = null;
   let unlistenAgentEvent: UnlistenFn | null = null;
+  let unlistenDaemonConnected: UnlistenFn | null = null;
 
   function hasConversationContent(): boolean {
     return messages.value.some(
@@ -235,6 +236,18 @@ function createChatController() {
     }
 
     try {
+      unlistenDaemonConnected = await listen("daemon-connected", async () => {
+        await conversationOps.refreshConversations();
+        const startupConversationId = conversations.value[0]?.id ?? "";
+        if (startupConversationId && !activeConversationId.value) {
+          await conversationOps.loadConversation(startupConversationId);
+        }
+      });
+    } catch (err) {
+      console.error("Failed to setup daemon-connected listener:", err);
+    }
+
+    try {
       unlistenScheduledTaskTrigger = await listen<ScheduledTaskTriggerEvent>(
         "scheduled-task-trigger",
         (event) => {
@@ -312,6 +325,7 @@ function createChatController() {
   });
 
   onUnmounted(() => {
+    if (unlistenDaemonConnected) unlistenDaemonConnected();
     if (unlistenScheduledTaskTrigger) unlistenScheduledTaskTrigger();
     if (unlistenAgentEvent) unlistenAgentEvent();
     window.removeEventListener("history-cleared", conversationOps.handleHistoryCleared as unknown as EventListener);

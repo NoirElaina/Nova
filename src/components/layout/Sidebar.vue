@@ -51,7 +51,7 @@ const filteredRecents = computed(() => {
   }
 
   return props.recents.filter((item) =>
-    (item.title || "New chat").toLocaleLowerCase().includes(keyword),
+    (item.title || "新对话").toLocaleLowerCase().includes(keyword),
   );
 });
 
@@ -399,7 +399,7 @@ onBeforeUnmount(() => {
         @keydown.enter="emit('select-conversation', recent.id)"
         @keydown.space.prevent="emit('select-conversation', recent.id)"
       >
-        <span class="truncate block flex-1">{{ recent.title || "New chat" }}</span>
+        <span class="truncate block flex-1">{{ recent.title || "新对话" }}</span>
         <span
           v-if="isPinnedConversation(recent)"
           class="h-1.5 w-1.5 flex-shrink-0 rounded-full bg-[#c87b57]"
@@ -505,7 +505,7 @@ onBeforeUnmount(() => {
                 <div class="min-w-0">
                   <div class="text-[18px] font-semibold text-[#26221b] dark:text-[#f4efe7]">导出会话</div>
                   <div class="mt-1 truncate text-[13px] text-[#8a8072] dark:text-[#aaa197]">
-                    {{ exportDialogConversation.title || "New chat" }}
+                    {{ exportDialogConversation.title || "新对话" }}
                   </div>
                 </div>
                 <button

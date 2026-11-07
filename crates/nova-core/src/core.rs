@@ -3,7 +3,7 @@
 //! 所有领域模块（引擎/工具/权限/会话/Provider）只依赖 `Core`，
 //! 不感知 CLI、守护进程、桌面端等任何宿主形态。
 
-use std::sync::Arc;
+use std::sync::{Arc, RwLock};
 
 use async_trait::async_trait;
 
@@ -35,8 +35,8 @@ impl HostHooks for NoopHostHooks {}
 struct CoreInner {
     config: CoreConfig,
     events: EventHub,
-    browser: Option<Arc<dyn BrowserCapability>>,
-    hooks: Arc<dyn HostHooks>,
+    browser: RwLock<Option<Arc<dyn BrowserCapability>>>,
+    hooks: RwLock<Arc<dyn HostHooks>>,
 }
 
 /// 内核上下文句柄（Arc 共享，廉价克隆，线程安全）。
@@ -51,23 +51,23 @@ impl Core {
             inner: Arc::new(CoreInner {
                 config,
                 events: EventHub::new(event_capacity),
-                browser: None,
-                hooks: Arc::new(NoopHostHooks),
+                browser: RwLock::new(None),
+                hooks: RwLock::new(Arc::new(NoopHostHooks)),
             }),
         }
     }
 
-    pub fn with_browser(mut self, capability: Arc<dyn BrowserCapability>) -> Self {
-        Arc::get_mut(&mut self.inner)
-            .expect("Core must be uniquely owned when registering capabilities")
-            .browser = Some(capability);
+    pub fn with_browser(self, capability: Arc<dyn BrowserCapability>) -> Self {
+        if let Ok(mut guard) = self.inner.browser.write() {
+            *guard = Some(capability);
+        }
         self
     }
 
-    pub fn with_hooks(mut self, hooks: Arc<dyn HostHooks>) -> Self {
-        Arc::get_mut(&mut self.inner)
-            .expect("Core must be uniquely owned when registering hooks")
-            .hooks = hooks;
+    pub fn with_hooks(self, hooks: Arc<dyn HostHooks>) -> Self {
+        if let Ok(mut guard) = self.inner.hooks.write() {
+            *guard = hooks;
+        }
         self
     }
 
@@ -90,11 +90,15 @@ impl Core {
     }
 
     pub fn browser(&self) -> Option<Arc<dyn BrowserCapability>> {
-        self.inner.browser.clone()
+        self.inner.browser.read().ok().and_then(|guard| guard.clone())
     }
 
-    pub fn hooks(&self) -> &Arc<dyn HostHooks> {
-        &self.inner.hooks
+    pub fn hooks(&self) -> Arc<dyn HostHooks> {
+        self.inner
+            .hooks
+            .read()
+            .map(|guard| guard.clone())
+            .unwrap_or_else(|_| Arc::new(NoopHostHooks))
     }
 
     pub fn subscribe(&self) -> tokio::sync::broadcast::Receiver<NovaEvent> {

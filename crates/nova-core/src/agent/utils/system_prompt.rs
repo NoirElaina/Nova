@@ -7,6 +7,7 @@ use crate::agent::capabilities::skills::list_enabled_skill_summaries_with_app;
 use crate::provider::types::AgentMode;
 
 // 系统提示文件名（相对工程目录 src/prompt）
+#[allow(dead_code)]
 const SYSTEM_PROMPT_FILE_NAME: &str = "system_prompt.md";
 // 编译期内联默认系统提示词，确保打包为独立二进制分发后即使开发机路径不存在也不会崩溃
 const DEFAULT_SYSTEM_PROMPT: &str = include_str!("../../prompt/system_prompt.md");
@@ -32,6 +33,7 @@ const GLOBAL_MEMORY_SECTION: &str = r#"
   when the user corrects an existing preference, REPLACE the old entry instead of adding a conflicting one
 "#;
 
+#[allow(dead_code)]
 fn read_non_empty_file(path: &Path) -> Option<String> {
     // 经全局文件内容缓存读取（指纹失效）：主提示词文件较大，
     // 避免每轮请求重复读盘；文件未变时直接命中内存。
@@ -46,6 +48,7 @@ fn read_non_empty_file(path: &Path) -> Option<String> {
     Some(trimmed.to_string())
 }
 
+#[allow(dead_code)]
 fn main_prompt_path() -> PathBuf {
     // 从编译时清单目录开始构造绝对路径。
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))

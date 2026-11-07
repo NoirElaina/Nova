@@ -1,5 +1,7 @@
+use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions};
 use sqlx::{Row, SqlitePool};
 use std::path::{Path, PathBuf};
+use std::str::FromStr;
 use crate::core::Core;
 use tokio::sync::OnceCell;
 use uuid::Uuid;
@@ -54,11 +56,22 @@ pub async fn history_pool(core: &Core) -> Result<SqlitePool, String> {
 }
 
 // Create a sqlx sqlite pool for history DB.
+//
+// 必须启用 WAL + busy_timeout：内核可能同时被桌面守护进程与独立 CLI 持有，
+// 传统 rollback journal 下并发写会立刻 `database is locked`。
 async fn get_pool(core: &Core) -> Result<SqlitePool, String> {
     let pool = DB_POOL
         .get_or_try_init(|| async {
             let db_url = get_db_url(core)?;
-            let pool = SqlitePool::connect(&db_url)
+            let options = SqliteConnectOptions::from_str(&db_url)
+                .map_err(|e| e.to_string())?
+                .journal_mode(SqliteJournalMode::Wal)
+                .synchronous(sqlx::sqlite::SqliteSynchronous::Normal)
+                .create_if_missing(true)
+                .busy_timeout(std::time::Duration::from_secs(10));
+            let pool = SqlitePoolOptions::new()
+                .max_connections(5)
+                .connect_with(options)
                 .await
                 .map_err(|e| e.to_string())?;
             ensure_schema(&pool).await?;

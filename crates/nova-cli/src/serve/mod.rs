@@ -1,17 +1,21 @@
-//! 守护进程：内核经 WebSocket JSON-RPC 对外开放。
+//! 宿主服务端：内核经 **stdio JSONL**（桌面默认）或 **WebSocket**（远程可选）对外开放。
 //!
 //! - 客户端请求：`{jsonrpc, id, method, params}` → 唯一分发器 → `{id, result|error}`；
 //! - 内核事件：以 `{method: "event", params: {name, payload}}` 通知扇出（前端契约由内核 to_frontend 定义）；
 //! - 桌面能力：浏览器自动化经 `capability/browser` 服务端→客户端请求闭环；
 //!   宿主钩子经 `capability/hooks` 通知下发（火忘式）。
+//!
+//! 两种传输共用 `handle_message` / `event_pump`，差别只在字节通道：
+//! - stdio：桌面壳 spawn 本进程并持有管道，不开端口，天然随父进程退出；
+//! - WebSocket：远程 / 多客户端场景，需自行承担鉴权与单实例约束。
 
 mod dispatch;
 
 use std::collections::HashMap;
+use std::fs::File;
 use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
-use futures_util::{SinkExt, StreamExt};
 use axum::{
     extract::ws::{Message, WebSocket, WebSocketUpgrade},
     extract::State,
@@ -19,16 +23,28 @@ use axum::{
     routing::get,
     Router,
 };
+use futures_util::{SinkExt, StreamExt};
 use nova_core::{BrowserCapability, Core, HostHooks};
 use serde_json::{json, Value};
+use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::sync::{mpsc, oneshot};
 use tracing::{info, warn};
 
 use crate::host;
 
-pub async fn run(host_addr: &str, port: u16) -> anyhow::Result<()> {
+// ─────────────────────────────────────────────
+// 启动引导（两种传输共用）
+// ─────────────────────────────────────────────
+
+/// 构建内核、取得单实例锁、挂载宿主能力、拉起后台子系统。
+///
+/// 返回的 `File` 是实例锁句柄，调用方必须持有到进程结束——一旦 drop，锁即释放。
+async fn bootstrap() -> anyhow::Result<(Core, ClientHub, File)> {
+    let core = host::build_core()?;
+    let instance_lock = acquire_instance_lock(&core).map_err(anyhow::Error::msg)?;
+
     let hub = ClientHub::default();
-    let core = host::build_core()?
+    let core = core
         .with_browser(Arc::new(RemoteBrowser { hub: hub.clone() }))
         .with_hooks(Arc::new(RemoteHooks { hub: hub.clone() }));
 
@@ -44,18 +60,47 @@ pub async fn run(host_addr: &str, port: u16) -> anyhow::Result<()> {
     let scheduler = core.clone();
     tokio::spawn(async move { nova_core::api::cron::run_scheduler_loop(&scheduler).await });
 
-    let state = Arc::new(ServerState { core, hub });
-    let app = Router::new()
-        .route("/health", get(|| async { "OK" }))
-        .route("/ws", get(ws_handler))
-        .with_state(state);
+    Ok((core, hub, instance_lock))
+}
 
-    let listener = tokio::net::TcpListener::bind((host_addr, port)).await?;
-    let addr = listener.local_addr()?;
-    info!("Nova daemon listening on {}", addr);
-    println!("Nova Daemon 已就绪: http://{} (WebSocket: ws://{}/ws)", addr, addr);
-    axum::serve(listener, app).await?;
-    Ok(())
+/// 单实例锁：同一数据目录下只允许一个内核持有后台子系统。
+///
+/// 没有它，两个守护进程会各自跑一份 cron 调度，定时任务被执行两次。
+/// TUI 与 `-p` 无头模式不持锁——它们只做单次会话，不争抢后台调度。
+fn acquire_instance_lock(core: &Core) -> Result<File, String> {
+    use fs2::FileExt;
+    use std::io::Write;
+
+    let path = core.config().data_dir().join("kernel.lock");
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+    }
+
+    let file = std::fs::OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(&path)
+        .map_err(|e| format!("无法打开内核锁文件 {}: {}", path.display(), e))?;
+
+    match file.try_lock_exclusive() {
+        Ok(()) => {
+            let _ = file.set_len(0);
+            let mut handle = &file;
+            let _ = writeln!(handle, "{}", std::process::id());
+            info!(lock = %path.display(), pid = std::process::id(), "内核实例锁已获取");
+            Ok(file)
+        }
+        Err(_) => {
+            let holder = std::fs::read_to_string(&path).unwrap_or_default();
+            let holder = holder.trim();
+            let holder = if holder.is_empty() { "未知" } else { holder };
+            Err(format!(
+                "已有 Nova 内核实例运行中（pid {}）。请先退出该实例，或确认没有残留的 nova serve 进程。",
+                holder
+            ))
+        }
+    }
 }
 
 struct ServerState {
@@ -82,6 +127,11 @@ struct HubInner {
 impl ClientHub {
     fn register_desktop(&self, sender: mpsc::UnboundedSender<Value>) {
         self.inner.lock().unwrap().desktop = Some(sender);
+    }
+
+    /// 摘掉桌面端出站句柄，用于连接收尾时让 writer 自然排空。
+    fn clear_desktop(&self) {
+        self.inner.lock().unwrap().desktop = None;
     }
 
     fn next_request(&self) -> (String, oneshot::Receiver<Value>) {
@@ -184,8 +234,174 @@ impl HostHooks for RemoteHooks {
 }
 
 // ─────────────────────────────────────────────
-// WebSocket 连接处理
+// 共用消息处理
 // ─────────────────────────────────────────────
+
+/// 内核事件扇出：把领域事件转成稳定的前端通知，写入给定通道。
+async fn event_pump(core: Core, out_tx: mpsc::UnboundedSender<Value>) {
+    let mut events = core.subscribe();
+    loop {
+        match events.recv().await {
+            Ok(event) => {
+                let (name, payload) = event.to_frontend();
+                let notification = json!({
+                    "jsonrpc": "2.0",
+                    "method": "event",
+                    "params": { "name": name, "payload": payload },
+                });
+                if out_tx.send(notification).is_err() {
+                    break;
+                }
+            }
+            Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
+            Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+        }
+    }
+}
+
+/// 单条入站信封的完整处理：能力响应回填 / hello 注册 / 业务分发。
+async fn handle_message(
+    state: &Arc<ServerState>,
+    envelope: Value,
+    out_tx: &mpsc::UnboundedSender<Value>,
+) {
+    // 能力请求响应（无 method，携带 id + result/error）。
+    if envelope.get("method").is_none() {
+        if let Some(id) = envelope.get("id").and_then(Value::as_str) {
+            let payload = envelope
+                .get("result")
+                .cloned()
+                .unwrap_or_else(|| envelope.get("error").cloned().unwrap_or(Value::Null));
+            state.hub.resolve(id, payload);
+        }
+        return;
+    }
+
+    let method = envelope.get("method").and_then(Value::as_str).unwrap_or("");
+    let id = envelope.get("id").cloned();
+    let params = envelope.get("params").cloned().unwrap_or(Value::Null);
+
+    match method {
+        "hello" => {
+            let is_desktop = params
+                .get("capabilities")
+                .and_then(Value::as_array)
+                .map(|caps| caps.iter().any(|c| c.as_str() == Some("browser")))
+                .unwrap_or(false);
+            if is_desktop {
+                state.hub.register_desktop(out_tx.clone());
+                info!("desktop client registered (browser capability)");
+            }
+            let response = json!({
+                "jsonrpc": "2.0",
+                "id": id,
+                "result": { "ok": true },
+            });
+            let _ = out_tx.send(response);
+        }
+        _ => {
+            let result = dispatch::dispatch(&state.core, method, params).await;
+            let response = match result {
+                Ok(value) => json!({ "jsonrpc": "2.0", "id": id, "result": value }),
+                Err(error) => json!({
+                    "jsonrpc": "2.0",
+                    "id": id,
+                    "error": { "code": -32000, "message": error },
+                }),
+            };
+            let _ = out_tx.send(response);
+        }
+    }
+}
+
+// ─────────────────────────────────────────────
+// stdio 传输（桌面默认）
+// ─────────────────────────────────────────────
+
+/// 通过 stdin/stdout 的 JSONL 协议提供服务。
+///
+/// 父进程（桌面壳）关闭管道即视为会话结束：读到 EOF 立刻退出，
+/// 保证不会留下孤儿进程继续占用 SQLite 与 MCP 连接。
+pub async fn run_stdio() -> anyhow::Result<()> {
+    let (core, hub, _instance_lock) = bootstrap().await?;
+    let state = Arc::new(ServerState { core, hub });
+
+    let (out_tx, mut out_rx) = mpsc::unbounded_channel::<Value>();
+
+    let writer = tokio::spawn(async move {
+        let mut stdout = tokio::io::stdout();
+        while let Some(message) = out_rx.recv().await {
+            let Ok(mut line) = serde_json::to_vec(&message) else {
+                continue;
+            };
+            line.push(b'\n');
+            if stdout.write_all(&line).await.is_err() {
+                break;
+            }
+            if stdout.flush().await.is_err() {
+                break;
+            }
+        }
+    });
+
+    // stdio 只有一个客户端，启动即注册桌面能力（客户端随后发 hello 亦可，重复注册无害）。
+    state.hub.register_desktop(out_tx.clone());
+    let pump = tokio::spawn(event_pump(state.core.clone(), out_tx.clone()));
+
+    info!("nova daemon serving over stdio");
+
+    let mut lines = BufReader::new(tokio::io::stdin()).lines();
+    loop {
+        match lines.next_line().await {
+            Ok(Some(line)) => {
+                if line.trim().is_empty() {
+                    continue;
+                }
+                let Ok(envelope) = serde_json::from_str::<Value>(&line) else {
+                    continue;
+                };
+                handle_message(&state, envelope, &out_tx).await;
+            }
+            Ok(None) => break,
+            Err(error) => {
+                warn!(%error, "stdio 读取失败，守护进程退出");
+                break;
+            }
+        }
+    }
+
+    // 收尾：先摘掉 hub 与本地持有的出站句柄，让 writer 把已排队的响应写完，
+    // 再终止事件泵。直接 abort writer 会丢掉 EOF 前最后一条响应。
+    pump.abort();
+    state.hub.clear_desktop();
+    drop(out_tx);
+    let _ = tokio::time::timeout(std::time::Duration::from_secs(2), writer).await;
+    info!("nova daemon stdio channel closed, exiting");
+    Ok(())
+}
+
+// ─────────────────────────────────────────────
+// WebSocket 传输（远程 / 可选）
+// ─────────────────────────────────────────────
+
+pub async fn run(host_addr: &str, port: u16) -> anyhow::Result<()> {
+    let (core, hub, _instance_lock) = bootstrap().await?;
+    let state = Arc::new(ServerState { core, hub });
+
+    let app = Router::new()
+        .route("/health", get(|| async { "OK" }))
+        .route("/healthz", get(|| async { "OK" }))
+        .route("/readyz", get(|| async { "OK" }))
+        .route("/ws", get(ws_handler))
+        .with_state(state);
+
+    let listener = tokio::net::TcpListener::bind((host_addr, port)).await?;
+    let addr = listener.local_addr()?;
+    info!("Nova daemon listening on {} (websocket)", addr);
+    eprintln!("Nova Daemon 已就绪（WebSocket 远程模式）: ws://{}/ws", addr);
+    axum::serve(listener, app).await?;
+    Ok(())
+}
 
 async fn ws_handler(
     ws: WebSocketUpgrade,
@@ -209,89 +425,24 @@ async fn handle_socket(socket: WebSocket, state: Arc<ServerState>) {
     });
 
     // 内核事件扇出（所有连接共享同一事件流）。
-    let mut events = state.core.subscribe();
-    let event_tx = out_tx.clone();
-    let event_pump = tokio::spawn(async move {
-        loop {
-            match events.recv().await {
-                Ok(event) => {
-                    let (name, payload) = event.to_frontend();
-                    let notification = json!({
-                        "jsonrpc": "2.0",
-                        "method": "event",
-                        "params": { "name": name, "payload": payload },
-                    });
-                    if event_tx.send(notification).is_err() {
-                        break;
-                    }
-                }
-                Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
-                Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
-            }
-        }
-    });
+    let pump = tokio::spawn(event_pump(state.core.clone(), out_tx.clone()));
 
-    let core = state.core.clone();
-    let hub = state.hub.clone();
     let reader = tokio::spawn(async move {
         while let Some(Ok(message)) = stream.next().await {
-            let Message::Text(text) = message else { continue };
-            let Ok(envelope) = serde_json::from_str::<Value>(&text) else { continue };
-
-            // 能力请求响应（无 method，携带 id + result/error）。
-            if envelope.get("method").is_none() {
-                if let Some(id) = envelope.get("id").and_then(Value::as_str) {
-                    let payload = envelope
-                        .get("result")
-                        .cloned()
-                        .unwrap_or_else(|| envelope.get("error").cloned().unwrap_or(Value::Null));
-                    hub.resolve(id, payload);
-                }
+            let Message::Text(text) = message else {
                 continue;
-            }
-
-            let method = envelope.get("method").and_then(Value::as_str).unwrap_or("");
-            let id = envelope.get("id").cloned();
-            let params = envelope.get("params").cloned().unwrap_or(Value::Null);
-
-            match method {
-                "hello" => {
-                    let is_desktop = params
-                        .get("capabilities")
-                        .and_then(Value::as_array)
-                        .map(|caps| caps.iter().any(|c| c.as_str() == Some("browser")))
-                        .unwrap_or(false);
-                    if is_desktop {
-                        hub.register_desktop(out_tx.clone());
-                        info!("desktop client registered (browser capability)");
-                    }
-                    let response = json!({
-                        "jsonrpc": "2.0",
-                        "id": id,
-                        "result": { "ok": true },
-                    });
-                    let _ = out_tx.send(response);
-                }
-                _ => {
-                    let result = dispatch::dispatch(&core, method, params).await;
-                    let response = match result {
-                        Ok(value) => json!({ "jsonrpc": "2.0", "id": id, "result": value }),
-                        Err(error) => json!({
-                            "jsonrpc": "2.0",
-                            "id": id,
-                            "error": { "code": -32000, "message": error },
-                        }),
-                    };
-                    let _ = out_tx.send(response);
-                }
-            }
+            };
+            let Ok(envelope) = serde_json::from_str::<Value>(&text) else {
+                continue;
+            };
+            handle_message(&state, envelope, &out_tx).await;
         }
     });
 
     // 任一方向结束即清理整个连接。
     tokio::select! {
         _ = writer => {},
-        _ = event_pump => {},
+        _ = pump => {},
         _ = reader => {},
     }
 }

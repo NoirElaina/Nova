@@ -31,6 +31,9 @@ anyhow = { workspace = true }
 futures-util = "0.3.32"
 async-trait = "0.1"
 
+# 单实例文件锁（跨平台 flock / LockFileEx）
+fs2 = "0.4"
+
 # 日志与追踪
 tracing = "0.1.44"
 tracing-subscriber = { version = "0.3.23", features = ["env-filter", "fmt"] }

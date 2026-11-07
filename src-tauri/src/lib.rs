@@ -24,9 +24,9 @@ pub fn run() {
 
             info!("desktop shell setup started");
 
-            // 部署并拉起 nova daemon（CLI 内核宿主），随后建立协议通道（自动重连）。
-            crate::supervisor::init_desktop_supervisor(app.handle());
-            crate::daemon::init(app.handle());
+            // 部署 CLI 并以其 stdio 管道拉起内核子进程（不监听端口）。
+            let cli_path = crate::supervisor::init_desktop_supervisor(app.handle());
+            crate::daemon::init(app.handle(), cli_path);
 
             info!("desktop shell setup completed");
             Ok(())
@@ -138,7 +138,7 @@ pub fn run() {
 
     app.run(|_app_handle, event| {
         if matches!(event, tauri::RunEvent::Exit) {
-            crate::supervisor::on_desktop_exit();
+            // 内核子进程随 stdio 管道关闭自行退出（kill_on_drop 兜底），无需显式终止。
             let already_cleaned = TERMINAL_CLEANUP_ON_EXIT
                 .get_or_init(|| AtomicBool::new(false))
                 .swap(true, Ordering::Relaxed);

@@ -27,8 +27,6 @@ nova-protocol = { path = "../crates/nova-protocol" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tokio = { version = "1.50.0", features = ["full"] }
-tokio-tungstenite = "0.28"
-futures-util = "0.3.32"
 async-trait = "0.1"
 tracing = "0.1.44"
 tracing-appender = "0.2.3"

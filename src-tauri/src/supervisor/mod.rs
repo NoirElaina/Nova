@@ -1,16 +1,15 @@
 pub mod deploy;
-pub mod process;
 
 use std::path::PathBuf;
 use tauri::{AppHandle, Manager};
 use tracing::{info, warn};
 
-/// 初始化桌面伴生守护子系统：
+/// 初始化桌面伴生内核子系统：
 /// 1. 自动寻找桌面端安装包内置携带的 CLI 二进制
 /// 2. 自动将其释放部署到系统固定全局目录 (%LOCALAPPDATA%\Nova\bin 或 ~/.nova/bin)
 /// 3. 自动将全局目录写入用户 PATH，供终端任何地方随时使用
-/// 4. 以后台服务模式拉起已部署好的全局 CLI 守护进程
-pub fn init_desktop_supervisor(app: &AppHandle) {
+/// 4. 返回 CLI 路径，由 `daemon` 模块以 stdio 方式拉起（不开端口）
+pub fn init_desktop_supervisor(app: &AppHandle) -> Option<PathBuf> {
     let mut candidates = Vec::new();
 
     // 1. 优先从 Tauri 安装包内置的 Resource 资源目录寻找（生产安装包形态）
@@ -48,18 +47,12 @@ pub fn init_desktop_supervisor(app: &AppHandle) {
     // 执行全局自释放部署与 PATH 注入
     match deploy::auto_deploy_cli(bundled_source.as_deref()) {
         Ok(deployed_exe) => {
-            info!(path = %deployed_exe.display(), "Nova CLI 已就绪于全局路径，正在拉起后台服务...");
-            if let Err(e) = process::spawn_daemon(&deployed_exe, 3080) {
-                warn!(error = %e, "启动 Nova Daemon 守护进程失败");
-            }
+            info!(path = %deployed_exe.display(), "Nova CLI 已就绪，交由内核通道拉起");
+            Some(deployed_exe)
         }
         Err(e) => {
             warn!(error = %e, "自动部署 Nova CLI 失败，请检查安装文件完整性");
+            None
         }
     }
-}
-
-/// 桌面应用退出钩子：清理后台进程
-pub fn on_desktop_exit() {
-    process::terminate_daemon();
 }

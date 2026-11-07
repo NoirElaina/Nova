@@ -38,3 +38,6 @@ release-artifacts/
 
 # workspace 化之前的残留 lock，统一使用根 Cargo.lock
 src-tauri/Cargo.lock
+
+# ts-rs 默认导出目录（正式产物在 src/lib/protocol.ts）
+crates/nova-protocol/bindings/

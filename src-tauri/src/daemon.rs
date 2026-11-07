@@ -183,12 +183,19 @@ async fn run_connection(mut child: Child, app: AppHandle) {
     set_active_client(Some(client));
     let _ = app.emit("daemon-connected", ());
 
-    // hello：声明桌面能力，daemon 会把浏览器自动化请求路由回本进程。
+    // initialize：声明桌面身份与能力，服务端回包自报版本与协议版本。
     let _ = out_tx.send(json!({
         "jsonrpc": "2.0",
-        "id": "hello",
-        "method": "hello",
-        "params": { "client": "desktop", "capabilities": ["browser"] },
+        "id": "initialize",
+        "method": "initialize",
+        "params": {
+            "clientInfo": {
+                "name": "nova_desktop",
+                "title": "Nova Desktop",
+                "version": env!("CARGO_PKG_VERSION"),
+            },
+            "capabilities": ["browser"],
+        },
     }));
 
     let mut writer = tokio::spawn(async move {
@@ -325,6 +332,30 @@ async fn dispatch_incoming(
         // RPC 响应：按 id 唤醒等待中的请求。
         _ => {
             if let Some(id) = envelope.get("id").and_then(Value::as_str) {
+                // 握手回包：比对内核版本，不一致时显式告警，
+                // 替代「每次启动强制覆写二进制」那种隐式兜底。
+                if id == "initialize" {
+                    let server = envelope
+                        .pointer("/result/serverInfo/version")
+                        .and_then(Value::as_str)
+                        .unwrap_or("");
+                    let protocol = envelope
+                        .pointer("/result/protocolVersion")
+                        .and_then(Value::as_str)
+                        .unwrap_or("");
+                    let host = env!("CARGO_PKG_VERSION");
+                    if !server.is_empty() && server != host {
+                        warn!(server, host, "内核版本与桌面壳不一致，需要重新部署 CLI");
+                        let _ = app.emit(
+                            "kernel-version-mismatch",
+                            json!({ "server": server, "host": host, "protocol": protocol }),
+                        );
+                    } else {
+                        info!(server, protocol, "内核握手完成");
+                    }
+                    return;
+                }
+
                 let payload = if let Some(error) = envelope.get("error") {
                     Err(error
                         .get("message")

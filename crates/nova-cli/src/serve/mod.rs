@@ -282,6 +282,41 @@ async fn handle_message(
     let params = envelope.get("params").cloned().unwrap_or(Value::Null);
 
     match method {
+        // 连接协商：服务端自报身份、协议版本与能力，客户端据此校验版本。
+        "initialize" => {
+            let client = params.get("clientInfo");
+            let client_name = client
+                .and_then(|c| c.get("name"))
+                .and_then(|v| v.as_str())
+                .unwrap_or("unknown");
+            let client_version = client
+                .and_then(|c| c.get("version"))
+                .and_then(|v| v.as_str())
+                .unwrap_or("0");
+            info!(
+                client = client_name,
+                version = client_version,
+                capabilities = ?params.get("capabilities"),
+                "initialize"
+            );
+
+            let result = serde_json::to_value(nova_protocol::rpc::InitializeResult {
+                server_info: nova_protocol::rpc::ClientInfo {
+                    name: "nova".to_string(),
+                    title: Some("Nova Agent Kernel".to_string()),
+                    version: env!("CARGO_PKG_VERSION").to_string(),
+                },
+                protocol_version: nova_protocol::rpc::PROTOCOL_VERSION.to_string(),
+                capabilities: vec!["browser".to_string(), "hooks".to_string()],
+            })
+            .unwrap_or(Value::Null);
+
+            let _ = out_tx.send(json!({
+                "jsonrpc": "2.0",
+                "id": id,
+                "result": result,
+            }));
+        }
         "hello" => {
             let is_desktop = params
                 .get("capabilities")

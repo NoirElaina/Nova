@@ -29,3 +29,12 @@ test/
 /target
 target/
 src-tauri/target/
+
+# 构建产物：CLI 二进制与安装包不入库
+# （src-tauri/bin/rg.exe 是构建依赖，需保留在仓库中）
+src-tauri/bin/nova.exe
+src-tauri/bin/nova
+release-artifacts/
+
+# workspace 化之前的残留 lock，统一使用根 Cargo.lock
+src-tauri/Cargo.lock

@@ -43,5 +43,9 @@ fn sync_bundled_cli() {
 
 fn main() {
     sync_bundled_cli();
+    // 显式声明对本仓库外产物的依赖：release 版 CLI 变化时必须重跑本脚本，
+    // 否则 src-tauri/bin/nova.exe 会一直停留在旧版本，dev 模式会 spawn 到过期的内核。
+    println!("cargo:rerun-if-changed=../target/release/nova.exe");
+    println!("cargo:rerun-if-changed=../target/release/nova");
     tauri_build::build();
 }

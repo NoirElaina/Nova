@@ -3,6 +3,9 @@
 use std::io;
 use std::time::Duration;
 
+use serde_json::{json, Value};
+use std::sync::Arc;
+
 use crossterm::{
     event::{
         self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEvent, KeyEventKind,
@@ -12,7 +15,6 @@ use crossterm::{
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
 };
 use nova_core::agent::events::AgentDomainEvent;
-use nova_core::{Core, NovaEvent};
 use ratatui::{
     backend::CrosstermBackend,
     layout::{Constraint, Direction, Layout, Rect},
@@ -23,7 +25,6 @@ use ratatui::{
 };
 use tokio::sync::mpsc;
 
-use crate::host;
 
 enum ChatItem {
     User(String),
@@ -158,9 +159,11 @@ const SLASH_COMMANDS: &[SlashCommandDef] = &[
 ];
 
 pub struct TuiApp {
-    core: Core,
+    client: Arc<nova_client::Client>,
+    /// 设置缓存：渲染路径是同步的，不能在渲染时就地 await RPC。
+    settings: Option<nova_core::services::settings::AppSettings>,
     conversation_id: String,
-    events: mpsc::UnboundedReceiver<NovaEvent>,
+    events: mpsc::UnboundedReceiver<(String, Value)>,
     messages: Vec<ChatItem>,
     // 输入编辑状态
     input: String,
@@ -185,31 +188,53 @@ pub struct TuiApp {
 
 impl TuiApp {
     pub async fn new() -> anyhow::Result<Self> {
-        let core = host::build_core()?;
-        host::init_kernel(&core).await;
+        // 经内核客户端接入：与桌面、无头共用一条路径，不再直连 Core。
+        let cli_path = std::env::current_exe().map_err(|e| anyhow::anyhow!("{e}"))?;
+        let client = nova_client::Client::spawn(&cli_path)
+            .await
+            .map_err(anyhow::Error::msg)?;
 
         let cwd = std::env::current_dir()
             .map(|p| p.display().to_string())
             .unwrap_or_default();
-        let conversation = nova_core::api::history::create_conversation(
-            &core,
-            None,
-            Some(cwd.clone()),
-        )
-        .await
-        .map_err(anyhow::Error::msg)?;
 
-        let model = nova_core::services::settings::load_settings(&core)
-            .map(|s| s.active_provider_profile().model)
-            .unwrap_or_else(|_| "unknown".to_string());
-
-        let cached_sessions = nova_core::api::history::list_conversations(&core)
+        let conversation = client
+            .invoke(
+                "create_conversation",
+                json!({ "title": Value::Null, "workspacePath": cwd.clone() }),
+            )
             .await
+            .map_err(anyhow::Error::msg)?;
+        let conversation_id = conversation
+            .get("id")
+            .and_then(Value::as_str)
+            .ok_or_else(|| anyhow::anyhow!("创建会话失败：{}", conversation))?
+            .to_string();
+
+        let settings = client
+            .invoke("get_settings", json!({}))
+            .await
+            .ok()
+            .and_then(|value| {
+                serde_json::from_value::<nova_core::services::settings::AppSettings>(value).ok()
+            });
+        let model = settings
+            .as_ref()
+            .map(|s| s.active_provider_profile().model.clone())
+            .unwrap_or_else(|| "unknown".to_string());
+
+        let cached_sessions = client
+            .invoke("list_conversations", json!({}))
+            .await
+            .ok()
+            .and_then(|value| {
+                serde_json::from_value::<Vec<nova_protocol::session::ConversationMeta>>(value).ok()
+            })
             .unwrap_or_default();
 
         // 内核事件 → TUI 通道（事件泵任务）。
         let (tx, rx) = mpsc::unbounded_channel();
-        let mut source = core.subscribe();
+        let mut source = client.subscribe();
         tokio::spawn(async move {
             loop {
                 match source.recv().await {
@@ -225,8 +250,9 @@ impl TuiApp {
         });
 
         Ok(Self {
-            core,
-            conversation_id: conversation.id,
+            client,
+            settings,
+            conversation_id,
             events: rx,
             messages: vec![ChatItem::Note(format!(
                 "Nova · 工作区 {} · 输入 / 自动弹出补全，或 /help 查看快捷键",
@@ -306,27 +332,54 @@ impl TuiApp {
     }
 
     fn drain_events(&mut self) {
-        while let Ok(event) = self.events.try_recv() {
-            self.apply_event(event);
+        while let Ok((name, payload)) = self.events.try_recv() {
+            self.apply_event(&name, payload);
         }
     }
 
-    fn apply_event(&mut self, event: NovaEvent) {
-        let NovaEvent::Agent(domain) = event else {
-            if let NovaEvent::BackendError(payload) = event {
-                self.messages.push(ChatItem::Note(format!(
-                    "[backend-error] {}",
-                    payload.message
-                )));
-            } else if let NovaEvent::BackendWarning(payload) = event {
-                self.messages.push(ChatItem::Note(format!(
-                    "[backend-warning] {}",
-                    payload.message
-                )));
-            }
-            return;
-        };
+    /// 统一 RPC 入口：调用内核方法并把 JSON 还原成强类型。
+    async fn rpc<T: serde::de::DeserializeOwned>(
+        &self,
+        method: &str,
+        params: Value,
+    ) -> Result<T, String> {
+        let value = self.client.invoke(method, params).await?;
+        serde_json::from_value(value).map_err(|e| e.to_string())
+    }
 
+    /// 刷新设置缓存：渲染路径是同步的，不能在渲染时就地 await。
+    /// 目前仅在启动时取一次；设置变更后需重启 TUI 才会反映最新值。
+    #[allow(dead_code)]
+    async fn refresh_settings(&mut self) {
+        if let Ok(settings) = self
+            .rpc::<nova_core::services::settings::AppSettings>("get_settings", json!({}))
+            .await
+        {
+            self.settings = Some(settings);
+        }
+    }
+
+    fn apply_event(&mut self, name: &str, payload: Value) {
+        match name {
+            "agent-event" => {
+                // 线协议载荷反序列化回强类型事件，渲染逻辑与直连时期完全一致。
+                if let Ok(domain) = serde_json::from_value::<AgentDomainEvent>(payload) {
+                    self.apply_agent_event(domain);
+                }
+            }
+            "backend-error" | "backend-warning" => {
+                let message = payload
+                    .get("message")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default();
+                self.messages
+                    .push(ChatItem::Note(format!("[{}] {}", name, message)));
+            }
+            _ => {}
+        }
+    }
+
+    fn apply_agent_event(&mut self, domain: AgentDomainEvent) {
         match domain {
             AgentDomainEvent::TextDelta { delta, .. } => {
                 self.ensure_assistant();
@@ -529,7 +582,7 @@ impl TuiApp {
                 let query = self.input["/model ".len()..].trim().to_lowercase();
                 let mut candidates: Vec<(String, String)> = Vec::new();
 
-                if let Ok(settings) = nova_core::services::settings::load_settings(&self.core) {
+                if let Ok(settings) = self.settings.clone().ok_or_else(|| "设置未就绪".to_string()) {
                     let active_provider = settings.active_provider_key();
                     let active_model = settings.active_provider_profile().model;
 
@@ -615,7 +668,7 @@ impl TuiApp {
                 let query = self.input["/provider ".len()..].trim().to_lowercase();
                 let mut candidates: Vec<(String, String)> = Vec::new();
 
-                if let Ok(settings) = nova_core::services::settings::load_settings(&self.core) {
+                if let Ok(settings) = self.settings.clone().ok_or_else(|| "设置未就绪".to_string()) {
                     let active = settings.active_provider_key();
                     candidates.push((active.clone(), "✓ 当前生效提供商".to_string()));
 
@@ -709,12 +762,18 @@ impl TuiApp {
             };
             if let Some(action) = action {
                 let prompt = self.permission.take().expect("permission checked");
-                let result = nova_core::api::permission_rules::submit_permission_decision(
-                    &self.core,
-                    Some(self.conversation_id.clone()),
-                    prompt.request_id,
-                    action.to_string(),
-                );
+                let result = self
+                    .client
+                    .invoke(
+                        "submit_permission_decision",
+                        json!({
+                            "conversationId": self.conversation_id,
+                            "requestId": prompt.request_id,
+                            "action": action,
+                        }),
+                    )
+                    .await
+                    .map(|_| ());
                 if let Err(error) = result {
                     self.messages
                         .push(ChatItem::Note(format!("[permission-error] {}", error)));
@@ -990,18 +1049,24 @@ impl TuiApp {
                 let cwd = std::env::current_dir()
                     .map(|p| p.display().to_string())
                     .unwrap_or_default();
-                match nova_core::api::history::create_conversation(
-                    &self.core,
-                    None,
-                    Some(cwd),
-                )
-                .await
+                match self
+                    .rpc::<nova_protocol::session::ConversationMeta>(
+                        "create_conversation",
+                        json!({ "title": Value::Null, "workspacePath": cwd }),
+                    )
+                    .await
                 {
                     Ok(meta) => {
                         self.conversation_id = meta.id;
                         self.messages.clear();
                         self.messages.push(ChatItem::Note("已开启新会话".to_string()));
-                        if let Ok(convs) = nova_core::api::history::list_conversations(&self.core).await {
+                        if let Ok(convs) = self
+                            .rpc::<Vec<nova_protocol::session::ConversationMeta>>(
+                                "list_conversations",
+                                json!({}),
+                            )
+                            .await
+                        {
                             self.cached_sessions = convs;
                         }
                     }
@@ -1040,11 +1105,12 @@ impl TuiApp {
             "/compact" => {
                 self.messages
                     .push(ChatItem::Note("正在压缩当前对话上下文...".to_string()));
-                match nova_core::api::history::manual_compact_conversation(
-                    &self.core,
-                    self.conversation_id.clone(),
-                )
-                .await
+                match self
+                    .rpc::<nova_core::agent::capabilities::compact::ManualCompactOutcome>(
+                        "manual_compact_conversation",
+                        json!({ "conversationId": self.conversation_id }),
+                    )
+                    .await
                 {
                     Ok(outcome) => {
                         self.messages.push(ChatItem::Note(format!(
@@ -1060,7 +1126,7 @@ impl TuiApp {
             }
             "/model" => {
                 if args.is_empty() {
-                    match nova_core::services::settings::load_settings(&self.core) {
+                    match self.settings.clone().ok_or_else(|| "设置未就绪".to_string()) {
                         Ok(settings) => {
                             let profile = settings.active_provider_profile();
                             let mut lines = vec![
@@ -1082,12 +1148,13 @@ impl TuiApp {
                         }
                     }
                 } else {
-                    match nova_core::services::settings::load_settings(&self.core) {
+                    match self.settings.clone().ok_or_else(|| "设置未就绪".to_string()) {
                         Ok(mut settings) => {
                             let key = settings.active_provider_key();
                             settings.provider_profiles.entry(key).or_default().model = args.to_string();
-                            if let Err(e) =
-                                nova_core::services::settings::save_settings_inner(&self.core, settings)
+                            if let Err(e) = self
+                                .rpc::<Value>("save_settings", json!({ "settings": settings }))
+                                .await
                             {
                                 self.messages
                                     .push(ChatItem::Note(format!("[model-save-error] {}", e)));
@@ -1106,7 +1173,7 @@ impl TuiApp {
             }
             "/provider" => {
                 if args.is_empty() {
-                    match nova_core::services::settings::load_settings(&self.core) {
+                    match self.settings.clone().ok_or_else(|| "设置未就绪".to_string()) {
                         Ok(settings) => {
                             let mut providers: Vec<String> =
                                 settings.provider_profiles.keys().cloned().collect();
@@ -1127,13 +1194,14 @@ impl TuiApp {
                         }
                     }
                 } else {
-                    match nova_core::services::settings::load_settings(&self.core) {
+                    match self.settings.clone().ok_or_else(|| "设置未就绪".to_string()) {
                         Ok(mut settings) => {
                             let old_provider = settings.provider.clone();
                             settings.provider = args.to_string();
                             let new_model = settings.active_provider_profile().model;
-                            if let Err(e) =
-                                nova_core::services::settings::save_settings_inner(&self.core, settings)
+                            if let Err(e) = self
+                                .rpc::<Value>("save_settings", json!({ "settings": settings }))
+                                .await
                             {
                                 self.messages
                                     .push(ChatItem::Note(format!("[provider-save-error] {}", e)));
@@ -1153,7 +1221,13 @@ impl TuiApp {
                 }
             }
             "/sessions" => {
-                match nova_core::api::history::list_conversations(&self.core).await {
+                match self
+                    .rpc::<Vec<nova_protocol::session::ConversationMeta>>(
+                        "list_conversations",
+                        json!({}),
+                    )
+                    .await
+                {
                     Ok(conversations) => {
                         self.cached_sessions = conversations.clone();
                         let mut lines = vec![
@@ -1186,7 +1260,13 @@ impl TuiApp {
                         .push(ChatItem::Note("用法: /resume <会话ID>（输入 /sessions 可查看列表）".to_string()));
                     return;
                 }
-                match nova_core::api::history::load_history(&self.core, args.to_string()).await {
+                match self
+                    .rpc::<Vec<nova_protocol::session::HistoryMessage>>(
+                        "load_history",
+                        json!({ "conversationId": args }),
+                    )
+                    .await
+                {
                     Ok(history) => {
                         self.conversation_id = args.to_string();
                         self.messages.clear();
@@ -1212,7 +1292,10 @@ impl TuiApp {
                 }
             }
             "/skills" => {
-                match nova_core::api::skill::list_skills(&self.core) {
+                match self
+                    .rpc::<Vec<nova_protocol::misc::SkillSummary>>("list_skills", json!({}))
+                    .await
+                {
                     Ok(skills) => {
                         let mut lines = vec![format!("已加载技能包列表 (共 {} 个):", skills.len())];
                         for s in skills.iter().take(20) {
@@ -1228,7 +1311,13 @@ impl TuiApp {
                 }
             }
             "/mcp" => {
-                match nova_core::api::mcp::get_mcp_server_statuses(&self.core).await {
+                match self
+                    .rpc::<Vec<nova_protocol::mcp::McpServerStatus>>(
+                        "get_mcp_server_statuses",
+                        json!({}),
+                    )
+                    .await
+                {
                     Ok(statuses) => {
                         let mut lines = vec![format!("MCP 服务器运行状态 (共 {} 个):", statuses.len())];
                         for st in statuses {
@@ -1247,7 +1336,10 @@ impl TuiApp {
                 }
             }
             "/memory" => {
-                match nova_core::api::history::list_memory_entries(&self.core).await {
+                match self
+                    .rpc::<Vec<String>>("list_memory_entries", json!({}))
+                    .await
+                {
                     Ok(entries) => {
                         let mut lines = vec![format!("跨会话持久记忆 (共 {} 条):", entries.len())];
                         for (i, entry) in entries.iter().enumerate() {
@@ -1263,7 +1355,13 @@ impl TuiApp {
             }
             "/diff" => {
                 let cid = self.conversation_id.clone();
-                match nova_core::api::file_changes::get_workspace_diff(&self.core, Some(cid)).await {
+                match self
+                    .rpc::<nova_protocol::misc::WorkspaceDiff>(
+                        "get_workspace_diff",
+                        json!({ "conversationId": cid }),
+                    )
+                    .await
+                {
                     Ok(diff) => {
                         let mut lines = vec![format!(
                             "工作区代码变更 (共 {} 个文件，+{} -{}):",
@@ -1286,11 +1384,12 @@ impl TuiApp {
                 }
             }
             "/todos" => {
-                match nova_core::api::todo::list_todos(
-                    &self.core,
-                    Some(self.conversation_id.clone()),
-                )
-                .await
+                match self
+                    .rpc::<Vec<nova_protocol::misc::TodoEntry>>(
+                        "list_todos",
+                        json!({ "conversationId": self.conversation_id }),
+                    )
+                    .await
                 {
                     Ok(todos) => {
                         if todos.is_empty() {
@@ -1319,11 +1418,12 @@ impl TuiApp {
                 }
             }
             "/plan" => {
-                match nova_core::api::plan::get_conversation_plan(
-                    &self.core,
-                    Some(self.conversation_id.clone()),
-                )
-                .await
+                match self
+                    .rpc::<Option<nova_protocol::misc::ConversationPlan>>(
+                        "get_conversation_plan",
+                        json!({ "conversationId": self.conversation_id }),
+                    )
+                    .await
                 {
                     Ok(Some(plan)) => {
                         let mut lines = vec![format!(
@@ -1344,11 +1444,12 @@ impl TuiApp {
                 }
             }
             "/usage" => {
-                match nova_core::api::usage::get_conversation_usage(
-                    &self.core,
-                    self.conversation_id.clone(),
-                )
-                .await
+                match self
+                    .rpc::<nova_protocol::misc::ConversationUsageSummary>(
+                        "get_conversation_usage",
+                        json!({ "conversationId": self.conversation_id }),
+                    )
+                    .await
                 {
                     Ok(usage) => {
                         let summary = format!(
@@ -1414,11 +1515,19 @@ impl TuiApp {
         self.status = "assembling".to_string();
         self.scroll = 0;
 
-        let core = self.core.clone();
+        let client = self.client.clone();
         let conversation_id = self.conversation_id.clone();
         tokio::spawn(async move {
-            if let Err(error) =
-                nova_core::agent::send_modern_agent_turn(core, conversation_id, text, None).await
+            if let Err(error) = client
+                .invoke(
+                    "send_modern_agent_turn",
+                    json!({
+                        "conversationId": conversation_id,
+                        "prompt": text,
+                        "attachments": Value::Null,
+                    }),
+                )
+                .await
             {
                 tracing::error!(%error, "agent turn failed");
             }

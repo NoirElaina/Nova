@@ -329,7 +329,12 @@ fn make_shell_command(workspace: Option<&str>) -> Result<Command, String> {
 }
 
 async fn spawn_session(initial_cwd: Option<&str>) -> Result<ShellSession, String> {
-    let mut command = make_shell_command(initial_cwd)?;
+    // 沙箱需要明确的可写目录；headless 等模式可能不给 cwd，回退到进程当前目录，
+    // 否则 workspace-write 会退化成"全盘只读"，连工作区都写不了。
+    let workspace = initial_cwd
+        .map(|s| s.to_string())
+        .or_else(|| std::env::current_dir().ok().map(|p| p.to_string_lossy().to_string()));
+    let mut command = make_shell_command(workspace.as_deref())?;
     let mut child = command
         .spawn()
         .map_err(|error| format!("Failed to start shell session: {}", error))?;
@@ -901,7 +906,6 @@ fn background_command(command: &str, cwd: Option<&str>) -> tokio::process::Comma
 
 #[cfg(not(target_os = "windows"))]
 fn background_command(command: &str, cwd: Option<&str>) -> tokio::process::Command {
-    use std::os::unix::process::CommandExt;
     let mut cmd = tokio::process::Command::new("sh");
     cmd.arg("-lc")
         .arg(command)

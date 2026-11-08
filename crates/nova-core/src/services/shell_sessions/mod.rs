@@ -335,6 +335,11 @@ async fn spawn_session(initial_cwd: Option<&str>) -> Result<ShellSession, String
         .map(|s| s.to_string())
         .or_else(|| std::env::current_dir().ok().map(|p| p.to_string_lossy().to_string()));
     let mut command = make_shell_command(workspace.as_deref())?;
+    tracing::info!(
+        sandbox = %crate::agent::sandbox::describe_active(),
+        workspace = ?workspace,
+        "启动 shell 会话"
+    );
     let mut child = command
         .spawn()
         .map_err(|error| format!("Failed to start shell session: {}", error))?;

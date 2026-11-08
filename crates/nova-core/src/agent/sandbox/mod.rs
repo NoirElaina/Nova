@@ -173,10 +173,17 @@ impl SandboxDriver for BubblewrapSandbox {
             "--ro-bind".into(),
             "/".into(),
             "/".into(),
+            // --dev 必须在可写根之前挂载，否则显式的 /dev/* 绑定会被覆盖。
             "--dev".into(),
             "/dev".into(),
-            "--proc".into(),
-            "/proc".into(),
+            // 恢复共享内存，否则 Chrome / Postgres 一类程序初始化失败。
+            "--bind-try".into(),
+            "/dev/shm".into(),
+            "/dev/shm".into(),
+            // 独立 user / ipc / pid 命名空间：不给宿主进程与 IPC 留可见性。
+            "--unshare-user".into(),
+            "--unshare-ipc".into(),
+            "--unshare-pid".into(),
             // 临时目录单独给一块可写的，避免污染宿主 /tmp。
             "--tmpfs".into(),
             "/tmp".into(),
@@ -184,6 +191,9 @@ impl SandboxDriver for BubblewrapSandbox {
             "--die-with-parent".into(),
             // 断开控制终端，防止 TIOCSTI 注入。
             "--new-session".into(),
+            // 丢弃全部 capability，降权到底。
+            "--cap-drop".into(),
+            "ALL".into(),
         ];
 
         // 工作区可写：只把会话目录重新 bind 成读写。
@@ -198,6 +208,9 @@ impl SandboxDriver for BubblewrapSandbox {
         if !ctx.policy.allows_network() {
             out.push("--unshare-net".into());
         }
+
+        // /proc 按需挂载：pid namespace 已隔离，这里给进程一个自己的 /proc。
+        out.extend(["--proc".into(), "/proc".into()]);
 
         out.push("--".into());
         out.push(program.to_string());

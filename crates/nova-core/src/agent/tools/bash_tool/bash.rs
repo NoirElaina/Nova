@@ -143,7 +143,12 @@ async fn execute_async(
     // 沙箱是默认执行位置，失败后由用户决定是否放行到沙箱外。
     if !background {
         if let Ok(ref failed) = result {
-            if should_retry_outside_sandbox(crate::agent::sandbox::active_policy(), failed) {
+            let approval = crate::agent::permissions::effective_approval_policy(core);
+            if should_retry_outside_sandbox(
+                crate::agent::sandbox::active_policy(),
+                approval,
+                failed,
+            ) {
                 let approved =
                     crate::agent::permissions::request_sandbox_retry(core, conversation_id, &cmd)
                         .await
@@ -185,14 +190,19 @@ async fn execute_async(
     }
 }
 
-/// 是否需要触发沙箱外重试：仅在沙箱启用、且命令确实以非零码结束时。
+/// 是否需要触发沙箱外重试。
 ///
-/// 超时与取消不重试——那是时间/用户意图问题，换个执行位置解决不了。
+/// 三个条件同时成立才重试：
+/// - 审批策略不是 `never`（Codex 对该值的定义是「失败直接返回模型，绝不向用户提权」）
+/// - 沙箱确实在生效
+/// - 命令以非零码结束（超时与取消不重试：换执行位置解决不了）
 fn should_retry_outside_sandbox(
     policy: crate::agent::sandbox::SandboxPolicy,
+    approval: crate::agent::permissions::ApprovalPolicy,
     result: &crate::services::shell_sessions::ShellExecutionResult,
 ) -> bool {
-    policy.is_enforcing()
+    !matches!(approval, crate::agent::permissions::ApprovalPolicy::Never)
+        && policy.is_enforcing()
         && !result.timed_out
         && !result.cancelled
         && result.exit_code.unwrap_or(0) != 0
@@ -281,22 +291,53 @@ mod tests {
 
     #[test]
     fn retry_only_when_sandbox_enforces_and_command_fails() {
+        use crate::agent::permissions::ApprovalPolicy;
         use crate::agent::sandbox::SandboxPolicy;
 
         let failed = execution(Some(1), false, false);
-        assert!(should_retry_outside_sandbox(SandboxPolicy::WorkspaceWrite, &failed));
-        assert!(should_retry_outside_sandbox(SandboxPolicy::ReadOnly, &failed));
+        assert!(should_retry_outside_sandbox(
+            SandboxPolicy::WorkspaceWrite,
+            ApprovalPolicy::OnRequest,
+            &failed
+        ));
+        assert!(should_retry_outside_sandbox(
+            SandboxPolicy::ReadOnly,
+            ApprovalPolicy::AlwaysAsk,
+            &failed
+        ));
         // 没有沙箱时无所谓重试——命令本来就在沙箱外跑的。
-        assert!(!should_retry_outside_sandbox(SandboxPolicy::DangerFullAccess, &failed));
+        assert!(!should_retry_outside_sandbox(
+            SandboxPolicy::DangerFullAccess,
+            ApprovalPolicy::OnRequest,
+            &failed
+        ));
+        // approval=never 时绝不向用户提权，失败直接回给模型。
+        assert!(!should_retry_outside_sandbox(
+            SandboxPolicy::WorkspaceWrite,
+            ApprovalPolicy::Never,
+            &failed
+        ));
 
         let succeeded = execution(Some(0), false, false);
-        assert!(!should_retry_outside_sandbox(SandboxPolicy::WorkspaceWrite, &succeeded));
+        assert!(!should_retry_outside_sandbox(
+            SandboxPolicy::WorkspaceWrite,
+            ApprovalPolicy::OnRequest,
+            &succeeded
+        ));
 
         // 超时与取消不重试：换执行位置解决不了这两类问题。
         let timed_out = execution(None, true, false);
-        assert!(!should_retry_outside_sandbox(SandboxPolicy::WorkspaceWrite, &timed_out));
+        assert!(!should_retry_outside_sandbox(
+            SandboxPolicy::WorkspaceWrite,
+            ApprovalPolicy::OnRequest,
+            &timed_out
+        ));
         let cancelled = execution(Some(1), false, true);
-        assert!(!should_retry_outside_sandbox(SandboxPolicy::WorkspaceWrite, &cancelled));
+        assert!(!should_retry_outside_sandbox(
+            SandboxPolicy::WorkspaceWrite,
+            ApprovalPolicy::OnRequest,
+            &cancelled
+        ));
     }
 
     #[test]

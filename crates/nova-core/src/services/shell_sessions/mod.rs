@@ -1,4 +1,3 @@
-#![allow(dead_code)] // TODO(oneshot 改造): 前台已改一次性执行，下列 marker 机制仅供后台/用户终端参考，待清理
 
 use std::collections::{HashMap, HashSet};
 use std::process::Stdio;
@@ -1236,14 +1235,27 @@ pub async fn run_foreground(
     timeout_ms: Option<u64>,
     initial_cwd: Option<&str>,
 ) -> Result<ShellExecutionResult, String> {
-    // oneshot：每条前台命令一个独立进程，退出码取自进程本身。
-    //
-    // 之前走持久 shell + 输出 marker，但 marker 依赖固定的输出格式：
-    // 命令一旦改动控制台编码（例如 [Console]::OutputEncoding）或输出被截断，
-    // 结束标记就再也读不到，只能干等到 120 秒超时。
-    // 与 Codex 的 unified_exec::oneshot 保持一致——可靠性优先于进程复用。
+    let timeout = normalized_timeout_ms(timeout_ms);
     let cancel_token = crate::agent::cancellation::get_token(conversation_id);
-    run_oneshot(command, initial_cwd, normalized_timeout_ms(timeout_ms), cancel_token).await
+
+    // 优先复用持久 shell：省掉每条命令约 500ms 冷启动，并保留 cd / 环境变量。
+    // 用一半超时做探测——持久会话失效时（marker 丢失、shell 状态被改坏），
+    // 能及时回退，而不是把整个超时都耗在等待上。
+    let probe_timeout = (timeout / 2).max(5_000);
+    let persistent = async {
+        let handle = get_or_create_handle(conversation_id, initial_cwd).await?;
+        let mut session = handle.inner.lock().await;
+        let script = build_foreground_wrapper("{command_id}", command);
+        execute_wrapped_command(&mut session, &script, probe_timeout, cancel_token.clone()).await
+    }
+    .await;
+
+    match persistent {
+        Ok(result) if !result.timed_out && !result.cancelled => Ok(result),
+        // 会话失效或超时：改用一次性进程重跑，保证命令一定有明确结局。
+        // 与 Codex 的 process_manager 在 sandbox 拒绝后重试的语义一致。
+        _ => run_oneshot(command, initial_cwd, timeout, cancel_token).await,
+    }
 }
 
 /// 一次性执行：spawn → 读完 stdout/stderr → 取退出码。

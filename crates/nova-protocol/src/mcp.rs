@@ -1,3 +1,4 @@
+use ts_rs::TS;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::HashMap;
@@ -21,7 +22,7 @@ impl McpRuntimeStatus {
     }
 }
 
-#[derive(Debug, Serialize, Deserialize, Clone)]
+#[derive(Debug, Serialize, Deserialize, Clone, TS)]
 #[serde(tag = "type", rename_all = "lowercase")]
 // 持久化的 MCP 服务配置。
 pub enum McpServerConfig {
@@ -51,7 +52,7 @@ pub enum McpServerConfig {
     },
 }
 
-#[derive(Debug, Serialize, Deserialize, Clone)]
+#[derive(Debug, Serialize, Deserialize, Clone, TS)]
 #[serde(rename_all = "camelCase")]
 // 返回给前端的 MCP 服务配置项。
 pub struct McpServerEntry {
@@ -60,7 +61,7 @@ pub struct McpServerEntry {
     pub config: McpServerConfig,
 }
 
-#[derive(Debug, Serialize, Deserialize, Clone)]
+#[derive(Debug, Serialize, Deserialize, Clone, TS)]
 #[serde(rename_all = "camelCase")]
 // 返回给前端的服务运行状态快照。
 pub struct McpServerStatus {
@@ -75,7 +76,7 @@ pub struct McpServerStatus {
     pub source_agent: Option<String>,
 }
 
-#[derive(Debug, Serialize, Deserialize, Clone)]
+#[derive(Debug, Serialize, Deserialize, Clone, TS)]
 #[serde(rename_all = "camelCase")]
 // MCP 工具的基础元数据。
 pub struct McpToolInfo {
@@ -84,7 +85,7 @@ pub struct McpToolInfo {
     pub input_schema: Option<Value>,
 }
 
-#[derive(Debug, Serialize, Deserialize, Clone)]
+#[derive(Debug, Serialize, Deserialize, Clone, TS)]
 #[serde(rename_all = "camelCase")]
 // MCP 资源列表项的基础信息。
 pub struct McpResourceInfo {

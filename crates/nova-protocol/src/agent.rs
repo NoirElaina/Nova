@@ -1,10 +1,12 @@
+use ts_rs::TS;
 use serde::{Deserialize, Serialize};
 
 /// 现代化 Agent 领域事件系统。
 /// 后端作为唯一真实信源（Single Source of Truth），向前端推送确定性的高阶事件。
 /// 前端仅需单向订阅，无需拼装消息状态或二次计算。
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
 #[serde(tag = "kind", content = "payload", rename_all = "snake_case")]
+#[ts(export, export_to = "protocol.ts")]
 pub enum AgentDomainEvent {
     /// 回合启动
     TurnStarted {
@@ -75,9 +77,10 @@ pub enum AgentDomainEvent {
 
 /// 严格的 Agent 认知状态机（Cognitive State Machine）
 /// 严格跟踪从“意图理解 -> 工具调用 -> 验证自愈 -> 任务完成”的每一步。
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "snake_case")]
 #[derive(Default)]
+#[ts(export, export_to = "protocol.ts")]
 pub enum CognitiveState {
     /// 空闲中，等待用户指令
     #[default]
@@ -102,8 +105,9 @@ pub enum CognitiveState {
 
 
 /// 审批策略：与操作风险正交的全局开关。
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize, TS)]
 #[serde(rename_all = "snake_case")]
+#[ts(export, export_to = "protocol.ts")]
 pub enum ApprovalPolicy {
     /// 凡产生权限描述符的操作一律审批（Forbidden 仍直接拒绝）。
     AlwaysAsk,

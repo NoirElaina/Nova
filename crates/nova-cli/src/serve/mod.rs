@@ -335,6 +335,17 @@ async fn handle_message(
                 return;
             }
 
+            // 按结构化能力注册桌面宿主：客户端声明 browser 能力，
+            // 内核才会把浏览器自动化请求路由回它。
+            let wants_browser = params
+                .pointer("/capabilities/browser")
+                .and_then(Value::as_bool)
+                .unwrap_or(false);
+            if wants_browser {
+                state.hub.register_desktop(out_tx.clone());
+                info!("desktop client registered (browser capability)");
+            }
+
             let result = serde_json::to_value(nova_protocol::rpc::InitializeResult {
                 server_info: nova_protocol::rpc::ClientInfo {
                     name: "nova".to_string(),
@@ -342,7 +353,11 @@ async fn handle_message(
                     version: env!("CARGO_PKG_VERSION").to_string(),
                 },
                 protocol_version: nova_protocol::rpc::PROTOCOL_VERSION.to_string(),
-                capabilities: vec!["browser".to_string(), "hooks".to_string()],
+                capabilities: nova_protocol::rpc::ServerCapabilities {
+                    browser: true,
+                    hooks: true,
+                    escalation: true,
+                },
             })
             .unwrap_or(Value::Null);
 
@@ -351,6 +366,10 @@ async fn handle_message(
                 "id": id,
                 "result": result,
             }));
+        }
+        // 握手完成通知：客户端确认收到 initialize 响应。无回包。
+        "initialized" => {
+            info!("client initialized");
         }
         "hello" => {
             let is_desktop = params

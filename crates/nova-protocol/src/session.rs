@@ -1,8 +1,10 @@
+use ts_rs::TS;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-#[derive(Debug, Serialize, Deserialize, Clone)]
+#[derive(Debug, Serialize, Deserialize, Clone, TS)]
 #[serde(rename_all = "camelCase")]
+#[ts(export, export_to = "protocol.ts")]
 pub struct ConversationMeta {
     // 会话唯一 ID。
     pub id: String,
@@ -18,8 +20,9 @@ pub struct ConversationMeta {
     pub active_agent_id: Option<String>,
 }
 
-#[derive(Debug, Serialize, Deserialize, Clone)]
+#[derive(Debug, Serialize, Deserialize, Clone, TS)]
 #[serde(rename_all = "camelCase")]
+#[ts(export, export_to = "protocol.ts")]
 pub struct HistoryAttachment {
     // 附件显示名称。
     pub source_name: String,
@@ -39,8 +42,9 @@ pub struct HistoryAttachment {
     pub session_file_path: Option<String>,
 }
 
-#[derive(Debug, Serialize, Deserialize, Clone)]
+#[derive(Debug, Serialize, Deserialize, Clone, TS)]
 #[serde(rename_all = "camelCase")]
+#[ts(export, export_to = "protocol.ts")]
 pub struct HistoryMessage {
     // 事件日志中的 seq（稳定唯一，前端作消息键使用）。
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -59,8 +63,9 @@ pub struct HistoryMessage {
     pub cost: Option<Value>,
 }
 
-#[derive(Debug, Serialize, Deserialize, Clone)]
+#[derive(Debug, Serialize, Deserialize, Clone, TS)]
 #[serde(rename_all = "camelCase")]
+#[ts(export, export_to = "protocol.ts")]
 pub struct HistoryToolExecution {
     // 工具调用唯一 ID（会话内唯一）。
     pub id: String,

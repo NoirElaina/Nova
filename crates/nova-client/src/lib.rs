@@ -18,7 +18,14 @@ use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::{Child, Command};
 use tokio::sync::{broadcast, mpsc, oneshot};
 
-type Pending = Arc<Mutex<HashMap<String, oneshot::Sender<Result<Value, String>>>>>;
+/// 内核返回的 JSON-RPC 错误（保留错误码，重试判断需要）。
+#[derive(Debug, Clone)]
+pub struct RpcError {
+    pub code: i32,
+    pub message: String,
+}
+
+type Pending = Arc<Mutex<HashMap<String, oneshot::Sender<Result<Value, RpcError>>>>>;
 
 /// 内核推送的事件：`(事件名, 载荷)`。事件名契约由 `NovaEvent::to_frontend` 定义。
 pub type ClientEvent = (String, Value);
@@ -138,7 +145,11 @@ impl Client {
             child: Mutex::new(child),
         });
 
-        // 握手：CLI 宿主不声明任何宿主能力（浏览器自动化只在桌面存在）。
+        // 握手：按注册的宿主能力声明 capabilities（桌面 browser=true，CLI 为 false）。
+        let capabilities = json!({
+            "browser": options.browser.is_some(),
+            "hooks": options.hooks.is_some(),
+        });
         let _ = client
             .out
             .send(json!({
@@ -147,33 +158,71 @@ impl Client {
                 "method": "initialize",
                 "params": {
                     "clientInfo": {
-                        "name": "nova_cli",
-                        "title": "Nova CLI",
+                        "name": "nova_client",
+                        "title": "Nova Client",
                         "version": env!("CARGO_PKG_VERSION"),
                     },
-                    "capabilities": [],
+                    "capabilities": capabilities,
                     "protocolVersion": nova_protocol::rpc::PROTOCOL_VERSION,
                 },
             }))
             .await;
 
+        // 握手确认通知（对齐 Codex 的 initialized）。
+        let _ = client
+            .out
+            .send(json!({ "jsonrpc": "2.0", "method": "initialized", "params": {} }))
+            .await;
+
         Ok(client)
     }
 
-    /// 发起一次 RPC 并等待结果（带超时，避免内核起不来时无限挂起）。
+    /// 发起一次 RPC 并等待结果。
+    ///
+    /// 收到 `-32001`（过载）时按指数退避 + jitter 重试，最多 5 次——
+    /// 与 Codex 对 "Server overloaded; retry later." 的处理一致。
     pub async fn invoke(&self, method: &str, params: Value) -> Result<Value, String> {
+        const MAX_RETRIES: u32 = 5;
+        let mut attempt: u32 = 0;
+        loop {
+            match self.invoke_once(method, params.clone()).await {
+                Ok(value) => return Ok(value),
+                Err(RpcError { code: -32001, .. }) if attempt < MAX_RETRIES => {
+                    let base = 100u64.saturating_mul(1u64 << attempt.min(6));
+                    let jitter = std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .map(|d| u64::from(d.subsec_nanos()) % 100)
+                        .unwrap_or(0);
+                    tokio::time::sleep(std::time::Duration::from_millis(base + jitter)).await;
+                    attempt += 1;
+                }
+                Err(error) => return Err(error.message),
+            }
+        }
+    }
+
+    async fn invoke_once(&self, method: &str, params: Value) -> Result<Value, RpcError> {
         let id = format!("rpc-{}", self.counter.fetch_add(1, Ordering::Relaxed));
         let (tx, rx) = oneshot::channel();
         self.pending.lock().unwrap().insert(id.clone(), tx);
         self.out
             .send(json!({ "jsonrpc": "2.0", "id": id, "method": method, "params": params }))
             .await
-            .map_err(|_| "内核通道已关闭".to_string())?;
+            .map_err(|_| RpcError {
+                code: -32000,
+                message: "内核通道已关闭".to_string(),
+            })?;
 
         match tokio::time::timeout(std::time::Duration::from_secs(30), rx).await {
             Ok(Ok(result)) => result,
-            Ok(Err(_)) => Err("内核响应通道已关闭".to_string()),
-            Err(_) => Err(format!("调用 '{}' 超时（内核可能未就绪）", method)),
+            Ok(Err(_)) => Err(RpcError {
+                code: -32000,
+                message: "内核响应通道已关闭".to_string(),
+            }),
+            Err(_) => Err(RpcError {
+                code: -32000,
+                message: format!("调用 '{}' 超时（内核可能未就绪）", method),
+            }),
         }
     }
 
@@ -257,11 +306,14 @@ async fn dispatch(
         _ => {
             if let Some(id) = envelope.get("id").and_then(Value::as_str) {
                 let payload = if let Some(error) = envelope.get("error") {
-                    Err(error
-                        .get("message")
-                        .and_then(Value::as_str)
-                        .unwrap_or("daemon error")
-                        .to_string())
+                    Err(RpcError {
+                        code: error.get("code").and_then(Value::as_i64).unwrap_or(-32603) as i32,
+                        message: error
+                            .get("message")
+                            .and_then(Value::as_str)
+                            .unwrap_or("daemon error")
+                            .to_string(),
+                    })
                 } else {
                     Ok(envelope.get("result").cloned().unwrap_or(Value::Null))
                 };

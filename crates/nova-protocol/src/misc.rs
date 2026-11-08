@@ -1,12 +1,14 @@
 //! 其余 IPC 线类型（配置目录/统计/任务等），与内核实现解耦。
 
+use ts_rs::TS;
 use serde::{Deserialize, Serialize};
 
 // ── 智能体套件 ──
 
 /// 前端智能体配置页展示的可配置工具（勾选清单用）。
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
+#[ts(export, export_to = "protocol.ts")]
 pub struct ConfigurableTool {
     pub name: String,
     pub description: String,
@@ -16,8 +18,9 @@ pub struct ConfigurableTool {
 }
 
 /// 智能体来源：手动创建 / 市场安装 / 导入。
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default, TS)]
 #[serde(rename_all = "lowercase")]
+#[ts(export, export_to = "protocol.ts")]
 pub enum AgentSourceKind {
     #[default]
     Manual,
@@ -25,8 +28,9 @@ pub enum AgentSourceKind {
     Import,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default, TS)]
 #[serde(rename_all = "camelCase")]
+#[ts(export, export_to = "protocol.ts")]
 pub struct AgentSource {
     #[serde(default)]
     pub kind: AgentSourceKind,
@@ -36,8 +40,9 @@ pub struct AgentSource {
     pub version: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
+#[ts(export, export_to = "protocol.ts")]
 pub struct AgentBundle {
     pub id: String,
     pub name: String,
@@ -120,8 +125,9 @@ impl AgentBundle {
 }
 
 /// 智能体资料文件条目（agents/<id>/files/ 顶层）。
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
+#[ts(export, export_to = "protocol.ts")]
 pub struct AgentFileEntry {
     pub name: String,
     pub size_bytes: u64,
@@ -130,16 +136,18 @@ pub struct AgentFileEntry {
 
 // ── 权限规则 ──
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "snake_case")]
+#[ts(export, export_to = "protocol.ts")]
 pub enum RuleKind {
     Allow,
     Deny,
 }
 
 /// 一条持久化权限规则。
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
+#[ts(export, export_to = "protocol.ts")]
 pub struct PermissionRule {
     pub kind: RuleKind,
     /// 操作签名（与审批描述符 signature 同一归一化规则）。
@@ -149,7 +157,8 @@ pub struct PermissionRule {
 
 // ── 技能目录 ──
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export, export_to = "protocol.ts")]
 pub struct SkillSummary {
     pub name: String,
     pub description: String,
@@ -159,8 +168,9 @@ pub struct SkillSummary {
 // ── 模型目录 ──
 
 /// 前端展示的模型属性摘要（OpenRouter 风格）。
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
+#[ts(export, export_to = "protocol.ts")]
 pub struct ModelCatalogSummary {
     pub id: String,
     pub name: String,
@@ -174,8 +184,9 @@ pub struct ModelCatalogSummary {
 }
 
 /// 模型数据库状态统计。
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
+#[ts(export, export_to = "protocol.ts")]
 pub struct ModelCatalogStats {
     pub total_models: usize,
     pub last_updated_secs: Option<u64>,
@@ -185,8 +196,9 @@ pub struct ModelCatalogStats {
 
 // ── 终端探测 ──
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
 #[serde(rename_all = "camelCase")]
+#[ts(export, export_to = "protocol.ts")]
 pub struct TerminalInfo {
     /// 唯一标识，如 "pwsh", "powershell", "git-bash", "cmd", "wsl", "zsh", "bash", "fish"
     pub id: String,
@@ -204,8 +216,9 @@ pub struct TerminalInfo {
 
 // ── Token 用量统计 ──
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
+#[ts(export, export_to = "protocol.ts")]
 pub struct UsageStats {
     pub total_sessions: i64,
     pub total_messages: i64,
@@ -221,16 +234,18 @@ pub struct UsageStats {
     pub model_breakdown: Vec<ModelBreakdown>,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
+#[ts(export, export_to = "protocol.ts")]
 pub struct HeatmapPoint {
     pub date: String,
     pub tokens: i64,
     pub sessions: i64,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
+#[ts(export, export_to = "protocol.ts")]
 pub struct ModelBreakdown {
     pub model: String,
     pub tokens: i64,
@@ -240,7 +255,8 @@ pub struct ModelBreakdown {
 
 // ── 待办 / 定时任务 ──
 
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, TS)]
+#[ts(export, export_to = "protocol.ts")]
 pub struct TodoEntry {
     pub id: String,
     pub content: String,
@@ -248,8 +264,9 @@ pub struct TodoEntry {
     pub priority: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
+#[ts(export, export_to = "protocol.ts")]
 pub struct CronJob {
     pub id: String,
     pub cron: String,
@@ -263,15 +280,17 @@ pub struct CronJob {
 
 // ── 模型拉取 / Git 初始化 ──
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
+#[ts(export, export_to = "protocol.ts")]
 pub struct FetchedModel {
     pub id: String,
     pub owned_by: Option<String>,
 }
 
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
+#[ts(export, export_to = "protocol.ts")]
 pub struct InitGitRepoResult {
     /// true 表示这次调用新建了 `.git`；false 表示仓库已存在，本次为空操作。
     pub created: bool,
@@ -280,8 +299,9 @@ pub struct InitGitRepoResult {
 
 // ── Token 用量流水与会话聚合 ──
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
+#[ts(export, export_to = "protocol.ts")]
 pub struct TokenUsageRecord {
     pub id: i64,
     pub conversation_id: Option<String>,
@@ -297,8 +317,9 @@ pub struct TokenUsageRecord {
     pub created_at: i64,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
+#[ts(export, export_to = "protocol.ts")]
 pub struct ConversationUsageSummary {
     pub requests: i64,
     pub input_tokens: i64,
@@ -311,8 +332,9 @@ pub struct ConversationUsageSummary {
 
 // ── 工作区 diff / git 状态 ──
 
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
+#[ts(export, export_to = "protocol.ts")]
 pub struct FileDiffLine {
     pub kind: String,
     pub old_line: Option<usize>,
@@ -320,8 +342,9 @@ pub struct FileDiffLine {
     pub text: String,
 }
 
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
+#[ts(export, export_to = "protocol.ts")]
 pub struct WorkspaceFileChange {
     pub path: String,
     pub absolute_path: String,
@@ -331,16 +354,18 @@ pub struct WorkspaceFileChange {
     pub diff: Vec<FileDiffLine>,
 }
 
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
+#[ts(export, export_to = "protocol.ts")]
 pub struct WorkspaceDiff {
     pub files: Vec<WorkspaceFileChange>,
     pub total_additions: usize,
     pub total_deletions: usize,
 }
 
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
+#[ts(export, export_to = "protocol.ts")]
 pub struct GitRepoStatus {
     pub initialized: bool,
     pub path: String,
@@ -350,8 +375,9 @@ pub struct GitRepoStatus {
 
 // ── 会话文件 / Shell 会话 ──
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
+#[ts(export, export_to = "protocol.ts")]
 pub struct SessionFileMeta {
     /// 文件名（已 sanitize，不含路径分隔符），同时也是读取时的唯一 key。
     pub filename: String,
@@ -361,8 +387,9 @@ pub struct SessionFileMeta {
     pub created_at: i64,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
+#[ts(export, export_to = "protocol.ts")]
 pub struct ShellSessionStatus {
     pub exists: bool,
     pub alive: bool,
@@ -372,8 +399,9 @@ pub struct ShellSessionStatus {
     pub background_count: usize,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
+#[ts(export, export_to = "protocol.ts")]
 pub struct BackgroundOutput {
     pub id: String,
     pub pid: u32,
@@ -394,8 +422,9 @@ pub struct BackgroundOutput {
 
 // ── 工作区浏览 ──
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
+#[ts(export, export_to = "protocol.ts")]
 pub struct WorkspaceEntry {
     pub name: String,
     pub path: String,
@@ -406,8 +435,9 @@ pub struct WorkspaceEntry {
     pub modified: Option<u64>,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
+#[ts(export, export_to = "protocol.ts")]
 pub struct WorkspaceDirectoryListing {
     pub root: String,
     pub path: String,
@@ -415,8 +445,9 @@ pub struct WorkspaceDirectoryListing {
     pub entries: Vec<WorkspaceEntry>,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
+#[ts(export, export_to = "protocol.ts")]
 pub struct WorkspaceFileContent {
     pub path: String,
     pub relative_path: String,
@@ -427,8 +458,9 @@ pub struct WorkspaceFileContent {
 // ── 计划 / 回合轨迹 / 压缩 ──
 
 /// 会话 plan 元信息，返回给前端展示。
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
+#[ts(export, export_to = "protocol.ts")]
 pub struct ConversationPlan {
     /// plan 的 Markdown 全文。
     pub content: String,
@@ -437,8 +469,9 @@ pub struct ConversationPlan {
 }
 
 /// 单个回合的轨迹：仅回合标识与最后一次模型收发（调试面板只展开发送/接收）。
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
+#[ts(export, export_to = "protocol.ts")]
 pub struct TurnTrace {
     pub turn_id: String,
     /// 回合在事件流中的序号（排序/定位用）。
@@ -451,8 +484,9 @@ pub struct TurnTrace {
 }
 
 /// 单次模型 API 请求及其响应。
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
+#[ts(export, export_to = "protocol.ts")]
 pub struct WireCallTrace {
     /// 请求报文完整 JSON（含 system prompt/tools/消息数组）。
     pub request: serde_json::Value,
@@ -460,7 +494,8 @@ pub struct WireCallTrace {
     pub response: Option<serde_json::Value>,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, TS)]
+#[ts(export, export_to = "protocol.ts")]
 pub struct ManualCompactOutcome {
     pub before_tokens: u32,
     pub after_tokens: u32,

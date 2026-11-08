@@ -1,3 +1,4 @@
+use ts_rs::TS;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
@@ -72,8 +73,9 @@ pub fn normalize_ui_theme(raw: &str) -> String {
     }
 }
 
-#[derive(Debug, Serialize, Deserialize, Clone, Default)]
+#[derive(Debug, Serialize, Deserialize, Clone, Default, TS)]
 #[serde(rename_all = "camelCase")]
+#[ts(export, export_to = "protocol.ts")]
 pub struct ProviderProfile {
     #[serde(default)]
     pub display_name: String,
@@ -94,8 +96,9 @@ pub struct ProviderProfile {
     pub stop_sequences: Vec<String>,
 }
 
-#[derive(Debug, Serialize, Deserialize, Clone)]
+#[derive(Debug, Serialize, Deserialize, Clone, TS)]
 #[serde(rename_all = "camelCase")]
+#[ts(export, export_to = "protocol.ts")]
 pub struct AppSettings {
     pub provider: String,
     #[serde(default = "default_custom_models")]

@@ -1,3 +1,4 @@
+use ts_rs::TS;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -6,8 +7,9 @@ use serde_json::Value;
 
 // Nova 内部消息角色。
 // lowercase 序列化用于持久化与 provider adapter 输入，不代表绑定某个上游协议。
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, TS)]
 #[serde(rename_all = "lowercase")]
+#[ts(export, export_to = "protocol.ts")]
 pub enum Role {
     User,
     Assistant,
@@ -17,8 +19,9 @@ pub enum Role {
 /// - Agent: 全功能自主编码与工具执行
 /// - Plan: 规划架构模式（只读分析、编写计划与技术方案，禁止直接修改代码）
 /// - Ask: 纯问答咨询模式（不触发破坏性工具修改）
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, TS)]
 #[serde(rename_all = "lowercase")]
+#[ts(export, export_to = "protocol.ts")]
 pub enum AgentMode {
     Agent,
     Plan,
@@ -29,15 +32,17 @@ pub enum AgentMode {
 // - Text: 纯文本
 // - Blocks: 结构化块（文本、工具调用、工具结果）
 // 这里使用 untagged 以兼容不同 provider 对 content 的不同 JSON 形态。
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
 #[serde(untagged)]
+#[ts(export, export_to = "protocol.ts")]
 pub enum Content {
     Text(String),
     Blocks(Vec<ContentBlock>),
 }
 
 // 图片源（当前仅支持 base64）。
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[ts(export, export_to = "protocol.ts")]
 pub struct ImageSource {
     #[serde(rename = "type")]
     pub source_type: String,
@@ -47,8 +52,9 @@ pub struct ImageSource {
 
 // Nova 结构化内容块。
 // 这里的 tag 是 Nova 内部持久化标签；各 provider adapter 负责翻译成上游协议字段。
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
 #[serde(tag = "type")]
+#[ts(export, export_to = "protocol.ts")]
 pub enum ContentBlock {
     // 普通文本块。
     #[serde(rename = "text")]
@@ -84,7 +90,8 @@ pub enum ContentBlock {
 }
 
 // 一条对话消息（role + content）。
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[ts(export, export_to = "protocol.ts")]
 pub struct Message {
     pub role: Role,
     pub content: Content,
@@ -92,7 +99,8 @@ pub struct Message {
 
 // Nova 暴露给模型的工具定义。
 // input_schema 使用 JSON Schema（或兼容子集）描述参数结构。
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export, export_to = "protocol.ts")]
 pub struct Tool {
     pub name: String,
     pub description: String,
@@ -100,7 +108,8 @@ pub struct Tool {
 }
 
 /// 流式事件传输载荷（供分支与子代理侧边栏流式事件复用）
-#[derive(Debug, Serialize, Clone)]
+#[derive(Debug, Serialize, Clone, TS)]
+#[ts(export, export_to = "protocol.ts")]
 pub struct ChatMessageEvent {
     pub r#type: String,
     pub text: Option<String>,

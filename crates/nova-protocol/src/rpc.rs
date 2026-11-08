@@ -54,14 +54,39 @@ impl JsonRpcNotification {
 pub const PROTOCOL_VERSION: &str = "1";
 
 /// `initialize` 请求参数（与 Codex App Server 的握手同形）。
+/// 客户端能力声明（结构化，与 Codex 的 `initialize.capabilities` 同形）。
+///
+/// 桌面声明 `browser: true` 表示能执行浏览器自动化；CLI 宿主声明 false。
+#[derive(Debug, Clone, Default, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export, export_to = "protocol.ts")]
+pub struct ClientCapabilities {
+    #[serde(default)]
+    pub browser: bool,
+    #[serde(default)]
+    pub hooks: bool,
+}
+
+/// 服务端能力声明。
+#[derive(Debug, Clone, Default, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export, export_to = "protocol.ts")]
+pub struct ServerCapabilities {
+    /// 服务端可把浏览器自动化请求路由给客户端。
+    pub browser: bool,
+    /// 服务端会下发宿主钩子通知。
+    pub hooks: bool,
+    /// 服务端支持沙箱逃逸审批（对齐 Codex 的 with_additional_permissions）。
+    pub escalation: bool,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
 #[ts(export, export_to = "protocol.ts")]
 pub struct InitializeParams {
     pub client_info: ClientInfo,
-    /// 客户端声明的能力，例如 `["browser"]`。
     #[serde(default)]
-    pub capabilities: Vec<String>,
+    pub capabilities: ClientCapabilities,
 }
 
 /// 一端（客户端或服务端）的身份描述。
@@ -83,5 +108,5 @@ pub struct InitializeResult {
     pub server_info: ClientInfo,
     pub protocol_version: String,
     #[serde(default)]
-    pub capabilities: Vec<String>,
+    pub capabilities: ServerCapabilities,
 }

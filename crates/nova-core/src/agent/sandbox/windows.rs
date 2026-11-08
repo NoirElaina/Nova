@@ -15,12 +15,19 @@ use std::ffi::OsStr;
 use std::os::windows::ffi::OsStrExt;
 use std::path::Path;
 
-use windows_sys::Win32::Foundation::{CloseHandle, GetLastError, HANDLE, LUID};
+use windows_sys::Win32::Foundation::{
+    CloseHandle, GetLastError, LocalFree, ERROR_SUCCESS, GENERIC_ALL, HANDLE, LUID,
+};
+use windows_sys::Win32::Security::Authorization::{
+    GetNamedSecurityInfoW, SetEntriesInAclW, SetNamedSecurityInfoW, EXPLICIT_ACCESS_W, GRANT_ACCESS,
+    SE_FILE_OBJECT, TRUSTEE_IS_SID, TRUSTEE_IS_UNKNOWN, TRUSTEE_W,
+};
 use windows_sys::Win32::Security::{
     AdjustTokenPrivileges, CreateRestrictedToken, CreateWellKnownSid, GetTokenInformation,
-    LookupPrivilegeValueW, TokenLogonSid, TokenUser, DISABLE_MAX_PRIVILEGE, LUA_TOKEN,
-    LUID_AND_ATTRIBUTES, SE_PRIVILEGE_ENABLED, SID_AND_ATTRIBUTES, TOKEN_ALL_ACCESS, TOKEN_GROUPS,
-    TOKEN_PRIVILEGES, TOKEN_USER, WinWorldSid,
+    LookupPrivilegeValueW, TokenLogonSid, TokenUser, ACL, DACL_SECURITY_INFORMATION,
+    DISABLE_MAX_PRIVILEGE, LUA_TOKEN, LUID_AND_ATTRIBUTES, PSECURITY_DESCRIPTOR,
+    SE_PRIVILEGE_ENABLED, SID_AND_ATTRIBUTES, SUB_CONTAINERS_AND_OBJECTS_INHERIT, TOKEN_ALL_ACCESS,
+    TOKEN_GROUPS, TOKEN_PRIVILEGES, TOKEN_USER, WinWorldSid,
 };
 use windows_sys::Win32::System::Threading::{
     CreateProcessAsUserW, GetCurrentProcess, GetExitCodeProcess, OpenProcessToken,
@@ -275,6 +282,145 @@ unsafe fn string_sid_bytes(sid: &str) -> Result<Vec<u8>, String> {
     std::ptr::copy_nonoverlapping(bytes, out.as_mut_ptr(), len);
     windows_sys::Win32::Foundation::LocalFree(ptr as *mut _);
     Ok(out)
+}
+
+/// 给工作区目录授予合成 SID 完全控制（继承到子目录）。
+///
+/// 这是 `workspace-write` 能真正写文件的前提：write-restricted 令牌在写操作时
+/// 只认 restricting SID 的 ACE，没有这条授权，工作区同样不可写。
+pub fn grant_workspace_write(workspace: &Path, cap_sid: &str) -> Result<(), String> {
+    unsafe {
+        let mut sid_bytes = string_sid_bytes(cap_sid)?;
+        let sid_ptr = sid_bytes.as_mut_ptr() as *mut std::ffi::c_void;
+        let path_wide = to_wide(&workspace.to_string_lossy());
+
+        let mut p_dacl: *mut ACL = std::ptr::null_mut();
+        let mut p_sd: PSECURITY_DESCRIPTOR = std::ptr::null_mut();
+        let code = GetNamedSecurityInfoW(
+            path_wide.as_ptr(),
+            SE_FILE_OBJECT,
+            DACL_SECURITY_INFORMATION,
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+            &mut p_dacl,
+            std::ptr::null_mut(),
+            &mut p_sd,
+        );
+        if code != ERROR_SUCCESS {
+            return Err(format!(
+                "GetNamedSecurityInfoW('{}') failed: {}",
+                workspace.display(),
+                code
+            ));
+        }
+
+        let explicit = EXPLICIT_ACCESS_W {
+            grfAccessPermissions: GENERIC_ALL,
+            grfAccessMode: GRANT_ACCESS,
+            grfInheritance: SUB_CONTAINERS_AND_OBJECTS_INHERIT,
+            Trustee: TRUSTEE_W {
+                pMultipleTrustee: std::ptr::null_mut(),
+                MultipleTrusteeOperation: 0,
+                TrusteeForm: TRUSTEE_IS_SID,
+                TrusteeType: TRUSTEE_IS_UNKNOWN,
+                ptstrName: sid_ptr as *mut u16,
+            },
+        };
+
+        let mut p_new_dacl: *mut ACL = std::ptr::null_mut();
+        let code = SetEntriesInAclW(1, &explicit, p_dacl, &mut p_new_dacl);
+        if code != ERROR_SUCCESS {
+            LocalFree(p_sd as *mut _);
+            return Err(format!("SetEntriesInAclW failed: {}", code));
+        }
+
+        let code = SetNamedSecurityInfoW(
+            path_wide.as_ptr() as *mut u16,
+            SE_FILE_OBJECT,
+            DACL_SECURITY_INFORMATION,
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+            p_new_dacl,
+            std::ptr::null_mut(),
+        );
+
+        LocalFree(p_new_dacl as *mut _);
+        LocalFree(p_sd as *mut _);
+
+        if code != ERROR_SUCCESS {
+            return Err(format!(
+                "SetNamedSecurityInfoW('{}') failed: {}",
+                workspace.display(),
+                code
+            ));
+        }
+        Ok(())
+    }
+}
+
+/// 在指定路径上给合成 SID 加 DENY 写 ACE（用于 `.git` 等敏感目录）。
+pub fn deny_write(path: &Path, cap_sid: &str) -> Result<(), String> {
+    use windows_sys::Win32::Security::Authorization::DENY_ACCESS;
+
+    unsafe {
+        let mut sid_bytes = string_sid_bytes(cap_sid)?;
+        let sid_ptr = sid_bytes.as_mut_ptr() as *mut std::ffi::c_void;
+        let path_wide = to_wide(&path.to_string_lossy());
+
+        let mut p_dacl: *mut ACL = std::ptr::null_mut();
+        let mut p_sd: PSECURITY_DESCRIPTOR = std::ptr::null_mut();
+        let code = GetNamedSecurityInfoW(
+            path_wide.as_ptr(),
+            SE_FILE_OBJECT,
+            DACL_SECURITY_INFORMATION,
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+            &mut p_dacl,
+            std::ptr::null_mut(),
+            &mut p_sd,
+        );
+        if code != ERROR_SUCCESS {
+            return Err(format!("GetNamedSecurityInfoW failed: {}", code));
+        }
+
+        let explicit = EXPLICIT_ACCESS_W {
+            grfAccessPermissions: GENERIC_ALL,
+            grfAccessMode: DENY_ACCESS,
+            grfInheritance: SUB_CONTAINERS_AND_OBJECTS_INHERIT,
+            Trustee: TRUSTEE_W {
+                pMultipleTrustee: std::ptr::null_mut(),
+                MultipleTrusteeOperation: 0,
+                TrusteeForm: TRUSTEE_IS_SID,
+                TrusteeType: TRUSTEE_IS_UNKNOWN,
+                ptstrName: sid_ptr as *mut u16,
+            },
+        };
+
+        let mut p_new_dacl: *mut ACL = std::ptr::null_mut();
+        let code = SetEntriesInAclW(1, &explicit, p_dacl, &mut p_new_dacl);
+        if code != ERROR_SUCCESS {
+            LocalFree(p_sd as *mut _);
+            return Err(format!("SetEntriesInAclW(deny) failed: {}", code));
+        }
+
+        let code = SetNamedSecurityInfoW(
+            path_wide.as_ptr() as *mut u16,
+            SE_FILE_OBJECT,
+            DACL_SECURITY_INFORMATION,
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+            p_new_dacl,
+            std::ptr::null_mut(),
+        );
+
+        LocalFree(p_new_dacl as *mut _);
+        LocalFree(p_sd as *mut _);
+
+        if code != ERROR_SUCCESS {
+            return Err(format!("SetNamedSecurityInfoW(deny) failed: {}", code));
+        }
+        Ok(())
+    }
 }
 
 /// 用受限令牌启动进程，返回退出码。

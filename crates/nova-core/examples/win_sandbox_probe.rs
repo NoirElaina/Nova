@@ -1,4 +1,4 @@
-//! Windows 受限令牌沙箱验证：令牌能建、进程能起、写操作被收窄。
+//! Windows 受限令牌沙箱验证：令牌 + ACL 授权后的 workspace-write 语义。
 //!
 //! 运行：`cargo run -p nova-core --example win_sandbox_probe`
 
@@ -7,6 +7,14 @@ fn main() {
     use nova_core::agent::sandbox::windows;
     use std::path::Path;
 
+    let cmd = "C:\\Windows\\System32\\cmd.exe";
+    let data_dir = std::env::temp_dir().join("nova-sandbox-probe");
+    let workspace = std::env::temp_dir().join("nova-sandbox-ws");
+    if let Err(error) = std::fs::create_dir_all(&workspace) {
+        println!("准备测试工作区失败: {error}");
+        return;
+    }
+
     println!("[1] 当前用户 SID");
     match windows::current_user_sid() {
         Ok(sid) => println!("    {sid}"),
@@ -14,8 +22,6 @@ fn main() {
     }
 
     println!("[2] 为工作区分配合成 SID");
-    let data_dir = std::env::temp_dir().join("nova-sandbox-probe");
-    let workspace = std::env::current_dir().unwrap_or_else(|_| Path::new(".").to_path_buf());
     let cap_sid = match windows::workspace_write_sid(&data_dir, &workspace) {
         Ok(sid) => {
             println!("    {sid}");
@@ -27,7 +33,14 @@ fn main() {
         }
     };
 
-    println!("[3] 创建写限制令牌");
+    println!("[3] 给工作区授予该 SID 完全控制");
+    if let Err(error) = windows::grant_workspace_write(&workspace, &cap_sid) {
+        println!("    失败: {error}");
+        return;
+    }
+    println!("    ok  ws={}", workspace.display());
+
+    println!("[4] 创建写限制令牌");
     let token = match windows::create_write_restricted_token(&[cap_sid.clone()]) {
         Ok(token) => {
             println!("    ok");
@@ -39,37 +52,36 @@ fn main() {
         }
     };
 
-    println!("[4] 用受限令牌启动 whoami");
-    match windows::spawn_restricted(
+    println!("[5] 写工作区（应成功）");
+    let ws_file = workspace.join("probe.txt");
+    let _ = std::fs::remove_file(&ws_file);
+    let _ = windows::spawn_restricted(
         token,
-        "C:\\Windows\\System32\\whoami.exe",
-        &[],
-        None,
+        cmd,
+        &["/C", &format!("echo probe>\"{}\"", ws_file.display())],
+        Some(&workspace),
         5000,
-    ) {
-        Ok(code) => println!("    exit={code}（能起就说明令牌+CreateProcessAsUserW 通过）"),
-        Err(error) => println!("    失败: {error}"),
-    }
-
-    println!("[5] 用受限令牌尝试写家目录");
-    let home = std::env::var("USERPROFILE").unwrap_or_default();
-    let probe = format!("{}\\_nova_sandbox_probe.txt", home);
-    match windows::spawn_restricted(
-        token,
-        "C:\\Windows\\System32\\cmd.exe",
-        &["/C", &format!("echo probe>\"{probe}\"")],
-        None,
-        5000,
-    ) {
-        Ok(code) => println!("    cmd exit={code}"),
-        Err(error) => println!("    失败: {error}"),
-    }
-
-    println!(
-        "[6] 家目录探测文件存在 = {}（应为 false）",
-        Path::new(&probe).exists()
     );
-    let _ = std::fs::remove_file(&probe);
+    println!("    exists={}（应为 true）", ws_file.exists());
+
+    println!("[6] 写家目录（应失败）");
+    let home = std::env::var("USERPROFILE").unwrap_or_default();
+    let home_file = format!("{}\\nova_sandbox_probe.txt", home);
+    let _ = std::fs::remove_file(&home_file);
+    let _ = windows::spawn_restricted(
+        token,
+        cmd,
+        &["/C", &format!("echo probe>\"{home_file}\"")],
+        Some(&workspace),
+        5000,
+    );
+    println!(
+        "    exists={}（应为 false）",
+        Path::new(&home_file).exists()
+    );
+
+    let _ = std::fs::remove_file(&ws_file);
+    let _ = std::fs::remove_file(&home_file);
 }
 
 #[cfg(not(windows))]

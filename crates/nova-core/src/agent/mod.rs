@@ -6,6 +6,7 @@ pub mod events;
 pub mod lifecycle;
 pub mod orchestration;
 pub mod permissions;
+pub mod sandbox;
 pub mod session;
 pub mod state;
 pub mod tools;

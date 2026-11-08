@@ -299,31 +299,38 @@ fn spawn_stream_reader<R>(
 }
 
 #[cfg(target_os = "windows")]
-fn make_shell_command() -> Command {
+fn make_shell_command(workspace: Option<&str>) -> Result<Command, String> {
     let pwsh = crate::services::terminal_detector::resolve_powershell_path();
-    let mut command = Command::new(pwsh);
+    let wrapped = crate::agent::sandbox::wrap_shell(
+        pwsh.to_string_lossy().as_ref(),
+        &["-NoProfile", "-NoLogo", "-NonInteractive", "-NoExit", "-Command", "-"],
+        workspace,
+    )?;
+    let mut command = Command::new(&wrapped.program);
     command
-        .args(["-NoProfile", "-NoLogo", "-NonInteractive", "-NoExit", "-Command", "-"])
+        .args(&wrapped.args)
         .creation_flags(CREATE_NO_WINDOW)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
-    command
+    Ok(command)
 }
 
 #[cfg(not(target_os = "windows"))]
-fn make_shell_command() -> Command {
-    let mut command = Command::new("sh");
+fn make_shell_command(workspace: Option<&str>) -> Result<Command, String> {
+    let wrapped = crate::agent::sandbox::wrap_shell("sh", &["-s"], workspace)?;
+    let mut command = Command::new(&wrapped.program);
     command
-        .arg("-s")
+        .args(&wrapped.args)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
-    command
+    Ok(command)
 }
 
 async fn spawn_session(initial_cwd: Option<&str>) -> Result<ShellSession, String> {
-    let mut child = make_shell_command()
+    let mut command = make_shell_command(initial_cwd)?;
+    let mut child = command
         .spawn()
         .map_err(|error| format!("Failed to start shell session: {}", error))?;
 

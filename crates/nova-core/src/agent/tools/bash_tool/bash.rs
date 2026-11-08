@@ -138,6 +138,36 @@ async fn execute_async(
         .await
     };
 
+    // on-failure：沙箱内失败时询问是否在沙箱外重试一次。
+    // 与 Codex 的 `approval_policy = "on-failure"` 同义：
+    // 沙箱是默认执行位置，失败后由用户决定是否放行到沙箱外。
+    if !background {
+        if let Ok(ref failed) = result {
+            if should_retry_outside_sandbox(crate::agent::sandbox::active_policy(), failed) {
+                let approved =
+                    crate::agent::permissions::request_sandbox_retry(core, conversation_id, &cmd)
+                        .await
+                        .unwrap_or(false);
+
+                if approved {
+                    if let Ok(retried) = crate::services::shell_sessions::run_once_unsandboxed(
+                        &cmd,
+                        Some(workspace_root.as_str()),
+                        timeout_ms,
+                    )
+                    .await
+                    {
+                        let mut payload = shell_result_json(&retried);
+                        if let Some(object) = payload.as_object_mut() {
+                            object.insert("sandboxRetried".to_string(), Value::Bool(true));
+                        }
+                        return Ok(ToolOutcome::json(payload));
+                    }
+                }
+            }
+        }
+    }
+
     match result {
         Ok(result) if result.cancelled => Err(ToolFailure::cancelled(shell_failure_text(
             "command cancelled",
@@ -153,6 +183,19 @@ async fn execute_async(
             error
         ))),
     }
+}
+
+/// 是否需要触发沙箱外重试：仅在沙箱启用、且命令确实以非零码结束时。
+///
+/// 超时与取消不重试——那是时间/用户意图问题，换个执行位置解决不了。
+fn should_retry_outside_sandbox(
+    policy: crate::agent::sandbox::SandboxPolicy,
+    result: &crate::services::shell_sessions::ShellExecutionResult,
+) -> bool {
+    policy.is_enforcing()
+        && !result.timed_out
+        && !result.cancelled
+        && result.exit_code.unwrap_or(0) != 0
 }
 
 fn shell_result_json(result: &ShellExecutionResult) -> Value {
@@ -218,6 +261,43 @@ fn truncate_output(content: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn execution(
+        exit_code: Option<i32>,
+        timed_out: bool,
+        cancelled: bool,
+    ) -> crate::services::shell_sessions::ShellExecutionResult {
+        crate::services::shell_sessions::ShellExecutionResult {
+            stdout: String::new(),
+            stderr: String::new(),
+            exit_code,
+            cwd: None,
+            timed_out,
+            cancelled,
+            background: false,
+            pid: None,
+        }
+    }
+
+    #[test]
+    fn retry_only_when_sandbox_enforces_and_command_fails() {
+        use crate::agent::sandbox::SandboxPolicy;
+
+        let failed = execution(Some(1), false, false);
+        assert!(should_retry_outside_sandbox(SandboxPolicy::WorkspaceWrite, &failed));
+        assert!(should_retry_outside_sandbox(SandboxPolicy::ReadOnly, &failed));
+        // 没有沙箱时无所谓重试——命令本来就在沙箱外跑的。
+        assert!(!should_retry_outside_sandbox(SandboxPolicy::DangerFullAccess, &failed));
+
+        let succeeded = execution(Some(0), false, false);
+        assert!(!should_retry_outside_sandbox(SandboxPolicy::WorkspaceWrite, &succeeded));
+
+        // 超时与取消不重试：换执行位置解决不了这两类问题。
+        let timed_out = execution(None, true, false);
+        assert!(!should_retry_outside_sandbox(SandboxPolicy::WorkspaceWrite, &timed_out));
+        let cancelled = execution(Some(1), false, true);
+        assert!(!should_retry_outside_sandbox(SandboxPolicy::WorkspaceWrite, &cancelled));
+    }
 
     #[test]
     fn short_output_unchanged() {

@@ -620,6 +620,57 @@ pub fn enforce_tool_permission(
     }
 }
 
+/// 发起一次「沙箱外重试」审批。
+///
+/// 不经过常规工具权限判定（那套判定要求工具声明 descriptor，这里没有），
+/// 而是直接登记一个 pending 请求并等待用户裁决。
+/// 返回 `true` 表示允许在沙箱外执行。
+pub async fn request_sandbox_retry(
+    core: &Core,
+    conversation_id: Option<&str>,
+    command: &str,
+) -> Result<bool, String> {
+    let operation = ProtectedOperation {
+        signature: format!(
+            "sandbox_retry:{}",
+            checks::normalize_command_for_match(command)
+        ),
+        preview: checks::truncate_chars(command, 400),
+        warning: Some(
+            "该命令在沙箱内执行失败（常见原因：只读文件系统或网络被隔离）。\
+             是否允许在沙箱外重试一次？"
+                .to_string(),
+        ),
+        risk: RiskLevel::Risky,
+    };
+
+    let (request_id, payload) = {
+        let mut guard = permission_state()
+            .lock()
+            .map_err(|_| "Permission state unavailable due to lock poisoning".to_string())?;
+        let state = conversation_state_mut(&mut guard, conversation_id);
+        prune_expired_pending(state);
+        let request_id = upsert_pending_request_id(state, &operation);
+        (request_id, build_permission_prompt_payload(&operation))
+    };
+
+    let _ = core.emit_agent(crate::agent::events::AgentDomainEvent::PermissionRequested {
+        turn_id: conversation_id.unwrap_or_default().to_string(),
+        request_id: request_id.clone(),
+        tool_name: "sandbox_retry".to_string(),
+        payload,
+    });
+
+    let timeout_ms = std::env::var("NOVA_PERMISSION_WAIT_TIMEOUT_MS")
+        .ok()
+        .and_then(|value| value.trim().parse::<u64>().ok())
+        .filter(|value| *value > 0)
+        .unwrap_or(15 * 60 * 1000);
+
+    let decision = await_permission_decision(conversation_id, &request_id, timeout_ms).await?;
+    Ok(!matches!(decision, PermissionAction::DenyOnce))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

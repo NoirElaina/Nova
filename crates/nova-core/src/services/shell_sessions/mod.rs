@@ -1164,6 +1164,70 @@ fn background_result_json(id: &str, pid: u32, cwd: &str, ttl: Duration) -> Strin
 }
 
 /// 启动后台作业：Rust 直接 spawn 进程，输出泵进内存缓冲。
+/// 在沙箱之外一次性执行命令，供 `on-failure` 重试使用。
+///
+/// 与 `run_foreground` 的区别：不进入持久 shell 会话，也不套沙箱包装，
+/// 因此能拿到沙箱内被拒绝的网络与写权限。
+pub async fn run_once_unsandboxed(
+    command: &str,
+    cwd: Option<&str>,
+    timeout_ms: Option<u64>,
+) -> Result<ShellExecutionResult, String> {
+    let timeout = std::time::Duration::from_millis(normalized_timeout_ms(timeout_ms));
+    let mut cmd = unsandboxed_command(command);
+    cmd.stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .kill_on_drop(true);
+    if let Some(dir) = cwd {
+        cmd.current_dir(dir);
+    }
+
+    let child = cmd
+        .spawn()
+        .map_err(|error| format!("无法启动非沙箱命令: {}", error))?;
+
+    match tokio::time::timeout(timeout, child.wait_with_output()).await {
+        Ok(Ok(output)) => Ok(ShellExecutionResult {
+            stdout: String::from_utf8_lossy(&output.stdout).to_string(),
+            stderr: String::from_utf8_lossy(&output.stderr).to_string(),
+            exit_code: output.status.code(),
+            cwd: cwd.map(|value| value.to_string()),
+            timed_out: false,
+            cancelled: false,
+            background: false,
+            pid: None,
+        }),
+        Ok(Err(error)) => Err(format!("非沙箱命令执行失败: {}", error)),
+        Err(_) => Ok(ShellExecutionResult {
+            stdout: String::new(),
+            stderr: String::new(),
+            exit_code: None,
+            cwd: cwd.map(|value| value.to_string()),
+            timed_out: true,
+            cancelled: false,
+            background: false,
+            pid: None,
+        }),
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn unsandboxed_command(command: &str) -> Command {
+    let pwsh = crate::services::terminal_detector::resolve_powershell_path();
+    let mut cmd = Command::new(pwsh);
+    cmd.args(["-NoProfile", "-NoLogo", "-NonInteractive", "-Command", command])
+        .creation_flags(CREATE_NO_WINDOW);
+    cmd
+}
+
+#[cfg(not(target_os = "windows"))]
+fn unsandboxed_command(command: &str) -> Command {
+    let mut cmd = Command::new("sh");
+    cmd.args(["-lc", command]);
+    cmd
+}
+
 pub async fn run_foreground(
     conversation_id: Option<&str>,
     command: &str,

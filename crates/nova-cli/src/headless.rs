@@ -1,9 +1,12 @@
-//! 无头一次性执行（nova -p）：真实内核回合，流式输出，权限请求按安全策略裁决。
+//! 无头一次性执行（`nova -p`）：经内核客户端驱动一个真实回合。
+//!
+//! 这里不再直连 `nova_core`——与桌面、TUI 一样走 stdio JSON-RPC，
+//! 保证内核只有一条接入路径。
 
 use std::io::Write;
 
-use nova_core::agent::events::AgentDomainEvent;
-use nova_core::{Core, NovaEvent};
+use nova_client::Client;
+use serde_json::{json, Value};
 
 pub struct HeadlessOptions {
     pub prompt: String,
@@ -12,67 +15,78 @@ pub struct HeadlessOptions {
     pub yes: bool,
 }
 
-pub async fn run(core: Core, options: HeadlessOptions) -> anyhow::Result<()> {
+enum Flow {
+    Continue,
+    /// 回合终态；`Some` 表示异常结束。
+    Finished(Option<String>),
+}
+
+pub async fn run(options: HeadlessOptions) -> anyhow::Result<()> {
+    let cli_path = std::env::current_exe().map_err(|error| anyhow::anyhow!("{error}"))?;
+    let client = Client::spawn(&cli_path).await.map_err(anyhow::Error::msg)?;
+
     let conversation_id = match options.conversation_id {
         Some(id) => id,
         None => {
             let cwd = std::env::current_dir()
                 .map(|p| p.display().to_string())
                 .unwrap_or_default();
-            nova_core::api::history::create_conversation(
-                &core,
-                None,
-                Some(cwd),
-            )
-            .await
-            .map_err(anyhow::Error::msg)?
-            .id
+            let created = client
+                .invoke(
+                    "create_conversation",
+                    json!({ "title": Value::Null, "workspacePath": cwd }),
+                )
+                .await
+                .map_err(anyhow::Error::msg)?;
+            created
+                .get("id")
+                .and_then(Value::as_str)
+                .ok_or_else(|| anyhow::anyhow!("创建会话失败：{}", created))?
+                .to_string()
         }
     };
 
-    let mut events = core.subscribe();
-    let turn_core = core.clone();
+    let mut events = client.subscribe();
+
+    let turn_client = client.clone();
     let turn_conversation = conversation_id.clone();
     let prompt = options.prompt.clone();
-    let mut turn = tokio::spawn(async move {
-        nova_core::agent::send_modern_agent_turn(turn_core, turn_conversation, prompt, None).await
+    tokio::spawn(async move {
+        let _ = turn_client
+            .invoke(
+                "send_modern_agent_turn",
+                json!({
+                    "conversationId": turn_conversation,
+                    "prompt": prompt,
+                    "attachments": Value::Null,
+                }),
+            )
+            .await;
     });
 
     let mut turn_error: Option<String> = None;
     loop {
-        tokio::select! {
-            result = &mut turn => {
-                match result {
-                    Ok(Ok(())) => {}
-                    Ok(Err(error)) => turn_error = Some(error),
-                    Err(join_error) => turn_error = Some(join_error.to_string()),
-                }
-                break;
-            }
-            event = events.recv() => {
-                match event {
-                    Ok(NovaEvent::Agent(domain)) => {
-                        if handle_agent_event(&core, &conversation_id, domain, options.yes).await {
-                            // TurnFinished/TurnError 到达后等待 turn 任务收尾即可退出。
-                        }
+        match events.recv().await {
+            Ok((name, payload)) if name == "agent-event" => {
+                match handle_agent_event(&client, &conversation_id, &payload, options.yes).await {
+                    Flow::Continue => {}
+                    Flow::Finished(error) => {
+                        turn_error = error;
+                        break;
                     }
-                    Ok(NovaEvent::BackendError(payload)) => {
-                        eprintln!("[backend-error] {}: {}", payload.source, payload.message);
-                    }
-                    Ok(NovaEvent::BackendWarning(payload)) => {
-                        eprintln!("[backend-warning] {}: {}", payload.source, payload.message);
-                    }
-                    Ok(_) => {}
-                    Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
-                        eprintln!("[warn] 事件流滞后，丢弃 {} 条事件", n);
-                    }
-                    Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
                 }
             }
+            Ok((name, payload)) if name == "backend-error" || name == "backend-warning" => {
+                eprintln!("[{}] {}", name, payload);
+            }
+            Ok(_) => {}
+            Err(tokio::sync::broadcast::error::RecvError::Lagged(count)) => {
+                eprintln!("[warn] 事件流滞后，丢弃 {} 条事件", count);
+            }
+            Err(_) => break,
         }
     }
 
-    // 回合结束后排空 stdout。
     std::io::stdout().flush().ok();
     println!();
     if let Some(error) = turn_error {
@@ -82,69 +96,81 @@ pub async fn run(core: Core, options: HeadlessOptions) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// 处理一条 Agent 领域事件；返回是否已到达回合终态。
 async fn handle_agent_event(
-    core: &Core,
+    client: &Client,
     conversation_id: &str,
-    event: AgentDomainEvent,
+    payload: &Value,
     yes: bool,
-) -> bool {
-    match event {
-        AgentDomainEvent::TextDelta { delta, .. } => {
-            print!("{}", delta);
-            std::io::stdout().flush().ok();
+) -> Flow {
+    let Some(kind) = payload.get("kind").and_then(Value::as_str) else {
+        return Flow::Continue;
+    };
+    let body = payload.get("payload").cloned().unwrap_or(Value::Null);
+
+    match kind {
+        "text_delta" => {
+            if let Some(delta) = body.get("delta").and_then(Value::as_str) {
+                print!("{}", delta);
+                std::io::stdout().flush().ok();
+            }
+            Flow::Continue
         }
-        AgentDomainEvent::ThinkingDelta { .. } => {
-            // 无头模式只输出最终回答；思考过程不污染 stdout。
+        // 无头模式只输出最终回答；思考过程不污染 stdout。
+        "thinking_delta" => Flow::Continue,
+        "tool_call_requested" => {
+            let tool = body.get("tool_name").and_then(Value::as_str).unwrap_or("?");
+            let args = body.get("arguments").cloned().unwrap_or(Value::Null);
+            let summary = args.to_string().chars().take(160).collect::<String>();
+            eprintln!("[tool] {} {}", tool, summary);
+            Flow::Continue
         }
-        AgentDomainEvent::ToolCallRequested {
-            tool_name,
-            arguments,
-            ..
-        } => {
-            let summary = arguments.to_string();
-            let summary = summary.chars().take(160).collect::<String>();
-            eprintln!("[tool] {} {}", tool_name, summary);
-        }
-        AgentDomainEvent::ToolCallCompleted {
-            tool_name,
-            is_error,
-            duration_ms,
-            ..
-        } => {
+        "tool_call_completed" => {
+            let tool = body.get("tool_name").and_then(Value::as_str).unwrap_or("?");
+            let is_error = body
+                .get("is_error")
+                .and_then(Value::as_bool)
+                .unwrap_or(false);
+            let duration = body.get("duration_ms").and_then(Value::as_u64).unwrap_or(0);
             eprintln!(
-                "[tool-done] {} {}{}",
-                tool_name,
+                "[tool-done] {} {}{}ms",
+                tool,
                 if is_error { "ERROR " } else { "" },
-                format!("{}ms", duration_ms)
+                duration
             );
+            Flow::Continue
         }
-        AgentDomainEvent::PermissionRequested {
-            request_id,
-            tool_name,
-            payload,
-            ..
-        } => {
+        "permission_requested" => {
+            let request_id = body.get("request_id").and_then(Value::as_str).unwrap_or("");
+            let tool = body.get("tool_name").and_then(Value::as_str).unwrap_or("?");
+            let detail = body.get("payload").and_then(Value::as_str).unwrap_or("");
             let action = if yes { "allow_once" } else { "deny_once" };
             eprintln!(
                 "[permission] {} {} -> {}",
-                tool_name,
-                payload.chars().take(200).collect::<String>(),
+                tool,
+                detail.chars().take(200).collect::<String>(),
                 action
             );
-            let _ = nova_core::api::permission_rules::submit_permission_decision(
-                core,
-                Some(conversation_id.to_string()),
-                request_id,
-                action.to_string(),
-            );
+            let _ = client
+                .invoke(
+                    "submit_permission_decision",
+                    json!({
+                        "conversationId": conversation_id,
+                        "requestId": request_id,
+                        "action": action,
+                    }),
+                )
+                .await;
+            Flow::Continue
         }
-        AgentDomainEvent::TurnError { error, .. } => {
-            eprintln!("[error] {}", error);
-            return true;
+        "turn_error" => {
+            let error = body
+                .get("error")
+                .and_then(Value::as_str)
+                .unwrap_or("unknown error")
+                .to_string();
+            Flow::Finished(Some(error))
         }
-        AgentDomainEvent::TurnFinished { .. } => return true,
-        _ => {}
+        "turn_finished" => Flow::Finished(None),
+        _ => Flow::Continue,
     }
-    false
 }

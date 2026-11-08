@@ -3575,6 +3575,7 @@ dependencies = [
  "fs2",
  "futures-util",
  "inquire",
+ "nova-client",
  "nova-core",
  "nova-protocol",
  "ratatui",
@@ -3584,6 +3585,15 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "uuid",
+]
+
+[[package]]
+name = "nova-client"
+version = "0.1.0"
+dependencies = [
+ "nova-protocol",
+ "serde_json",
+ "tokio",
 ]
 
 [[package]]

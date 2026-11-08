@@ -31,7 +31,7 @@ use windows_sys::Win32::Security::{
 };
 use windows_sys::Win32::System::Threading::{
     CreateProcessAsUserW, GetCurrentProcess, GetExitCodeProcess, OpenProcessToken,
-    WaitForSingleObject, CREATE_NO_WINDOW, PROCESS_INFORMATION, STARTUPINFOW,
+    WaitForSingleObject, PROCESS_INFORMATION, STARTUPINFOW,
 };
 
 /// `WRITE_RESTRICTED` 未在 windows-sys 中导出，取 Win32 头文件定义。

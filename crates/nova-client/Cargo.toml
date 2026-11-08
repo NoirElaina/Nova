@@ -1,0 +1,12 @@
+[package]
+name = "nova-client"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Nova 内核客户端：spawn `nova serve` 并经 stdio JSONL 通信（桌面 / TUI / 无头共用）"
+publish = false
+
+[dependencies]
+nova-protocol = { path = "../nova-protocol" }
+serde_json = { workspace = true }
+tokio = { workspace = true }

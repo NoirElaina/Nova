@@ -73,16 +73,11 @@ async fn main() -> anyhow::Result<()> {
         }
         None => {
             if let Some(prompt) = cli.prompt {
-                let core = host::build_core()?;
-                host::init_kernel(&core).await;
-                headless::run(
-                    core,
-                    headless::HeadlessOptions {
-                        prompt,
-                        conversation_id: cli.conversation,
-                        yes: cli.yes,
-                    },
-                )
+                headless::run(headless::HeadlessOptions {
+                    prompt,
+                    conversation_id: cli.conversation,
+                    yes: cli.yes,
+                })
                 .await
             } else {
                 let app = tui::TuiApp::new().await?;

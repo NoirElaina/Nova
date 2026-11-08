@@ -2,6 +2,7 @@
 members = [
     "crates/nova-protocol",
     "crates/nova-core",
+    "crates/nova-client",
     "crates/nova-cli",
     "src-tauri",
 ]

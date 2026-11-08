@@ -70,7 +70,9 @@ export default defineConfig(async () => ({
       : undefined,
     watch: {
       // 3. tell Vite to ignore watching `src-tauri`
-      ignored: ["**/src-tauri/**"],
+      // 4. workspace 化之后编译产物在根 target/，cargo 写入时会锁 DLL，
+      //    vite 若 watch 到会抛 EBUSY 并让 dev 直接退出。
+      ignored: ["**/src-tauri/**", "**/target/**", "**/.workbuddy/**"],
     },
   },
 }));

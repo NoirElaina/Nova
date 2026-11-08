@@ -1,3 +1,5 @@
+#![allow(dead_code)] // TODO(oneshot 改造): 前台已改一次性执行，下列 marker 机制仅供后台/用户终端参考，待清理
+
 use std::collections::{HashMap, HashSet};
 use std::process::Stdio;
 use std::sync::atomic::{AtomicU32, Ordering};
@@ -1234,13 +1236,109 @@ pub async fn run_foreground(
     timeout_ms: Option<u64>,
     initial_cwd: Option<&str>,
 ) -> Result<ShellExecutionResult, String> {
+    // oneshot：每条前台命令一个独立进程，退出码取自进程本身。
+    //
+    // 之前走持久 shell + 输出 marker，但 marker 依赖固定的输出格式：
+    // 命令一旦改动控制台编码（例如 [Console]::OutputEncoding）或输出被截断，
+    // 结束标记就再也读不到，只能干等到 120 秒超时。
+    // 与 Codex 的 unified_exec::oneshot 保持一致——可靠性优先于进程复用。
     let cancel_token = crate::agent::cancellation::get_token(conversation_id);
-    let handle = get_or_create_handle(conversation_id, initial_cwd).await?;
-    let mut session = handle.inner.lock().await;
-    let command_id = "{command_id}";
-    let script = build_foreground_wrapper(command_id, command);
-    execute_wrapped_command(&mut session, &script, normalized_timeout_ms(timeout_ms), cancel_token)
-        .await
+    run_oneshot(command, initial_cwd, normalized_timeout_ms(timeout_ms), cancel_token).await
+}
+
+/// 一次性执行：spawn → 读完 stdout/stderr → 取退出码。
+async fn run_oneshot(
+    command: &str,
+    cwd: Option<&str>,
+    timeout_ms: u64,
+    cancel_token: CancellationToken,
+) -> Result<ShellExecutionResult, String> {
+    let wrapped = make_oneshot_command(command, cwd)?;
+    let mut cmd = Command::new(&wrapped.program);
+    cmd.args(&wrapped.args)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .kill_on_drop(true);
+    if let Some(dir) = cwd {
+        cmd.current_dir(dir);
+    }
+    #[cfg(target_os = "windows")]
+    cmd.creation_flags(CREATE_NO_WINDOW);
+
+    let child = cmd
+        .spawn()
+        .map_err(|error| format!("Failed to spawn command: {}", error))?;
+
+    let collected = tokio::select! {
+        result = tokio::time::timeout(
+            Duration::from_millis(timeout_ms),
+            child.wait_with_output(),
+        ) => result,
+        _ = cancel_token.cancelled() => {
+            // child 随 select 分支结束被 drop，kill_on_drop 负责收尾。
+            return Ok(ShellExecutionResult {
+                stdout: String::new(),
+                stderr: String::new(),
+                exit_code: None,
+                cwd: cwd.map(|v| v.to_string()),
+                timed_out: false,
+                cancelled: true,
+                background: false,
+                pid: None,
+            });
+        }
+    };
+
+    match collected {
+        Ok(Ok(output)) => Ok(ShellExecutionResult {
+            stdout: String::from_utf8_lossy(&output.stdout).to_string(),
+            stderr: String::from_utf8_lossy(&output.stderr).to_string(),
+            exit_code: output.status.code(),
+            cwd: cwd.map(|v| v.to_string()),
+            timed_out: false,
+            cancelled: false,
+            background: false,
+            pid: None,
+        }),
+        Ok(Err(error)) => Err(format!("Failed to read command output: {}", error)),
+        Err(_) => Ok(ShellExecutionResult {
+            stdout: String::new(),
+            stderr: format!("命令在 {} 秒内未结束，已终止", timeout_ms / 1000),
+            exit_code: None,
+            cwd: cwd.map(|v| v.to_string()),
+            timed_out: true,
+            cancelled: false,
+            background: false,
+            pid: None,
+        }),
+    }
+}
+
+/// 构造一次性命令（含平台沙箱包装）。
+fn make_oneshot_command(
+    command: &str,
+    cwd: Option<&str>,
+) -> Result<crate::agent::sandbox::WrappedCommand, String> {
+    #[cfg(target_os = "windows")]
+    {
+        let pwsh = crate::services::terminal_detector::resolve_powershell_path();
+        crate::agent::sandbox::wrap_shell(
+            pwsh.to_string_lossy().as_ref(),
+            &[
+                "-NoProfile",
+                "-NoLogo",
+                "-NonInteractive",
+                "-Command",
+                command,
+            ],
+            cwd,
+        )
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        crate::agent::sandbox::wrap_shell("sh", &["-lc", command], cwd)
+    }
 }
 
 pub async fn run_background(

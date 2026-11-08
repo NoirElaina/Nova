@@ -3629,6 +3629,7 @@ dependencies = [
  "url",
  "urlencoding",
  "uuid",
+ "windows-sys 0.61.2",
  "winreg 0.10.1",
 ]
 

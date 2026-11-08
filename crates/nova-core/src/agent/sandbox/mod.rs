@@ -15,6 +15,9 @@ use std::path::Path;
 
 use serde::{Deserialize, Serialize};
 
+#[cfg(windows)]
+pub mod windows;
+
 /// 命令可触及的资源边界。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]

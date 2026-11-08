@@ -50,3 +50,12 @@ dirs = "6"
 
 [target.'cfg(windows)'.dependencies]
 winreg = "0.10"
+# Windows 沙箱：受限令牌 + 合成 SID + ACL（对照 codex-rs/windows-sandbox-rs）
+windows-sys = { version = "0.61", features = [
+    "Win32_Foundation",
+    "Win32_Security",
+    "Win32_Security_Authorization",
+    "Win32_System_Threading",
+    "Win32_System_JobObjects",
+    "Win32_System_Memory",
+] }

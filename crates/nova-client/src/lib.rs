@@ -93,7 +93,8 @@ impl Client {
 
         let (out_tx, mut out_rx) = mpsc::channel::<Value>(1024);
         let pending: Pending = Arc::new(Mutex::new(HashMap::new()));
-        let (event_tx, _) = broadcast::channel::<ClientEvent>(1024);
+        // 逐 token 的 delta 事件很密集，容量偏小时容易触发 Lagged 丢事件。
+        let (event_tx, _) = broadcast::channel::<ClientEvent>(8192);
 
         tokio::spawn(async move {
             while let Some(message) = out_rx.recv().await {

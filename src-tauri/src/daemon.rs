@@ -43,8 +43,18 @@ pub fn init(app: &AppHandle, cli_path: Option<PathBuf>) {
                     let _ = app.emit("daemon-connected", ());
 
                     let mut events = client.subscribe();
-                    while let Ok((name, payload)) = events.recv().await {
-                        let _ = app.emit(&name, payload);
+                    loop {
+                        match events.recv().await {
+                            Ok((name, payload)) => {
+                                let _ = app.emit(&name, payload);
+                            }
+                            // 事件积压时丢弃的只是中间增量，绝不能退出循环——
+                            // 否则连 turn_finished 都收不到，前端会永远停在「进行中」。
+                            Err(tokio::sync::broadcast::error::RecvError::Lagged(skipped)) => {
+                                warn!(skipped, "事件流滞后，跳过部分增量事件");
+                            }
+                            Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+                        }
                     }
 
                     warn!("内核事件流结束，准备重启");

@@ -212,6 +212,9 @@ impl AssistantOutputBuilder {
 /// - 将 Delta 转换为前端 `chat-stream` 事件（emit）
 /// - 执行工具调用（`ToolsReady` delta 触发）
 /// - 组装并返回 `ProviderTurnResult`
+/// 流式响应空闲超时：连续该时长未收到任何数据即判定连接挂起。
+const STREAM_IDLE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(180);
+
 pub async fn run_streaming<P: StreamParser>(
     parser: &mut P,
     core: &Core,
@@ -243,6 +246,14 @@ pub async fn run_streaming<P: StreamParser>(
         // 无需轮询等待。
         let next_chunk = tokio::select! {
             chunk = stream.next() => chunk,
+            // 空闲看门狗：服务端既不发数据也不关连接时，不能让 turn 无限等待。
+            // 每两个 chunk 之间重新计时，所以长回答不会误伤。
+            _ = tokio::time::sleep(STREAM_IDLE_TIMEOUT) => {
+                return Err(ProviderTurnError::new(format!(
+                    "模型响应超时：连续 {} 秒未收到任何数据，连接可能已挂起",
+                    STREAM_IDLE_TIMEOUT.as_secs()
+                )));
+            }
             _ = cancel_token.cancelled() => {
                 // 把已流式输出的部分内容封装成 partial assistant 消息返回，
                 // 确保事件日志与 UI 历史保持一致。

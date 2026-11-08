@@ -6,7 +6,7 @@
 use nova_core::Core;
 use serde::de::DeserializeOwned;
 use serde::Serialize;
-use serde_json::Value;
+use serde_json::{json, Value};
 
 /// 分发错误：JSON-RPC 标准错误码 + 人类可读信息。
 ///
@@ -21,21 +21,49 @@ pub const INTERNAL_ERROR: i32 = -32603;
 
 pub async fn dispatch(core: &Core, method: &str, params: Value) -> Result<Value, DispatchError> {
     match method {
-        "send_modern_agent_turn" => result(nova_core::agent::send_modern_agent_turn(
-            core.clone(),
-            arg(&params, "conversationId")?,
-            arg(&params, "prompt")?,
-            arg(&params, "attachments")?,
-        ).await),
+        // 长任务：立即返回，进度与结果经由事件流推送（对齐 Codex 的 submission 模型）。
+        // 若在此 await 整个 turn，一次耗时数分钟的回合会让客户端 RPC 超时。
+        "send_modern_agent_turn" => {
+            let core = core.clone();
+            let conversation_id: String = arg(&params, "conversationId")?;
+            let prompt: String = arg(&params, "prompt")?;
+            let attachments = arg(&params, "attachments")?;
+            tokio::spawn(async move {
+                if let Err(error) = nova_core::agent::send_modern_agent_turn(
+                    core,
+                    conversation_id,
+                    prompt,
+                    attachments,
+                )
+                .await
+                {
+                    tracing::error!(%error, "agent turn failed");
+                }
+            });
+            Ok(json!({ "started": true }))
+        }
         "cancel_modern_agent_turn" => result(nova_core::agent::cancel_modern_agent_turn(
             arg(&params, "conversationId")?,
         ).await),
-        "send_branch_message" => result(nova_core::agent::orchestration::branch::send_branch_message(
-            core.clone(),
-            arg(&params, "parentConversationId")?,
-            arg(&params, "branchId")?,
-            arg(&params, "messages")?,
-        ).await),
+        "send_branch_message" => {
+            let core = core.clone();
+            let parent_conversation_id: String = arg(&params, "parentConversationId")?;
+            let branch_id: String = arg(&params, "branchId")?;
+            let messages = arg(&params, "messages")?;
+            tokio::spawn(async move {
+                if let Err(error) = nova_core::agent::orchestration::branch::send_branch_message(
+                    core,
+                    parent_conversation_id,
+                    branch_id,
+                    messages,
+                )
+                .await
+                {
+                    tracing::error!(%error, "branch message failed");
+                }
+            });
+            Ok(json!({ "started": true }))
+        }
         "cancel_branch_message" => result(nova_core::agent::orchestration::branch::cancel_branch_message(
             arg(&params, "parentConversationId")?,
             arg(&params, "branchId")?,

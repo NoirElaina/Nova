@@ -23,6 +23,9 @@ use std::os::windows::process::CommandExt;
 
 const DEFAULT_TIMEOUT_MS: u64 = 120_000;
 const MAX_TIMEOUT_MS: u64 = 1_800_000;
+/// 单次命令的捕获上限（每个流）。超过后停止累积但命令继续跑，
+/// 避免 `yes` 一类无界输出撑爆内存。对应 Codex `unified_exec::output` 的 cap。
+const MAX_CAPTURE_BYTES: usize = 512 * 1024;
 const MARKER_PREFIX: &str = "__NOVA_CMD_END__|";
 const READY_MARKER: &str = "__NOVA_SHELL_READY__";
 
@@ -704,13 +707,17 @@ async fn execute_wrapped_command(
         match event.stream {
             StreamKind::Stdout => {
                 if !stdout_done {
-                    stdout.push_str(&event.text);
+                    if stdout.len() < MAX_CAPTURE_BYTES {
+                        stdout.push_str(&event.text);
+                    }
                     last_output_growth_at = tokio::time::Instant::now();
                 }
             }
             StreamKind::Stderr => {
                 if !stderr_done {
-                    stderr.push_str(&event.text);
+                    if stderr.len() < MAX_CAPTURE_BYTES {
+                        stderr.push_str(&event.text);
+                    }
                     last_output_growth_at = tokio::time::Instant::now();
                 }
             }

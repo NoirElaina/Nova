@@ -23,6 +23,23 @@ type Pending = Arc<Mutex<HashMap<String, oneshot::Sender<Result<Value, String>>>
 /// 内核推送的事件：`(事件名, 载荷)`。事件名契约由 `NovaEvent::to_frontend` 定义。
 pub type ClientEvent = (String, Value);
 
+/// 宿主能力：处理内核发来的浏览器自动化请求，返回回包。
+pub type BrowserHandler = Arc<
+    dyn Fn(Value) -> std::pin::Pin<Box<dyn std::future::Future<Output = Value> + Send>>
+        + Send
+        + Sync,
+>;
+
+/// 宿主钩子：处理内核下发的通知（火忘式，无回包）。
+pub type HookHandler = Arc<dyn Fn(String, Value) + Send + Sync>;
+
+/// 客户端启动选项。桌面注册能力，CLI 宿主留空。
+#[derive(Clone, Default)]
+pub struct ClientOptions {
+    pub browser: Option<BrowserHandler>,
+    pub hooks: Option<HookHandler>,
+}
+
 pub struct Client {
     out: mpsc::Sender<Value>,
     pending: Pending,
@@ -34,8 +51,16 @@ pub struct Client {
 }
 
 impl Client {
-    /// 拉起内核子进程并完成 `initialize` 握手。
+    /// 拉起内核子进程并完成 `initialize` 握手（无宿主能力）。
     pub async fn spawn(cli_path: &Path) -> Result<Arc<Self>, String> {
+        Self::spawn_with(cli_path, ClientOptions::default()).await
+    }
+
+    /// 拉起内核子进程并完成 `initialize` 握手，可注册宿主能力。
+    pub async fn spawn_with(
+        cli_path: &Path,
+        options: ClientOptions,
+    ) -> Result<Arc<Self>, String> {
         let mut command = Command::new(cli_path);
         command
             .arg("serve")
@@ -81,6 +106,8 @@ impl Client {
         let reader_pending = pending.clone();
         let reader_events = event_tx.clone();
         let reader_out = out_tx.clone();
+        let reader_browser = options.browser.clone();
+        let reader_hooks = options.hooks.clone();
         tokio::spawn(async move {
             let mut lines = BufReader::new(stdout).lines();
             while let Ok(Some(line)) = lines.next_line().await {
@@ -90,7 +117,15 @@ impl Client {
                 let Ok(envelope) = serde_json::from_str::<Value>(&line) else {
                     continue;
                 };
-                dispatch(&reader_out, &reader_pending, &reader_events, envelope).await;
+                dispatch(
+                    &reader_out,
+                    &reader_pending,
+                    &reader_events,
+                    reader_browser.as_ref(),
+                    reader_hooks.as_ref(),
+                    envelope,
+                )
+                .await;
             }
         });
 
@@ -162,6 +197,8 @@ async fn dispatch(
     out: &mpsc::Sender<Value>,
     pending: &Pending,
     events: &broadcast::Sender<ClientEvent>,
+    browser: Option<&BrowserHandler>,
+    hooks: Option<&HookHandler>,
     envelope: Value,
 ) {
     match envelope.get("method").and_then(Value::as_str) {
@@ -177,18 +214,46 @@ async fn dispatch(
                 .unwrap_or(Value::Null);
             let _ = events.send((name, payload));
         }
-        // CLI 宿主没有浏览器能力：明确回绝，避免内核等到 120 秒超时。
+        // 浏览器自动化：桌面注册了能力就本地执行后回包；CLI 宿主明确回绝，
+        // 避免内核等到 120 秒超时。
         Some("capability/browser") => {
             let id = envelope.get("id").cloned();
-            let _ = out
-                .send(json!({
-                    "jsonrpc": "2.0",
-                    "id": id,
-                    "result": { "ok": false, "error": "当前宿主不支持浏览器自动化" },
-                }))
-                .await;
+            let params = envelope.get("params").cloned().unwrap_or(Value::Null);
+            match browser {
+                Some(handler) => {
+                    let handler = handler.clone();
+                    let out = out.clone();
+                    tokio::spawn(async move {
+                        let result = handler(params).await;
+                        let _ = out
+                            .send(json!({ "jsonrpc": "2.0", "id": id, "result": result }))
+                            .await;
+                    });
+                }
+                None => {
+                    let _ = out
+                        .send(json!({
+                            "jsonrpc": "2.0",
+                            "id": id,
+                            "result": { "ok": false, "error": "当前宿主不支持浏览器自动化" },
+                        }))
+                        .await;
+                }
+            }
         }
-        Some("capability/hooks") => {}
+        // 宿主钩子：火忘式通知，无回包。
+        Some("capability/hooks") => {
+            if let Some(handler) = hooks {
+                let params = envelope.get("params").cloned().unwrap_or(Value::Null);
+                let operation = params
+                    .get("operation")
+                    .and_then(Value::as_str)
+                    .unwrap_or("")
+                    .to_string();
+                let args = params.get("params").cloned().unwrap_or(Value::Null);
+                handler(operation, args);
+            }
+        }
         _ => {
             if let Some(id) = envelope.get("id").and_then(Value::as_str) {
                 let payload = if let Some(error) = envelope.get("error") {

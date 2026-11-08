@@ -138,7 +138,8 @@ pub fn run() {
 
     app.run(|_app_handle, event| {
         if matches!(event, tauri::RunEvent::Exit) {
-            // 内核子进程随 stdio 管道关闭自行退出（kill_on_drop 兜底），无需显式终止。
+            // 显式释放客户端：drop Client 会触发 kill_on_drop，结束内核子进程。
+            crate::daemon::shutdown();
             let already_cleaned = TERMINAL_CLEANUP_ON_EXIT
                 .get_or_init(|| AtomicBool::new(false))
                 .swap(true, Ordering::Relaxed);

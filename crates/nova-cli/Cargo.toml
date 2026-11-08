@@ -38,3 +38,4 @@ fs2 = "0.4"
 # 日志与追踪
 tracing = "0.1.44"
 tracing-subscriber = { version = "0.3.23", features = ["env-filter", "fmt"] }
+tracing-appender = "0.2"

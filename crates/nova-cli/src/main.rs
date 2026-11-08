@@ -43,19 +43,59 @@ enum Commands {
     },
 }
 
-/// 守护进程的日志一律写 stderr。
+/// 守护进程的日志同时写 stderr 与文件。
 ///
-/// stdio 模式下 stdout 是 JSONL 协议流，任何一行日志插进去都会破坏帧边界，
-/// 对端只会表现为「偶发丢消息」，排查成本极高。
-fn init_tracing() {
+/// stdio 模式下 stdout 是 JSONL 协议流，任何日志插进去都会破坏帧边界。
+/// 而桌面壳以 GUI 方式拉起本进程时 stderr 没有控制台，日志会整段丢失——
+/// 所以必须落文件，否则排查只能靠猜。
+fn init_tracing() -> Option<tracing_appender::non_blocking::WorkerGuard> {
+    use tracing_subscriber::layer::SubscriberExt;
+    use tracing_subscriber::util::SubscriberInitExt;
     use tracing_subscriber::EnvFilter;
 
-    tracing_subscriber::fmt()
-        .with_writer(std::io::stderr)
-        .with_env_filter(
-            EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info")),
+    let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
+    let mut guard: Option<tracing_appender::non_blocking::WorkerGuard> = None;
+
+    let file_layer = kernel_log_path().and_then(|path| {
+        if let Some(parent) = path.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        let file = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&path)
+            .ok()?;
+        let (non_blocking, worker) = tracing_appender::non_blocking(file);
+        guard = Some(worker);
+        Some(
+            tracing_subscriber::fmt::layer()
+                .with_ansi(false)
+                .with_writer(non_blocking),
         )
+    });
+
+    tracing_subscriber::registry()
+        .with(filter)
+        .with(tracing_subscriber::fmt::layer().with_writer(std::io::stderr))
+        .with(file_layer)
         .init();
+
+    guard
+}
+
+/// 内核日志路径：与应用数据目录同源。
+fn kernel_log_path() -> Option<std::path::PathBuf> {
+    #[cfg(target_os = "windows")]
+    let base = std::env::var_os("APPDATA").map(std::path::PathBuf::from);
+    #[cfg(not(target_os = "windows"))]
+    let base = std::env::var_os("HOME")
+        .map(|home| std::path::PathBuf::from(home).join(".local").join("share"));
+
+    base.map(|dir| {
+        dir.join("com.tauri-app.nova")
+            .join("logs")
+            .join("kernel.log")
+    })
 }
 
 #[tokio::main]
@@ -64,7 +104,7 @@ async fn main() -> anyhow::Result<()> {
 
     match cli.command {
         Some(Commands::Serve { listen, host, port }) => {
-            init_tracing();
+            let _log_guard = init_tracing();
             if listen {
                 serve::run(&host, port).await
             } else {

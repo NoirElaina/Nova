@@ -2,7 +2,8 @@
 
 use serde_json::Value;
 pub use nova_protocol::mcp::{
-    McpResourceInfo, McpServerConfig, McpServerEntry, McpServerStatus, McpToolInfo,
+    McpElicitationDecision, McpOAuthLoginResult, McpResourceInfo, McpServerConfig, McpServerEntry,
+    McpServerStatus, McpToolInfo,
 };
 
 #[tauri::command]
@@ -69,4 +70,41 @@ pub async fn read_mcp_resource(server_name: String, uri: String) -> Result<Value
 pub async fn call_mcp_tool(server_name: String, tool_name: String, arguments: Value) -> Result<Value, String> {
     crate::daemon::invoke("call_mcp_tool", serde_json::json!({"serverName": server_name, "toolName": tool_name, "arguments": arguments})).await
         .and_then(|v| serde_json::from_value(v).map_err(|e| e.to_string()))
+}
+
+#[tauri::command]
+pub async fn mcp_oauth_login(
+    server_name: String,
+    client_id: Option<String>,
+    scopes: Option<Vec<String>>,
+) -> Result<McpOAuthLoginResult, String> {
+    crate::daemon::invoke(
+        "mcp_oauth_login",
+        serde_json::json!({"serverName": server_name, "clientId": client_id, "scopes": scopes}),
+    )
+    .await
+    .and_then(|v| serde_json::from_value(v).map_err(|e| e.to_string()))
+}
+
+#[tauri::command]
+pub async fn mcp_oauth_logout(server_name: String) -> Result<McpOAuthLoginResult, String> {
+    crate::daemon::invoke(
+        "mcp_oauth_logout",
+        serde_json::json!({"serverName": server_name}),
+    )
+    .await
+    .and_then(|v| serde_json::from_value(v).map_err(|e| e.to_string()))
+}
+
+#[tauri::command]
+pub async fn resolve_mcp_elicitation(
+    request_id: String,
+    decision: McpElicitationDecision,
+) -> Result<bool, String> {
+    crate::daemon::invoke(
+        "resolve_mcp_elicitation",
+        serde_json::json!({"requestId": request_id, "decision": decision}),
+    )
+    .await
+    .and_then(|v| serde_json::from_value(v).map_err(|e| e.to_string()))
 }

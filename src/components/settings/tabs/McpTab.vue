@@ -1,13 +1,27 @@
 <script setup lang="ts">
-import { ref } from 'vue'
+import { onMounted, onUnmounted, ref } from 'vue'
 import { invoke } from '@tauri-apps/api/core'
+import { listen, type UnlistenFn } from '@tauri-apps/api/event'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Textarea } from '@/components/ui/textarea'
 
 type MCPServerConfig = { type: 'stdio'; command: string; args: string[]; env?: Record<string, string> } | { type: 'sse'; url: string; headers?: Record<string, string> } | { type: 'streamable_http'; url: string; headers?: Record<string, string> }
 type MCPServerEntry = { name: string; enabled: boolean; config: MCPServerConfig }
-type ServerStatus = { name: string; status: 'connected' | 'error' | 'connecting' | 'disconnected'; type: 'stdio' | 'sse' | 'streamable_http'; enabled: boolean; toolCount?: number; error?: string; sourceAgent?: string | null }
+type NegotiatedCapabilities = { tools: boolean; resources: boolean; prompts: boolean; logging: boolean; toolsListChanged: boolean }
+type ServerStatus = {
+  name: string
+  status: 'connected' | 'error' | 'connecting' | 'disconnected'
+  type: 'stdio' | 'sse' | 'streamable_http'
+  enabled: boolean
+  toolCount?: number
+  error?: string
+  sourceAgent?: string | null
+  protocolVersion?: string | null
+  capabilities?: NegotiatedCapabilities | null
+  authStatus?: string | null
+}
+type McpOAuthResult = { status: string; authStatus: string; message?: string | null }
 type MCPForm = { name: string; type: 'stdio' | 'sse' | 'streamable_http'; command: string; args: string; env: string; url: string; headers: string }
 type ToastItem = { id: number; message: string; variant: 'error' | 'success' }
 
@@ -32,6 +46,12 @@ const reloadAllServers = async () => {
 const setServerEnabled = async (name: string, enabled: boolean) => {
   await invoke('set_mcp_server_enabled', { name, enabled })
 }
+const oauthLoginServer = async (serverName: string): Promise<McpOAuthResult> => {
+  return await invoke('mcp_oauth_login', { serverName, clientId: null, scopes: null })
+}
+const oauthLogoutServer = async (serverName: string): Promise<McpOAuthResult> => {
+  return await invoke('mcp_oauth_logout', { serverName })
+}
 
 const servers = ref<ServerStatus[]>([])
 const loading = ref(false)
@@ -45,6 +65,7 @@ const editingEnabled = ref(true)
 const loadingEditName = ref<string | null>(null)
 const removingName = ref<string | null>(null)
 const togglingName = ref<string | null>(null)
+const authorizingName = ref<string | null>(null)
 const form = ref<MCPForm>({ name: '', type: 'stdio', command: 'npx', args: '-y @playwright/mcp@latest', env: '', url: '', headers: '' })
 
 const pushToast = (message: string, variant: ToastItem['variant']) => {
@@ -221,6 +242,48 @@ const handleToggleEnabled = async (name: string, enabled: boolean) => {
   finally { togglingName.value = null }
 }
 
+const handleOAuthLogin = async (name: string) => {
+  authorizingName.value = name
+  try {
+    await oauthLoginServer(name)
+    await refresh()
+    pushToast(`已完成 MCP OAuth 授权: ${name}`, 'success')
+  }
+  catch (e) {
+    const msg = e instanceof Error ? e.message : String(e)
+    pushToast(`OAuth 授权失败 (${name}): ${msg}`, 'error')
+  }
+  finally { authorizingName.value = null }
+}
+
+const handleOAuthLogout = async (name: string) => {
+  authorizingName.value = name
+  try {
+    await oauthLogoutServer(name)
+    await refresh()
+    pushToast(`已清除 OAuth 授权凭证: ${name}`, 'success')
+  }
+  catch (e) {
+    const msg = e instanceof Error ? e.message : String(e)
+    pushToast(`清除 OAuth 授权失败 (${name}): ${msg}`, 'error')
+  }
+  finally { authorizingName.value = null }
+}
+
+let unlistenToolsChanged: UnlistenFn | null = null
+onMounted(async () => {
+  try {
+    unlistenToolsChanged = await listen('mcp-tools-changed', () => {
+      void refresh()
+    })
+  } catch {
+    // 忽略非桌面环境监听失败
+  }
+})
+onUnmounted(() => {
+  if (unlistenToolsChanged) unlistenToolsChanged()
+})
+
 defineExpose({ refresh })
 refresh()
 </script>
@@ -339,12 +402,35 @@ refresh()
               <span v-if="s.sourceAgent" class="text-[11px] px-1.5 py-[1px] rounded bg-[#eff6ff] dark:bg-[#1e293b] text-[#3b82f6] dark:text-[#93c5fd] shrink-0" :title="`由智能体「${s.sourceAgent}」添加`">来自智能体 · {{ s.sourceAgent }}</span>
               <span v-if="s.enabled" class="text-[11px] px-1.5 py-[1px] rounded bg-green-50 dark:bg-green-950/30 text-green-700 dark:text-green-400 shrink-0">已启用</span>
               <span v-else class="text-[11px] px-1.5 py-[1px] rounded bg-[#f3f4f6] dark:bg-[#2a2a2a] text-[#6b7280] dark:text-[#9f9f9f] shrink-0">已停用</span>
+              <span v-if="s.protocolVersion" class="text-[11px] px-1.5 py-[1px] rounded bg-[#f3f4f6] dark:bg-[#2a2a2a] text-[#6b7280] dark:text-[#a3a3a3] font-mono shrink-0">v{{ s.protocolVersion }}</span>
+              <span v-if="s.authStatus === 'authenticated'" class="text-[11px] px-1.5 py-[1px] rounded bg-emerald-50 dark:bg-emerald-950/30 text-emerald-700 dark:text-emerald-400 shrink-0">OAuth 已授权</span>
+              <span v-else-if="s.authStatus === 'unauthenticated'" class="text-[11px] px-1.5 py-[1px] rounded bg-amber-50 dark:bg-amber-950/30 text-amber-700 dark:text-amber-400 shrink-0">需 OAuth 授权</span>
               <span v-if="s.status === 'connected'" class="text-[12px] text-[#6b7280] dark:text-[#a3a3a3] whitespace-nowrap shrink-0">{{ s.toolCount }} 个工具</span>
               <span v-if="s.error" class="text-[12px] text-red-600 dark:text-red-400 truncate" :title="s.error">{{ s.error }}</span>
             </div>
           </div>
         </div>
         <div class="flex items-center gap-2 shrink-0">
+          <Button
+            v-if="s.type !== 'stdio' && s.authStatus !== 'authenticated'"
+            variant="outline"
+            size="sm"
+            class="px-3 py-1.5 text-[12px] text-blue-600 dark:text-blue-400 border-blue-200 dark:border-blue-800 hover:bg-blue-50 dark:hover:bg-blue-950/30"
+            :disabled="authorizingName === s.name"
+            @click="handleOAuthLogin(s.name)"
+          >
+            {{ authorizingName === s.name ? '授权中...' : 'OAuth 登录' }}
+          </Button>
+          <Button
+            v-if="s.type !== 'stdio' && s.authStatus === 'authenticated'"
+            variant="outline"
+            size="sm"
+            class="px-3 py-1.5 text-[12px]"
+            :disabled="authorizingName === s.name"
+            @click="handleOAuthLogout(s.name)"
+          >
+            {{ authorizingName === s.name ? '处理中...' : '登出授权' }}
+          </Button>
           <Button variant="outline" size="sm" class="px-3 py-1.5 text-[12px]" :disabled="loadingEditName === s.name" @click="handleEdit(s.name)">
             {{ loadingEditName === s.name ? '读取中...' : '编辑' }}
           </Button>

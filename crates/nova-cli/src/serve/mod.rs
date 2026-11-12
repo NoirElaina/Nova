@@ -206,11 +206,14 @@ impl ClientHub {
         }
 
         let denied = nova_core::agent::permissions::deny_pending_for_client(core, client_id);
-        if denied > 0 {
+        let cancelled_elicitations =
+            nova_core::agent::capabilities::mcp::cancel_elicitations_for_client(client_id);
+        if denied > 0 || cancelled_elicitations > 0 {
             info!(
                 client_id = %client_id,
                 denied_count = denied,
-                "client disconnected; fail-closed pending permissions as DenyOnce"
+                cancelled_elicitations = cancelled_elicitations,
+                "client disconnected; fail-closed pending permissions and MCP elicitations"
             );
         }
     }
@@ -355,7 +358,7 @@ impl HostHooks for RemoteHooks {
 // 共用消息处理与按连接过滤事件泵
 // ─────────────────────────────────────────────
 
-/// 判断事件是否绑定了特定发起连接：仅限发起审批的窗口接收 `PermissionRequested`。
+/// 判断事件是否绑定了特定发起连接：仅限发起审批或 MCP Elicitation 的窗口接收。
 fn should_deliver_event_to_client(event: &NovaEvent, client_id: &str) -> bool {
     if let NovaEvent::Agent(AgentDomainEvent::PermissionRequested {
         turn_id,
@@ -365,6 +368,13 @@ fn should_deliver_event_to_client(event: &NovaEvent, client_id: &str) -> bool {
     {
         if let Some(owner_client_id) =
             nova_core::agent::permissions::pending_approval_client_id(Some(turn_id), request_id)
+        {
+            return owner_client_id == client_id;
+        }
+    }
+    if let NovaEvent::McpElicitationRequested { request_id, .. } = event {
+        if let Some(owner_client_id) =
+            nova_core::agent::capabilities::mcp::pending_elicitation_client_id(request_id)
         {
             return owner_client_id == client_id;
         }

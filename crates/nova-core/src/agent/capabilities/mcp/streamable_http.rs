@@ -1,388 +1,105 @@
-use reqwest::header::{HeaderMap, HeaderName, HeaderValue, ACCEPT, CONTENT_TYPE};
-use serde_json::{json, Value};
+use super::connection::{McpConnection, NovaMcpHandler, RmcpConnection};
+use super::{oauth, MCP_CONNECT_TIMEOUT};
+use crate::core::Core;
+use http::{HeaderName, HeaderValue};
+use rmcp::service::ServiceExt;
+use rmcp::transport::streamable_http_client::StreamableHttpClientTransportConfig;
+use rmcp::transport::StreamableHttpClientTransport;
 use std::collections::HashMap;
+use std::str::FromStr;
+use std::sync::Arc;
 use tokio::time::timeout;
 
-use super::{McpResourceInfo, McpToolInfo, MCP_CONNECT_TIMEOUT};
-
-pub(super) struct StreamableHttpMcpConnection {
-    client: reqwest::Client,
-    url: String,
-    headers: HeaderMap,
-    session_id: Option<String>,
-    next_id: u64,
-}
-
-fn extract_session_id_from_headers(headers: &reqwest::header::HeaderMap) -> Option<String> {
-    headers
-        .get("mcp-session-id")
-        .and_then(|value| value.to_str().ok())
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .map(|value| value.to_string())
-}
-
-fn parse_jsonrpc_id(value: &Value) -> Option<u64> {
-    value.get("id").and_then(|v| {
-        v.as_u64()
-            .or_else(|| v.as_str().and_then(|s| s.parse::<u64>().ok()))
-    })
-}
-
-fn collect_sse_json_messages(body: &str) -> Vec<Value> {
-    let mut messages = Vec::new();
-    let mut data_lines: Vec<String> = Vec::new();
-
-    let flush_event = |lines: &mut Vec<String>, target: &mut Vec<Value>| {
-        if lines.is_empty() {
-            return;
-        }
-
-        let payload = lines.join("\n");
-        lines.clear();
-
-        let payload = payload.trim();
-        if payload.is_empty() || payload == "[DONE]" {
-            return;
-        }
-
-        if let Ok(v) = serde_json::from_str::<Value>(payload) {
-            target.push(v);
-        }
-    };
-
-    for raw_line in body.lines() {
-        let line = raw_line.trim_end_matches('\r');
-        if line.is_empty() {
-            flush_event(&mut data_lines, &mut messages);
+pub(super) fn split_custom_headers(
+    headers: &HashMap<String, String>,
+) -> Result<(HashMap<HeaderName, HeaderValue>, Option<String>), String> {
+    let mut custom = HashMap::new();
+    let mut bearer_auth = None;
+    for (k, v) in headers {
+        let trimmed_key = k.trim();
+        let trimmed_val = v.trim();
+        if trimmed_key.is_empty() {
             continue;
         }
-
-        if let Some(rest) = line.strip_prefix("data:") {
-            // 兼容 data: 和 data: 两种前缀形式。
-            let payload = rest.strip_prefix(' ').unwrap_or(rest);
-            data_lines.push(payload.to_string());
+        if trimmed_key.eq_ignore_ascii_case("authorization") {
+            if let Some(token) = trimmed_val
+                .strip_prefix("Bearer ")
+                .or_else(|| trimmed_val.strip_prefix("bearer "))
+            {
+                bearer_auth = Some(token.trim().to_string());
+                continue;
+            }
         }
-    }
-
-    flush_event(&mut data_lines, &mut messages);
-    messages
-}
-
-fn collect_mcp_json_messages(body: &str) -> Vec<Value> {
-    let trimmed = body.trim();
-    if trimmed.is_empty() {
-        return Vec::new();
-    }
-
-    if let Ok(v) = serde_json::from_str::<Value>(trimmed) {
-        if let Some(arr) = v.as_array() {
-            return arr.clone();
-        }
-        return vec![v];
-    }
-
-    collect_sse_json_messages(trimmed)
-}
-
-fn compact_body_for_error(raw: &str) -> String {
-    let mut compact = raw.replace(['\n', '\r'], " ");
-    if compact.len() > 240 {
-        compact.truncate(240);
-        compact.push_str("...");
-    }
-    compact
-}
-
-fn parse_mcp_response_for_id(body: &str, request_id: u64) -> Result<Value, String> {
-    let messages = collect_mcp_json_messages(body);
-    if messages.is_empty() {
-        return Err("MCP streamable_http returned empty or invalid response body".to_string());
-    }
-
-    for msg in &messages {
-        let msg_id = parse_jsonrpc_id(msg);
-        if msg_id == Some(request_id) {
-            return Ok(msg.clone());
-        }
-    }
-
-    for msg in &messages {
-        if parse_jsonrpc_id(msg).is_none()
-            && (msg.get("result").is_some() || msg.get("error").is_some())
+        // 保留受 Transport 自动管理的协议头（accept / mcp-session-id / last-event-id）不透传。
+        if trimmed_key.eq_ignore_ascii_case("accept")
+            || trimmed_key.eq_ignore_ascii_case("mcp-session-id")
+            || trimmed_key.eq_ignore_ascii_case("last-event-id")
         {
-            return Ok(msg.clone());
-        }
-    }
-
-    Err(format!(
-        "MCP streamable_http did not return response for request id {}. body={} ",
-        request_id,
-        compact_body_for_error(body)
-    ))
-}
-
-impl StreamableHttpMcpConnection {
-    fn with_custom_headers(
-        &self,
-        mut request_builder: reqwest::RequestBuilder,
-    ) -> reqwest::RequestBuilder {
-        for (name, value) in self.headers.iter() {
-            request_builder = request_builder.header(name, value);
-        }
-        request_builder
-    }
-
-    async fn send_request(&mut self, method: &str, params: Value) -> Result<Value, String> {
-        let id = self.next_id;
-        self.next_id += 1;
-
-        let req = json!({
-            "jsonrpc": "2.0",
-            "id": id,
-            "method": method,
-            "params": params
-        });
-
-        let mut request_builder = self
-            .with_custom_headers(
-                self.client
-                    .post(&self.url)
-                    .header(ACCEPT, "application/json, text/event-stream")
-                    .header(CONTENT_TYPE, "application/json"),
-            )
-            .json(&req);
-
-        if let Some(session_id) = self.session_id.as_deref() {
-            request_builder = request_builder.header("mcp-session-id", session_id);
-        }
-
-        let resp = request_builder
-            .send()
-            .await
-            .map_err(|e| format!("MCP streamable_http request failed: {}", e))?;
-
-        let status = resp.status();
-        if let Some(session_id) = extract_session_id_from_headers(resp.headers()) {
-            self.session_id = Some(session_id);
-        }
-        let body = resp
-            .text()
-            .await
-            .map_err(|e| format!("MCP streamable_http read body failed: {}", e))?;
-
-        if !status.is_success() {
-            return Err(format!(
-                "MCP streamable_http HTTP {}: {}",
-                status,
-                compact_body_for_error(&body)
-            ));
-        }
-
-        let msg = parse_mcp_response_for_id(&body, id)?;
-        if let Some(err) = msg.get("error") {
-            return Err(format!("MCP error: {}", err));
-        }
-
-        Ok(msg.get("result").cloned().unwrap_or_else(|| json!({})))
-    }
-
-    async fn send_notification(&mut self, method: &str, params: Value) -> Result<(), String> {
-        let req = json!({
-            "jsonrpc": "2.0",
-            "method": method,
-            "params": params
-        });
-
-        let mut request_builder = self
-            .with_custom_headers(
-                self.client
-                    .post(&self.url)
-                    .header(ACCEPT, "application/json, text/event-stream")
-                    .header(CONTENT_TYPE, "application/json"),
-            )
-            .json(&req);
-
-        if let Some(session_id) = self.session_id.as_deref() {
-            request_builder = request_builder.header("mcp-session-id", session_id);
-        }
-
-        let resp = request_builder
-            .send()
-            .await
-            .map_err(|e| format!("MCP streamable_http notification failed: {}", e))?;
-
-        if let Some(session_id) = extract_session_id_from_headers(resp.headers()) {
-            self.session_id = Some(session_id);
-        }
-
-        if !resp.status().is_success() {
-            let status = resp.status();
-            let body = resp.text().await.unwrap_or_default();
-            return Err(format!(
-                "MCP streamable_http notification HTTP {}: {}",
-                status,
-                compact_body_for_error(&body)
-            ));
-        }
-
-        Ok(())
-    }
-
-    pub(super) async fn list_tools(&mut self) -> Result<Vec<McpToolInfo>, String> {
-        let result = self.send_request("tools/list", json!({})).await?;
-        let tools = result
-            .get("tools")
-            .and_then(|v| v.as_array())
-            .cloned()
-            .unwrap_or_default();
-
-        Ok(tools
-            .into_iter()
-            .filter_map(|t| {
-                let name = t.get("name").and_then(|v| v.as_str())?.to_string();
-                let description = t
-                    .get("description")
-                    .and_then(|v| v.as_str())
-                    .map(|s| s.to_string());
-                let input_schema = t.get("inputSchema").cloned();
-                Some(McpToolInfo {
-                    name,
-                    description,
-                    input_schema,
-                })
-            })
-            .collect())
-    }
-
-    pub(super) async fn call_tool(
-        &mut self,
-        tool_name: &str,
-        arguments: Value,
-    ) -> Result<Value, String> {
-        self.send_request(
-            "tools/call",
-            json!({
-                "name": tool_name,
-                "arguments": arguments
-            }),
-        )
-        .await
-    }
-
-    pub(super) async fn list_resources(&mut self) -> Result<Vec<McpResourceInfo>, String> {
-        let result = self.send_request("resources/list", json!({})).await?;
-        let resources = result
-            .get("resources")
-            .and_then(|v| v.as_array())
-            .cloned()
-            .unwrap_or_default();
-
-        Ok(resources
-            .into_iter()
-            .filter_map(|r| {
-                let uri = r.get("uri").and_then(|v| v.as_str())?.to_string();
-                let name = r
-                    .get("name")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or(&uri)
-                    .to_string();
-                let description = r
-                    .get("description")
-                    .and_then(|v| v.as_str())
-                    .map(|s| s.to_string());
-                let mime_type = r
-                    .get("mimeType")
-                    .and_then(|v| v.as_str())
-                    .map(|s| s.to_string());
-                Some(McpResourceInfo {
-                    uri,
-                    name,
-                    description,
-                    mime_type,
-                })
-            })
-            .collect())
-    }
-
-    pub(super) async fn read_resource(&mut self, uri: &str) -> Result<Value, String> {
-        self.send_request("resources/read", json!({ "uri": uri }))
-            .await
-    }
-
-    pub(super) async fn shutdown(&mut self) {
-        // streamable_http 为无状态连接，无需显式关闭。
-    }
-}
-
-pub(super) fn build_header_map(headers: &HashMap<String, String>) -> Result<HeaderMap, String> {
-    let mut map = HeaderMap::new();
-    for (key, value) in headers {
-        let trimmed_key = key.trim();
-        let trimmed_value = value.trim();
-        if trimmed_key.is_empty() || trimmed_value.is_empty() {
             continue;
         }
-        if trimmed_key.eq_ignore_ascii_case("mcp-session-id") {
-            return Err(
-                "MCP header 'mcp-session-id' is managed by Nova and cannot be configured manually"
-                    .to_string(),
-            );
-        }
-        let name = HeaderName::from_bytes(trimmed_key.as_bytes())
-            .map_err(|error| format!("Invalid MCP header name '{}': {}", trimmed_key, error))?;
-        let value = HeaderValue::from_str(trimmed_value).map_err(|error| {
-            format!("Invalid MCP header value for '{}': {}", trimmed_key, error)
-        })?;
-        map.insert(name, value);
+        let name = HeaderName::from_str(trimmed_key)
+            .map_err(|e| format!("Invalid header name '{}': {}", k, e))?;
+        let value = HeaderValue::from_str(trimmed_val)
+            .map_err(|e| format!("Invalid header value for '{}': {}", k, e))?;
+        custom.insert(name, value);
     }
-    Ok(map)
+    Ok((custom, bearer_auth))
+}
+
+pub(super) fn is_unauthorized_error_text(err: &str) -> bool {
+    let lower = err.to_ascii_lowercase();
+    lower.contains("401") || lower.contains("unauthorized") || lower.contains("auth required")
 }
 
 pub(super) async fn connect_streamable_http(
+    core: &Core,
+    server_name: &str,
     url: &str,
     headers: &HashMap<String, String>,
-) -> Result<StreamableHttpMcpConnection, String> {
-    let client = reqwest::Client::builder()
-        .timeout(MCP_CONNECT_TIMEOUT)
+) -> Result<Arc<dyn McpConnection>, String> {
+    let target_url = url.trim().to_string();
+    if target_url.is_empty() {
+        return Err("Streamable HTTP server URL cannot be empty".to_string());
+    }
+
+    let (custom_headers, manual_bearer) = split_custom_headers(headers)?;
+    let http_client = reqwest::Client::builder()
+        .connect_timeout(MCP_CONNECT_TIMEOUT)
         .build()
-        .map_err(|e| format!("Failed to build HTTP client for MCP streamable_http: {}", e))?;
+        .map_err(|e| format!("Failed to construct HTTP client: {e}"))?;
 
-    let mut conn = StreamableHttpMcpConnection {
-        client,
-        url: url.to_string(),
-        headers: build_header_map(headers)?,
-        session_id: None,
-        next_id: 1,
-    };
+    let mut cfg = StreamableHttpClientTransportConfig::with_uri(target_url.clone())
+        .custom_headers(custom_headers);
+    let auth_manager = oauth::load_authorized_manager(core, server_name, &target_url).await?;
 
-    let init_result = timeout(
-        MCP_CONNECT_TIMEOUT,
-        conn.send_request(
-            "initialize",
-            json!({
-                "protocolVersion": "2024-11-05",
-                "capabilities": {},
-                "clientInfo": {
-                    "name": "nova",
-                    "version": "0.1.0"
-                }
-            }),
-        ),
-    )
-    .await;
-
-    match init_result {
-        Ok(Ok(_)) => {}
-        Ok(Err(e)) => return Err(e),
-        Err(_) => {
-            return Err("MCP streamable_http initialize timeout (30s).".to_string());
+    if auth_manager.is_none() {
+        if let Some(token) = manual_bearer {
+            cfg = cfg.auth_header(token);
         }
     }
 
-    let _ = conn
-        .send_notification("notifications/initialized", json!({}))
-        .await;
+    let handler = NovaMcpHandler::new(core.clone(), server_name);
+    let connect_result = if let Some(manager) = auth_manager {
+        let auth_client = oauth::wrap_reqwest_with_auth(http_client, manager);
+        let transport = StreamableHttpClientTransport::with_client(auth_client, cfg);
+        timeout(MCP_CONNECT_TIMEOUT, handler.serve(transport)).await
+    } else {
+        let transport = StreamableHttpClientTransport::with_client(http_client, cfg);
+        timeout(MCP_CONNECT_TIMEOUT, handler.serve(transport)).await
+    };
 
-    Ok(conn)
+    match connect_result {
+        Err(_) => Err(
+            "MCP streamable_http initialize timeout (30s). Remote server may be overloaded or unreachable."
+                .to_string(),
+        ),
+        Ok(Err(e)) => {
+            let msg = format!("MCP streamable_http initialize failed: {e}");
+            if is_unauthorized_error_text(&msg) {
+                oauth::mark_server_auth_required(core, server_name, &target_url);
+            }
+            Err(msg)
+        }
+        Ok(Ok(running)) => Ok(RmcpConnection::from_running_service(running)),
+    }
 }

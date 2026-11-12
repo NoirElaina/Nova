@@ -74,6 +74,21 @@ pub enum NovaEvent {
         conversation_id: String,
         channel: serde_json::Value,
     },
+    /// MCP 服务工具列表变更通知（notifications/tools/list_changed）。
+    McpToolsChanged {
+        server_name: String,
+        tool_count: usize,
+    },
+    /// MCP 服务发起 Elicitation 交互请求（elicitation/create）。
+    McpElicitationRequested {
+        request_id: String,
+        server_name: String,
+        mode: String,
+        message: String,
+        url: Option<String>,
+        requested_schema: Option<serde_json::Value>,
+        conversation_id: Option<String>,
+    },
 }
 
 impl NovaEvent {
@@ -188,6 +203,33 @@ impl NovaEvent {
                 serde_json::json!({
                     "conversationId": conversation_id,
                     "channel": channel,
+                }),
+            ),
+            NovaEvent::McpToolsChanged { server_name, tool_count } => (
+                "mcp-tools-changed",
+                serde_json::json!({
+                    "serverName": server_name,
+                    "toolCount": tool_count,
+                }),
+            ),
+            NovaEvent::McpElicitationRequested {
+                request_id,
+                server_name,
+                mode,
+                message,
+                url,
+                requested_schema,
+                conversation_id,
+            } => (
+                "mcp-elicitation-requested",
+                serde_json::json!({
+                    "requestId": request_id,
+                    "serverName": server_name,
+                    "mode": mode,
+                    "message": message,
+                    "url": url,
+                    "requestedSchema": requested_schema,
+                    "conversationId": conversation_id,
                 }),
             ),
         }

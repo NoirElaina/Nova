@@ -2,7 +2,7 @@ use std::path::Path;
 use ts_rs::TS;
 
 fn export_all_protocol_types(out_dir: &Path) -> Result<(), ts_rs::ExportError> {
-    use nova_protocol::{agent, errors, llm, misc, rpc, session, settings};
+    use nova_protocol::{agent, errors, llm, mcp, misc, rpc, session, settings};
 
     let cfg = ts_rs::Config::default().with_out_dir(out_dir);
 
@@ -45,6 +45,10 @@ fn export_all_protocol_types(out_dir: &Path) -> Result<(), ts_rs::ExportError> {
         rpc::InitializeParams,
         rpc::InitializeResult,
         misc::ManualCompactOutcome,
+        mcp::McpElicitationDecision,
+        mcp::McpNegotiatedCapabilities,
+        mcp::McpOAuthLoginResult,
+        mcp::McpServerStatus,
         llm::Message,
         misc::ModelBreakdown,
         misc::ModelCatalogStats,

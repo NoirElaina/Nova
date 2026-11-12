@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { onMounted } from "vue";
 import GlobalToastHost from "./components/layout/GlobalToastHost.vue";
+import McpElicitationDialog from "./components/layout/McpElicitationDialog.vue";
 import { useChatController } from "./features/chat/controllers/useChatController";
 
 // 全局启动 ChatController 单例，确保后台事件流与定时器在根生命周期中持续存活
@@ -21,6 +22,7 @@ onMounted(() => {
 <template>
   <div class="flex h-screen w-screen overflow-hidden bg-[#fcfcfc] dark:bg-[#1a1a1a] text-[#1a1a1a] dark:text-[#ececec] font-sans">
     <GlobalToastHost />
+    <McpElicitationDialog />
     <RouterView />
   </div>
 </template>

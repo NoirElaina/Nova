@@ -146,6 +146,39 @@ export type InitializeResult = { serverInfo: ClientInfo, protocolVersion: string
 
 export type ManualCompactOutcome = { before_tokens: number, after_tokens: number, saved_tokens: number, summary: string, };
 
+/**
+ * 前端回传给 MCP 服务端的 Elicitation 用户交互裁决。
+ */
+export type McpElicitationDecision = { action: string, content?: JsonValue | null, };
+
+/**
+ * 协商后记录的服务端能力摘要。
+ */
+export type McpNegotiatedCapabilities = { tools: boolean, resources: boolean, prompts: boolean, logging: boolean, toolsListChanged: boolean, };
+
+/**
+ * OAuth 登录/登出结果。
+ */
+export type McpOAuthLoginResult = { status: string, authStatus: string, message?: string | null, };
+
+export type McpServerStatus = { name: string, status: string, enabled: boolean, type: string, toolCount: number, error: string | null, 
+/**
+ * 来源智能体名（由智能体配置页创建/迁入）；普通全局条目为 None。
+ */
+sourceAgent?: string | null, 
+/**
+ * 协商后的 MCP 协议版本（如 `2025-11-25` / `2024-11-05`）。
+ */
+protocolVersion?: string | null, 
+/**
+ * 协商后的服务端能力摘要。
+ */
+capabilities?: McpNegotiatedCapabilities | null, 
+/**
+ * 远端服务 OAuth 状态（`none` / `unauthenticated` / `authenticated` / `error`）。
+ */
+authStatus?: string | null, };
+
 export type Message = { role: Role, content: Content, };
 
 export type ModelBreakdown = { model: string, tokens: number, calls: number, costUsd: string, };

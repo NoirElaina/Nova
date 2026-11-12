@@ -61,19 +61,68 @@ pub struct McpServerEntry {
     pub config: McpServerConfig,
 }
 
+#[derive(Debug, Serialize, Deserialize, Clone, Default, PartialEq, Eq, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export, export_to = "protocol.ts")]
+/// 协商后记录的服务端能力摘要。
+pub struct McpNegotiatedCapabilities {
+    #[serde(default)]
+    pub tools: bool,
+    #[serde(default)]
+    pub resources: bool,
+    #[serde(default)]
+    pub prompts: bool,
+    #[serde(default)]
+    pub logging: bool,
+    #[serde(default)]
+    pub tools_list_changed: bool,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export, export_to = "protocol.ts")]
+/// OAuth 登录/登出结果。
+pub struct McpOAuthLoginResult {
+    pub status: String,
+    pub auth_status: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub message: Option<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export, export_to = "protocol.ts")]
+/// 前端回传给 MCP 服务端的 Elicitation 用户交互裁决。
+pub struct McpElicitationDecision {
+    pub action: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub content: Option<Value>,
+}
+
 #[derive(Debug, Serialize, Deserialize, Clone, TS)]
 #[serde(rename_all = "camelCase")]
+#[ts(export, export_to = "protocol.ts")]
 // 返回给前端的服务运行状态快照。
 pub struct McpServerStatus {
     pub name: String,
     pub status: String,
     pub enabled: bool,
     pub r#type: String,
+    #[ts(type = "number")]
     pub tool_count: usize,
     pub error: Option<String>,
     /// 来源智能体名（由智能体配置页创建/迁入）；普通全局条目为 None。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source_agent: Option<String>,
+    /// 协商后的 MCP 协议版本（如 `2025-11-25` / `2024-11-05`）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub protocol_version: Option<String>,
+    /// 协商后的服务端能力摘要。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub capabilities: Option<McpNegotiatedCapabilities>,
+    /// 远端服务 OAuth 状态（`none` / `unauthenticated` / `authenticated` / `error`）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub auth_status: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone, TS)]

@@ -1,74 +1,34 @@
+use crate::core::Core;
+use crate::events::NovaEvent;
+use rmcp::service::{Peer, RoleClient};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::HashMap;
 use std::path::PathBuf;
-use std::sync::OnceLock;
+use std::sync::{Arc, OnceLock};
 use std::time::Duration;
-use crate::core::Core;
 use tokio::sync::Mutex;
 use tokio::time::timeout;
+use tokio_util::sync::CancellationToken;
 
+mod connection;
+mod elicitation;
+mod oauth;
 mod sse;
 mod stdio;
 mod streamable_http;
 mod types;
 
-use sse::{connect_sse, SseMcpConnection};
-use stdio::{connect_stdio, StdioMcpConnection};
-use streamable_http::{connect_streamable_http, StreamableHttpMcpConnection};
+use connection::{map_rmcp_tools, McpCallError, McpConnection};
+pub use elicitation::{cancel_elicitations_for_client, pending_elicitation_client_id};
+use sse::connect_sse;
+use stdio::connect_stdio;
+use streamable_http::connect_streamable_http;
 
 pub use types::{
-    McpResourceInfo, McpRuntimeStatus, McpServerConfig, McpServerEntry, McpServerStatus,
-    McpToolInfo,
+    McpElicitationDecision, McpNegotiatedCapabilities, McpOAuthLoginResult, McpResourceInfo,
+    McpRuntimeStatus, McpServerConfig, McpServerEntry, McpServerStatus, McpToolInfo,
 };
-
-enum ServerConnection {
-    Stdio(Box<StdioMcpConnection>),
-    StreamableHttp(StreamableHttpMcpConnection),
-    Sse(Box<SseMcpConnection>),
-}
-
-impl ServerConnection {
-    async fn list_tools(&mut self) -> Result<Vec<McpToolInfo>, String> {
-        match self {
-            Self::Stdio(conn) => conn.list_tools().await,
-            Self::StreamableHttp(conn) => conn.list_tools().await,
-            Self::Sse(conn) => conn.list_tools().await,
-        }
-    }
-
-    async fn list_resources(&mut self) -> Result<Vec<McpResourceInfo>, String> {
-        match self {
-            Self::Stdio(conn) => conn.list_resources().await,
-            Self::StreamableHttp(conn) => conn.list_resources().await,
-            Self::Sse(conn) => conn.list_resources().await,
-        }
-    }
-
-    async fn read_resource(&mut self, uri: &str) -> Result<Value, String> {
-        match self {
-            Self::Stdio(conn) => conn.read_resource(uri).await,
-            Self::StreamableHttp(conn) => conn.read_resource(uri).await,
-            Self::Sse(conn) => conn.read_resource(uri).await,
-        }
-    }
-
-    async fn call_tool(&mut self, tool_name: &str, arguments: Value) -> Result<Value, String> {
-        match self {
-            Self::Stdio(conn) => conn.call_tool(tool_name, arguments).await,
-            Self::StreamableHttp(conn) => conn.call_tool(tool_name, arguments).await,
-            Self::Sse(conn) => conn.call_tool(tool_name, arguments).await,
-        }
-    }
-
-    async fn shutdown(&mut self) {
-        match self {
-            Self::Stdio(conn) => conn.shutdown().await,
-            Self::StreamableHttp(conn) => conn.shutdown().await,
-            Self::Sse(conn) => conn.shutdown().await,
-        }
-    }
-}
 
 struct RegisteredServer {
     config: McpServerConfig,
@@ -76,7 +36,9 @@ struct RegisteredServer {
     status: McpRuntimeStatus,
     tool_count: usize,
     error: Option<String>,
-    connection: Option<ServerConnection>,
+    connection: Option<Arc<dyn McpConnection>>,
+    protocol_version: Option<String>,
+    capabilities: Option<McpNegotiatedCapabilities>,
     /// 来源标注：由智能体配置页迁入/创建的 server 记录其智能体名，仅展示用。
     source_agent: Option<String>,
 }
@@ -347,6 +309,8 @@ fn migrate_agent_mcp_configs(
                     tool_count: 0,
                     error: None,
                     connection: None,
+                    protocol_version: None,
+                    capabilities: None,
                     source_agent: Some(bundle.name.clone()),
                 },
             );
@@ -359,121 +323,117 @@ fn migrate_agent_mcp_configs(
     migrated_any
 }
 
-async fn connect_server(
-    config: &McpServerConfig,
-) -> (
-    McpRuntimeStatus,
-    usize,
-    Option<String>,
-    Option<ServerConnection>,
-) {
-    match config {
-        McpServerConfig::Stdio { command, args, env } => {
-            match connect_stdio(command, args, env).await {
-                Ok(mut conn) => {
-                    let tool_count = match timeout(MCP_CONNECT_TIMEOUT, conn.list_tools()).await {
-                        Err(_) => {
-                            let _ = conn.shutdown().await;
-                            return (
-                            McpRuntimeStatus::Error,
-                            0,
-                            Some("MCP tools/list timeout (30s). Server may still be downloading dependencies or stuck during startup.".to_string()),
-                            None,
-                        );
-                        }
-                        Ok(result) => match result {
-                            Ok(tools) => tools.len(),
-                            Err(e) => {
-                                return (
-                                    McpRuntimeStatus::Connected,
-                                    0,
-                                    Some(e),
-                                    Some(ServerConnection::Stdio(Box::new(conn))),
-                                )
-                            }
-                        },
-                    };
-                    (
-                        McpRuntimeStatus::Connected,
-                        tool_count,
-                        None,
-                        Some(ServerConnection::Stdio(Box::new(conn))),
-                    )
-                }
-                Err(e) => (McpRuntimeStatus::Error, 0, Some(e), None),
-            }
-        }
-        McpServerConfig::Sse { url, headers } => {
-            match connect_sse(url, headers).await {
-                Ok(mut conn) => {
-                    let tool_count = match timeout(MCP_CONNECT_TIMEOUT, conn.list_tools()).await {
-                        Err(_) => {
-                            let _ = conn.shutdown().await;
-                            return (
-                                McpRuntimeStatus::Error,
-                                0,
-                                Some("MCP tools/list timeout (30s) over SSE.".to_string()),
-                                None,
-                            );
-                        }
-                        Ok(result) => match result {
-                            Ok(tools) => tools.len(),
-                            Err(e) => {
-                                return (
-                                    McpRuntimeStatus::Connected,
-                                    0,
-                                    Some(e),
-                                    Some(ServerConnection::Sse(Box::new(conn))),
-                                )
-                            }
-                        },
-                    };
-                    (
-                        McpRuntimeStatus::Connected,
-                        tool_count,
-                        None,
-                        Some(ServerConnection::Sse(Box::new(conn))),
-                    )
-                }
-                Err(e) => (McpRuntimeStatus::Error, 0, Some(e), None),
-            }
-        }
-        McpServerConfig::StreamableHttp { url, headers } => {
-            match connect_streamable_http(url, headers).await {
-                Ok(mut conn) => {
-                    let tool_count = match timeout(MCP_CONNECT_TIMEOUT, conn.list_tools()).await {
-                        Err(_) => {
-                            let _ = conn.shutdown().await;
-                            return (
-                            McpRuntimeStatus::Error,
-                            0,
-                            Some("MCP tools/list timeout (30s). streamable_http server may be overloaded or blocked.".to_string()),
-                            None,
-                        );
-                        }
-                        Ok(result) => match result {
-                            Ok(tools) => tools.len(),
-                            Err(e) => {
-                                return (
-                                    McpRuntimeStatus::Connected,
-                                    0,
-                                    Some(e),
-                                    Some(ServerConnection::StreamableHttp(conn)),
-                                )
-                            }
-                        },
-                    };
-                    (
-                        McpRuntimeStatus::Connected,
-                        tool_count,
-                        None,
-                        Some(ServerConnection::StreamableHttp(conn)),
-                    )
-                }
-                Err(e) => (McpRuntimeStatus::Error, 0, Some(e), None),
-            }
+struct ConnectOutcome {
+    status: McpRuntimeStatus,
+    tool_count: usize,
+    error: Option<String>,
+    connection: Option<Arc<dyn McpConnection>>,
+    protocol_version: Option<String>,
+    capabilities: Option<McpNegotiatedCapabilities>,
+}
+
+impl ConnectOutcome {
+    fn disconnected() -> Self {
+        Self {
+            status: McpRuntimeStatus::Disconnected,
+            tool_count: 0,
+            error: None,
+            connection: None,
+            protocol_version: None,
+            capabilities: None,
         }
     }
+}
+
+async fn open_transport(
+    core: &Core,
+    server_name: &str,
+    config: &McpServerConfig,
+) -> Result<Arc<dyn McpConnection>, String> {
+    match config {
+        McpServerConfig::Stdio { command, args, env } => {
+            connect_stdio(core, server_name, command, args, env).await
+        }
+        McpServerConfig::Sse { url, headers } => connect_sse(core, server_name, url, headers).await,
+        McpServerConfig::StreamableHttp { url, headers } => {
+            connect_streamable_http(core, server_name, url, headers).await
+        }
+    }
+}
+
+async fn connect_server(core: &Core, server_name: &str, config: &McpServerConfig) -> ConnectOutcome {
+    let conn = match open_transport(core, server_name, config).await {
+        Ok(conn) => conn,
+        Err(e) => {
+            return ConnectOutcome {
+                status: McpRuntimeStatus::Error,
+                tool_count: 0,
+                error: Some(e),
+                connection: None,
+                protocol_version: None,
+                capabilities: None,
+            };
+        }
+    };
+
+    let (protocol_version, capabilities) = conn.negotiated_info();
+    let timeout_hint = match config {
+        McpServerConfig::Stdio { .. } => {
+            "MCP tools/list timeout (30s). Server may still be downloading dependencies or stuck during startup."
+        }
+        McpServerConfig::Sse { .. } => "MCP tools/list timeout (30s) over SSE.",
+        McpServerConfig::StreamableHttp { .. } => {
+            "MCP tools/list timeout (30s). streamable_http server may be overloaded or blocked."
+        }
+    };
+
+    match timeout(MCP_CONNECT_TIMEOUT, conn.list_tools()).await {
+        Err(_) => {
+            conn.shutdown().await;
+            ConnectOutcome {
+                status: McpRuntimeStatus::Error,
+                tool_count: 0,
+                error: Some(timeout_hint.to_string()),
+                connection: None,
+                protocol_version: None,
+                capabilities: None,
+            }
+        }
+        Ok(Ok(tools)) => {
+            let count = tools.len();
+            crate::agent::capabilities::mcp_tools::refresh_server_tools_cache(server_name, &tools);
+            ConnectOutcome {
+                status: McpRuntimeStatus::Connected,
+                tool_count: count,
+                error: None,
+                connection: Some(conn),
+                protocol_version,
+                capabilities,
+            }
+        }
+        Ok(Err(e)) => ConnectOutcome {
+            status: McpRuntimeStatus::Connected,
+            tool_count: 0,
+            error: Some(e),
+            connection: Some(conn),
+            protocol_version,
+            capabilities,
+        },
+    }
+}
+
+async fn apply_connect_outcome(
+    server: &mut RegisteredServer,
+    outcome: ConnectOutcome,
+) -> Option<Arc<dyn McpConnection>> {
+    let old = server.connection.take();
+    server.status = outcome.status;
+    server.tool_count = outcome.tool_count;
+    server.error = outcome.error;
+    server.connection = outcome.connection;
+    server.protocol_version = outcome.protocol_version;
+    server.capabilities = outcome.capabilities;
+    old
 }
 
 async fn reconnect_server(core: &Core, name: &str) -> Result<(), crate::NovaCoreError> {
@@ -488,37 +448,68 @@ async fn reconnect_server(core: &Core, name: &str) -> Result<(), crate::NovaCore
         server.config.clone()
     };
 
-    let (status, tool_count, error, connection) = connect_server(&cfg).await;
-    let mut map = runtime().lock().await;
-    let server = map.get_mut(name).ok_or_else(|| mcp_not_found(name))?;
+    let outcome = connect_server(core, name, &cfg).await;
+    let is_connected = outcome.status == McpRuntimeStatus::Connected;
+    let err_msg = outcome.error.clone();
 
-    if let Some(conn) = server.connection.as_mut() {
+    let old_conn = {
+        let mut map = runtime().lock().await;
+        let server = map.get_mut(name).ok_or_else(|| mcp_not_found(name))?;
+        apply_connect_outcome(server, outcome).await
+    };
+    if let Some(conn) = old_conn {
         conn.shutdown().await;
     }
 
-    server.status = status;
-    server.tool_count = tool_count;
-    server.error = error.clone();
-    server.connection = connection;
-
-    if status == McpRuntimeStatus::Connected {
+    if is_connected {
         Ok(())
     } else {
         Err(mcp_err(
             name,
-            error.unwrap_or_else(|| format!("MCP server '{}' failed to reconnect", name)),
+            err_msg.unwrap_or_else(|| format!("MCP server '{}' failed to reconnect", name)),
         ))
     }
 }
 
 async fn mark_server_runtime_error(server_name: &str, error: String) {
-    let mut map = runtime().lock().await;
-    if let Some(server) = map.get_mut(server_name) {
-        server.status = McpRuntimeStatus::Error;
-        server.error = Some(error);
-        server.tool_count = 0;
-        server.connection = None;
+    let old_conn = {
+        let mut map = runtime().lock().await;
+        if let Some(server) = map.get_mut(server_name) {
+            server.status = McpRuntimeStatus::Error;
+            server.error = Some(error);
+            server.tool_count = 0;
+            server.connection.take()
+        } else {
+            None
+        }
+    };
+    if let Some(conn) = old_conn {
+        conn.shutdown().await;
     }
+}
+
+pub(super) async fn handle_tool_list_changed_notification(
+    core: Core,
+    server_name: String,
+    peer: Peer<RoleClient>,
+) {
+    let Ok(raw_tools) = peer.list_all_tools().await else {
+        return;
+    };
+    let tools = map_rmcp_tools(raw_tools);
+    let tool_count = tools.len();
+    crate::agent::capabilities::mcp_tools::refresh_server_tools_cache(&server_name, &tools);
+    {
+        let mut map = runtime().lock().await;
+        if let Some(server) = map.get_mut(&server_name) {
+            server.tool_count = tool_count;
+            mark_server_connected(server);
+        }
+    }
+    core.emit(NovaEvent::McpToolsChanged {
+        server_name,
+        tool_count,
+    });
 }
 
 async fn ensure_runtime_loaded(core: &Core) {
@@ -540,6 +531,8 @@ async fn ensure_runtime_loaded(core: &Core) {
                     tool_count: 0,
                     error: None,
                     connection: None,
+                    protocol_version: None,
+                    capabilities: None,
                     source_agent: item.source_agent,
                 },
             );
@@ -568,13 +561,10 @@ async fn ensure_runtime_loaded(core: &Core) {
         };
 
         if let Some(cfg) = config {
-            let (status, tool_count, error, connection) = connect_server(&cfg).await;
+            let outcome = connect_server(core, &name, &cfg).await;
             let mut map = runtime().lock().await;
             if let Some(server) = map.get_mut(&name) {
-                server.status = status;
-                server.tool_count = tool_count;
-                server.error = error;
-                server.connection = connection;
+                let _ = apply_connect_outcome(server, outcome).await;
             }
         }
     }
@@ -596,28 +586,30 @@ pub async fn add_mcp_server(
         ));
     }
 
-    let (status, connected_tools, error, connection) = connect_server(&config).await;
+    let outcome = connect_server(&core, &name, &config).await;
 
-    let mut map = runtime().lock().await;
-    if let Some(mut old) = map.remove(&name) {
-        if let Some(conn) = old.connection.as_mut() {
-            conn.shutdown().await;
-        }
+    let old_conn = {
+        let mut map = runtime().lock().await;
+        let old = map.remove(&name).and_then(|mut s| s.connection.take());
+        map.insert(
+            name,
+            RegisteredServer {
+                config,
+                enabled: true,
+                status: outcome.status,
+                tool_count: outcome.tool_count,
+                error: outcome.error,
+                connection: outcome.connection,
+                protocol_version: outcome.protocol_version,
+                capabilities: outcome.capabilities,
+                source_agent,
+            },
+        );
+        old
+    };
+    if let Some(conn) = old_conn {
+        conn.shutdown().await;
     }
-
-    map.insert(
-        name,
-        RegisteredServer {
-            config,
-            enabled: true,
-            status,
-            tool_count: connected_tools,
-            error,
-            connection,
-            source_agent,
-        },
-    );
-    drop(map);
 
     persist_runtime(&core).await?;
 
@@ -670,34 +662,37 @@ pub async fn update_mcp_server(
         (current.enabled, current.source_agent.clone())
     };
 
-    let (status, connected_tools, error, connection) = if enabled {
-        connect_server(&config).await
+    let outcome = if enabled {
+        connect_server(&core, &new_name, &config).await
     } else {
-        (McpRuntimeStatus::Disconnected, 0, None, None)
+        ConnectOutcome::disconnected()
     };
 
-    let mut map = runtime().lock().await;
-    let mut old = map
-        .remove(&old_name)
-        .ok_or_else(|| mcp_not_found(&old_name))?;
-
-    if let Some(conn) = old.connection.as_mut() {
+    let old_conn = {
+        let mut map = runtime().lock().await;
+        let mut old = map
+            .remove(&old_name)
+            .ok_or_else(|| mcp_not_found(&old_name))?;
+        let prev = old.connection.take();
+        map.insert(
+            new_name,
+            RegisteredServer {
+                config,
+                enabled,
+                status: outcome.status,
+                tool_count: outcome.tool_count,
+                error: outcome.error,
+                connection: outcome.connection,
+                protocol_version: outcome.protocol_version,
+                capabilities: outcome.capabilities,
+                source_agent,
+            },
+        );
+        prev
+    };
+    if let Some(conn) = old_conn {
         conn.shutdown().await;
     }
-
-    map.insert(
-        new_name,
-        RegisteredServer {
-            config,
-            enabled,
-            status,
-            tool_count: connected_tools,
-            error,
-            connection,
-            source_agent,
-        },
-    );
-    drop(map);
 
     persist_runtime(&core).await?;
     Ok(())
@@ -706,13 +701,14 @@ pub async fn update_mcp_server(
 pub async fn remove_mcp_server(core: Core, name: String) -> Result<(), crate::NovaCoreError> {
     ensure_runtime_loaded(&core).await;
 
-    let mut map = runtime().lock().await;
-    if let Some(mut item) = map.remove(&name) {
-        if let Some(conn) = item.connection.as_mut() {
-            conn.shutdown().await;
-        }
+    let old_conn = {
+        let mut map = runtime().lock().await;
+        map.remove(&name).and_then(|mut item| item.connection.take())
+    };
+    if let Some(conn) = old_conn {
+        conn.shutdown().await;
     }
-    drop(map);
+    let _ = oauth::clear_oauth_credentials(&core, &name);
 
     persist_runtime(&core).await?;
 
@@ -727,6 +723,8 @@ pub async fn get_mcp_server_statuses(
     let map = runtime().lock().await;
     let mut result = Vec::new();
     for (name, item) in map.iter() {
+        let is_remote = !matches!(item.config, McpServerConfig::Stdio { .. });
+        let auth_status = Some(oauth::auth_status_for_server(&core, name, is_remote));
         result.push(McpServerStatus {
             name: name.clone(),
             status: item.status.as_str().to_string(),
@@ -735,6 +733,9 @@ pub async fn get_mcp_server_statuses(
             tool_count: item.tool_count,
             error: item.error.clone(),
             source_agent: item.source_agent.clone(),
+            protocol_version: item.protocol_version.clone(),
+            capabilities: item.capabilities.clone(),
+            auth_status,
         });
     }
     Ok(result)
@@ -751,30 +752,21 @@ pub async fn reload_all_mcp_servers(core: Core) -> Result<(), crate::NovaCoreErr
     };
 
     for (name, cfg, enabled) in configs {
-        if !enabled {
+        let outcome = if enabled {
+            connect_server(&core, &name, &cfg).await
+        } else {
+            ConnectOutcome::disconnected()
+        };
+        let old_conn = {
             let mut map = runtime().lock().await;
             if let Some(server) = map.get_mut(&name) {
-                server.status = McpRuntimeStatus::Disconnected;
-                server.tool_count = 0;
-                server.error = None;
-                if let Some(conn) = server.connection.as_mut() {
-                    conn.shutdown().await;
-                }
-                server.connection = None;
+                apply_connect_outcome(server, outcome).await
+            } else {
+                None
             }
-            continue;
-        }
-
-        let (status, tool_count, error, connection) = connect_server(&cfg).await;
-        let mut map = runtime().lock().await;
-        if let Some(server) = map.get_mut(&name) {
-            if let Some(conn) = server.connection.as_mut() {
-                conn.shutdown().await;
-            }
-            server.status = status;
-            server.tool_count = tool_count;
-            server.error = error;
-            server.connection = connection;
+        };
+        if let Some(conn) = old_conn {
+            conn.shutdown().await;
         }
     }
 
@@ -796,31 +788,23 @@ pub async fn set_mcp_server_enabled(
         server.config.clone()
     };
 
-    if enabled {
-        let (status, tool_count, error, connection) = connect_server(&cfg).await;
-        let mut map = runtime().lock().await;
-        if let Some(server) = map.get_mut(&name) {
-            if let Some(conn) = server.connection.as_mut() {
-                conn.shutdown().await;
-            }
-            server.enabled = true;
-            server.status = status;
-            server.tool_count = tool_count;
-            server.error = error;
-            server.connection = connection;
-        }
+    let outcome = if enabled {
+        connect_server(&core, &name, &cfg).await
     } else {
+        ConnectOutcome::disconnected()
+    };
+
+    let old_conn = {
         let mut map = runtime().lock().await;
         if let Some(server) = map.get_mut(&name) {
-            if let Some(conn) = server.connection.as_mut() {
-                conn.shutdown().await;
-            }
-            server.enabled = false;
-            server.status = McpRuntimeStatus::Disconnected;
-            server.tool_count = 0;
-            server.error = None;
-            server.connection = None;
+            server.enabled = enabled;
+            apply_connect_outcome(server, outcome).await
+        } else {
+            None
         }
+    };
+    if let Some(conn) = old_conn {
+        conn.shutdown().await;
     }
 
     persist_runtime(&core).await?;
@@ -888,6 +872,44 @@ fn mark_server_connected(server: &mut RegisteredServer) {
     server.error = None;
 }
 
+async fn current_connection(server_name: &str) -> Result<Arc<dyn McpConnection>, String> {
+    let map = runtime().lock().await;
+    let server = map
+        .get(server_name)
+        .ok_or_else(|| format!("MCP server '{}' not found", server_name))?;
+    server
+        .connection
+        .clone()
+        .ok_or_else(|| "Server is not connected".to_string())
+}
+
+async fn run_with_reconnect<T, F, Fut>(
+    core: &Core,
+    server_name: &str,
+    mut op: F,
+) -> Result<T, crate::NovaCoreError>
+where
+    F: FnMut(Arc<dyn McpConnection>) -> Fut,
+    Fut: std::future::Future<Output = Result<T, String>>,
+{
+    let first_attempt = match current_connection(server_name).await {
+        Ok(conn) => op(conn).await,
+        Err(e) => Err(e),
+    };
+
+    match first_attempt {
+        Ok(val) => Ok(val),
+        Err(first_err) => {
+            mark_server_runtime_error(server_name, first_err).await;
+            reconnect_server(core, server_name).await?;
+            let conn = current_connection(server_name)
+                .await
+                .map_err(|e| mcp_err(server_name, e))?;
+            op(conn).await.map_err(|e| mcp_err(server_name, e))
+        }
+    }
+}
+
 pub async fn list_mcp_tools(
     core: Core,
     server_name: String,
@@ -895,38 +917,10 @@ pub async fn list_mcp_tools(
     let _permit = acquire_mcp_permit(&server_name, "list_mcp_tools").await?;
     ensure_server_connected(&core, &server_name).await?;
 
-    let first_attempt = {
-        let mut map = runtime().lock().await;
-        let server = map
-            .get_mut(&server_name)
-            .ok_or_else(|| mcp_not_found(&server_name))?;
-
-        match server.connection.as_mut() {
-            Some(conn) => conn.list_tools().await,
-            None => Err("Server is not connected".into()),
-        }
-    };
-
-    let tools = match first_attempt {
-        Ok(v) => v,
-        Err(e) => {
-            mark_server_runtime_error(&server_name, e.clone()).await;
-            reconnect_server(&core, &server_name).await?;
-
-            let mut map = runtime().lock().await;
-            let server = map
-                .get_mut(&server_name)
-                .ok_or_else(|| mcp_not_found(&server_name))?;
-
-            match server.connection.as_mut() {
-                Some(conn) => conn
-                    .list_tools()
-                    .await
-                    .map_err(|err| mcp_err(&server_name, err))?,
-                None => return Err(mcp_err(&server_name, "Server is not connected")),
-            }
-        }
-    };
+    let tools = run_with_reconnect(&core, &server_name, |conn| async move {
+        conn.list_tools().await
+    })
+    .await?;
 
     let mut map = runtime().lock().await;
     let server = map
@@ -934,6 +928,8 @@ pub async fn list_mcp_tools(
         .ok_or_else(|| mcp_not_found(&server_name))?;
     server.tool_count = tools.len();
     mark_server_connected(server);
+    drop(map);
+    crate::agent::capabilities::mcp_tools::refresh_server_tools_cache(&server_name, &tools);
     Ok(tools)
 }
 
@@ -944,38 +940,10 @@ pub async fn list_mcp_resources(
     let _permit = acquire_mcp_permit(&server_name, "list_mcp_resources").await?;
     ensure_server_connected(&core, &server_name).await?;
 
-    let first_attempt = {
-        let mut map = runtime().lock().await;
-        let server = map
-            .get_mut(&server_name)
-            .ok_or_else(|| mcp_not_found(&server_name))?;
-
-        match server.connection.as_mut() {
-            Some(conn) => conn.list_resources().await,
-            None => Err("Server is not connected".into()),
-        }
-    };
-
-    let resources = match first_attempt {
-        Ok(v) => v,
-        Err(e) => {
-            mark_server_runtime_error(&server_name, e.clone()).await;
-            reconnect_server(&core, &server_name).await?;
-
-            let mut map = runtime().lock().await;
-            let server = map
-                .get_mut(&server_name)
-                .ok_or_else(|| mcp_not_found(&server_name))?;
-
-            match server.connection.as_mut() {
-                Some(conn) => conn
-                    .list_resources()
-                    .await
-                    .map_err(|err| mcp_err(&server_name, err))?,
-                None => return Err(mcp_err(&server_name, "Server is not connected")),
-            }
-        }
-    };
+    let resources = run_with_reconnect(&core, &server_name, |conn| async move {
+        conn.list_resources().await
+    })
+    .await?;
 
     let mut map = runtime().lock().await;
     let server = map
@@ -993,38 +961,11 @@ pub async fn read_mcp_resource(
     let _permit = acquire_mcp_permit(&server_name, "read_mcp_resource").await?;
     ensure_server_connected(&core, &server_name).await?;
 
-    let first_attempt = {
-        let mut map = runtime().lock().await;
-        let server = map
-            .get_mut(&server_name)
-            .ok_or_else(|| mcp_not_found(&server_name))?;
-
-        match server.connection.as_mut() {
-            Some(conn) => conn.read_resource(&uri).await,
-            None => Err("Server is not connected".into()),
-        }
-    };
-
-    let value = match first_attempt {
-        Ok(v) => v,
-        Err(e) => {
-            mark_server_runtime_error(&server_name, e.clone()).await;
-            reconnect_server(&core, &server_name).await?;
-
-            let mut map = runtime().lock().await;
-            let server = map
-                .get_mut(&server_name)
-                .ok_or_else(|| mcp_not_found(&server_name))?;
-
-            match server.connection.as_mut() {
-                Some(conn) => conn
-                    .read_resource(&uri)
-                    .await
-                    .map_err(|err| mcp_err(&server_name, err))?,
-                None => return Err(mcp_err(&server_name, "Server is not connected")),
-            }
-        }
-    };
+    let value = run_with_reconnect(&core, &server_name, |conn| {
+        let uri = uri.clone();
+        async move { conn.read_resource(&uri).await }
+    })
+    .await?;
 
     let mut map = runtime().lock().await;
     let server = map
@@ -1040,68 +981,132 @@ pub async fn call_mcp_tool(
     tool_name: String,
     arguments: Value,
 ) -> Result<Value, crate::NovaCoreError> {
+    call_mcp_tool_with_context(core, None, server_name, tool_name, arguments, None).await
+}
+
+pub(crate) async fn call_mcp_tool_with_context(
+    core: Core,
+    conversation_id: Option<String>,
+    server_name: String,
+    tool_name: String,
+    arguments: Value,
+    cancel_token: Option<CancellationToken>,
+) -> Result<Value, crate::NovaCoreError> {
     let _permit =
         acquire_mcp_permit(&server_name, &format!("call_mcp_tool:{}/{}", server_name, tool_name))
             .await?;
     ensure_server_connected(&core, &server_name).await?;
 
-    let first_attempt = {
+    let effective_token = cancel_token.or_else(|| {
+        conversation_id
+            .as_deref()
+            .map(|id| crate::agent::cancellation::get_token(Some(id)))
+    });
+
+    let scoped_server = server_name.clone();
+    elicitation::scope_conversation(&scoped_server, conversation_id, async move {
+        let first_attempt = match current_connection(&server_name).await {
+            Ok(conn) => {
+                conn.call_tool(
+                    &tool_name,
+                    arguments.clone(),
+                    effective_token.clone(),
+                    MCP_TOOL_CALL_TIMEOUT,
+                )
+                .await
+            }
+            Err(e) => Err(McpCallError::Transport(e)),
+        };
+
+        let result = match first_attempt {
+            Ok(v) => v,
+            Err(err) => {
+                if !err.should_reconnect() {
+                    return Err(mcp_err(&server_name, err.into_message()));
+                }
+                mark_server_runtime_error(&server_name, err.into_message()).await;
+                reconnect_server(&core, &server_name).await?;
+                let conn = current_connection(&server_name)
+                    .await
+                    .map_err(|e| mcp_err(&server_name, e))?;
+                conn.call_tool(&tool_name, arguments, effective_token, MCP_TOOL_CALL_TIMEOUT)
+                    .await
+                    .map_err(|e| mcp_err(&server_name, e.into_message()))?
+            }
+        };
+
         let mut map = runtime().lock().await;
         let server = map
             .get_mut(&server_name)
             .ok_or_else(|| mcp_not_found(&server_name))?;
+        mark_server_connected(server);
+        Ok(result)
+    })
+    .await
+}
 
-        match server.connection.as_mut() {
-            Some(conn) => {
-                match timeout(MCP_TOOL_CALL_TIMEOUT, conn.call_tool(&tool_name, arguments.clone())).await {
-                    Ok(res) => res,
-                    Err(_) => Err(format!(
-                        "MCP tool call '{}/{}' timed out after 60s. Server may be unresponsive.",
-                        server_name, tool_name
-                    )),
-                }
+pub async fn mcp_oauth_login(
+    core: Core,
+    server_name: String,
+    client_id: Option<String>,
+    scopes: Vec<String>,
+) -> Result<McpOAuthLoginResult, crate::NovaCoreError> {
+    ensure_runtime_loaded(&core).await;
+
+    let url = {
+        let map = runtime().lock().await;
+        let server = map.get(&server_name).ok_or_else(|| mcp_not_found(&server_name))?;
+        match &server.config {
+            McpServerConfig::Sse { url, .. } | McpServerConfig::StreamableHttp { url, .. } => {
+                url.clone()
             }
-            None => Err("Server is not connected".into()),
-        }
-    };
-
-    let result = match first_attempt {
-        Ok(v) => v,
-        Err(e) => {
-            mark_server_runtime_error(&server_name, e.clone()).await;
-            reconnect_server(&core, &server_name).await?;
-
-            let mut map = runtime().lock().await;
-            let server = map
-                .get_mut(&server_name)
-                .ok_or_else(|| mcp_not_found(&server_name))?;
-
-            match server.connection.as_mut() {
-                Some(conn) => {
-                    match timeout(MCP_TOOL_CALL_TIMEOUT, conn.call_tool(&tool_name, arguments)).await {
-                        Ok(res) => res.map_err(|err| mcp_err(&server_name, err))?,
-                        Err(_) => {
-                            return Err(mcp_err(
-                                &server_name,
-                                format!(
-                                    "MCP tool call '{}/{}' timed out after 60s on retry. Server may be unresponsive.",
-                                    server_name, tool_name
-                                ),
-                            ));
-                        }
-                    }
-                }
-                None => return Err(mcp_err(&server_name, "Server is not connected")),
+            McpServerConfig::Stdio { .. } => {
+                return Err(crate::NovaCoreError::InvalidInput(format!(
+                    "MCP server '{}' uses stdio and does not support OAuth 2.1",
+                    server_name
+                )));
             }
         }
     };
 
-    let mut map = runtime().lock().await;
-    let server = map
-        .get_mut(&server_name)
-        .ok_or_else(|| mcp_not_found(&server_name))?;
-    mark_server_connected(server);
+    let result = oauth::perform_oauth_login(&core, &server_name, &url, client_id, scopes)
+        .await
+        .map_err(|e| mcp_err(&server_name, e))?;
+
+    let _ = reconnect_server(&core, &server_name).await;
     Ok(result)
+}
+
+pub async fn mcp_oauth_logout(
+    core: Core,
+    server_name: String,
+) -> Result<McpOAuthLoginResult, crate::NovaCoreError> {
+    ensure_runtime_loaded(&core).await;
+
+    {
+        let map = runtime().lock().await;
+        if !map.contains_key(&server_name) {
+            return Err(mcp_not_found(&server_name));
+        }
+    }
+
+    oauth::clear_oauth_credentials(&core, &server_name).map_err(|e| mcp_err(&server_name, e))?;
+    let _ = reconnect_server(&core, &server_name).await;
+
+    Ok(McpOAuthLoginResult {
+        status: "disconnected".to_string(),
+        auth_status: "none".to_string(),
+        message: Some("MCP OAuth credentials cleared".to_string()),
+    })
+}
+
+pub fn resolve_mcp_elicitation(
+    request_id: String,
+    decision: McpElicitationDecision,
+    caller_client_id: Option<&str>,
+) -> Result<bool, crate::NovaCoreError> {
+    elicitation::submit_elicitation_decision(&request_id, decision, caller_client_id)
+        .map_err(crate::NovaCoreError::InvalidInput)
 }
 
 pub async fn warmup_runtime(core: Core) -> Result<(), crate::NovaCoreError> {
@@ -1122,27 +1127,655 @@ pub async fn warmup_runtime(core: Core) -> Result<(), crate::NovaCoreError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::agent::session_runtime::{
+        complete_turn_and_take_next, request_cancel, submit_turn, SubmitTurnDecision,
+    };
+    use crate::CoreConfig;
+    use axum::extract::State;
+    use axum::http::StatusCode;
+    use axum::response::sse::{Event, KeepAlive, Sse};
+    use axum::response::IntoResponse;
+    use axum::routing::{get, post};
+    use axum::Router;
+    use futures_util::StreamExt;
+    use nova_protocol::agent::TurnSubmitMode;
+    use serde_json::json;
+    use std::sync::{Arc, Mutex as StdMutex, OnceLock};
+    use tempfile::TempDir;
+    use tokio::net::TcpListener;
+    use tokio::sync::{broadcast, mpsc, Mutex as AsyncMutex};
+
+    fn mcp_lib_test_lock() -> &'static AsyncMutex<()> {
+        static LOCK: OnceLock<AsyncMutex<()>> = OnceLock::new();
+        LOCK.get_or_init(|| AsyncMutex::new(()))
+    }
+
+    fn temp_core() -> Result<(TempDir, Core), String> {
+        let dir = TempDir::new().map_err(|e| format!("tempdir failed: {e}"))?;
+        let cfg = CoreConfig::new(dir.path().to_path_buf())
+            .with_cache_dir(dir.path().join("cache"))
+            .with_download_dir(dir.path().join("downloads"));
+        Ok((dir, Core::new(cfg, 128)))
+    }
+
+    #[derive(Clone)]
+    struct MockSseServerState {
+        sse_tx: broadcast::Sender<String>,
+        tools: Arc<StdMutex<Vec<Value>>>,
+        incoming_tx: mpsc::UnboundedSender<Value>,
+        elicit_responses: Arc<StdMutex<HashMap<i64, tokio::sync::oneshot::Sender<Value>>>>,
+    }
+
+    async fn mock_sse_endpoint(State(state): State<MockSseServerState>) -> impl IntoResponse {
+        let rx = state.sse_tx.subscribe();
+        let first = futures_util::stream::once(async {
+            Ok::<Event, std::convert::Infallible>(
+                Event::default().event("endpoint").data("/message"),
+            )
+        });
+        let rest = futures_util::stream::unfold(rx, |mut r| async move {
+            loop {
+                match r.recv().await {
+                    Ok(payload) => {
+                        return Some((
+                            Ok::<Event, std::convert::Infallible>(
+                                Event::default().event("message").data(payload),
+                            ),
+                            r,
+                        ));
+                    }
+                    Err(broadcast::error::RecvError::Lagged(_)) => continue,
+                    Err(broadcast::error::RecvError::Closed) => return None,
+                }
+            }
+        });
+        Sse::new(first.chain(rest)).keep_alive(KeepAlive::default())
+    }
+
+    async fn mock_message_endpoint(
+        State(state): State<MockSseServerState>,
+        axum::Json(msg): axum::Json<Value>,
+    ) -> StatusCode {
+        let _ = state.incoming_tx.send(msg.clone());
+
+        // Handle responses to server-initiated requests (e.g. elicitation/create)
+        if msg.get("method").is_none() {
+            if let Some(id) = msg.get("id").and_then(Value::as_i64) {
+                let sender = state
+                    .elicit_responses
+                    .lock()
+                    .ok()
+                    .and_then(|mut guard| guard.remove(&id));
+                if let Some(tx) = sender {
+                    let _ = tx.send(msg);
+                }
+            }
+            return StatusCode::ACCEPTED;
+        }
+
+        let Some(id) = msg.get("id").cloned() else {
+            // Client notification (e.g. notifications/initialized, notifications/cancelled)
+            return StatusCode::ACCEPTED;
+        };
+
+        let method = msg.get("method").and_then(Value::as_str).unwrap_or("");
+        let params = msg.get("params").cloned().unwrap_or_else(|| json!({}));
+
+        match method {
+            "initialize" => {
+                let reply = json!({
+                    "jsonrpc": "2.0",
+                    "id": id,
+                    "result": {
+                        "protocolVersion": "2025-11-25",
+                        "capabilities": {
+                            "tools": { "listChanged": true },
+                            "resources": { "subscribe": true, "listChanged": true },
+                            "prompts": { "listChanged": false },
+                            "logging": {}
+                        },
+                        "serverInfo": { "name": "mock-modern-mcp", "version": "1.0.0" }
+                    }
+                });
+                let _ = state.sse_tx.send(reply.to_string());
+            }
+            "tools/list" => {
+                let tools = state
+                    .tools
+                    .lock()
+                    .map(|g| g.clone())
+                    .unwrap_or_default();
+                let reply = json!({
+                    "jsonrpc": "2.0",
+                    "id": id,
+                    "result": { "tools": tools }
+                });
+                let _ = state.sse_tx.send(reply.to_string());
+            }
+            "tools/call" => {
+                let tool_name = params
+                    .get("name")
+                    .and_then(Value::as_str)
+                    .unwrap_or("")
+                    .to_string();
+                let state_clone = state.clone();
+                tokio::spawn(async move {
+                    match tool_name.as_str() {
+                        "slow_tool" => {
+                            tokio::time::sleep(Duration::from_secs(30)).await;
+                        }
+                        "elicit_form" => {
+                            let req_id = 701_i64;
+                            let (tx, rx) = tokio::sync::oneshot::channel();
+                            if let Ok(mut guard) = state_clone.elicit_responses.lock() {
+                                guard.insert(req_id, tx);
+                            }
+                            let req = json!({
+                                "jsonrpc": "2.0",
+                                "id": req_id,
+                                "method": "elicitation/create",
+                                "params": {
+                                    "mode": "form",
+                                    "message": "Select target branch",
+                                    "requestedSchema": {
+                                        "type": "object",
+                                        "properties": {
+                                            "branch": { "type": "string" }
+                                        },
+                                        "required": ["branch"]
+                                    }
+                                }
+                            });
+                            let _ = state_clone.sse_tx.send(req.to_string());
+                            let response = rx.await.unwrap_or_else(|_| json!({}));
+                            let reply = json!({
+                                "jsonrpc": "2.0",
+                                "id": id,
+                                "result": {
+                                    "content": [{
+                                        "type": "text",
+                                        "text": response.get("result").cloned().unwrap_or(Value::Null).to_string()
+                                    }]
+                                }
+                            });
+                            let _ = state_clone.sse_tx.send(reply.to_string());
+                        }
+                        "elicit_url" => {
+                            let req_id = 702_i64;
+                            let (tx, rx) = tokio::sync::oneshot::channel();
+                            if let Ok(mut guard) = state_clone.elicit_responses.lock() {
+                                guard.insert(req_id, tx);
+                            }
+                            let req = json!({
+                                "jsonrpc": "2.0",
+                                "id": req_id,
+                                "method": "elicitation/create",
+                                "params": {
+                                    "mode": "url",
+                                    "message": "Authorize external integration",
+                                    "url": "https://example.com/authorize",
+                                    "elicitationId": "elicit-url-702"
+                                }
+                            });
+                            let _ = state_clone.sse_tx.send(req.to_string());
+                            let response = rx.await.unwrap_or_else(|_| json!({}));
+                            let reply = json!({
+                                "jsonrpc": "2.0",
+                                "id": id,
+                                "result": {
+                                    "content": [{
+                                        "type": "text",
+                                        "text": response.get("result").cloned().unwrap_or(Value::Null).to_string()
+                                    }]
+                                }
+                            });
+                            let _ = state_clone.sse_tx.send(reply.to_string());
+                        }
+                        _ => {
+                            let reply = json!({
+                                "jsonrpc": "2.0",
+                                "id": id,
+                                "result": {
+                                    "content": [{ "type": "text", "text": "ok" }]
+                                }
+                            });
+                            let _ = state_clone.sse_tx.send(reply.to_string());
+                        }
+                    }
+                });
+            }
+            _ => {
+                let reply = json!({
+                    "jsonrpc": "2.0",
+                    "id": id,
+                    "error": { "code": -32601, "message": "method not found" }
+                });
+                let _ = state.sse_tx.send(reply.to_string());
+            }
+        }
+        StatusCode::ACCEPTED
+    }
+
+    async fn spawn_mock_modern_sse_server(
+        initial_tools: Vec<Value>,
+    ) -> Result<
+        (
+            String,
+            MockSseServerState,
+            mpsc::UnboundedReceiver<Value>,
+            tokio::task::JoinHandle<()>,
+        ),
+        String,
+    > {
+        let (sse_tx, _) = broadcast::channel::<String>(64);
+        let (incoming_tx, incoming_rx) = mpsc::unbounded_channel();
+        let state = MockSseServerState {
+            sse_tx,
+            tools: Arc::new(StdMutex::new(initial_tools)),
+            incoming_tx,
+            elicit_responses: Arc::new(StdMutex::new(HashMap::new())),
+        };
+        let app = Router::new()
+            .route("/sse", get(mock_sse_endpoint))
+            .route("/message", post(mock_message_endpoint))
+            .with_state(state.clone());
+
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .map_err(|e| format!("bind failed: {e}"))?;
+        let addr = listener.local_addr().map_err(|e| format!("addr failed: {e}"))?;
+        let handle = tokio::spawn(async move {
+            let _ = axum::serve(listener, app).await;
+        });
+        Ok((format!("http://{addr}/sse"), state, incoming_rx, handle))
+    }
+
+    fn sample_tool(name: &str) -> Value {
+        json!({
+            "name": name,
+            "description": format!("Mock tool {name}"),
+            "inputSchema": { "type": "object", "properties": {} }
+        })
+    }
 
     #[tokio::test]
-    async fn mcp_concurrency_semaphore_rejects_when_saturated() {
+    async fn mcp_concurrency_semaphore_rejects_when_saturated() -> Result<(), String> {
         let sem = std::sync::Arc::new(tokio::sync::Semaphore::new(2));
         let p1 = acquire_mcp_permit_with(&sem, Duration::from_millis(50), "srv", "op1")
             .await
-            .expect("first permit");
+            .map_err(|e| format!("first permit failed: {e}"))?;
         let p2 = acquire_mcp_permit_with(&sem, Duration::from_millis(50), "srv", "op2")
             .await
-            .expect("second permit");
+            .map_err(|e| format!("second permit failed: {e}"))?;
 
-        let err = acquire_mcp_permit_with(&sem, Duration::from_millis(20), "srv", "op3")
-            .await
-            .expect_err("third concurrent call must time out on semaphore");
+        let Err(err) = acquire_mcp_permit_with(&sem, Duration::from_millis(20), "srv", "op3").await
+        else {
+            return Err("third concurrent call must time out on semaphore".to_string());
+        };
         assert!(err.to_string().contains("saturated"));
 
         drop(p1);
         let p3 = acquire_mcp_permit_with(&sem, Duration::from_millis(50), "srv", "op3_retry")
             .await
-            .expect("permit should succeed after release");
+            .map_err(|e| format!("permit after release failed: {e}"))?;
         drop(p2);
         drop(p3);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn mcp_protocol_negotiation_and_tools_list_changed_hot_reload() -> Result<(), String> {
+        let _guard = mcp_lib_test_lock().lock().await;
+        let (_dir, core) = temp_core()?;
+        let (sse_url, state, _incoming_rx, server_handle) =
+            spawn_mock_modern_sse_server(vec![sample_tool("tool_alpha")]).await?;
+
+        let server_name = "mock-modern-cap-reload";
+        let mut events = core.events().subscribe();
+
+        add_mcp_server(
+            core.clone(),
+            server_name.to_string(),
+            McpServerConfig::Sse {
+                url: sse_url,
+                headers: HashMap::new(),
+            },
+            None,
+        )
+        .await
+        .map_err(|e| format!("add_mcp_server failed: {e}"))?;
+
+        let statuses = get_mcp_server_statuses(core.clone())
+            .await
+            .map_err(|e| format!("get_mcp_server_statuses failed: {e}"))?;
+        let status = statuses
+            .iter()
+            .find(|s| s.name == server_name)
+            .ok_or_else(|| "missing server status".to_string())?;
+        assert_eq!(status.protocol_version.as_deref(), Some("2025-11-25"));
+        let caps = status
+            .capabilities
+            .as_ref()
+            .ok_or_else(|| "missing negotiated capabilities".to_string())?;
+        assert!(caps.tools);
+        assert!(caps.tools_list_changed);
+        assert!(caps.resources);
+        assert!(caps.prompts);
+        assert!(caps.logging);
+        assert_eq!(status.tool_count, 1);
+
+        // Push notifications/tools/list_changed with an updated tool list
+        if let Ok(mut guard) = state.tools.lock() {
+            guard.push(sample_tool("tool_beta"));
+        }
+        let _ = state.sse_tx.send(
+            json!({
+                "jsonrpc": "2.0",
+                "method": "notifications/tools/list_changed"
+            })
+            .to_string(),
+        );
+
+        let updated_count = tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                match events.recv().await {
+                    Ok(NovaEvent::McpToolsChanged {
+                        server_name: ev_srv,
+                        tool_count,
+                    }) if ev_srv == server_name => return Ok(tool_count),
+                    Ok(_) => continue,
+                    Err(e) => return Err(format!("event recv error: {e}")),
+                }
+            }
+        })
+        .await
+        .map_err(|_| "timed out waiting for McpToolsChanged event".to_string())??;
+
+        assert_eq!(updated_count, 2);
+        let statuses_after = get_mcp_server_statuses(core.clone())
+            .await
+            .map_err(|e| format!("get_mcp_server_statuses failed: {e}"))?;
+        let status_after = statuses_after
+            .iter()
+            .find(|s| s.name == server_name)
+            .ok_or_else(|| "missing status after tools/list_changed".to_string())?;
+        assert_eq!(status_after.tool_count, 2);
+        assert!(
+            crate::agent::capabilities::mcp_tools::find_cached_mcp_tool(
+                "mcp__mock-modern-cap-reload__tool_beta"
+            )
+            .is_some(),
+            "tool_beta must be present in mcp_tools cache"
+        );
+
+        let _ = remove_mcp_server(core, server_name.to_string()).await;
+        server_handle.abort();
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn mcp_cancellation_sends_notifications_cancelled_to_server() -> Result<(), String> {
+        let _guard = mcp_lib_test_lock().lock().await;
+        let (_dir, core) = temp_core()?;
+        let (sse_url, _state, mut incoming_rx, server_handle) =
+            spawn_mock_modern_sse_server(vec![sample_tool("slow_tool")]).await?;
+
+        let server_name = "mock-modern-cancel";
+        add_mcp_server(
+            core.clone(),
+            server_name.to_string(),
+            McpServerConfig::Sse {
+                url: sse_url,
+                headers: HashMap::new(),
+            },
+            None,
+        )
+        .await
+        .map_err(|e| format!("add_mcp_server failed: {e}"))?;
+
+        let conv_id = "conv-mcp-cancel-test".to_string();
+        let SubmitTurnDecision::StartNow { .. } = submit_turn(
+            &conv_id,
+            "run slow tool".to_string(),
+            None,
+            TurnSubmitMode::StartOrSteer,
+            Some("client-cancel".to_string()),
+        ) else {
+            return Err("expected StartNow decision".to_string());
+        };
+
+        let call_handle = tokio::spawn({
+            let core = core.clone();
+            let conv_id = conv_id.clone();
+            async move {
+                call_mcp_tool_with_context(
+                    core,
+                    Some(conv_id),
+                    server_name.to_string(),
+                    "slow_tool".to_string(),
+                    json!({}),
+                    None,
+                )
+                .await
+            }
+        });
+
+        // Wait until server actually receives the slow tools/call request
+        let slow_request_id = tokio::time::timeout(Duration::from_secs(5), async {
+            while let Some(msg) = incoming_rx.recv().await {
+                if msg.get("method").and_then(Value::as_str) == Some("tools/call") {
+                    return msg.get("id").cloned();
+                }
+            }
+            None
+        })
+        .await
+        .map_err(|_| "timed out waiting for slow tools/call".to_string())?
+        .ok_or_else(|| "missing slow tools/call id".to_string())?;
+
+        assert!(request_cancel(Some(&conv_id)));
+
+        let cancelled_request_id = tokio::time::timeout(Duration::from_secs(5), async {
+            while let Some(msg) = incoming_rx.recv().await {
+                if msg.get("method").and_then(Value::as_str) == Some("notifications/cancelled") {
+                    return msg
+                        .get("params")
+                        .and_then(|p| p.get("requestId"))
+                        .cloned();
+                }
+            }
+            None
+        })
+        .await
+        .map_err(|_| "timed out waiting for notifications/cancelled".to_string())?
+        .ok_or_else(|| "missing requestId in notifications/cancelled".to_string())?;
+
+        assert_eq!(cancelled_request_id, slow_request_id);
+
+        let call_res = tokio::time::timeout(Duration::from_secs(5), call_handle)
+            .await
+            .map_err(|_| "call_handle did not finish promptly after cancel".to_string())?
+            .map_err(|e| format!("call_handle join error: {e}"))?;
+        assert!(call_res.is_err(), "cancelled tool call must return Err");
+
+        let _ = complete_turn_and_take_next(Some(&conv_id));
+        let _ = remove_mcp_server(core, server_name.to_string()).await;
+        server_handle.abort();
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn mcp_elicitation_form_url_cross_client_guard_and_disconnect_fail_closed(
+    ) -> Result<(), String> {
+        let _guard = mcp_lib_test_lock().lock().await;
+        let (_dir, core) = temp_core()?;
+        let (sse_url, _state, _incoming_rx, server_handle) = spawn_mock_modern_sse_server(vec![
+            sample_tool("elicit_form"),
+            sample_tool("elicit_url"),
+        ])
+        .await?;
+
+        let server_name = "mock-modern-elicit";
+        add_mcp_server(
+            core.clone(),
+            server_name.to_string(),
+            McpServerConfig::Sse {
+                url: sse_url,
+                headers: HashMap::new(),
+            },
+            None,
+        )
+        .await
+        .map_err(|e| format!("add_mcp_server failed: {e}"))?;
+
+        let conv_id = "conv-mcp-elicit-test".to_string();
+        let SubmitTurnDecision::StartNow { .. } = submit_turn(
+            &conv_id,
+            "run elicitation".to_string(),
+            None,
+            TurnSubmitMode::StartOrSteer,
+            Some("client-A".to_string()),
+        ) else {
+            return Err("expected StartNow decision".to_string());
+        };
+
+        let mut events = core.events().subscribe();
+
+        // 1) Form elicitation + cross-client guard + accept
+        let form_call = tokio::spawn({
+            let core = core.clone();
+            let conv_id = conv_id.clone();
+            async move {
+                call_mcp_tool_with_context(
+                    core,
+                    Some(conv_id),
+                    server_name.to_string(),
+                    "elicit_form".to_string(),
+                    json!({}),
+                    None,
+                )
+                .await
+            }
+        });
+
+        let form_req_id = tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                match events.recv().await {
+                    Ok(NovaEvent::McpElicitationRequested {
+                        request_id,
+                        server_name: ev_srv,
+                        mode,
+                        requested_schema,
+                        ..
+                    }) if ev_srv == server_name => {
+                        assert_eq!(mode, "form");
+                        assert!(requested_schema.is_some());
+                        return Ok(request_id);
+                    }
+                    Ok(_) => continue,
+                    Err(e) => return Err(format!("event recv failed: {e}")),
+                }
+            }
+        })
+        .await
+        .map_err(|_| "timed out waiting for form elicitation event".to_string())??;
+
+        let wrong_client_res = resolve_mcp_elicitation(
+            form_req_id.clone(),
+            McpElicitationDecision {
+                action: "accept".to_string(),
+                content: Some(json!({ "branch": "hijacked" })),
+            },
+            Some("client-B"),
+        );
+        assert!(
+            wrong_client_res.is_err(),
+            "non-owning client-B must be rejected"
+        );
+
+        let accepted = resolve_mcp_elicitation(
+            form_req_id,
+            McpElicitationDecision {
+                action: "accept".to_string(),
+                content: Some(json!({ "branch": "main" })),
+            },
+            Some("client-A"),
+        )
+        .map_err(|e| format!("owning client accept failed: {e}"))?;
+        assert!(accepted);
+
+        let form_result = form_call
+            .await
+            .map_err(|e| format!("form call join failed: {e}"))?
+            .map_err(|e| format!("form call failed: {e}"))?;
+        let form_text = form_result
+            .get("content")
+            .and_then(|c| c.get(0))
+            .and_then(|item| item.get("text"))
+            .and_then(Value::as_str)
+            .unwrap_or("");
+        assert!(form_text.contains("\"action\":\"accept\""));
+        assert!(form_text.contains("\"branch\":\"main\""));
+
+        // 2) URL elicitation + originating client disconnect -> fail-closed cancel
+        let url_call = tokio::spawn({
+            let core = core.clone();
+            let conv_id = conv_id.clone();
+            async move {
+                call_mcp_tool_with_context(
+                    core,
+                    Some(conv_id),
+                    server_name.to_string(),
+                    "elicit_url".to_string(),
+                    json!({}),
+                    None,
+                )
+                .await
+            }
+        });
+
+        tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                match events.recv().await {
+                    Ok(NovaEvent::McpElicitationRequested {
+                        server_name: ev_srv,
+                        mode,
+                        url,
+                        ..
+                    }) if ev_srv == server_name => {
+                        assert_eq!(mode, "url");
+                        assert_eq!(url.as_deref(), Some("https://example.com/authorize"));
+                        return Ok::<(), String>(());
+                    }
+                    Ok(_) => continue,
+                    Err(e) => return Err(format!("event recv failed: {e}")),
+                }
+            }
+        })
+        .await
+        .map_err(|_| "timed out waiting for url elicitation event".to_string())??;
+
+        let cancelled_count = cancel_elicitations_for_client("client-A");
+        assert_eq!(cancelled_count, 1);
+
+        let url_result = url_call
+            .await
+            .map_err(|e| format!("url call join failed: {e}"))?
+            .map_err(|e| format!("url call failed: {e}"))?;
+        let url_text = url_result
+            .get("content")
+            .and_then(|c| c.get(0))
+            .and_then(|item| item.get("text"))
+            .and_then(Value::as_str)
+            .unwrap_or("");
+        assert!(
+            url_text.contains("\"action\":\"cancel\""),
+            "client disconnect must fail-closed with action=cancel, got {url_text}"
+        );
+
+        let _ = complete_turn_and_take_next(Some(&conv_id));
+        let _ = remove_mcp_server(core, server_name.to_string()).await;
+        server_handle.abort();
+        Ok(())
     }
 }

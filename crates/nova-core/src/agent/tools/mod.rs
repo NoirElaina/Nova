@@ -738,8 +738,13 @@ pub(crate) async fn execute_tool_with_app(
         }
     }
 
-    if let Some(output) =
-        crate::agent::capabilities::mcp_tools::execute_dynamic_with_app(core, name, input.clone()).await
+    if let Some(output) = crate::agent::capabilities::mcp_tools::execute_dynamic_with_app(
+        core,
+        conversation_id,
+        name,
+        input.clone(),
+    )
+    .await
     {
         return output;
     }

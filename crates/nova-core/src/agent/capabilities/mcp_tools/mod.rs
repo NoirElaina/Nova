@@ -35,6 +35,29 @@ pub fn find_cached_mcp_tool(name: &str) -> Option<Tool> {
         .cloned()
 }
 
+/// 增量刷新单个 MCP 服务在内存缓存中的工具列表（供 `notifications/tools/list_changed` 热更新）。
+pub fn refresh_server_tools_cache(
+    server_name: &str,
+    server_tools: &[crate::agent::capabilities::mcp::McpToolInfo],
+) {
+    let prefix = format!("mcp__{}__", server_name.trim());
+    if let Ok(mut w) = mcp_tools_cache().write() {
+        w.retain(|tool| !tool.name.starts_with(&prefix));
+        for t in server_tools {
+            w.push(Tool {
+                name: build_mcp_tool_name(server_name, &t.name),
+                description: t.description.clone().unwrap_or_else(|| {
+                    format!("MCP tool '{}' from server '{}'.", t.name, server_name)
+                }),
+                input_schema: t
+                    .input_schema
+                    .clone()
+                    .unwrap_or_else(|| serde_json::json!({ "type": "object", "properties": {} })),
+            });
+        }
+    }
+}
+
 /// 异步拉取已连接 MCP 服务器的全部工具列表，并原子更新同步内存缓存。
 pub async fn refresh_mcp_tools_cache(core: &Core) -> Vec<Tool> {
     let tools = collect_mcp_tools(core).await;
@@ -65,13 +88,21 @@ pub fn dynamic_tool_read_only(_name: &str) -> Option<bool> {
 
 pub(crate) async fn execute_dynamic_with_app(
     core: &Core,
+    conversation_id: Option<&str>,
     name: &str,
     arguments: serde_json::Value,
 ) -> Option<ToolExecResult> {
     let (server_name, tool_name) = parse_mcp_tool_name(name)?;
     Some(
-        match crate::agent::capabilities::mcp::call_mcp_tool(core.clone(), server_name, tool_name, arguments)
-            .await
+        match crate::agent::capabilities::mcp::call_mcp_tool_with_context(
+            core.clone(),
+            conversation_id.map(str::to_string),
+            server_name,
+            tool_name,
+            arguments,
+            None,
+        )
+        .await
         {
             Ok(v) if v.get("isError").and_then(|value| value.as_bool()) == Some(true) => {
                 Err(ToolFailure::mcp(v.to_string()))

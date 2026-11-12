@@ -4,7 +4,8 @@ use serde_json::Value;
 
 // 复用 services 层的 MCP 对外类型。
 pub use crate::agent::capabilities::mcp::{
-    McpResourceInfo, McpServerConfig, McpServerEntry, McpServerStatus, McpToolInfo,
+    McpElicitationDecision, McpNegotiatedCapabilities, McpOAuthLoginResult, McpResourceInfo,
+    McpServerConfig, McpServerEntry, McpServerStatus, McpToolInfo,
 };
 
 pub async fn add_mcp_server(
@@ -140,6 +141,46 @@ pub async fn call_mcp_tool(
     )
     .await;
     report_backend_result(&app_handle, "command.mcp.call_mcp_tool", result, None)
+}
+
+pub async fn mcp_oauth_login(
+    core: &crate::core::Core,
+    server_name: String,
+    client_id: Option<String>,
+    scopes: Option<Vec<String>>,
+) -> Result<McpOAuthLoginResult, NovaCoreError> {
+    let app_handle = core.clone();
+    let result = crate::agent::capabilities::mcp::mcp_oauth_login(
+        core.clone(),
+        server_name,
+        client_id,
+        scopes.unwrap_or_default(),
+    )
+    .await;
+    report_backend_result(&app_handle, "command.mcp.mcp_oauth_login", result, None)
+}
+
+pub async fn mcp_oauth_logout(
+    core: &crate::core::Core,
+    server_name: String,
+) -> Result<McpOAuthLoginResult, NovaCoreError> {
+    let app_handle = core.clone();
+    let result = crate::agent::capabilities::mcp::mcp_oauth_logout(core.clone(), server_name).await;
+    report_backend_result(&app_handle, "command.mcp.mcp_oauth_logout", result, None)
+}
+
+pub fn resolve_mcp_elicitation(
+    core: &crate::core::Core,
+    request_id: String,
+    decision: McpElicitationDecision,
+    caller_client_id: Option<&str>,
+) -> Result<bool, NovaCoreError> {
+    let result = crate::agent::capabilities::mcp::resolve_mcp_elicitation(
+        request_id,
+        decision,
+        caller_client_id,
+    );
+    report_backend_result(core, "command.mcp.resolve_mcp_elicitation", result, None)
 }
 
 pub async fn warmup_runtime(core: &crate::core::Core) -> Result<(), NovaCoreError> {

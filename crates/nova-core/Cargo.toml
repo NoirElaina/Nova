@@ -48,6 +48,21 @@ tree-sitter-bash = "0.23"
 libc = "0.2"
 dirs = "6"
 portable-pty = "0.9.0"
+rmcp = { version = "3.9", features = [
+    "auth",
+    "client",
+    "client-side-sse",
+    "elicitation",
+    "transport-async-rw",
+    "transport-child-process",
+    "transport-streamable-http-client",
+    "transport-streamable-http-client-reqwest",
+    "transport-worker",
+] }
+http = "1"
+sse-stream = "0.2"
+oauth2 = { version = "5", default-features = false }
+open = "5"
 
 [target.'cfg(windows)'.dependencies]
 winreg = "0.10"

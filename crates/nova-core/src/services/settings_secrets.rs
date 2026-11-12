@@ -103,6 +103,11 @@ fn get_master_key() -> Result<[u8; KEY_LEN], String> {
         .ok_or_else(|| "Master key not initialized; call init_master_key first".to_string())
 }
 
+#[cfg(test)]
+pub(crate) fn init_ephemeral_test_master_key() {
+    let _ = MASTER_KEY.set([0x42_u8; KEY_LEN]);
+}
+
 fn master_key_account(data_dir: &Path) -> String {
     let normalized = std::fs::canonicalize(data_dir)
         .unwrap_or_else(|_| data_dir.to_path_buf())

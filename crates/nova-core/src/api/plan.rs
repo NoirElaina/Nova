@@ -12,6 +12,6 @@ pub async fn get_conversation_plan(
     core: &crate::core::Core,
     conversation_id: Option<String>,
 ) -> Result<Option<ConversationPlan>, String> {
-    let result = plan_files::load_conversation_plan(&core, conversation_id.as_deref());
-    report_backend_result(&core, "command.plan.get_conversation_plan", result, None)
+    let result = plan_files::load_conversation_plan(core, conversation_id.as_deref());
+    report_backend_result(core, "command.plan.get_conversation_plan", result, None)
 }

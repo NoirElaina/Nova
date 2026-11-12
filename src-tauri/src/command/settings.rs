@@ -59,3 +59,21 @@ pub async fn get_model_catalog(search: Option<String>, modality: Option<String>)
         Err(_) => Default::default(),
     }
 }
+
+#[tauri::command]
+pub async fn get_sandbox_status() -> nova_protocol::misc::SandboxStatus {
+    match crate::daemon::invoke("get_sandbox_status", serde_json::json!({})).await {
+        Ok(v) => serde_json::from_value(v).unwrap_or_default(),
+        Err(_) => Default::default(),
+    }
+}
+
+#[tauri::command]
+pub async fn export_diagnostic_bundle(target_path: Option<String>) -> Result<String, String> {
+    let value = crate::daemon::invoke(
+        "export_diagnostic_bundle",
+        serde_json::json!({"targetPath": target_path}),
+    )
+    .await?;
+    serde_json::from_value(value).map_err(|e| e.to_string())
+}

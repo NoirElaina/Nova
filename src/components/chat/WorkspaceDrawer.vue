@@ -1,10 +1,12 @@
 <script setup lang="ts">
 import { computed, defineAsyncComponent, onBeforeUnmount, ref, watch } from 'vue';
 import { Button } from '@/components/ui/button';
+import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import {
   FileText,
   FolderOpen,
   Globe,
+  Network,
   Route,
   SquareTerminal,
   X,
@@ -16,6 +18,7 @@ import CodeDiffTab from './workspace/CodeDiffTab.vue';
 import FilesTab from './workspace/FilesTab.vue';
 import BrowserTab from './workspace/BrowserTab.vue';
 import TraceTab from './workspace/TraceTab.vue';
+import CollaborationTab from './workspace/CollaborationTab.vue';
 
 const TerminalTab = defineAsyncComponent(() => import('./workspace/TerminalTab.vue'));
 
@@ -25,7 +28,7 @@ const emit = defineEmits<{
   (e: 'resize-end'): void;
 }>();
 
-type TabId = 'files' | 'diff' | 'terminal' | 'browser' | 'trace';
+type TabId = 'files' | 'diff' | 'collab' | 'terminal' | 'browser' | 'trace';
 
 const props = defineProps<{
   open: boolean;
@@ -38,6 +41,7 @@ const props = defineProps<{
   assistantTurnCost?: TurnCost;
   conversationId?: string | null;
   browserOpenRequestKey?: number;
+  terminalBgFocusKey?: number;
   /** 面板宽度（停靠式布局，占布局空间，可拖拽调整）。 */
   width?: number;
 }>();
@@ -48,6 +52,7 @@ const activeTab = ref<TabId>('files');
 const tabs: { id: TabId; label: string; icon: Component }[] = [
   { id: 'files', label: '文件', icon: FolderOpen },
   { id: 'diff', label: '审查', icon: FileText },
+  { id: 'collab', label: '协同', icon: Network },
   { id: 'terminal', label: '终端', icon: SquareTerminal },
   { id: 'browser', label: '浏览器', icon: Globe },
   { id: 'trace', label: '轨迹', icon: Route },
@@ -136,22 +141,20 @@ onBeforeUnmount(() => {
         >
           <div class="flex h-11 shrink-0 items-center justify-between gap-2 border-b border-[#eef0f3] px-2 dark:border-[#2c2c2c]">
             <!-- 页签条：全部页签直接平铺，图标+文字，点击即切换 -->
-            <div class="custom-scrollbar flex min-w-0 flex-1 items-center gap-0.5 overflow-x-auto">
-              <button
-                v-for="tab in tabs"
-                :key="tab.id"
-                type="button"
-                class="flex h-7 shrink-0 items-center gap-1.5 rounded-lg px-2 text-[12px] transition-colors"
-                :class="activeTab === tab.id
-                  ? 'bg-[#eef2f7] font-medium text-[#111827] dark:bg-white/12 dark:text-[#ececec]'
-                  : 'text-[#64748b] hover:bg-[#f5f6f8] hover:text-[#334155] dark:text-[#8a8a8a] dark:hover:bg-white/5 dark:hover:text-[#ccc]'"
-                :title="tab.label"
-                @click="selectTab(tab.id)"
-              >
-                <component :is="tab.icon" class="h-3.5 w-3.5 shrink-0" />
-                <span>{{ tab.label }}</span>
-              </button>
-            </div>
+            <Tabs :model-value="activeTab" @update:model-value="selectTab($event as any)" class="min-w-0 flex-1">
+              <TabsList class="h-8 p-0.5 bg-muted/60 flex items-center justify-start overflow-x-auto custom-scrollbar">
+                <TabsTrigger
+                  v-for="tab in tabs"
+                  :key="tab.id"
+                  :value="tab.id"
+                  class="h-7 px-2 text-[12px] gap-1.5 shrink-0"
+                  :title="tab.label"
+                >
+                  <component :is="tab.icon" class="h-3.5 w-3.5 shrink-0" />
+                  <span>{{ tab.label }}</span>
+                </TabsTrigger>
+              </TabsList>
+            </Tabs>
 
             <Button
               type="button"
@@ -178,10 +181,16 @@ onBeforeUnmount(() => {
             :conversationId="conversationId ?? null"
           />
 
+          <CollaborationTab
+            v-else-if="activeTab === 'collab'"
+            :conversationId="conversationId ?? null"
+          />
+
           <TerminalTab
             v-show="activeTab === 'terminal'"
             :conversationId="conversationId ?? null"
             :visible="open && activeTab === 'terminal'"
+            :focusBgRequestKey="terminalBgFocusKey"
           />
 
           <BrowserTab
@@ -203,7 +212,7 @@ onBeforeUnmount(() => {
 </template>
 
 <style scoped>
-/* 停靠式面板：与参考应用一致，占据布局空间压缩聊天区，宽度可拖拽调整 */
+/* 停靠式面板：占据布局空间压缩聊天区，宽度可拖拽调整 */
 .workspace-drawer-docked {
   flex-shrink: 0;
   overflow: hidden;

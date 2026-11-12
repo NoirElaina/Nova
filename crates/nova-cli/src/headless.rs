@@ -65,25 +65,17 @@ pub async fn run(options: HeadlessOptions) -> anyhow::Result<()> {
     });
 
     let mut turn_error: Option<String> = None;
-    loop {
-        match events.recv().await {
-            Ok((name, payload)) if name == "agent-event" => {
-                match handle_agent_event(&client, &conversation_id, &payload, options.yes).await {
-                    Flow::Continue => {}
-                    Flow::Finished(error) => {
-                        turn_error = error;
-                        break;
-                    }
+    while let Some((name, payload)) = events.recv().await {
+        if name == "agent-event" {
+            match handle_agent_event(&client, &conversation_id, &payload, options.yes).await {
+                Flow::Continue => {}
+                Flow::Finished(error) => {
+                    turn_error = error;
+                    break;
                 }
             }
-            Ok((name, payload)) if name == "backend-error" || name == "backend-warning" => {
-                eprintln!("[{}] {}", name, payload);
-            }
-            Ok(_) => {}
-            Err(tokio::sync::broadcast::error::RecvError::Lagged(count)) => {
-                eprintln!("[warn] 事件流滞后，丢弃 {} 条事件", count);
-            }
-            Err(_) => break,
+        } else if name == "backend-error" || name == "backend-warning" {
+            eprintln!("[{}] {}", name, payload);
         }
     }
 

@@ -21,60 +21,35 @@ fn main() {
         Err(error) => println!("    失败: {error}"),
     }
 
-    println!("[2] 为工作区分配合成 SID");
-    let cap_sid = match windows::workspace_write_sid(&data_dir, &workspace) {
-        Ok(sid) => {
-            println!("    {sid}");
-            sid
-        }
-        Err(error) => {
-            println!("    失败: {error}");
-            return;
-        }
-    };
-
-    println!("[3] 给工作区授予该 SID 完全控制");
-    if let Err(error) = windows::grant_workspace_write(&workspace, &cap_sid) {
-        println!("    失败: {error}");
-        return;
-    }
-    println!("    ok  ws={}", workspace.display());
-
-    println!("[4] 创建写限制令牌");
-    let token = match windows::create_write_restricted_token(&[cap_sid.clone()]) {
-        Ok(token) => {
-            println!("    ok");
-            token
-        }
-        Err(error) => {
-            println!("    失败: {error}");
-            return;
-        }
-    };
-
-    println!("[5] 写工作区（应成功）");
+    println!("[2] 写工作区（应成功）");
     let ws_file = workspace.join("probe.txt");
     let _ = std::fs::remove_file(&ws_file);
-    let _ = windows::spawn_restricted(
-        token,
+    let _ = windows::spawn_sandboxed_pipe(
+        nova_core::agent::sandbox::SandboxPolicy::WorkspaceWrite,
+        &data_dir,
+        &workspace,
+        &workspace,
         cmd,
         &["/C", &format!("echo probe>\"{}\"", ws_file.display())],
-        Some(&workspace),
-        5000,
+        &[],
     );
+    std::thread::sleep(std::time::Duration::from_millis(500));
     println!("    exists={}（应为 true）", ws_file.exists());
 
-    println!("[6] 写家目录（应失败）");
+    println!("[3] 写家目录（应失败）");
     let home = std::env::var("USERPROFILE").unwrap_or_default();
     let home_file = format!("{}\\nova_sandbox_probe.txt", home);
     let _ = std::fs::remove_file(&home_file);
-    let _ = windows::spawn_restricted(
-        token,
+    let _ = windows::spawn_sandboxed_pipe(
+        nova_core::agent::sandbox::SandboxPolicy::WorkspaceWrite,
+        &data_dir,
+        &workspace,
+        &workspace,
         cmd,
         &["/C", &format!("echo probe>\"{home_file}\"")],
-        Some(&workspace),
-        5000,
+        &[],
     );
+    std::thread::sleep(std::time::Duration::from_millis(500));
     println!(
         "    exists={}（应为 false）",
         Path::new(&home_file).exists()

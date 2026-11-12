@@ -46,7 +46,10 @@ pub(crate) fn normalize_path_for_match(path: &str) -> String {
 }
 
 pub(crate) fn normalize_command_for_match(command: &str) -> String {
+    // 换行是命令边界，不能折叠成空格：否则 `git status\nrm -rf x` 会退化成
+    // `git status rm -rf x`，被 `exec_command:git status` 的**前缀规则**命中放行。
     command
+        .replace(['\n', '\r'], " ; ")
         // 压缩空白，避免同义命令因空格差异得到不同签名。
         .split_whitespace()
         .collect::<Vec<_>>()
@@ -57,6 +60,179 @@ pub(crate) fn normalize_command_for_match(command: &str) -> String {
 
 pub(crate) fn truncate_chars(input: &str, max_chars: usize) -> String {
     input.chars().take(max_chars).collect::<String>()
+}
+
+#[derive(Debug, Default)]
+pub(crate) struct ShellCommandScan {
+    pub stages: Vec<Vec<String>>,
+    pub has_redirection: bool,
+    pub has_subshell_or_backtick: bool,
+    pub has_unquoted_ampersand: bool,
+    pub has_unclosed_quote: bool,
+    pub has_unquoted_metachar: bool,
+}
+
+/// 引号感知的 shell 命令扫描器，统一供 `check_windows_powershell_fallback` 与前缀规则匹配使用。
+///
+/// 规则：
+/// - 单引号 `'...'` 内部视为字面量（PowerShell / POSIX 同构处理，不在其内分割 `;`/`|`/`&`/`>`）；
+/// - 双引号 `"..."` 内部不做命令分隔分割，但仍识别命令替换 `$(` 与反引号 `` ` ``；
+/// - 引号外识别 `;`、`|`、`&&`、`||`、`\n`、`\r` 为阶段边界，识别 `&`、`>`、`<`、`$(`、`` ` ``、`(`、`)`、`{`、`}` 等元字符。
+pub(crate) fn scan_shell_command(command: &str) -> ShellCommandScan {
+    #[derive(Clone, Copy, PartialEq, Eq)]
+    enum Quote {
+        None,
+        Single,
+        Double,
+    }
+
+    let mut scan = ShellCommandScan::default();
+    let mut quote = Quote::None;
+    let mut stages: Vec<Vec<String>> = Vec::new();
+    let mut stage: Vec<String> = Vec::new();
+    let mut tok = String::new();
+    let mut tok_active = false;
+
+    let flush_tok = |stage: &mut Vec<String>, tok: &mut String, tok_active: &mut bool| {
+        if *tok_active {
+            stage.push(std::mem::take(tok));
+            *tok_active = false;
+        }
+    };
+    let flush_stage = |stages: &mut Vec<Vec<String>>, stage: &mut Vec<String>| {
+        if !stage.is_empty() {
+            stages.push(std::mem::take(stage));
+        }
+    };
+
+    let chars: Vec<char> = command.chars().collect();
+    let mut i = 0usize;
+    while i < chars.len() {
+        let ch = chars[i];
+        match quote {
+            Quote::Single => {
+                if ch == '\'' {
+                    quote = Quote::None;
+                } else {
+                    tok.push(ch);
+                }
+                i += 1;
+            }
+            Quote::Double => {
+                if ch == '"' {
+                    quote = Quote::None;
+                    i += 1;
+                } else if ch == '`' {
+                    // PowerShell / POSIX 双引号内的反引号可能带来逃逸或命令替换，保守标记。
+                    scan.has_subshell_or_backtick = true;
+                    scan.has_unquoted_metachar = true;
+                    tok.push(ch);
+                    i += 1;
+                } else if ch == '$' && chars.get(i + 1) == Some(&'(') {
+                    scan.has_subshell_or_backtick = true;
+                    scan.has_unquoted_metachar = true;
+                    tok.push('$');
+                    tok.push('(');
+                    i += 2;
+                } else if ch == '\\' && chars.get(i + 1) == Some(&'"') {
+                    tok.push('"');
+                    i += 2;
+                } else {
+                    tok.push(ch);
+                    i += 1;
+                }
+            }
+            Quote::None => match ch {
+                '\'' => {
+                    quote = Quote::Single;
+                    tok_active = true;
+                    i += 1;
+                }
+                '"' => {
+                    quote = Quote::Double;
+                    tok_active = true;
+                    i += 1;
+                }
+                '`' => {
+                    scan.has_subshell_or_backtick = true;
+                    scan.has_unquoted_metachar = true;
+                    tok_active = true;
+                    tok.push(ch);
+                    i += 1;
+                }
+                '$' if chars.get(i + 1) == Some(&'(') => {
+                    scan.has_subshell_or_backtick = true;
+                    scan.has_unquoted_metachar = true;
+                    tok_active = true;
+                    tok.push('$');
+                    tok.push('(');
+                    i += 2;
+                }
+                '>' | '<' => {
+                    scan.has_redirection = true;
+                    scan.has_unquoted_metachar = true;
+                    flush_tok(&mut stage, &mut tok, &mut tok_active);
+                    stage.push(ch.to_string());
+                    i += 1;
+                }
+                '&' if chars.get(i + 1) == Some(&'&') => {
+                    scan.has_unquoted_metachar = true;
+                    flush_tok(&mut stage, &mut tok, &mut tok_active);
+                    flush_stage(&mut stages, &mut stage);
+                    i += 2;
+                }
+                '&' => {
+                    // 孤立 `&`：可能是 PowerShell call operator `& 'exe'` 或后台/cmd 串联符
+                    scan.has_unquoted_ampersand = true;
+                    scan.has_unquoted_metachar = true;
+                    flush_tok(&mut stage, &mut tok, &mut tok_active);
+                    flush_stage(&mut stages, &mut stage);
+                    i += 1;
+                }
+                '|' if chars.get(i + 1) == Some(&'|') => {
+                    scan.has_unquoted_metachar = true;
+                    flush_tok(&mut stage, &mut tok, &mut tok_active);
+                    flush_stage(&mut stages, &mut stage);
+                    i += 2;
+                }
+                '|' | ';' | '\n' | '\r' => {
+                    scan.has_unquoted_metachar = true;
+                    flush_tok(&mut stage, &mut tok, &mut tok_active);
+                    flush_stage(&mut stages, &mut stage);
+                    i += 1;
+                }
+                '(' | ')' | '{' | '}' => {
+                    scan.has_subshell_or_backtick = true;
+                    flush_tok(&mut stage, &mut tok, &mut tok_active);
+                    stage.push(ch.to_string());
+                    i += 1;
+                }
+                c if c.is_whitespace() => {
+                    flush_tok(&mut stage, &mut tok, &mut tok_active);
+                    i += 1;
+                }
+                other => {
+                    tok_active = true;
+                    tok.push(other);
+                    i += 1;
+                }
+            },
+        }
+    }
+
+    if quote != Quote::None {
+        scan.has_unclosed_quote = true;
+        scan.has_unquoted_metachar = true;
+    }
+    flush_tok(&mut stage, &mut tok, &mut tok_active);
+    flush_stage(&mut stages, &mut stage);
+    scan.stages = stages;
+    scan
+}
+
+/// 前缀规则后缀检查：引号外不允许存在命令拼接、管道、重定向、命令替换或未闭合引号。
+pub(crate) fn has_unquoted_shell_metachar(rest: &str) -> bool {
+    scan_shell_command(rest).has_unquoted_metachar
 }
 
 /// 检查路径是否触碰受保护路径。公开供 bash_ast 模块调用。
@@ -219,17 +395,38 @@ pub(crate) fn check_command(command: &str) -> (RiskLevel, Option<String>) {
 
 #[cfg(target_os = "windows")]
 fn check_windows_powershell_fallback(command: &str) -> Option<(RiskLevel, Option<String>)> {
-    let lower = command.to_ascii_lowercase();
+    let scan = scan_shell_command(command);
 
-    // 1. 检查是否存在重定向符号写入文件
-    if lower.contains('>') {
+    // 1. 未闭合引号直接交由 AST / 保守 Risky 处理，绝不放行 Safe
+    if scan.has_unclosed_quote {
         return Some((
             RiskLevel::Risky,
-            Some("命令包含重定向符号 (> / >>)，可能写入文件，需要确认".to_string()),
+            Some("命令存在未闭合引号，无法安全判定，需要确认".to_string()),
         ));
     }
 
-    // 2. 检查危险命令与写操作关键字
+    // 2. 引号外或双引号内存在子表达式/命令替换/脚本块（`$(...)`、`` ` ``、`{...}`、`(...)`）
+    if scan.has_subshell_or_backtick {
+        return Some((
+            RiskLevel::Risky,
+            Some("命令包含子表达式、脚本块或反引号转义，可能执行额外命令，需要确认".to_string()),
+        ));
+    }
+
+    // 3. 真正的引号外重定向符号 (> / <)
+    if scan.has_redirection {
+        return Some((
+            RiskLevel::Risky,
+            Some("命令包含重定向符号 (> / <)，可能读写文件，需要确认".to_string()),
+        ));
+    }
+
+    // 4. 孤立 `&`（PowerShell call operator `& 'exe'` / 串联 / 后台运行）一律不自动放行
+    if scan.has_unquoted_ampersand {
+        return None;
+    }
+
+    // 5. 检查危险命令与写操作关键字
     const POWERSHELL_DANGEROUS_TOKENS: &[&str] = &[
         "remove-item", "rmdir", "del", "erase", "clear-content",
         "set-content", "add-content", "out-file", "new-item",
@@ -239,9 +436,7 @@ fn check_windows_powershell_fallback(command: &str) -> Option<(RiskLevel, Option
         "format-volume", "stop-process", "kill", "restart-computer", "stop-computer"
     ];
 
-    // 分割管道
-    let stages: Vec<&str> = command.split('|').map(|s| s.trim()).collect();
-    if stages.is_empty() {
+    if scan.stages.is_empty() {
         return None;
     }
 
@@ -263,25 +458,25 @@ fn check_windows_powershell_fallback(command: &str) -> Option<(RiskLevel, Option
         "findstr", "head", "tail", "more", "less"
     ];
 
-    for stage in &stages {
-        let trimmed_stage = stage.trim();
-        if trimmed_stage.is_empty() {
+    for tokens in &scan.stages {
+        if tokens.is_empty() {
             return None;
         }
-        let tokens: Vec<&str> = trimmed_stage.split_whitespace().collect();
         let first_token = tokens[0].to_ascii_lowercase();
 
         // 检查参数中是否有指向受保护路径的参数
         for token in &tokens[1..] {
-            let clean_token = token.trim_matches(|c| c == '\'' || c == '"');
-            if let Err(reason) = check_file_path(clean_token) {
+            if let Err(reason) = check_file_path(token) {
                 return Some((RiskLevel::Forbidden, Some(reason)));
             }
         }
 
-        // 检查是否包含危险关键字
+        // 检查危险命令关键字：stage 命令名命中，或非 Write-*/echo 的参数中出现写命令词
+        let is_echo_only = matches!(first_token.as_str(), "write-output" | "echo" | "write-host");
         for dang in POWERSHELL_DANGEROUS_TOKENS {
-            if first_token == *dang || tokens.iter().any(|t| t.to_ascii_lowercase() == *dang) {
+            if first_token == *dang
+                || (!is_echo_only && tokens.iter().any(|t| t.to_ascii_lowercase() == *dang))
+            {
                 return Some((
                     RiskLevel::Risky,
                     Some(format!("PowerShell 命令包含写/执行操作（{}），需要确认", dang)),
@@ -289,9 +484,12 @@ fn check_windows_powershell_fallback(command: &str) -> Option<(RiskLevel, Option
             }
         }
 
-        // 检查首 token 是否在安全只读命令表中
+        // 检查首 token 是否在安全只读命令表中（剥 wrapper 后再查 is_read_only_command）。
+        // 注意必须传**完整 argv**：只传命令名会让 `git push/reset/clean`
+        // 因为 "git 无子命令" 分支被误判为只读。
+        let stripped = strip_wrappers_from_argv(tokens);
         let is_safe = SAFE_POWERSHELL_CMDLETS.iter().any(|c| &first_token == c)
-            || is_read_only_command(&[first_token.clone()]);
+            || is_read_only_command(&stripped);
         if !is_safe {
             return None;
         }
@@ -456,6 +654,49 @@ mod tests {
 
         let (risk_protected, _) = check_command("Get-ChildItem C:/Windows");
         assert!(matches!(risk_protected, RiskLevel::Forbidden));
+    }
+
+    /// 回归：兜底曾只把「命令名」传给 `is_read_only_command`，
+    /// 导致 `git push / reset / clean` 全被当成只读放行。
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn git_write_subcommands_are_not_safe() {
+        let (status, _) = check_command("git status");
+        assert!(matches!(status, RiskLevel::Safe));
+
+        for cmd in ["git push --force", "git reset --hard", "git clean -fdx"] {
+            let (risk, _) = check_command(cmd);
+            assert!(
+                !matches!(risk, RiskLevel::Safe),
+                "{cmd} must not be auto-approved as Safe"
+            );
+        }
+    }
+
+    /// 回归：兜底只按 `|` 切段，`;` 链接的第二条语句完全不检查；
+    /// 现同时覆盖 `&&` / `||` / `&` / `$()` 与引号内分号/大于号误判。
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn semicolon_chained_statement_is_not_safe() {
+        for chained in [
+            "Get-Date; node -e \"process.exit(0)\"",
+            "Get-Date && node -e \"process.exit(0)\"",
+            "Get-Date || Remove-Item foo",
+            "& 'Get-Date'",
+            "Write-Output \"$(whoami)\"",
+        ] {
+            let (risk, _) = check_command(chained);
+            assert!(
+                !matches!(risk, RiskLevel::Safe),
+                "chained/dynamic statement `{chained}` must not be auto-approved"
+            );
+        }
+
+        // 引号内分号与大于号是纯文本参数，不应误切分也不应误报重定向
+        let (quoted_semi, _) = check_command("Write-Output \"a; b\"");
+        assert!(matches!(quoted_semi, RiskLevel::Safe));
+        let (quoted_gt, _) = check_command("Write-Output \"1 > 2\"");
+        assert!(matches!(quoted_gt, RiskLevel::Safe));
     }
 }
 

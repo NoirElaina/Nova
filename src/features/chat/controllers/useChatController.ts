@@ -18,6 +18,7 @@ import {
 import { createConversationOperations } from "./chat-conversation-ops";
 import { createSendOperations } from "./chat-send-ops";
 import { setupAgentEventListener } from "../../agent/agent-listener";
+import { filterToolEntriesForSegments } from "../utils/assistant-transcript";
 import { useConversationStore } from "@/stores/conversation";
 import { useAgentSessionStore } from "@/stores/agentSession";
 import { useComposerStore } from "@/stores/composer";
@@ -62,7 +63,7 @@ function createChatController() {
   const chatScreenRef = ref<ChatScreenHandle | null>(null);
 
   const currentTurnToolExecutionLogs = computed(() => {
-    return toolExecutionLogs.value;
+    return filterToolEntriesForSegments(toolExecutionLogs.value, assistantSegments.value);
   });
 
   const latestPersistedPromptTokens = computed(() => {
@@ -307,13 +308,24 @@ function createChatController() {
               .catch(() => {});
           }
         },
-        onError: (error, turnId) => {
-          agentSessionStore.handleTurnError(error, turnId);
+        onError: (error, turnId, errorInfo) => {
+          agentSessionStore.handleTurnError(error, turnId, errorInfo);
           emitToast({
             variant: "error",
             source: "agent",
             message: error,
           });
+        },
+        onTurnSteered: () => {
+          emitToast({
+            variant: "info",
+            source: "steer",
+            message: "新指令已注入当前回合。",
+          });
+        },
+        onTurnQueued: (_turnId, convId, queueLength) => {
+          const session = agentSessionStore.getSession(convId);
+          session.queuedCount = queueLength;
         },
       });
     } catch (err) {

@@ -1,7 +1,5 @@
 mod ask_user_question_tool;
-mod bash_kill_tool;
-mod bash_output_tool;
-mod bash_tool;
+mod board_tool;
 mod browser_tool;
 mod config_tool;
 mod edit_tool;
@@ -15,15 +13,21 @@ mod read_mcp_resource_tool;
 mod read_tool;
 mod remember_global_memory_tool;
 mod skill_tool;
+mod spawn_agent_tool;
 mod task_tool;
 mod todo_write_tool;
+mod unified_exec_tool;
 mod web_fetch_tool;
 mod web_search_tool;
 mod write_plan_tool;
 mod write_tool;
 
+pub mod apply_patch;
+pub mod orchestrator;
 pub mod registry;
 pub mod shared;
+
+pub use orchestrator::{ToolExecutionContext, ToolOrchestrator};
 
 #[allow(unused_imports)]
 pub(crate) use registry::{CustomToolHandler, ToolRegistry};
@@ -31,10 +35,9 @@ pub(crate) use registry::global_tool_registry;
 
 pub(crate) fn builtin_tool_registrations() -> Vec<ToolRegistration> {
     let mut tools = Vec::with_capacity(32);
+    tools.push(apply_patch::tool::registration());
     tools.extend(ask_user_question_tool::registrations());
-    tools.extend(bash_kill_tool::registrations());
-    tools.extend(bash_output_tool::registrations());
-    tools.extend(bash_tool::registrations());
+    tools.extend(board_tool::registrations());
     tools.extend(browser_tool::registrations());
     tools.extend(config_tool::registrations());
     tools.extend(edit_tool::registrations());
@@ -48,8 +51,10 @@ pub(crate) fn builtin_tool_registrations() -> Vec<ToolRegistration> {
     tools.extend(read_tool::registrations());
     tools.extend(remember_global_memory_tool::registrations());
     tools.extend(skill_tool::registrations());
+    tools.extend(spawn_agent_tool::registrations());
     tools.extend(task_tool::registrations());
     tools.extend(todo_write_tool::registrations());
+    tools.extend(unified_exec_tool::registrations());
     tools.extend(web_fetch_tool::registrations());
     tools.extend(web_search_tool::registrations());
     tools.extend(write_plan_tool::registrations());
@@ -59,11 +64,9 @@ pub(crate) fn builtin_tool_registrations() -> Vec<ToolRegistration> {
 
 use crate::provider::types::{Message, Tool};
 use serde_json::Value;
-use std::collections::{BTreeMap, VecDeque};
 use std::future::Future;
 use std::pin::Pin;
 use crate::core::Core;
-use tokio::task::JoinSet;
 
 pub(crate) type ToolExecResult = Result<ToolOutcome, ToolFailure>;
 pub(crate) type AppExecuteFuture = Pin<Box<dyn Future<Output = ToolExecResult> + Send>>;
@@ -149,8 +152,8 @@ impl ToolFailure {
             .suppress_backend_error()
     }
 
-    pub(crate) fn mcp(message: impl Into<String>) -> Self {
-        Self::new(message).with_kind(ToolFailureKind::Mcp)
+    pub(crate) fn mcp(message: impl std::fmt::Display) -> Self {
+        Self::new(message.to_string()).with_kind(ToolFailureKind::Mcp)
     }
 
     pub(crate) fn hook(message: impl Into<String>) -> Self {
@@ -165,6 +168,26 @@ impl ToolFailure {
     pub(crate) fn suppress_backend_error(mut self) -> Self {
         self.suppress_backend_error = true;
         self
+    }
+
+    pub(crate) fn to_nova_core_error(&self, tool: &str) -> crate::NovaCoreError {
+        match self.kind {
+            ToolFailureKind::InvalidInput => {
+                crate::NovaCoreError::InvalidInput(self.message.clone())
+            }
+            ToolFailureKind::PermissionDenied => {
+                crate::NovaCoreError::PermissionDenied(self.message.clone())
+            }
+            ToolFailureKind::UnknownTool => {
+                crate::NovaCoreError::NotFound(format!("Unknown tool '{}': {}", tool, self.message))
+            }
+            ToolFailureKind::Cancelled => crate::NovaCoreError::Cancelled,
+            ToolFailureKind::Mcp => crate::NovaCoreError::mcp(tool, self.message.clone()),
+            ToolFailureKind::Execution | ToolFailureKind::Hook => crate::NovaCoreError::ToolFailed {
+                tool: tool.to_string(),
+                message: self.message.clone(),
+            },
+        }
     }
 }
 
@@ -250,7 +273,9 @@ pub struct ToolCallResult {
 }
 
 fn find_tool_definition(name: &str) -> Option<Tool> {
-    global_tool_registry().get_definition(name)
+    global_tool_registry()
+        .get_definition(name)
+        .or_else(|| crate::agent::capabilities::mcp_tools::find_cached_mcp_tool(name))
 }
 
 fn find_registered_tool(name: &str) -> Option<registry::ToolEntry> {
@@ -290,8 +315,8 @@ fn validate_tool_input(name: &str, input: &Value) -> Result<(), String> {
 }
 
 pub(crate) fn is_read_only_tool(name: &str) -> bool {
-    if let Some(entry) = find_registered_tool(name) {
-        return entry.is_read_only();
+    if let Some(read_only) = global_tool_registry().is_read_only(name) {
+        return read_only;
     }
 
     if let Some(read_only) = crate::agent::capabilities::mcp_tools::dynamic_tool_read_only(name) {
@@ -343,6 +368,14 @@ fn emit_tool_failure(core: &Core, name: &str, failure: &ToolFailure) {
     if failure.suppress_backend_error || failure.kind == ToolFailureKind::Cancelled {
         return;
     }
+
+    let structured = failure.to_nova_core_error(name);
+    tracing::warn!(
+        tool = %name,
+        rpc_code = structured.json_rpc_code(),
+        error_info = ?structured.to_nova_error_info(),
+        "Tool execution failed"
+    );
 
     crate::agent::utils::error_event::emit_backend_error(
         core,
@@ -547,149 +580,6 @@ pub(crate) async fn execute_single_tool_call(
     }
 }
 
-async fn execute_read_only_batch(
-    core: &Core,
-    conversation_id: Option<&str>,
-    calls: Vec<ToolCallRequest>,
-) -> Vec<ToolCallResult> {
-    let total = calls.len();
-    if total == 0 {
-        return Vec::new();
-    }
-
-    let mut queue: VecDeque<(usize, ToolCallRequest)> = calls.into_iter().enumerate().collect();
-    let mut in_flight: BTreeMap<usize, ToolCallRequest> = BTreeMap::new();
-    let mut results_by_index: BTreeMap<usize, ToolCallResult> = BTreeMap::new();
-    let mut tasks: JoinSet<(usize, ToolCallResult)> = JoinSet::new();
-    let mut cancellation_reason: Option<String> = None;
-    let max_concurrency = max_tool_use_concurrency();
-    let conversation_owned = conversation_id.map(|v| v.to_string());
-
-    while !queue.is_empty() || !tasks.is_empty() {
-        // 用户取消时立即中止所有已起飞的并发任务。
-        if crate::agent::cancellation::is_cancelled(conversation_id) {
-            tasks.abort_all();
-            while tasks.join_next().await.is_some() {}
-            cancellation_reason = Some("cancelled".into());
-            break;
-        }
-
-        while tasks.len() < max_concurrency && !queue.is_empty() {
-            let Some((index, call)) = queue.pop_front() else {
-                break;
-            };
-
-            let app_clone = core.clone();
-            let conversation_for_task = conversation_owned.clone();
-            in_flight.insert(index, call.clone());
-            tasks.spawn(async move {
-                let result =
-                    execute_single_tool_call(&app_clone, conversation_for_task.as_deref(), call)
-                        .await;
-                (index, result)
-            });
-        }
-
-        let cancel_token = crate::agent::cancellation::get_token(conversation_id);
-        let maybe_joined = tokio::select! {
-            biased;
-            _ = cancel_token.cancelled() => {
-                tasks.abort_all();
-                while tasks.join_next().await.is_some() {}
-                cancellation_reason = Some("cancelled".into());
-                break;
-            }
-            joined = tasks.join_next() => joined,
-        };
-
-        let Some(joined) = maybe_joined else {
-            break;
-        };
-
-        if let Ok((index, result)) = joined {
-            in_flight.remove(&index);
-            results_by_index.insert(index, result);
-        }
-    }
-
-    if let Some(reason) = cancellation_reason {
-        for (index, call) in in_flight.into_iter() {
-            results_by_index
-                .entry(index)
-                .or_insert_with(|| cancelled_result_from_call(call, &reason));
-        }
-        while let Some((index, call)) = queue.pop_front() {
-            results_by_index
-                .entry(index)
-                .or_insert_with(|| cancelled_result_from_call(call, &reason));
-        }
-    } else {
-        for (index, call) in in_flight.into_iter() {
-            results_by_index.entry(index).or_insert_with(|| {
-                cancelled_result_from_call(call, "cancelled: read-only task aborted")
-            });
-        }
-        while let Some((index, call)) = queue.pop_front() {
-            results_by_index.entry(index).or_insert_with(|| {
-                cancelled_result_from_call(call, "cancelled: read-only task not executed")
-            });
-        }
-    }
-
-    let mut ordered_results = Vec::with_capacity(total);
-    for index in 0..total {
-        if let Some(result) = results_by_index.remove(&index) {
-            ordered_results.push(result);
-        }
-    }
-    ordered_results
-}
-
-async fn flush_read_only_batch(
-    core: &Core,
-    conversation_id: Option<&str>,
-    batch: &mut Vec<ToolCallRequest>,
-    out: &mut Vec<ToolCallResult>,
-) {
-    if batch.is_empty() {
-        return;
-    }
-
-    let drained = std::mem::take(batch);
-    let mut batch_results = execute_read_only_batch(core, conversation_id, drained).await;
-    out.append(&mut batch_results);
-}
-
-pub async fn execute_tool_calls_with_app(
-    core: &Core,
-    conversation_id: Option<&str>,
-    calls: Vec<ToolCallRequest>,
-) -> Vec<ToolCallResult> {
-    let mut results: Vec<ToolCallResult> = Vec::with_capacity(calls.len());
-    let mut read_only_batch: Vec<ToolCallRequest> = Vec::new();
-
-    for call in calls {
-        if crate::agent::cancellation::is_cancelled(conversation_id) {
-            results.push(cancelled_result_from_call(call, "cancelled"));
-            continue;
-        }
-
-        if is_read_only_tool(&call.name) {
-            read_only_batch.push(call);
-            continue;
-        }
-
-        flush_read_only_batch(core, conversation_id, &mut read_only_batch, &mut results).await;
-        if crate::agent::cancellation::is_cancelled(conversation_id) {
-            results.push(cancelled_result_from_call(call, "cancelled"));
-            continue;
-        }
-        results.push(execute_single_tool_call(core, conversation_id, call).await);
-    }
-
-    flush_read_only_batch(core, conversation_id, &mut read_only_batch, &mut results).await;
-    results
-}
 
 pub(crate) fn permission_descriptor_for_tool(
     name: &str,
@@ -761,55 +651,44 @@ pub fn get_available_tools_for_agent(core: &Core, conversation_id: Option<&str>)
     let disclosure_enabled = crate::services::settings::load_settings(core)
         .map(|settings| settings.progressive_tool_disclosure)
         .unwrap_or(true);
-    if !disclosure_enabled {
-        return bundle_filtered
+    let mut final_tools: Vec<Tool> = if !disclosure_enabled {
+        bundle_filtered
             .into_iter()
             .filter(|tool| tool.name != LOAD_TOOL_NAME)
-            .collect();
-    }
+            .collect()
+    } else {
+        let disclosed = crate::agent::capabilities::tool_disclosure::disclosed_tools(core, conversation_id);
+        bundle_filtered
+            .into_iter()
+            .filter(|tool| {
+                match disclosure_for_tool(&tool.name) {
+                    // 内置工具：Core 始终可见，Deferred 需本会话已加载。
+                    Some(ToolDisclosure::Core) => true,
+                    Some(ToolDisclosure::Deferred) => disclosed.contains(&tool.name),
+                    // 非内置（MCP 动态）：不参与披露。
+                    None => true,
+                }
+            })
+            .collect()
+    };
 
-    let disclosed = crate::agent::capabilities::tool_disclosure::disclosed_tools(core, conversation_id);
-    bundle_filtered
+    // 动态注入 MCP 工具：
+    // MCP 工具不参与渐进式披露，全量对主代理暴露（子代理白名单在上方拦截）。
+    // 若当前会话挂载了 AgentBundle，按 enabled_mcp_servers 过滤。
+    let active_bundle = crate::agent::capabilities::agent_bundles::active_bundle(core, conversation_id);
+    let mcp_tools = crate::agent::capabilities::mcp_tools::cached_mcp_tools()
         .into_iter()
         .filter(|tool| {
-            match disclosure_for_tool(&tool.name) {
-                // 内置工具：Core 始终可见，Deferred 需本会话已加载。
-                Some(ToolDisclosure::Core) => true,
-                Some(ToolDisclosure::Deferred) => disclosed.contains(&tool.name),
-                // 非内置（MCP 动态）：不参与披露。
+            match crate::agent::capabilities::mcp_tools::parse_mcp_tool_name(&tool.name) {
+                Some((server, _)) => match &active_bundle {
+                    Some(b) => b.is_mcp_server_enabled(&server),
+                    None => true,
+                },
                 None => true,
             }
-        })
-        .collect()
-}
-
-/// 前端智能体配置页展示的工具目录（含 always_on 标记）。
-/// 默认专属工具（memory）不进目录：专用智能体不允许写全局记忆。
-pub fn configurable_tool_catalog(
-    core: &Core,
-) -> Result<Vec<crate::agent::capabilities::agent_bundles::ConfigurableTool>, String> {
-    // 目录与当前激活 bundle 无关：配置的是任意 bundle 的勾选清单。
-    let _ = core;
-    let catalog: Vec<crate::agent::capabilities::agent_bundles::ConfigurableTool> = global_tool_registry()
-        .list_all_tools()
-        .into_iter()
-        .filter(|tool| {
-            !crate::agent::capabilities::agent_bundles::DEFAULT_ONLY_TOOLS.contains(&tool.name.as_str())
-                && tool.name != LOAD_TOOL_NAME
-        })
-        .map(|tool| {
-            let read_only = global_tool_registry().is_read_only(&tool.name).unwrap_or(false);
-            crate::agent::capabilities::agent_bundles::ConfigurableTool {
-                name: tool.name.clone(),
-                description: tool.description.clone(),
-                read_only,
-                always_on: crate::agent::capabilities::agent_bundles::ALWAYS_ON_TOOLS
-                    .contains(&tool.name.as_str()),
-            }
-        })
-        .collect();
-
-    Ok(catalog)
+        });
+    final_tools.extend(mcp_tools);
+    final_tools
 }
 
 // 在带 Core 的环境中执行工具，附带权限校验和 MCP 代理能力。
@@ -872,4 +751,29 @@ pub(crate) async fn execute_tool_with_app(
     }
 
     Err(ToolFailure::unknown_tool(format!("Unknown tool: {}", name)))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use nova_protocol::errors::NovaErrorInfo;
+
+    #[test]
+    fn tool_failure_maps_cleanly_to_nova_core_error() {
+        let invalid = ToolFailure::invalid_input("missing arg").to_nova_core_error("Read");
+        assert_eq!(invalid.json_rpc_code(), crate::error::RPC_INVALID_PARAMS);
+        assert_eq!(invalid.to_nova_error_info(), NovaErrorInfo::BadRequest);
+
+        let denied = ToolFailure::permission_denied("blocked").to_nova_core_error("Bash");
+        assert_eq!(denied.json_rpc_code(), crate::error::RPC_PERMISSION_DENIED);
+
+        let unknown = ToolFailure::unknown_tool("no such tool").to_nova_core_error("Ghost");
+        assert_eq!(unknown.json_rpc_code(), crate::error::RPC_NOT_FOUND);
+
+        let mcp = ToolFailure::mcp("connection reset").to_nova_core_error("mcp__demo__ping");
+        assert_eq!(mcp.json_rpc_code(), crate::error::RPC_TOOL_ERROR);
+
+        let exec = ToolFailure::new("exit 1").to_nova_core_error("Bash");
+        assert_eq!(exec.json_rpc_code(), crate::error::RPC_TOOL_ERROR);
+    }
 }

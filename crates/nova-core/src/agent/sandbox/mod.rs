@@ -1,14 +1,14 @@
-//! 命令执行沙箱策略（语义对齐 Codex 的 `SandboxPolicy`）。
+//! 命令执行沙箱策略。
 //!
-//! 这里定义**两个正交轴中的第一个**：
-//! - `SandboxPolicy`：命令**能碰到什么**（文件系统 / 网络）——本模块
-//! - `ApprovalPolicy`：什么时候**问用户**——见 `agent::permissions`
+//! 这里定义两个正交轴中的第一个：
+//! - `SandboxPolicy`：命令能碰到什么（文件系统 / 网络）——本模块
+//! - `ApprovalPolicy`：什么时候询问用户——见 `agent::permissions`
 //!
-//! 两者独立配置，与 Codex 的 `--sandbox` × `--ask-for-approval` 一致。
+//! 两者独立配置，支持灵活组合。
 //!
 //! 驱动现状：
 //! - Linux：`bubblewrap`（若可用），完整支持三档策略。
-//! - 其它平台：`NoSandbox`，**拒绝**执行需要隔离的策略（fail-closed），
+//! - 其它平台：`NoSandbox`，拒绝执行需要隔离的策略（fail-closed），
 //!   而不是静默退化成无隔离——否则用户会以为命令被限制了，实际没有。
 
 use std::path::Path;
@@ -21,19 +21,15 @@ pub mod windows;
 /// 命令可触及的资源边界。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
+#[derive(Default)]
 pub enum SandboxPolicy {
-    /// 只读：可读工作区与系统，不可写任何位置，禁止联网。
+    /// 只读：可读工作区与系统，不可写任何位置（不限制联网）。
     ReadOnly,
-    /// 工作区可写：可读全局，只能写工作区目录，默认禁止联网。
+    /// 工作区可写：可读全局，只能写工作区目录及必要临时目录（不限制联网）。
     WorkspaceWrite,
     /// 不限制：命令以当前用户完整权限执行。
+    #[default]
     DangerFullAccess,
-}
-
-impl Default for SandboxPolicy {
-    fn default() -> Self {
-        Self::DangerFullAccess
-    }
 }
 
 impl SandboxPolicy {
@@ -41,7 +37,9 @@ impl SandboxPolicy {
         match raw.trim().to_ascii_lowercase().replace('_', "-").as_str() {
             "read-only" | "readonly" => Some(Self::ReadOnly),
             "workspace-write" | "workspacewrite" => Some(Self::WorkspaceWrite),
-            "danger-full-access" | "dangerfullaccess" | "none" => Some(Self::DangerFullAccess),
+            "danger-full-access" | "dangerfullaccess" | "full-access" | "unrestricted" | "none" => {
+                Some(Self::DangerFullAccess)
+            }
             _ => None,
         }
     }
@@ -57,11 +55,6 @@ impl SandboxPolicy {
     /// 是否需要真实隔离。`DangerFullAccess` 之外都必须有平台驱动。
     pub fn is_enforcing(&self) -> bool {
         !matches!(self, Self::DangerFullAccess)
-    }
-
-    /// 该策略是否允许出站网络。
-    pub fn allows_network(&self) -> bool {
-        matches!(self, Self::DangerFullAccess)
     }
 }
 
@@ -97,7 +90,7 @@ pub trait SandboxDriver: Send + Sync {
         program: &str,
         args: &[String],
         ctx: &SandboxContext<'_>,
-    ) -> Result<WrappedCommand, String>;
+    ) -> Result<WrappedCommand, crate::NovaCoreError>;
 }
 
 /// 无隔离驱动：仅允许 `DangerFullAccess`。
@@ -117,12 +110,15 @@ impl SandboxDriver for NoSandbox {
         program: &str,
         args: &[String],
         ctx: &SandboxContext<'_>,
-    ) -> Result<WrappedCommand, String> {
+    ) -> Result<WrappedCommand, crate::NovaCoreError> {
         if ctx.policy.is_enforcing() {
-            return Err(format!(
-                "沙箱策略 '{}' 需要平台驱动，当前平台只支持 'danger-full-access'。\
-                 已拒绝在无隔离的情况下执行命令。",
-                ctx.policy.as_str()
+            return Err(crate::NovaCoreError::sandbox(
+                self.name(),
+                format!(
+                    "沙箱策略 '{}' 需要平台驱动，当前平台只支持 'danger-full-access'。\
+                     已拒绝在无隔离的情况下执行命令。",
+                    ctx.policy.as_str()
+                ),
             ));
         }
         Ok(WrappedCommand {
@@ -153,7 +149,7 @@ impl SandboxDriver for BubblewrapSandbox {
         program: &str,
         args: &[String],
         ctx: &SandboxContext<'_>,
-    ) -> Result<WrappedCommand, String> {
+    ) -> Result<WrappedCommand, crate::NovaCoreError> {
         if !ctx.policy.is_enforcing() {
             return Ok(WrappedCommand {
                 program: program.to_string(),
@@ -163,9 +159,11 @@ impl SandboxDriver for BubblewrapSandbox {
         }
 
         let bwrap = find_in_path("bwrap").ok_or_else(|| {
-            "找不到 bubblewrap（bwrap）。请先安装：apt install bubblewrap / dnf install bubblewrap。\
-             在未隔离的情况下拒绝执行命令。"
-                .to_string()
+            crate::NovaCoreError::sandbox(
+                self.name(),
+                "找不到 bubblewrap（bwrap）。请先安装：apt install bubblewrap / dnf install bubblewrap。\
+                 在未隔离的情况下拒绝执行命令。",
+            )
         })?;
 
         let mut out: Vec<String> = vec![
@@ -196,20 +194,25 @@ impl SandboxDriver for BubblewrapSandbox {
             "ALL".into(),
         ];
 
-        // 工作区可写：只把会话目录重新 bind 成读写。
+        // 工作区可写：只把会话目录重新 bind 成读写，并对敏感子路径补只读覆盖。
         if matches!(ctx.policy, SandboxPolicy::WorkspaceWrite) {
             if let Some(workspace) = ctx.workspace {
                 let path = workspace.to_string_lossy().to_string();
                 out.extend(["--bind".into(), path.clone(), path]);
+                for protected in [
+                    workspace.join(".git").join("hooks"),
+                    workspace.join(".git").join("config"),
+                    workspace.join(".nova"),
+                ] {
+                    if protected.exists() {
+                        let p = protected.to_string_lossy().to_string();
+                        out.extend(["--ro-bind".into(), p.clone(), p]);
+                    }
+                }
             }
         }
 
-        // 网络：非 full-access 默认全部隔离。
-        if !ctx.policy.allows_network() {
-            out.push("--unshare-net".into());
-        }
-
-        // /proc 按需挂载：pid namespace 已隔离，这里给进程一个自己的 /proc。
+        // /proc 按需挂载：pid namespace 已隔离，这里给进程一个自己的 /proc（不隔离网络）。
         out.extend(["--proc".into(), "/proc".into()]);
 
         out.push("--".into());
@@ -220,7 +223,7 @@ impl SandboxDriver for BubblewrapSandbox {
             program: bwrap,
             args: out,
             describe: format!(
-                "bubblewrap 沙箱：策略={}, 可写={}, 网络={}",
+                "linux-bubblewrap（policy={}，仅文件写入与进程命名空间隔离：{}，不限联网）",
                 ctx.policy.as_str(),
                 if matches!(ctx.policy, SandboxPolicy::WorkspaceWrite) {
                     ctx.workspace
@@ -228,8 +231,7 @@ impl SandboxDriver for BubblewrapSandbox {
                         .unwrap_or_else(|| "(未指定)".to_string())
                 } else {
                     "(只读)".to_string()
-                },
-                if ctx.policy.allows_network() { "允许" } else { "隔离" }
+                }
             ),
         })
     }
@@ -262,11 +264,58 @@ fn is_executable(path: &Path) -> bool {
 ///
 /// 默认保持不隔离，是为了不改变既有行为；要启用隔离需显式设置，例如
 /// `NOVA_SANDBOX_POLICY=workspace-write`。
-pub fn active_policy() -> SandboxPolicy {
-    std::env::var("NOVA_SANDBOX_POLICY")
+/// Windows 驱动声明：通过受限令牌 + 合成 Capability SID ACL + JobObject + ConPTY/Pipe
+/// 在进程创建期完成隔离（由 `sandbox::windows` 执行，不通过 CLI 包装）。
+#[cfg(target_os = "windows")]
+pub struct WindowsRestrictedSandbox;
+
+#[cfg(target_os = "windows")]
+impl SandboxDriver for WindowsRestrictedSandbox {
+    fn name(&self) -> &'static str {
+        "windows-restricted"
+    }
+
+    fn is_enforcing(&self) -> bool {
+        true
+    }
+
+    fn wrap(
+        &self,
+        program: &str,
+        args: &[String],
+        ctx: &SandboxContext<'_>,
+    ) -> Result<WrappedCommand, crate::NovaCoreError> {
+        Ok(WrappedCommand {
+            program: program.to_string(),
+            args: args.to_vec(),
+            describe: status_for_policy(ctx.policy).summary,
+        })
+    }
+}
+
+/// 解析沙箱策略：环境变量 `NOVA_SANDBOX_POLICY` 优先，其次设置项，缺省 `danger-full-access`。
+pub fn resolve_sandbox_policy(configured: Option<&str>) -> SandboxPolicy {
+    if let Some(from_env) = std::env::var("NOVA_SANDBOX_POLICY")
         .ok()
         .and_then(|raw| SandboxPolicy::parse(&raw))
+    {
+        return from_env;
+    }
+    configured
+        .and_then(SandboxPolicy::parse)
         .unwrap_or_default()
+}
+
+pub fn active_policy() -> SandboxPolicy {
+    resolve_sandbox_policy(None)
+}
+
+/// 读取当前全局设置下的生效沙箱策略（环境变量 `NOVA_SANDBOX_POLICY` 可覆盖）。
+pub fn effective_sandbox_policy(core: &crate::core::Core) -> SandboxPolicy {
+    let configured = crate::services::settings::load_settings(core)
+        .ok()
+        .map(|s| s.sandbox_policy);
+    resolve_sandbox_policy(configured.as_deref())
 }
 
 pub fn active_driver() -> &'static dyn SandboxDriver {
@@ -274,19 +323,85 @@ pub fn active_driver() -> &'static dyn SandboxDriver {
     {
         &BubblewrapSandbox
     }
-    #[cfg(not(target_os = "linux"))]
+    #[cfg(target_os = "windows")]
+    {
+        &WindowsRestrictedSandbox
+    }
+    #[cfg(not(any(target_os = "linux", target_os = "windows")))]
     {
         &NoSandbox
     }
 }
 
-/// 把 shell 启动命令包装进沙箱。`workspace` 为会话可写目录。
-pub fn wrap_shell(
+/// 构造给定策略下当前平台如实的沙箱状态说明。
+pub fn status_for_policy(policy: SandboxPolicy) -> nova_protocol::misc::SandboxStatus {
+    if !policy.is_enforcing() {
+        return nova_protocol::misc::SandboxStatus {
+            driver: "none".to_string(),
+            policy: policy.as_str().to_string(),
+            enforcing: false,
+            network_restricted: false,
+            summary: "未开启沙箱：命令以当前用户完整权限执行（不限文件写入，不限联网）".to_string(),
+        };
+    }
+
+    #[cfg(target_os = "windows")]
+    {
+        nova_protocol::misc::SandboxStatus {
+            driver: "windows-restricted".to_string(),
+            policy: policy.as_str().to_string(),
+            enforcing: true,
+            network_restricted: false,
+            summary: format!(
+                "windows-restricted（{}：仅文件写入与进程树隔离，不限联网）",
+                policy.as_str()
+            ),
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    {
+        let has_bwrap = find_in_path("bwrap").is_some();
+        nova_protocol::misc::SandboxStatus {
+            driver: "linux-bubblewrap".to_string(),
+            policy: policy.as_str().to_string(),
+            enforcing: has_bwrap,
+            network_restricted: false,
+            summary: if has_bwrap {
+                format!(
+                    "linux-bubblewrap（{}：仅文件写入与进程命名空间隔离，不限联网）",
+                    policy.as_str()
+                )
+            } else {
+                "linux-bubblewrap（未检测到 bwrap，请先安装 bubblewrap；不限联网）".to_string()
+            },
+        }
+    }
+
+    #[cfg(not(any(target_os = "windows", target_os = "linux")))]
+    {
+        nova_protocol::misc::SandboxStatus {
+            driver: "none".to_string(),
+            policy: policy.as_str().to_string(),
+            enforcing: false,
+            network_restricted: false,
+            summary: "未开启沙箱（当前平台未实现写入隔离）".to_string(),
+        }
+    }
+}
+
+/// 读取当前核心配置的真实沙箱状态。
+pub fn active_status(core: &crate::core::Core) -> nova_protocol::misc::SandboxStatus {
+    status_for_policy(effective_sandbox_policy(core))
+}
+
+/// 把 shell 启动命令包装进沙箱（显式策略版本；Linux 使用 bubblewrap）。
+pub fn wrap_shell_with_policy(
+    policy: SandboxPolicy,
     program: &str,
     args: &[&str],
     workspace: Option<&str>,
-) -> Result<WrappedCommand, String> {
-    let policy = active_policy();
+) -> Result<WrappedCommand, crate::NovaCoreError> {
     let ctx = SandboxContext {
         policy,
         workspace: workspace.map(Path::new),
@@ -295,21 +410,18 @@ pub fn wrap_shell(
     active_driver().wrap(program, &owned, &ctx)
 }
 
+/// 把 shell 启动命令包装进沙箱。`workspace` 为会话可写目录。
+pub fn wrap_shell(
+    program: &str,
+    args: &[&str],
+    workspace: Option<&str>,
+) -> Result<WrappedCommand, crate::NovaCoreError> {
+    wrap_shell_with_policy(active_policy(), program, args, workspace)
+}
+
 /// 供日志/UI 展示当前隔离状态。
 pub fn describe_active() -> String {
-    let policy = active_policy();
-    if !policy.is_enforcing() {
-        return "未启用沙箱：命令以当前用户完整权限执行（含文件系统与网络）".to_string();
-    }
-    let ctx = SandboxContext {
-        policy,
-        workspace: None,
-    };
-    let args: Vec<String> = Vec::new();
-    match active_driver().wrap("sh", &args, &ctx) {
-        Ok(wrapped) => wrapped.describe,
-        Err(error) => format!("沙箱不可用：{}", error),
-    }
+    status_for_policy(active_policy()).summary
 }
 
 #[cfg(test)]
@@ -351,25 +463,51 @@ mod tests {
                 workspace: Some(Path::new("/tmp/ws")),
             };
             let error = NoSandbox.wrap("sh", &[], &ctx).unwrap_err();
-            assert!(error.contains(policy.as_str()), "错误信息应包含策略名: {error}");
+            assert!(matches!(
+                error,
+                crate::NovaCoreError::Sandbox { driver: "none", .. }
+            ));
+            let msg = error.to_string();
+            assert!(msg.contains(policy.as_str()), "错误信息应包含策略名: {msg}");
         }
     }
 
     #[test]
-    fn bubblewrap_isolates_network_and_binds_workspace() {
+    fn bubblewrap_binds_workspace_without_net_isolation_and_protects_sensitive_paths() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        std::fs::create_dir_all(dir.path().join(".git").join("hooks")).expect("hooks dir");
+        std::fs::write(dir.path().join(".git").join("config"), "[core]\n").expect("git config");
+        std::fs::create_dir_all(dir.path().join(".nova")).expect("nova dir");
+
         let ctx = SandboxContext {
             policy: SandboxPolicy::WorkspaceWrite,
-            workspace: Some(Path::new("/tmp/ws")),
+            workspace: Some(dir.path()),
         };
         match BubblewrapSandbox.wrap("sh", &["-s".to_string()], &ctx) {
             Ok(wrapped) => {
-                assert!(wrapped.args.iter().any(|a| a == "--unshare-net"));
+                assert!(!wrapped.args.iter().any(|a| a == "--unshare-net"));
                 assert!(wrapped.args.iter().any(|a| a == "--ro-bind"));
                 assert!(wrapped.args.windows(2).any(|w| w[0] == "--bind"));
+                assert!(wrapped.args.windows(2).any(|w| {
+                    w[0] == "--ro-bind" && w[1].ends_with("hooks")
+                }));
+                assert!(wrapped.args.windows(2).any(|w| {
+                    w[0] == "--ro-bind" && w[1].ends_with(".nova")
+                }));
                 assert!(wrapped.args.iter().any(|a| a == "--die-with-parent"));
             }
             // 未安装 bwrap 时必须 fail-closed，而不是返回未包装命令。
-            Err(error) => assert!(error.contains("bubblewrap"), "应提示安装: {error}"),
+            Err(error) => {
+                assert!(matches!(
+                    error,
+                    crate::NovaCoreError::Sandbox {
+                        driver: "bubblewrap",
+                        ..
+                    }
+                ));
+                let msg = error.to_string();
+                assert!(msg.contains("bubblewrap"), "应提示安装: {msg}");
+            }
         }
     }
 

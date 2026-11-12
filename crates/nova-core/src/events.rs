@@ -59,6 +59,21 @@ pub enum NovaEvent {
     },
     /// 定时任务触发（载荷结构由 cron 域定义）。
     ScheduledTaskTrigger(serde_json::Value),
+    /// 智能体图谱节点变更。
+    AgentGraphUpdated {
+        conversation_id: String,
+        node: serde_json::Value,
+    },
+    /// 协同看板新帖子。
+    BoardPostCreated {
+        conversation_id: String,
+        post: serde_json::Value,
+    },
+    /// 协同看板频道变更。
+    BoardChannelCreated {
+        conversation_id: String,
+        channel: serde_json::Value,
+    },
 }
 
 impl NovaEvent {
@@ -154,6 +169,27 @@ impl NovaEvent {
             NovaEvent::ScheduledTaskTrigger(payload) => {
                 ("scheduled-task-trigger", payload.clone())
             }
+            NovaEvent::AgentGraphUpdated { conversation_id, node } => (
+                "agent-graph-updated",
+                serde_json::json!({
+                    "conversationId": conversation_id,
+                    "node": node,
+                }),
+            ),
+            NovaEvent::BoardPostCreated { conversation_id, post } => (
+                "board-post-created",
+                serde_json::json!({
+                    "conversationId": conversation_id,
+                    "post": post,
+                }),
+            ),
+            NovaEvent::BoardChannelCreated { conversation_id, channel } => (
+                "board-channel-created",
+                serde_json::json!({
+                    "conversationId": conversation_id,
+                    "channel": channel,
+                }),
+            ),
         }
     }
 }

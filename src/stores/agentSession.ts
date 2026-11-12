@@ -17,12 +17,15 @@ import {
   loadConversationToolLogs,
 } from "@/features/chat/services/chat-api";
 import { sanitizeConsecutiveAssistantMessages } from "@/features/chat/controllers/chat-message-helpers";
+import { parseNeedsUserInput } from "@/lib/chat-payloads";
 import {
   appendTranscriptReasoning,
   appendTranscriptText,
   appendTranscriptTool,
 } from "@/features/chat/utils/assistant-transcript";
 import { useConversationStore } from "./conversation";
+import type { NovaErrorInfo } from "@/lib/protocol";
+import type { JsonValue } from "@/lib/serde_json/JsonValue";
 
 export interface SessionRuntimeState {
   conversationId: string;
@@ -44,7 +47,9 @@ export interface SessionRuntimeState {
   contextTokens: number;
   conversationUsage: ConversationUsageSummary | null;
   chatError: string | null;
+  chatErrorInfo?: NovaErrorInfo | null;
   isCompacting: boolean;
+  queuedCount: number;
 }
 
 export function createInitialSessionState(conversationId: string): SessionRuntimeState {
@@ -68,7 +73,9 @@ export function createInitialSessionState(conversationId: string): SessionRuntim
     contextTokens: 0,
     conversationUsage: null,
     chatError: null,
+    chatErrorInfo: null,
     isCompacting: false,
+    queuedCount: 0,
   };
 }
 
@@ -169,6 +176,7 @@ export const useAgentSessionStore = defineStore("agentSession", () => {
     turnToConversation.set(turnId, convId);
     const session = getSession(convId);
     session.isGenerating = true;
+    session.queuedCount = Math.max(0, session.queuedCount - 1);
     session.currentStage = "processing";
     session.cognitiveState = "assembling_context";
     session.assistantResponse = "";
@@ -206,7 +214,7 @@ export const useAgentSessionStore = defineStore("agentSession", () => {
     appendTranscriptText(session.assistantSegments, delta);
   }
 
-  function handleToolRequested(callId: string, toolName: string, args: Record<string, unknown>, turnOrConvId?: string) {
+  function handleToolRequested(callId: string, toolName: string, args: JsonValue, turnOrConvId?: string) {
     const session = getSessionByTurnOrConv(turnOrConvId);
     session.toolExecutionLogs.push({
       id: callId,
@@ -226,6 +234,12 @@ export const useAgentSessionStore = defineStore("agentSession", () => {
       entry.status = isError ? "error" : "completed";
       entry.result = output;
       entry.finishedAt = Date.now();
+    }
+    if (!isError && output) {
+      const needsUserInput = parseNeedsUserInput(output);
+      if (needsUserInput) {
+        session.pendingQuestion = needsUserInput;
+      }
     }
   }
 
@@ -261,27 +275,34 @@ export const useAgentSessionStore = defineStore("agentSession", () => {
     }
   }
 
-  function handleTurnError(error: string, turnOrConvId?: string) {
+  function handleTurnError(
+    error: string,
+    turnOrConvId?: string,
+    errorInfo?: NovaErrorInfo | null,
+  ) {
     const session = getSessionByTurnOrConv(turnOrConvId);
     if (turnOrConvId) turnToConversation.delete(turnOrConvId);
     session.isGenerating = false;
     session.chatError = error;
+    session.chatErrorInfo = errorInfo ?? null;
   }
 
   function dismissChatError(convId?: string) {
     const session = convId ? getSession(convId) : activeSession.value;
     session.chatError = null;
+    session.chatErrorInfo = null;
   }
 
   function handlePermissionRequested(
     requestId: string,
     _toolName: string,
-    _payload: string,
-    convId?: string,
+    payload: string,
+    turnOrConvId?: string,
   ) {
-    const session = convId ? getSession(convId) : activeSession.value;
+    const session = getSessionByTurnOrConv(turnOrConvId);
     session.pendingPermissionRequestId = requestId;
     session.currentStage = "awaiting_approval";
+    session.pendingQuestion = parseNeedsUserInput(payload);
   }
 
   function clearActiveTurnRuntime(convId?: string) {
@@ -296,6 +317,7 @@ export const useAgentSessionStore = defineStore("agentSession", () => {
     session.pendingQuestion = null;
     session.pendingPermissionRequestId = null;
     session.currentTurnStartedAt = null;
+    session.queuedCount = 0;
   }
 
   return {

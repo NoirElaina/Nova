@@ -6,6 +6,9 @@ use std::time::Duration;
 use tauri::{AppHandle, Manager, Url};
 
 fn browser_window_webview(app: &AppHandle, label: &str) -> Result<tauri::Webview, String> {
+    if !label.starts_with("nova-browser-page-") {
+        return Err(format!("refusing browser operation on non-page webview label: {label}"));
+    }
     app.get_webview(label)
         .ok_or_else(|| format!("browser window not found: {label}"))
 }
@@ -13,6 +16,9 @@ fn browser_window_webview(app: &AppHandle, label: &str) -> Result<tauri::Webview
 #[tauri::command]
 pub fn browser_navigate_window(app: AppHandle, label: String, url: String) -> Result<(), String> {
     let parsed = Url::parse(&url).map_err(|error| error.to_string())?;
+    if !matches!(parsed.scheme(), "http" | "https" | "about") {
+        return Err(format!("unsupported browser URL scheme: {}", parsed.scheme()));
+    }
     browser_window_webview(&app, &label)?
         .navigate(parsed)
         .map_err(|error| error.to_string())

@@ -5,7 +5,7 @@ use tracing::info;
 
 /// 获取全局标准化的 Nova CLI 安装目录
 /// Windows:   %LOCALAPPDATA%\Nova\bin\nova.exe
-/// Unix/macOS: ~/.nova/bin/nova
+/// Linux/Unix: ~/.nova/bin/nova
 pub fn get_global_cli_dir() -> Result<PathBuf, String> {
     #[cfg(target_os = "windows")]
     {

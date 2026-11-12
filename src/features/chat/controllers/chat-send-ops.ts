@@ -57,6 +57,7 @@ export function createSendOperations(deps: SendOpsDeps) {
   async function dispatchConversationMessages(
     sendingConversationId: string,
     nextMessages: ChatMessage[],
+    options?: { wasGenerating?: boolean },
   ) {
     if (activeConversationId.value !== sendingConversationId) {
       emitToast({
@@ -67,16 +68,40 @@ export function createSendOperations(deps: SendOpsDeps) {
       return;
     }
 
-    const turnId = `turn-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-    sessionStore.handleTurnStarted(turnId, sendingConversationId);
-    void chatScreenRef.value?.scrollLiveAssistantIntoView();
+    const wasGenerating = options?.wasGenerating ?? false;
+    if (!wasGenerating) {
+      const placeholderTurnId = `turn-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+      sessionStore.handleTurnStarted(placeholderTurnId, sendingConversationId);
+      void chatScreenRef.value?.scrollLiveAssistantIntoView();
+    }
 
     const lastMessage = nextMessages[nextMessages.length - 1];
     const userPrompt = lastMessage?.role === "user" ? lastMessage.content : "";
     const attachments = lastMessage?.attachments;
+    const submitMode = wasGenerating ? composerStore.submitModeWhileGenerating : "start_or_steer";
 
     try {
-      await sendModernAgentTurn(sendingConversationId, userPrompt, attachments);
+      const res = await sendModernAgentTurn(
+        sendingConversationId,
+        userPrompt,
+        attachments,
+        submitMode,
+      );
+      const session = sessionStore.getSession(sendingConversationId);
+      session.queuedCount = res.queueLength;
+      if (res.outcome === "steered") {
+        emitToast({
+          variant: "info",
+          source: "steer",
+          message: "已提交引导指令，将在当前工具步骤完成后立即注入。",
+        });
+      } else if (res.outcome === "queued") {
+        emitToast({
+          variant: "info",
+          source: "queue",
+          message: `已加入顺序队列（当前等待 ${res.queueLength} 条）。`,
+        });
+      }
     } catch (err: unknown) {
       console.error("Chat error:", err);
       const raw = getRawErrorText(err);
@@ -85,14 +110,16 @@ export function createSendOperations(deps: SendOpsDeps) {
         message: raw || "消息发送失败，请检查后端日志后重试。",
       });
 
-      const session = sessionStore.getSession(sendingConversationId);
-      if (
-        session.assistantResponse.trim().length > 0 ||
-        session.assistantReasoning.trim().length > 0
-      ) {
-        await finalizeActiveTurnOnError();
+      if (!wasGenerating) {
+        const session = sessionStore.getSession(sendingConversationId);
+        if (
+          session.assistantResponse.trim().length > 0 ||
+          session.assistantReasoning.trim().length > 0
+        ) {
+          await finalizeActiveTurnOnError();
+        }
+        sessionStore.handleTurnError(raw || "Turn execution failed", sendingConversationId);
       }
-      sessionStore.handleTurnError(raw || "Turn execution failed", sendingConversationId);
     }
   }
 
@@ -119,6 +146,7 @@ export function createSendOperations(deps: SendOpsDeps) {
     try {
       // 1. 立即前端响应：设置生成状态为 false，将正在运行的工具直接标记为已取消，给用户立竿见影的反馈
       sessionStore.activeSession.isGenerating = false;
+      sessionStore.activeSession.queuedCount = 0;
       sessionStore.activeSession.currentStage = "processing";
       sessionStore.activeSession.cognitiveState = "idle";
       for (const tool of sessionStore.activeSession.toolExecutionLogs) {
@@ -139,7 +167,7 @@ export function createSendOperations(deps: SendOpsDeps) {
   }
 
   async function handleSendMessage(userText: string) {
-    if (sessionStore.activeSession.isGenerating) return;
+    const wasGenerating = sessionStore.activeSession.isGenerating;
     const text = userText.trim();
     const filesToSend = composerStore.pendingUploads.slice();
     const textFiles = filesToSend.filter(isDocumentUploadFile);
@@ -147,7 +175,9 @@ export function createSendOperations(deps: SendOpsDeps) {
     if (!text && filesToSend.length === 0) return;
 
     mainView.value = "chat";
-    sessionStore.clearActiveTurnRuntime();
+    if (!wasGenerating) {
+      sessionStore.clearActiveTurnRuntime();
+    }
 
     if (!activeConversationId.value) {
       const seedTitle = text || filesToSend[0]?.sourceName;
@@ -223,7 +253,7 @@ export function createSendOperations(deps: SendOpsDeps) {
     }
 
     sessionStore.activeSession.messages = nextMessages;
-    await dispatchConversationMessages(sendingConversationId, nextMessages);
+    await dispatchConversationMessages(sendingConversationId, nextMessages, { wasGenerating });
 
   }
 
@@ -310,12 +340,15 @@ export function createSendOperations(deps: SendOpsDeps) {
           action,
         );
         sessionStore.activeSession.pendingPermissionRequestId = null;
+        sessionStore.activeSession.pendingQuestion = null;
+        sessionStore.activeSession.currentStage = "processing";
       } catch (err) {
         console.error("Failed to submit permission decision:", err);
       }
       return;
     }
 
+    sessionStore.activeSession.pendingQuestion = null;
     await handleSendMessage(buildPendingQuestionReply(payload, "submit"));
   }
 
@@ -329,12 +362,15 @@ export function createSendOperations(deps: SendOpsDeps) {
           "deny_once",
         );
         sessionStore.activeSession.pendingPermissionRequestId = null;
+        sessionStore.activeSession.pendingQuestion = null;
+        sessionStore.activeSession.currentStage = "processing";
       } catch (err) {
         console.error("Failed to submit permission denial:", err);
       }
       return;
     }
 
+    sessionStore.activeSession.pendingQuestion = null;
     await handleSendMessage(buildPendingQuestionReply(null, "skip"));
   }
 

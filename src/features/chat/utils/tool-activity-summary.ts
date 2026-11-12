@@ -24,6 +24,15 @@ function categorizeTool(toolName: string): ToolCategory {
   const lower = (toolName || "").toLowerCase();
 
   if (
+    lower === "exec_command" ||
+    lower === "write_stdin" ||
+    lower === "bash" ||
+    lower.includes("shell")
+  ) {
+    return categoryCatalog[2];
+  }
+
+  if (
     lower.includes("read") ||
     lower.includes("readmcpresource")
   ) {
@@ -37,13 +46,6 @@ function categorizeTool(toolName: string): ToolCategory {
     lower.includes("config")
   ) {
     return categoryCatalog[1];
-  }
-
-  if (
-    lower === "bash" ||
-    lower.includes("shell")
-  ) {
-    return categoryCatalog[2];
   }
 
   if (

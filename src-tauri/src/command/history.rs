@@ -5,9 +5,17 @@ pub use nova_protocol::session::{
 };
 
 #[tauri::command]
-pub async fn create_conversation(title: Option<String>, workspace_path: Option<String>) -> Result<ConversationMeta, String> {
-    crate::daemon::invoke("create_conversation", serde_json::json!({"title": title, "workspacePath": workspace_path})).await
-        .and_then(|v| serde_json::from_value(v).map_err(|e| e.to_string()))
+pub async fn create_conversation(
+    title: Option<String>,
+    workspace_path: Option<String>,
+    idempotency_key: Option<String>,
+) -> Result<ConversationMeta, String> {
+    crate::daemon::invoke(
+        "create_conversation",
+        serde_json::json!({"title": title, "workspacePath": workspace_path, "idempotencyKey": idempotency_key}),
+    )
+    .await
+    .and_then(|v| serde_json::from_value(v).map_err(|e| e.to_string()))
 }
 
 #[tauri::command]

@@ -25,19 +25,19 @@ enabled: boolean,
 /**
  * 来源标注（手动 / 市场 / 导入）。
  */
-source: AgentSource, createdAt: bigint, updatedAt: bigint, };
+source: AgentSource, createdAt: number, updatedAt: number, };
 
 /**
  * 现代化 Agent 领域事件系统。
  * 后端作为唯一真实信源（Single Source of Truth），向前端推送确定性的高阶事件。
  * 前端仅需单向订阅，无需拼装消息状态或二次计算。
  */
-export type AgentDomainEvent = { "kind": "turn_started", "payload": { turn_id: string, conversation_id: string, timestamp: bigint, } } | { "kind": "state_changed", "payload": { turn_id: string, state: CognitiveState, } } | { "kind": "thinking_delta", "payload": { turn_id: string, delta: string, } } | { "kind": "text_delta", "payload": { turn_id: string, delta: string, } } | { "kind": "tool_call_requested", "payload": { turn_id: string, call_id: string, tool_name: string, arguments: JsonValue, } } | { "kind": "tool_call_completed", "payload": { turn_id: string, call_id: string, tool_name: string, is_error: boolean, output: string, duration_ms: bigint, } } | { "kind": "token_usage_update", "payload": { turn_id: string, input_tokens: number, output_tokens: number, cache_read_tokens: number, cache_creation_tokens: number, } } | { "kind": "permission_requested", "payload": { turn_id: string, request_id: string, tool_name: string, payload: string, } } | { "kind": "turn_finished", "payload": { turn_id: string, stop_reason: string, total_tokens: number, } } | { "kind": "turn_error", "payload": { turn_id: string, error: string, } };
+export type AgentDomainEvent = { "kind": "turn_started", "payload": { turn_id: string, conversation_id: string, timestamp: number, trace_id?: string | null, } } | { "kind": "state_changed", "payload": { turn_id: string, state: CognitiveState, trace_id?: string | null, } } | { "kind": "thinking_delta", "payload": { turn_id: string, delta: string, trace_id?: string | null, } } | { "kind": "text_delta", "payload": { turn_id: string, delta: string, trace_id?: string | null, } } | { "kind": "tool_call_requested", "payload": { turn_id: string, call_id: string, tool_name: string, arguments: JsonValue, trace_id?: string | null, } } | { "kind": "tool_call_completed", "payload": { turn_id: string, call_id: string, tool_name: string, is_error: boolean, output: string, duration_ms: number, trace_id?: string | null, } } | { "kind": "token_usage_update", "payload": { turn_id: string, input_tokens: number, output_tokens: number, cache_read_tokens: number, cache_creation_tokens: number, trace_id?: string | null, } } | { "kind": "permission_requested", "payload": { turn_id: string, request_id: string, tool_name: string, payload: string, trace_id?: string | null, } } | { "kind": "turn_finished", "payload": { turn_id: string, stop_reason: string, total_tokens: number, trace_id?: string | null, } } | { "kind": "turn_error", "payload": { turn_id: string, error: string, error_info?: NovaErrorInfo | null, trace_id?: string | null, } } | { "kind": "turn_steered", "payload": { turn_id: string, conversation_id: string, prompt: string, trace_id?: string | null, } } | { "kind": "turn_queued", "payload": { turn_id: string, conversation_id: string, queue_length: number, trace_id?: string | null, } };
 
 /**
  * 智能体资料文件条目（agents/<id>/files/ 顶层）。
  */
-export type AgentFileEntry = { name: string, sizeBytes: bigint, isDir: boolean, };
+export type AgentFileEntry = { name: string, sizeBytes: number, isDir: boolean, };
 
 /**
  * 对话执行模式：
@@ -54,14 +54,19 @@ export type AgentSource = { kind: AgentSourceKind, name: string | null, version:
  */
 export type AgentSourceKind = "manual" | "market" | "import";
 
-export type AppSettings = { provider: string, customModels: { [key in string]: Array<string> }, providerProfiles: { [key in string]: ProviderProfile }, providerOrder: Array<string>, modelContextWindows: { [key in string]: number }, disabledSkills: Array<string>, uiLanguage: string, uiTheme: string, enableAppLog: boolean, approvalPolicy: string, progressiveToolDisclosure: boolean, terminalShell: string | null, };
+/**
+ * `send_modern_agent_turn` 的同步仲裁回包。
+ */
+export type AgentTurnSubmitOutcome = { outcome: TurnSubmitOutcomeKind, turnId: string, queueLength: number, };
+
+export type AppSettings = { provider: string, customModels: { [key in string]: Array<string> }, providerProfiles: { [key in string]: ProviderProfile }, providerOrder: Array<string>, modelContextWindows: { [key in string]: number }, disabledSkills: Array<string>, uiLanguage: string, uiTheme: string, enableAppLog: boolean, approvalPolicy: string, sandboxPolicy: string, progressiveToolDisclosure: boolean, terminalShell: string | null, };
 
 /**
  * 审批策略：与操作风险正交的全局开关。
  */
 export type ApprovalPolicy = "always_ask" | "on_request" | "never";
 
-export type BackgroundOutput = { id: string, pid: number, command: string, cwd: string | null, running: boolean, finished: boolean, exitCode: number | null, killed: boolean, timedOut: boolean, stdout: string, stderr: string, truncated: boolean, elapsedMs: bigint, ttlMs: bigint, remainingMs: bigint, };
+export type BackgroundOutput = { id: string, pid: number, command: string, cwd: string | null, running: boolean, finished: boolean, exitCode: number | null, killed: boolean, timedOut: boolean, stdout: string, stderr: string, truncated: boolean, elapsedMs: number, ttlMs: number, remainingMs: number, };
 
 /**
  * 流式事件传输载荷（供分支与子代理侧边栏流式事件复用）
@@ -69,8 +74,8 @@ export type BackgroundOutput = { id: string, pid: number, command: string, cwd: 
 export type ChatMessageEvent = { type: string, text: string | null, tool_use_id: string | null, tool_use_name: string | null, tool_use_input: string | null, tool_result: string | null, tool_is_error: boolean | null, token_usage: number | null, stop_reason: string | null, turn_state: string | null, conversation_id: string | null, };
 
 /**
- * `initialize` 请求参数（与 Codex App Server 的握手同形）。
- * 客户端能力声明（结构化，与 Codex 的 `initialize.capabilities` 同形）。
+ * `initialize` 请求参数。
+ * 客户端能力声明（结构化）。
  *
  * 桌面声明 `browser: true` 表示能执行浏览器自动化；CLI 宿主声明 false。
  */
@@ -87,20 +92,11 @@ export type ClientInfo = { name: string, title?: string | null, version: string,
  */
 export type CognitiveState = "idle" | "assembling_context" | "model_inference" | "awaiting_approval" | "executing_tool" | "verifying_workspace" | "reflecting" | "turn_complete" | "failed";
 
-/**
- * 前端智能体配置页展示的可配置工具（勾选清单用）。
- */
-export type ConfigurableTool = { name: string, description: string, readOnly: boolean, 
-/**
- * 内核流程控制工具（不可移除）。
- */
-alwaysOn: boolean, };
-
 export type Content = string | Array<ContentBlock>;
 
 export type ContentBlock = { "type": "text", text: string, } | { "type": "thinking", thinking: string, signature: string, } | { "type": "image", source: ImageSource, } | { "type": "tool_use", id: string, name: string, input: JsonValue, } | { "type": "tool_result", tool_use_id: string, is_error: boolean, content: Array<ContentBlock>, };
 
-export type ConversationMeta = { id: string, title: string, updatedAt: bigint, pinnedAt: bigint | null, workspacePath: string | null, activeAgentId: string | null, };
+export type ConversationMeta = { id: string, title: string, updatedAt: number, pinnedAt: number | null, workspacePath: string | null, activeAgentId: string | null, };
 
 /**
  * 会话 plan 元信息，返回给前端展示。
@@ -113,9 +109,9 @@ content: string,
 /**
  * plan 文件更新时间（Unix 秒）。
  */
-updatedAt: bigint, };
+updatedAt: number, };
 
-export type ConversationUsageSummary = { requests: bigint, inputTokens: bigint, outputTokens: bigint, cacheReadTokens: bigint, cacheCreationTokens: bigint, totalTokens: bigint, totalCostUsd: string, };
+export type ConversationUsageSummary = { requests: number, inputTokens: number, outputTokens: number, cacheReadTokens: number, cacheCreationTokens: number, totalTokens: number, totalCostUsd: string, };
 
 export type CronJob = { id: string, cron: string, prompt: string, conversationId: string | null, recurring: boolean, durable: boolean, createdAt: string, };
 
@@ -125,13 +121,13 @@ export type FileDiffLine = { kind: string, oldLine: number | null, newLine: numb
 
 export type GitRepoStatus = { initialized: boolean, path: string, branch: string | null, worktree: string | null, };
 
-export type HeatmapPoint = { date: string, tokens: bigint, sessions: bigint, };
+export type HeatmapPoint = { date: string, tokens: number, sessions: number, };
 
-export type HistoryAttachment = { sourceName: string, mimeType: string | null, size: bigint | null, kind: string | null, mediaType: string | null, data: string | null, content: string | null, sessionFilePath: string | null, };
+export type HistoryAttachment = { sourceName: string, mimeType: string | null, size: number | null, kind: string | null, mediaType: string | null, data: string | null, content: string | null, sessionFilePath: string | null, };
 
-export type HistoryMessage = { id?: bigint | null, role: string, content: string, reasoning: string | null, attachments: Array<HistoryAttachment> | null, tokenUsage: bigint | null, cost: JsonValue | null, };
+export type HistoryMessage = { id?: number | null, role: string, content: string, reasoning: string | null, attachments: Array<HistoryAttachment> | null, tokenUsage: number | null, cost: JsonValue | null, };
 
-export type HistoryToolExecution = { id: string, turnId: string | null, toolName: string, input: string, result: string, status: string, startedAt: bigint, finishedAt: bigint | null, };
+export type HistoryToolExecution = { id: string, turnId: string | null, toolName: string, input: string, result: string, status: string, startedAt: number, finishedAt: number | null, };
 
 export type ImageSource = { type: string, media_type: string, data: string, };
 
@@ -152,17 +148,19 @@ export type ManualCompactOutcome = { before_tokens: number, after_tokens: number
 
 export type Message = { role: Role, content: Content, };
 
-export type ModelBreakdown = { model: string, tokens: bigint, calls: bigint, costUsd: string, };
+export type ModelBreakdown = { model: string, tokens: number, calls: number, costUsd: string, };
 
 /**
  * 模型数据库状态统计。
  */
-export type ModelCatalogStats = { totalModels: number, lastUpdatedSecs: bigint | null, cacheFileExists: boolean, cacheFilePath: string, };
+export type ModelCatalogStats = { totalModels: number, lastUpdatedSecs: number | null, cacheFileExists: boolean, cacheFilePath: string, };
 
 /**
  * 前端展示的模型属性摘要（OpenRouter 风格）。
  */
-export type ModelCatalogSummary = { id: string, name: string, description: string | null, contextLength: bigint, maxCompletionTokens: bigint | null, inputModalities: Array<string>, promptPricePerM: string, completionPricePerM: string, cacheReadPricePerM: string | null, };
+export type ModelCatalogSummary = { id: string, name: string, description: string | null, contextLength: number, maxCompletionTokens: number | null, inputModalities: Array<string>, promptPricePerM: string, completionPricePerM: string, cacheReadPricePerM: string | null, };
+
+export type NovaErrorInfo = "contextWindowExceeded" | "usageLimitExceeded" | { "rateLimitExceeded": { retry_after_ms: number | null, } } | { "serverOverloaded": { retry_after_ms: number | null, } } | "modelNotFound" | "unauthorized" | "badRequest" | "internalServerError" | { "httpConnectionFailed": { http_status_code: number | null, } } | { "responseStreamConnectionFailed": { http_status_code: number | null, } } | { "responseStreamDisconnected": { http_status_code: number | null, } } | { "responseTooManyFailedAttempts": { http_status_code: number | null, } } | { "toolExecutionFailed": { tool_name: string, } } | { "permissionDenied": { reason: string, } } | "cancelled" | { "other": string };
 
 /**
  * 一条持久化权限规则。
@@ -171,13 +169,38 @@ export type PermissionRule = { kind: RuleKind,
 /**
  * 操作签名（与审批描述符 signature 同一归一化规则）。
  */
-signature: string, createdAtMs: bigint, };
+signature: string, createdAtMs: number, };
 
 export type ProviderProfile = { displayName: string, apiFormat: string, apiKey: string, baseUrl: string, model: string, anthropicThinkingEnabled: boolean, anthropicThinkingBudgetTokens: number | null, stopSequences: Array<string>, };
 
 export type Role = "user" | "assistant";
 
 export type RuleKind = "allow" | "deny";
+
+/**
+ * 当前沙箱驱动与策略状态（桌面状态栏与设置项如实展示，不隐藏真实驱动与网络策略）。
+ */
+export type SandboxStatus = { 
+/**
+ * 实际驱动标识："windows-restricted" / "linux-bubblewrap" / "none"
+ */
+driver: string, 
+/**
+ * 当前生效策略："read-only" / "workspace-write" / "danger-full-access"
+ */
+policy: string, 
+/**
+ * 当前是否真正在执行写入与进程隔离。
+ */
+enforcing: boolean, 
+/**
+ * 是否限制联网（双平台均允许联网，恒为 false）。
+ */
+networkRestricted: boolean, 
+/**
+ * 状态栏与设置页可读说明。
+ */
+summary: string, };
 
 /**
  * 服务端能力声明。
@@ -192,7 +215,7 @@ browser: boolean,
  */
 hooks: boolean, 
 /**
- * 服务端支持沙箱逃逸审批（对齐 Codex 的 with_additional_permissions）。
+ * 服务端支持沙箱逃逸审批。
  */
 escalation: boolean, };
 
@@ -204,13 +227,11 @@ filename: string,
 /**
  * 文件大小（字节）。
  */
-size: bigint, 
+size: number, 
 /**
  * 创建时间（Unix 秒）。
  */
-createdAt: bigint, };
-
-export type ShellSessionStatus = { exists: boolean, alive: boolean, busy: boolean, cwd: string | null, backgroundPids: Array<number>, backgroundCount: number, };
+createdAt: number, };
 
 export type SkillSummary = { name: string, description: string, path: string, };
 
@@ -242,29 +263,47 @@ shellType: string, };
 
 export type TodoEntry = { id: string, content: string, status: string, priority: string, };
 
-export type TokenUsageRecord = { id: bigint, conversationId: string | null, model: string, provider: string | null, inputTokens: bigint, outputTokens: bigint, cacheReadTokens: bigint, cacheCreationTokens: bigint, totalTokens: bigint, costUsd: string | null, source: string | null, createdAt: bigint, };
+export type TokenUsageRecord = { id: number, conversationId: string | null, model: string, provider: string | null, inputTokens: number, outputTokens: number, cacheReadTokens: number, cacheCreationTokens: number, totalTokens: number, costUsd: string | null, source: string | null, createdAt: number, };
 
 export type Tool = { name: string, description: string, input_schema: JsonValue, };
+
+/**
+ * 回合提交并发策略。
+ */
+export type TurnSubmitMode = "start_or_steer" | "queue";
+
+/**
+ * 回合提交的同步仲裁结果类型。
+ */
+export type TurnSubmitOutcomeKind = "started" | "steered" | "queued";
 
 /**
  * 单个回合的轨迹：仅回合标识与最后一次模型收发（调试面板只展开发送/接收）。
  */
 export type TurnTrace = { turnId: string, 
 /**
+ * 全链路追踪标识（Turn -> Tool -> session_events -> 前端事件）。
+ */
+traceId?: string | null, 
+/**
  * 回合在事件流中的序号（排序/定位用）。
  */
-seq: bigint, startedAt: bigint, endedAt: bigint | null, stopReason: string | null, 
+seq: number, startedAt: number, endedAt: number | null, stopReason: string | null, 
 /**
  * 本回合发给模型 API 的 wire 级请求/响应（按顺序配对）。
  */
 wireCalls: Array<WireCallTrace>, };
 
-export type UsageStats = { totalSessions: bigint, totalMessages: bigint, totalTokens: bigint, totalInputTokens: bigint, totalOutputTokens: bigint, totalCostUsd: string, activeDays: bigint, currentStreak: bigint, peakHour: bigint | null, favoriteModel: string | null, heatmap: Array<HeatmapPoint>, modelBreakdown: Array<ModelBreakdown>, };
+export type UsageStats = { totalSessions: number, totalMessages: number, totalTokens: number, totalInputTokens: number, totalOutputTokens: number, totalCostUsd: string, activeDays: number, currentStreak: number, peakHour: number | null, favoriteModel: string | null, heatmap: Array<HeatmapPoint>, modelBreakdown: Array<ModelBreakdown>, };
 
 /**
  * 单次模型 API 请求及其响应。
  */
 export type WireCallTrace = { 
+/**
+ * 关联的 Turn traceId（如可用）。
+ */
+traceId?: string | null, 
 /**
  * 请求报文完整 JSON（含 system prompt/tools/消息数组）。
  */
@@ -278,8 +317,8 @@ export type WorkspaceDiff = { files: Array<WorkspaceFileChange>, totalAdditions:
 
 export type WorkspaceDirectoryListing = { root: string, path: string, relativePath: string, entries: Array<WorkspaceEntry>, };
 
-export type WorkspaceEntry = { name: string, path: string, relativePath: string, kind: string, extension: string | null, size: bigint | null, modified: bigint | null, };
+export type WorkspaceEntry = { name: string, path: string, relativePath: string, kind: string, extension: string | null, size: number | null, modified: number | null, };
 
 export type WorkspaceFileChange = { path: string, absolutePath: string, changeType: string, additions: number, deletions: number, diff: Array<FileDiffLine>, };
 
-export type WorkspaceFileContent = { path: string, relativePath: string, content: string, size: bigint, };
+export type WorkspaceFileContent = { path: string, relativePath: string, content: string, size: number, };

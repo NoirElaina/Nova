@@ -190,7 +190,7 @@ pub fn build_models_url_candidates(
             }
         } else if let Some(idx) = trimmed.rfind('/') {
             let root = &trimmed[..idx];
-            if root.contains("://") && root.len() > root.find("://").unwrap() + 3 {
+            if root.find("://").is_some_and(|pos| root.len() > pos + 3) {
                 candidates.push(format!("{root}/v1/models"));
                 if let Some(stripped) = strip_compat_suffix(root) {
                     let bare = stripped.trim_end_matches('/');

@@ -54,10 +54,10 @@ function collect(names, re, text) {
   }
 }
 
-// 前端实际 invoke 的命令名
+// 前端实际 invoke / ipcInvoke 的命令名
 const frontend = new Set();
 for (const file of walk(path.join(rootDir, 'src'), ['.ts', '.vue'])) {
-  collect(frontend, /invoke(?:<[^>]*>)?\(\s*['"]([a-z0-9_]+)['"]/g, fs.readFileSync(file, 'utf8'));
+  collect(frontend, /(?:ipcInvoke|invoke)(?:<[^>]*>)?\(\s*['"]([a-z0-9_]+)['"]/g, fs.readFileSync(file, 'utf8'));
 }
 
 // 内核 RPC 分发器支持的方法名
@@ -83,9 +83,31 @@ const apiMissing = [...api]
   .filter((name) => !dispatch.has(name) && !INTERNAL_API.has(name))
   .sort();
 
+// 校验 Rust `nova-protocol` 绑定导出覆盖率与零 `bigint` 漂移
+const protocolTypes = new Set();
+for (const file of walk(path.join(rootDir, 'crates/nova-protocol/src'), ['.rs'])) {
+  collect(
+    protocolTypes,
+    /#\[ts\([^\]]*export_to\s*=\s*"protocol\.ts"[^\]]*\)\][\s\S]*?\bpub\s+(?:struct|enum)\s+([A-Za-z0-9_]+)/g,
+    fs.readFileSync(file, 'utf8'),
+  );
+}
+const protocolTs = fs.readFileSync(path.join(rootDir, 'src/lib/protocol.ts'), 'utf8');
+const contractSyncRs = fs.readFileSync(
+  path.join(rootDir, 'crates/nova-protocol/tests/contract_sync.rs'),
+  'utf8',
+);
+const protocolMissingInTs = [...protocolTypes]
+  .filter((name) => !new RegExp(`\\bexport\\s+(?:type|interface)\\s+${name}\\b`).test(protocolTs))
+  .sort();
+const protocolMissingInSyncTest = [...protocolTypes]
+  .filter((name) => !new RegExp(`::${name}\\b`).test(contractSyncRs))
+  .sort();
+const hasBigintInProtocol = /\bbigint\b/.test(protocolTs);
+
 console.log(
   `[contract] 前端 invoke=${frontend.size} dispatch=${dispatch.size} api=${api.size} ` +
-    `(桌面本地=${DESKTOP_LOCAL.size}, 内核内部=${INTERNAL_API.size})`,
+    `(桌面本地=${DESKTOP_LOCAL.size}, 内核内部=${INTERNAL_API.size}), protocol=${protocolTypes.size}`,
 );
 
 let failed = false;
@@ -99,6 +121,20 @@ if (apiMissing.length > 0) {
   console.error('\n[contract] api 中的函数未在 dispatch 中暴露:');
   for (const name of apiMissing) console.error(`  - ${name}`);
 }
+if (protocolMissingInTs.length > 0) {
+  failed = true;
+  console.error('\n[contract] nova-protocol 类型未导出到 src/lib/protocol.ts（请运行 npm run gen:bindings）:');
+  for (const name of protocolMissingInTs) console.error(`  - ${name}`);
+}
+if (protocolMissingInSyncTest.length > 0) {
+  failed = true;
+  console.error('\n[contract] nova-protocol 类型未注册到 crates/nova-protocol/tests/contract_sync.rs:');
+  for (const name of protocolMissingInSyncTest) console.error(`  - ${name}`);
+}
+if (hasBigintInProtocol) {
+  failed = true;
+  console.error('\n[contract] src/lib/protocol.ts 出现禁止的 `bigint` 类型（请改为 number 注解）');
+}
 
 if (failed) process.exit(1);
-console.log('[contract] 三方契约一致');
+console.log('[contract] 三方契约与 protocol 绑定一致');

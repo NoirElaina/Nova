@@ -237,7 +237,7 @@ pub(crate) fn build_request(
     conversation_id: Option<&str>,
 ) -> Result<BuiltOpenAiRequest, ProviderTurnError> {
     let settings =
-        crate::services::settings::load_settings(&core).map_err(ProviderTurnError::new)?;
+        crate::services::settings::load_settings(core).map_err(ProviderTurnError::new)?;
     let profile = settings.active_provider_profile();
     let builtin_tools = tools::get_available_tools_for_agent(core, conversation_id);
     let tool_count = builtin_tools.len();

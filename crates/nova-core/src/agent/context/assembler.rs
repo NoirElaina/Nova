@@ -6,6 +6,8 @@ use crate::provider::types::{Content, ContentBlock, Message, Role};
 
 pub const CONTEXT_TAG_START: &str = "<workspace_context>";
 pub const CONTEXT_TAG_END: &str = "</workspace_context>";
+pub const BG_SESSIONS_TAG_START: &str = "<background_sessions>";
+pub const BG_SESSIONS_TAG_END: &str = "</background_sessions>";
 
 /// 确定性上下文装配器（Deterministic Context Assembler）
 ///
@@ -46,18 +48,25 @@ impl ContextAssembler {
     }
 }
 
-/// 剥除历史文本中先前包含的工作区快照
-fn strip_context_text(text: &str) -> String {
-    if let (Some(start), Some(end)) = (text.find(CONTEXT_TAG_START), text.find(CONTEXT_TAG_END)) {
-        if start <= end {
-            let end_idx = end + CONTEXT_TAG_END.len();
-            let mut cleaned = String::with_capacity(text.len());
-            cleaned.push_str(&text[..start]);
-            cleaned.push_str(&text[end_idx..]);
-            return cleaned.trim().to_string();
+fn strip_tag_block(text: &str, start_tag: &str, end_tag: &str) -> String {
+    let mut current = text.to_string();
+    while let (Some(start), Some(end)) = (current.find(start_tag), current.find(end_tag)) {
+        if start > end {
+            break;
         }
+        let end_idx = end + end_tag.len();
+        let mut next = String::with_capacity(current.len());
+        next.push_str(&current[..start]);
+        next.push_str(&current[end_idx..]);
+        current = next.trim().to_string();
     }
-    text.to_string()
+    current
+}
+
+/// 剥除历史文本中先前包含的工作区快照与遗留后台任务标记
+fn strip_context_text(text: &str) -> String {
+    let without_ws = strip_tag_block(text, CONTEXT_TAG_START, CONTEXT_TAG_END);
+    strip_tag_block(&without_ws, BG_SESSIONS_TAG_START, BG_SESSIONS_TAG_END)
 }
 
 /// 清理历史 User 消息中的陈旧上下文块

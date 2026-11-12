@@ -11,7 +11,7 @@ use crate::agent::permissions::checks::{
 };
 use crate::agent::permissions::RiskLevel;
 
-/// shell 命令类工具（Bash/PowerShell 等）的权限描述。
+/// shell 命令类工具（exec_command / PowerShell 等）的权限描述。
 pub(crate) fn describe_shell_command_permission(
     tool_name: &str,
     preview_label: &str,
@@ -19,7 +19,7 @@ pub(crate) fn describe_shell_command_permission(
 ) -> Option<ToolPermissionDescriptor> {
     // command: 当前工具请求执行的终端命令文本。
     let command = input
-        .get("command")
+        .get("cmd").or_else(|| input.get("command"))
         .and_then(|v| v.as_str())
         .unwrap_or_default()
         .trim();
@@ -50,8 +50,69 @@ pub(crate) fn describe_shell_command_permission(
     })
 }
 
-/// 文件写类工具（Write/Edit/MultiEdit 等）的权限描述。
-/// 受保护/敏感路径一律 Forbidden（硬拒绝），其余 Safe。
+/// 交互式终端写入（`write_stdin`）的权限描述。
+///
+/// 这是 Codex `stdin_approval` 的等价物：一旦某个会话被批准，后续写入可以
+/// 把任意命令送进仍在运行的 shell/REPL，因此非空写入必须归类为 Risky，
+/// 只有空字符串（纯轮询）与 Ctrl+C（`\u0003`）才允许不打扰用户。
+pub(crate) fn describe_stdin_permission(
+    tool_name: &str,
+    input: &Value,
+) -> Option<ToolPermissionDescriptor> {
+    let session_id = input
+        .get("session_id")
+        .map(|v| {
+            v.as_i64()
+                .map(|n| n.to_string())
+                .or_else(|| v.as_u64().map(|n| n.to_string()))
+                .or_else(|| v.as_f64().filter(|f| f.fract() == 0.0).map(|f| (f as i64).to_string()))
+                .or_else(|| {
+                    v.as_str()
+                        .map(str::trim)
+                        .filter(|s| !s.is_empty())
+                        .map(str::to_string)
+                })
+                .unwrap_or_else(|| "?".to_string())
+        })
+        .unwrap_or_else(|| "?".to_string());
+
+    let chars = input.get("chars").and_then(|v| v.as_str()).unwrap_or_default();
+    if chars.is_empty() {
+        return Some(ToolPermissionDescriptor {
+            signature: format!("{}:{}:poll", tool_name, session_id),
+            preview: format!("读取终端会话 {} 的新增输出", session_id),
+            warning: None,
+            risk: RiskLevel::Safe,
+        });
+    }
+    if chars == "\u{3}" {
+        return Some(ToolPermissionDescriptor {
+            signature: format!("{}:{}:interrupt", tool_name, session_id),
+            preview: format!("向终端会话 {} 发送 Ctrl+C", session_id),
+            warning: None,
+            risk: RiskLevel::Safe,
+        });
+    }
+
+    // 与 exec_command 对齐：权限签名绑定到具体标准化输入，避免放行一条 write_stdin 后
+    // 同一 session_id 的所有后续命令都自动免审。
+    let normalized = normalize_command_for_match(chars);
+    Some(ToolPermissionDescriptor {
+        signature: format!("{}:{}:input:{}", tool_name, session_id, normalized),
+        preview: format!(
+            "向终端会话 {} 注入输入：{}",
+            session_id,
+            truncate_chars(&chars.replace(['\r', '\n'], "↵"), 120)
+        ),
+        warning: Some(
+            "向仍在运行的终端/REPL 注入输入等同于在其中执行命令，可能修改文件或访问网络。"
+                .to_string(),
+        ),
+        risk: RiskLevel::Risky,
+    })
+}
+
+/// 文件写类工具（Write/Edit/MultiEdit 等）的权限描述。/// 受保护/敏感路径一律 Forbidden（硬拒绝），其余 Safe。
 pub(crate) fn describe_file_write_permission(
     tool_name: &str,
     preview_label: &str,
@@ -92,4 +153,27 @@ pub(crate) fn describe_file_write_permission(
         warning,
         risk,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn write_stdin_permission_scopes_signature_to_input() {
+        let d_poll = describe_stdin_permission("write_stdin", &json!({ "session_id": " 1 ", "chars": "" })).unwrap();
+        assert!(matches!(d_poll.risk, RiskLevel::Safe));
+        assert_eq!(d_poll.signature, "write_stdin:1:poll");
+
+        let d_ctrlc = describe_stdin_permission("write_stdin", &json!({ "session_id": 1, "chars": "\u{3}" })).unwrap();
+        assert!(matches!(d_ctrlc.risk, RiskLevel::Safe));
+        assert_eq!(d_ctrlc.signature, "write_stdin:1:interrupt");
+
+        let d_ls = describe_stdin_permission("write_stdin", &json!({ "session_id": "1", "chars": "echo hi\n" })).unwrap();
+        let d_rm = describe_stdin_permission("write_stdin", &json!({ "session_id": "1", "chars": "rm -rf /\n" })).unwrap();
+        assert!(matches!(d_ls.risk, RiskLevel::Risky));
+        assert!(matches!(d_rm.risk, RiskLevel::Risky));
+        assert_ne!(d_ls.signature, d_rm.signature);
+    }
 }

@@ -1,9 +1,8 @@
 use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions};
-use sqlx::{Row, SqlitePool};
+use sqlx::{Executor, Row, SqlitePool};
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
 use crate::core::Core;
-use tokio::sync::OnceCell;
 use uuid::Uuid;
 
 use crate::agent::session::types::{
@@ -33,13 +32,16 @@ pub fn derive_title_from_message(content: &str) -> String {
     }
 }
 
+pub const LATEST_SCHEMA_VERSION: i64 = 2;
+
+fn history_db_path(core: &Core) -> PathBuf {
+    core.config().data_dir().join("history.db")
+}
+
 // Build sqlite database URL under core data directory.
 // Format: sqlite:<path>?mode=rwc (read/write/create).
 fn get_db_url(core: &Core) -> Result<String, String> {
-    let db_path = core
-        .config()
-        .data_dir()
-        .join("history.db");
+    let db_path = history_db_path(core);
 
     if let Some(parent) = db_path.parent() {
         std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
@@ -48,25 +50,81 @@ fn get_db_url(core: &Core) -> Result<String, String> {
     Ok(format!("sqlite:{}?mode=rwc", db_path.display()))
 }
 
-static DB_POOL: OnceCell<SqlitePool> = OnceCell::const_new();
-
-/// 获取历史库连接池（含 schema 保证）。session_log 等模块复用同一连接池。
+/// 获取当前 `Core` 实例隔离的历史库连接池（含版本化迁移与崩溃补偿扫描）。
 pub async fn history_pool(core: &Core) -> Result<SqlitePool, String> {
     get_pool_with_schema(core).await
 }
 
+/// 显式关闭当前 `Core` 的 SQLite 连接池（Windows 测试清理临时目录前可用）。
+pub async fn close_history_pool(core: &Core) {
+    if let Some(pool) = core.db_pool_cell().get() {
+        pool.close().await;
+    }
+}
+
+async fn has_table_column(
+    tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+    table: &str,
+    column: &str,
+) -> Result<bool, String> {
+    let query = format!("PRAGMA table_info({})", table);
+    let rows = sqlx::query(&query)
+        .fetch_all(&mut **tx)
+        .await
+        .map_err(|e| e.to_string())?;
+    Ok(rows
+        .iter()
+        .any(|row| row.get::<String, _>("name") == column))
+}
+
+async fn backup_db_before_migration(
+    pool: &SqlitePool,
+    db_path: &Path,
+    from_version: i64,
+) -> Result<(), String> {
+    if !db_path.exists() {
+        return Ok(());
+    }
+    let backup_name = format!("history.db.v{}.bak", from_version.max(0));
+    let backup_path = db_path
+        .parent()
+        .map(|p| p.join(&backup_name))
+        .unwrap_or_else(|| PathBuf::from(&backup_name));
+
+    if backup_path.exists() {
+        std::fs::remove_file(&backup_path)
+            .map_err(|e| format!("清理旧迁移备份失败 ({}): {}", backup_path.display(), e))?;
+    }
+
+    let backup_str = backup_path.to_string_lossy().replace('\'', "''");
+    let vacuum_sql = format!("VACUUM INTO '{}'", backup_str);
+    if let Err(vacuum_err) = pool.execute(vacuum_sql.as_str()).await {
+        tracing::warn!(
+            error = %vacuum_err,
+            backup = %backup_path.display(),
+            "VACUUM INTO 备份失败，回退文件复制"
+        );
+        std::fs::copy(db_path, &backup_path)
+            .map_err(|e| format!("数据库迁移前备份失败 ({}): {}", backup_path.display(), e))?;
+    }
+    Ok(())
+}
+
 // Create a sqlx sqlite pool for history DB.
 //
-// 必须启用 WAL + busy_timeout：内核可能同时被桌面守护进程与独立 CLI 持有，
-// 传统 rollback journal 下并发写会立刻 `database is locked`。
+// 必须启用 WAL + busy_timeout + foreign_keys：
+// 连接池按 Core 实例隔离，既支持生产单库复用，又让并行测试彻底隔离无文件锁冲突。
 async fn get_pool(core: &Core) -> Result<SqlitePool, String> {
-    let pool = DB_POOL
+    let pool = core
+        .db_pool_cell()
         .get_or_try_init(|| async {
+            let db_path = history_db_path(core);
             let db_url = get_db_url(core)?;
             let options = SqliteConnectOptions::from_str(&db_url)
                 .map_err(|e| e.to_string())?
                 .journal_mode(SqliteJournalMode::Wal)
                 .synchronous(sqlx::sqlite::SqliteSynchronous::Normal)
+                .foreign_keys(true)
                 .create_if_missing(true)
                 .busy_timeout(std::time::Duration::from_secs(10));
             let pool = SqlitePoolOptions::new()
@@ -74,79 +132,193 @@ async fn get_pool(core: &Core) -> Result<SqlitePool, String> {
                 .connect_with(options)
                 .await
                 .map_err(|e| e.to_string())?;
-            ensure_schema(&pool).await?;
+            run_migrations(&pool, &db_path).await?;
+            let recovered =
+                crate::agent::session::store::recover_interrupted_turns_on_pool(&pool, Some(core))
+                    .await?;
+            if recovered > 0 {
+                crate::agent::utils::error_event::emit_backend_warning(
+                    core,
+                    "agent.session.recovery",
+                    format!(
+                        "检测到 {} 个未正常结束的中断回合，已在启动恢复阶段补全终态与工具结果配对",
+                        recovered
+                    ),
+                    Some("startup.crash_recovery"),
+                );
+            }
             Ok::<SqlitePool, String>(pool)
         })
         .await?;
     Ok(pool.clone())
 }
 
-// Ensure required schema exists.
-// 事件日志时代仅保留三张表：
-// - conversations：会话元数据；
-// - session_events：会话事实唯一事实源（append-only，结构见 session_log/store.rs）；
-// - token_usage_log：计费流水。
-async fn ensure_schema(pool: &SqlitePool) -> Result<(), String> {
-    sqlx::query(
-        r#"
-        CREATE TABLE IF NOT EXISTS conversations (
-            id TEXT PRIMARY KEY,
-            title TEXT NOT NULL,
-            created_at INTEGER NOT NULL,
-            updated_at INTEGER NOT NULL,
-            pinned_at INTEGER,
-            workspace_path TEXT,
-            active_agent_id TEXT
-        );
-        "#,
-    )
-    .execute(pool)
-    .await
-    .map_err(|e| e.to_string())?;
-
-    sqlx::query(
-        r#"
-        CREATE TABLE IF NOT EXISTS token_usage_log (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            conversation_id TEXT,
-            model TEXT NOT NULL,
-            provider TEXT,
-            input_tokens INTEGER NOT NULL DEFAULT 0,
-            output_tokens INTEGER NOT NULL DEFAULT 0,
-            cache_read_tokens INTEGER NOT NULL DEFAULT 0,
-            cache_creation_tokens INTEGER NOT NULL DEFAULT 0,
-            total_tokens INTEGER NOT NULL DEFAULT 0,
-            cost_usd TEXT,
-            source TEXT,
-            created_at INTEGER NOT NULL
-        );
-    
-        CREATE INDEX IF NOT EXISTS idx_token_usage_log_created
-            ON token_usage_log(created_at DESC);
-    
-        CREATE INDEX IF NOT EXISTS idx_token_usage_log_model
-            ON token_usage_log(model);
-    
-        CREATE INDEX IF NOT EXISTS idx_token_usage_log_conversation
-            ON token_usage_log(conversation_id);
-        "#,
-    )
-    .execute(pool)
-    .await
-    .map_err(|e| e.to_string())?;
-
-    // 会话事件日志表（唯一事实源；结构定义见 session_log/store.rs）。
-    sqlx::query(crate::agent::session::store::SESSION_EVENTS_SCHEMA)
-        .execute(pool)
+async fn run_migrations(pool: &SqlitePool, db_path: &Path) -> Result<(), String> {
+    let current_version: i64 = sqlx::query_scalar("PRAGMA user_version")
+        .fetch_one(pool)
         .await
         .map_err(|e| e.to_string())?;
 
-    // 会话级智能体：旧库补列（已存在则忽略报错）。
-    sqlx::query("ALTER TABLE conversations ADD COLUMN active_agent_id TEXT")
-        .execute(pool)
-        .await
-        .ok();
+    if current_version > LATEST_SCHEMA_VERSION {
+        return Err(format!(
+            "history.db schema version v{} is newer than supported v{}; refusing to downgrade",
+            current_version, LATEST_SCHEMA_VERSION
+        ));
+    }
 
+    let existing_tables: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM sqlite_master
+         WHERE type = 'table' AND name IN ('conversations', 'session_events', 'token_usage_log')",
+    )
+    .fetch_one(pool)
+    .await
+    .map_err(|e| e.to_string())?;
+
+    if current_version < LATEST_SCHEMA_VERSION && existing_tables > 0 {
+        let check: String = sqlx::query_scalar("PRAGMA quick_check")
+            .fetch_one(pool)
+            .await
+            .map_err(|e| format!("数据库迁移前完整性检查失败: {}", e))?;
+        if !check.eq_ignore_ascii_case("ok") {
+            return Err(format!("数据库迁移前完整性检查异常: {}", check));
+        }
+        backup_db_before_migration(pool, db_path, current_version).await?;
+    }
+
+    if current_version == LATEST_SCHEMA_VERSION {
+        return Ok(());
+    }
+
+    let mut tx = pool.begin().await.map_err(|e| e.to_string())?;
+    sqlx::query(
+        r#"
+        CREATE TABLE IF NOT EXISTS schema_migrations (
+            version INTEGER PRIMARY KEY,
+            name TEXT NOT NULL,
+            applied_at INTEGER NOT NULL
+        );
+        "#,
+    )
+    .execute(&mut *tx)
+    .await
+    .map_err(|e| e.to_string())?;
+
+    let now_ms = chrono::Utc::now().timestamp_millis();
+
+    if current_version < 1 {
+        sqlx::query(
+            r#"
+            CREATE TABLE IF NOT EXISTS conversations (
+                id TEXT PRIMARY KEY,
+                title TEXT NOT NULL,
+                created_at INTEGER NOT NULL,
+                updated_at INTEGER NOT NULL,
+                pinned_at INTEGER,
+                workspace_path TEXT,
+                active_agent_id TEXT
+            );
+            "#,
+        )
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| e.to_string())?;
+
+        if !has_table_column(&mut tx, "conversations", "active_agent_id").await? {
+            sqlx::query("ALTER TABLE conversations ADD COLUMN active_agent_id TEXT")
+                .execute(&mut *tx)
+                .await
+                .map_err(|e| e.to_string())?;
+        }
+
+        sqlx::query(
+            r#"
+            CREATE TABLE IF NOT EXISTS token_usage_log (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                conversation_id TEXT,
+                model TEXT NOT NULL,
+                provider TEXT,
+                input_tokens INTEGER NOT NULL DEFAULT 0,
+                output_tokens INTEGER NOT NULL DEFAULT 0,
+                cache_read_tokens INTEGER NOT NULL DEFAULT 0,
+                cache_creation_tokens INTEGER NOT NULL DEFAULT 0,
+                total_tokens INTEGER NOT NULL DEFAULT 0,
+                cost_usd TEXT,
+                source TEXT,
+                created_at INTEGER NOT NULL
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_token_usage_log_created
+                ON token_usage_log(created_at DESC);
+
+            CREATE INDEX IF NOT EXISTS idx_token_usage_log_model
+                ON token_usage_log(model);
+
+            CREATE INDEX IF NOT EXISTS idx_token_usage_log_conversation
+                ON token_usage_log(conversation_id);
+            "#,
+        )
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| e.to_string())?;
+
+        sqlx::query(crate::agent::session::store::SESSION_EVENTS_SCHEMA)
+            .execute(&mut *tx)
+            .await
+            .map_err(|e| e.to_string())?;
+
+        sqlx::query(
+            "INSERT INTO schema_migrations (version, name, applied_at)
+             VALUES (1, '001_initial_schema', ?)
+             ON CONFLICT(version) DO NOTHING",
+        )
+        .bind(now_ms)
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| e.to_string())?;
+
+        sqlx::query("PRAGMA user_version = 1")
+            .execute(&mut *tx)
+            .await
+            .map_err(|e| e.to_string())?;
+    }
+
+    if current_version < 2 {
+        if !has_table_column(&mut tx, "session_events", "trace_id").await? {
+            sqlx::query("ALTER TABLE session_events ADD COLUMN trace_id TEXT")
+                .execute(&mut *tx)
+                .await
+                .map_err(|e| e.to_string())?;
+        }
+
+        sqlx::query(
+            r#"
+            CREATE INDEX IF NOT EXISTS idx_session_events_trace
+                ON session_events(trace_id);
+            CREATE INDEX IF NOT EXISTS idx_session_events_type_turn
+                ON session_events(conversation_id, event_type, turn_id);
+            "#,
+        )
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| e.to_string())?;
+
+        sqlx::query(
+            "INSERT INTO schema_migrations (version, name, applied_at)
+             VALUES (2, '002_trace_id_and_diagnostics', ?)
+             ON CONFLICT(version) DO NOTHING",
+        )
+        .bind(now_ms)
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| e.to_string())?;
+
+        sqlx::query("PRAGMA user_version = 2")
+            .execute(&mut *tx)
+            .await
+            .map_err(|e| e.to_string())?;
+    }
+
+    tx.commit().await.map_err(|e| e.to_string())?;
     Ok(())
 }
 
@@ -281,19 +453,7 @@ fn chromium_candidates() -> Vec<PathBuf> {
         .collect()
     }
 
-    #[cfg(target_os = "macos")]
-    {
-        vec![
-            PathBuf::from("/Applications/Google Chrome.core/Contents/MacOS/Google Chrome"),
-            PathBuf::from("/Applications/Microsoft Edge.core/Contents/MacOS/Microsoft Edge"),
-            PathBuf::from("/Applications/Chromium.core/Contents/MacOS/Chromium"),
-        ]
-        .into_iter()
-        .filter(|path| path.exists())
-        .collect()
-    }
-
-    #[cfg(all(not(target_os = "windows"), not(target_os = "macos")))]
+    #[cfg(not(target_os = "windows"))]
     {
         vec![
             PathBuf::from("google-chrome"),
@@ -782,7 +942,8 @@ pub async fn clear_history(core: &Core, conversation_id: Option<String>) -> Resu
         tx.commit().await.map_err(|e| e.to_string())?;
         crate::agent::capabilities::session_files::delete_all_session_files(core, &id)?;
         let _ = crate::agent::capabilities::plan_files::delete_conversation_plan(core, Some(&id));
-        crate::services::shell_sessions::close_session(Some(&id)).await;
+        crate::services::unified_exec::close_conversation(Some(&id)).await;
+        cleanup_collaboration_state(&id);
         core.hooks().stop_user_terminal_session(&id);
         // 内存级 per-conversation 缓存统一回收（注册表单一入口）。
         crate::agent::utils::cache_registry::clear_conversation_caches(Some(&id));
@@ -802,13 +963,31 @@ pub async fn clear_history(core: &Core, conversation_id: Option<String>) -> Resu
 
         tx.commit().await.map_err(|e| e.to_string())?;
         crate::agent::capabilities::session_files::delete_all_session_files_all(core)?;
-        crate::services::shell_sessions::close_all_sessions().await;
+        crate::services::unified_exec::close_all().await;
+        cleanup_all_collaboration_state();
         core.hooks().close_all_user_terminal_sessions();
         // 全量清除路径：所有会话级内存缓存一并清空。
         crate::agent::utils::cache_registry::clear_conversation_caches(None);
     }
 
     Ok(())
+}
+
+/// 会话删除时一并回收进程内的协同状态（看板 / 图谱 / 子智能体句柄）。
+/// 不清理的话这三张全局 Map 会随着"建会话-删会话"无限增长，且落盘文件只增不减。
+fn cleanup_collaboration_state(conversation_id: &str) {
+    crate::agent::orchestration::board::global_message_board()
+        .remove_conversation(conversation_id);
+    crate::agent::orchestration::graph::global_graph_store()
+        .remove_conversation(conversation_id);
+    crate::agent::orchestration::registry::global_agent_registry()
+        .remove_conversation(conversation_id);
+}
+
+fn cleanup_all_collaboration_state() {
+    crate::agent::orchestration::board::global_message_board().remove_all();
+    crate::agent::orchestration::graph::global_graph_store().remove_all();
+    crate::agent::orchestration::registry::global_agent_registry().remove_all();
 }
 
 // Delete one conversation and all dependent rows.
@@ -854,11 +1033,258 @@ pub async fn delete_conversation(core: &Core, conversation_id: &str) -> Result<(
 
     crate::agent::capabilities::session_files::delete_all_session_files(core, conversation_id)?;
     let _ = crate::agent::capabilities::plan_files::delete_conversation_plan(core, Some(conversation_id));
-    crate::services::shell_sessions::close_session(Some(conversation_id)).await;
+    crate::services::unified_exec::close_conversation(Some(conversation_id)).await;
+    cleanup_collaboration_state(conversation_id);
     core.hooks().stop_user_terminal_session(conversation_id);
 
     // 内存级 per-conversation 缓存统一回收（注册表单一入口）。
     crate::agent::utils::cache_registry::clear_conversation_caches(Some(conversation_id));
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::CoreConfig;
+    use crate::events::NovaEvent;
+    use crate::provider::types::{Content, ContentBlock, Message, Role};
+
+    #[tokio::test]
+    async fn fresh_db_runs_explicit_migrations_with_foreign_keys_enabled() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let core = Core::new(CoreConfig::new(dir.path().to_path_buf()), 32);
+
+        let pool = history_pool(&core).await.expect("pool initialized");
+        let user_version: i64 = sqlx::query_scalar("PRAGMA user_version")
+            .fetch_one(&pool)
+            .await
+            .expect("user_version");
+        let foreign_keys: i64 = sqlx::query_scalar("PRAGMA foreign_keys")
+            .fetch_one(&pool)
+            .await
+            .expect("foreign_keys");
+        let migration_versions: Vec<i64> =
+            sqlx::query_scalar("SELECT version FROM schema_migrations ORDER BY version ASC")
+                .fetch_all(&pool)
+                .await
+                .expect("schema_migrations");
+
+        assert_eq!(user_version, LATEST_SCHEMA_VERSION);
+        assert_eq!(foreign_keys, 1);
+        assert_eq!(migration_versions, vec![1, 2]);
+
+        close_history_pool(&core).await;
+    }
+
+    #[tokio::test]
+    async fn migrates_legacy_v0_db_creates_backup_and_preserves_data() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let db_path = dir.path().join("history.db");
+
+        // 构造缺失 active_agent_id 与 trace_id 列的旧版 v0 数据库。
+        let url = format!("sqlite:{}?mode=rwc", db_path.display());
+        let opts = SqliteConnectOptions::from_str(&url)
+            .expect("opts")
+            .create_if_missing(true);
+        let legacy_pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect_with(opts)
+            .await
+            .expect("legacy pool");
+        sqlx::query(
+            "CREATE TABLE conversations (
+                id TEXT PRIMARY KEY,
+                title TEXT NOT NULL,
+                created_at INTEGER NOT NULL,
+                updated_at INTEGER NOT NULL,
+                pinned_at INTEGER,
+                workspace_path TEXT
+            );",
+        )
+        .execute(&legacy_pool)
+        .await
+        .expect("create legacy conversations");
+        sqlx::query(
+            "CREATE TABLE session_events (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                conversation_id TEXT NOT NULL,
+                turn_id TEXT,
+                seq INTEGER NOT NULL,
+                event_type TEXT NOT NULL,
+                payload_json TEXT NOT NULL,
+                created_at INTEGER NOT NULL,
+                UNIQUE (conversation_id, seq)
+            );",
+        )
+        .execute(&legacy_pool)
+        .await
+        .expect("create legacy session_events");
+        sqlx::query(
+            "INSERT INTO conversations (id, title, created_at, updated_at)
+             VALUES ('conv-legacy', 'Legacy Chat', 100, 100)",
+        )
+        .execute(&legacy_pool)
+        .await
+        .expect("insert legacy row");
+        legacy_pool.close().await;
+
+        let core = Core::new(CoreConfig::new(dir.path().to_path_buf()), 32);
+        let list = list_conversations(&core).await.expect("list after migration");
+        assert_eq!(list.len(), 1);
+        assert_eq!(list[0].id, "conv-legacy");
+        assert!(dir.path().join("history.db.v0.bak").exists());
+
+        let pool = history_pool(&core).await.expect("migrated pool");
+        let version: i64 = sqlx::query_scalar("PRAGMA user_version")
+            .fetch_one(&pool)
+            .await
+            .expect("user_version");
+        assert_eq!(version, LATEST_SCHEMA_VERSION);
+
+        close_history_pool(&core).await;
+    }
+
+    #[tokio::test]
+    async fn startup_recovery_repairs_unclosed_turn_and_dangling_tool_call() {
+        let dir = tempfile::tempdir().expect("tempdir");
+
+        // 1. 首轮进程：写入未闭合 TurnStart + Assistant ToolUse + ToolCall 后“崩溃”。
+        {
+            let core1 = Core::new(CoreConfig::new(dir.path().to_path_buf()), 64);
+            let conv = create_conversation(&core1, Some("Crash Test".to_string()), None)
+                .await
+                .expect("create conv");
+
+            let crash_events = vec![
+                crate::agent::session::SessionEvent::TurnStart {
+                    turn_id: "turn-crash".to_string(),
+                    trace_id: Some("trace-crash".to_string()),
+                },
+                crate::agent::session::SessionEvent::UserMessage {
+                    message: Message {
+                        role: Role::User,
+                        content: Content::Text("run command".to_string()),
+                    },
+                    attachments: None,
+                },
+                crate::agent::session::SessionEvent::AssistantMessage {
+                    message: Message {
+                        role: Role::Assistant,
+                        content: Content::Blocks(vec![ContentBlock::ToolUse {
+                            id: "call-dangling".to_string(),
+                            name: "exec_command".to_string(),
+                            input: serde_json::json!({"cmd": "echo hi"}),
+                        }]),
+                    },
+                    token_usage: None,
+                    cost: None,
+                },
+                crate::agent::session::SessionEvent::ToolCall {
+                    call_id: "call-dangling".to_string(),
+                    tool_name: "exec_command".to_string(),
+                    input: r#"{"cmd":"echo hi"}"#.to_string(),
+                    turn_id: Some("turn-crash".to_string()),
+                    trace_id: Some("trace-crash".to_string()),
+                },
+            ];
+            crate::agent::session::append_events(&core1, &conv.id, Some("turn-crash"), &crash_events)
+                .await
+                .expect("append pre-crash events");
+            close_history_pool(&core1).await;
+        }
+
+        // 2. 重启后新 Core 实例打开库：应自动检测并补偿修复未闭合回合且触发后端告警。
+        let core2 = Core::new(CoreConfig::new(dir.path().to_path_buf()), 64);
+        let mut rx = core2.subscribe();
+        let convs = list_conversations(&core2).await.expect("list convs");
+        let conv_id = convs[0].id.clone();
+
+        let traces = crate::api::history::get_conversation_turn_traces(&core2, conv_id.clone())
+            .await
+            .expect("traces");
+        assert_eq!(traces.len(), 1);
+        assert_eq!(traces[0].stop_reason.as_deref(), Some("interrupted"));
+        assert!(traces[0].ended_at.is_some());
+        assert_eq!(traces[0].trace_id.as_deref(), Some("trace-crash"));
+
+        let tool_logs = load_conversation_tool_logs(&core2, &conv_id)
+            .await
+            .expect("tool logs");
+        assert_eq!(tool_logs.len(), 1);
+        assert_eq!(tool_logs[0].status, "error");
+        assert!(tool_logs[0].result.contains("Interrupted"));
+
+        let stored = crate::agent::session::load_events(&core2, &conv_id)
+            .await
+            .expect("load events");
+        let ctx = crate::agent::session::projection::reconstruct_model_context(&stored);
+        let has_matching_tool_result = ctx.iter().any(|msg| match &msg.content {
+            Content::Blocks(blocks) => blocks.iter().any(|b| {
+                matches!(
+                    b,
+                    ContentBlock::ToolResult {
+                        tool_use_id,
+                        is_error: true,
+                        ..
+                    } if tool_use_id == "call-dangling"
+                )
+            }),
+            _ => false,
+        });
+        assert!(
+            has_matching_tool_result,
+            "recovered context must pair dangling ToolUse with synthetic error ToolResult"
+        );
+
+        let mut saw_recovery_warning = false;
+        while let Ok(ev) = rx.try_recv() {
+            if let NovaEvent::BackendWarning(w) = ev {
+                if w.source == "agent.session.recovery" {
+                    saw_recovery_warning = true;
+                }
+            }
+        }
+        assert!(saw_recovery_warning, "expected backend-warning on startup recovery");
+
+        close_history_pool(&core2).await;
+    }
+
+    #[tokio::test]
+    async fn store_write_failure_emits_backend_warning() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let core = Core::new(CoreConfig::new(dir.path().to_path_buf()), 32);
+        let pool = history_pool(&core).await.expect("pool");
+        let mut rx = core.subscribe();
+
+        // 故意破坏目标表使写入必然失败，验证不会静默吞掉。
+        sqlx::query("DROP TABLE session_events")
+            .execute(&pool)
+            .await
+            .expect("drop session_events");
+
+        let res = crate::agent::session::append_event(
+            &core,
+            "conv-broken",
+            Some("turn-1"),
+            &crate::agent::session::SessionEvent::TurnStart {
+                turn_id: "turn-1".to_string(),
+                trace_id: None,
+            },
+        )
+        .await;
+        assert!(res.is_err());
+
+        let mut saw_store_warning = false;
+        while let Ok(ev) = rx.try_recv() {
+            if let NovaEvent::BackendWarning(w) = ev {
+                if w.source == "agent.session.store" {
+                    saw_store_warning = true;
+                }
+            }
+        }
+        assert!(saw_store_warning, "store failure must emit backend-warning");
+
+        close_history_pool(&core).await;
+    }
 }

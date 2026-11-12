@@ -47,14 +47,14 @@ pub fn emit_backend_error(
     );
 }
 
-pub fn report_backend_result<T>(
+pub fn report_backend_result<T, E: std::fmt::Display>(
     core: &Core,
     source: &str,
-    result: Result<T, String>,
+    result: Result<T, E>,
     stage: Option<&str>,
-) -> Result<T, String> {
+) -> Result<T, E> {
     if let Err(error) = &result {
-        emit_backend_error(core, source, error.clone(), stage);
+        emit_backend_error(core, source, error.to_string(), stage);
     }
     result
 }

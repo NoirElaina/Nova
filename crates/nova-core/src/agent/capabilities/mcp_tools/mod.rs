@@ -1,7 +1,46 @@
+use std::sync::{OnceLock, RwLock};
 use crate::core::Core;
 
 use crate::agent::tools::{ToolExecResult, ToolFailure, ToolOutcome};
 use crate::provider::types::Tool;
+
+static CACHED_MCP_TOOLS: OnceLock<RwLock<Vec<Tool>>> = OnceLock::new();
+
+fn mcp_tools_cache() -> &'static RwLock<Vec<Tool>> {
+    CACHED_MCP_TOOLS.get_or_init(|| RwLock::new(Vec::new()))
+}
+
+/// 同步读取已缓存的 MCP 工具定义列表，供三协议适配器及工具查找同步热路径读取。
+pub fn cached_mcp_tools() -> Vec<Tool> {
+    mcp_tools_cache()
+        .read()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .clone()
+}
+
+/// 更新内存中缓存的 MCP 工具定义列表。
+pub fn update_cached_mcp_tools(tools: Vec<Tool>) {
+    if let Ok(mut w) = mcp_tools_cache().write() {
+        *w = tools;
+    }
+}
+
+/// 根据完整工具名（mcp__<server>__<tool>）查找已缓存的定义。
+pub fn find_cached_mcp_tool(name: &str) -> Option<Tool> {
+    mcp_tools_cache()
+        .read()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .iter()
+        .find(|t| t.name == name)
+        .cloned()
+}
+
+/// 异步拉取已连接 MCP 服务器的全部工具列表，并原子更新同步内存缓存。
+pub async fn refresh_mcp_tools_cache(core: &Core) -> Vec<Tool> {
+    let tools = collect_mcp_tools(core).await;
+    update_cached_mcp_tools(tools.clone());
+    tools
+}
 
 pub fn build_mcp_tool_name(server: &str, tool: &str) -> String {
     format!("mcp__{}__{}", server.trim(), tool.trim())
@@ -99,4 +138,49 @@ pub async fn collect_mcp_tools(core: &Core) -> Vec<Tool> {
     }
 
     tools_vec
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_mcp_tool_name_roundtrip() {
+        let name = build_mcp_tool_name("github", "create_issue");
+        assert_eq!(name, "mcp__github__create_issue");
+
+        let parsed = parse_mcp_tool_name(&name);
+        assert_eq!(parsed, Some(("github".to_string(), "create_issue".to_string())));
+
+        assert_eq!(parse_mcp_tool_name("regular_tool"), None);
+        assert_eq!(parse_mcp_tool_name("mcp____tool"), None);
+    }
+
+    #[test]
+    fn test_cached_mcp_tools_storage_and_lookup() {
+        let sample = vec![
+            Tool {
+                name: "mcp__sqlite__query".into(),
+                description: "Run SQL query".into(),
+                input_schema: serde_json::json!({ "type": "object" }),
+            },
+            Tool {
+                name: "mcp__fetch__get".into(),
+                description: "HTTP GET request".into(),
+                input_schema: serde_json::json!({ "type": "object" }),
+            },
+        ];
+
+        update_cached_mcp_tools(sample);
+
+        let cached = cached_mcp_tools();
+        assert_eq!(cached.len(), 2);
+        assert_eq!(cached[0].name, "mcp__sqlite__query");
+
+        let found = find_cached_mcp_tool("mcp__fetch__get");
+        assert!(found.is_some());
+        assert_eq!(found.unwrap().description, "HTTP GET request");
+
+        assert!(find_cached_mcp_tool("mcp__nonexistent__tool").is_none());
+    }
 }

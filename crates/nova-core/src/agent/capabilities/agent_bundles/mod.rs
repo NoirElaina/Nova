@@ -17,7 +17,7 @@ use std::sync::{OnceLock, RwLock};
 use std::time::{SystemTime, UNIX_EPOCH};
 use crate::core::Core;
 
-pub use nova_protocol::misc::{AgentBundle, AgentSource, AgentSourceKind, ConfigurableTool, ALWAYS_ON_TOOLS, DEFAULT_ONLY_TOOLS};
+pub use nova_protocol::misc::{AgentBundle, AgentSource, AgentSourceKind, ALWAYS_ON_TOOLS, DEFAULT_ONLY_TOOLS};
 
 /// 存量兼容：剔除 DEFAULT_ONLY_TOOLS（旧 bundle 可能勾选了 memory）。
 fn sanitize_bundle(mut bundle: AgentBundle) -> AgentBundle {

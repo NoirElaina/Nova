@@ -205,13 +205,13 @@ impl AssistantOutputBuilder {
 
 /// 运行 SSE 流式响应处理循环。
 ///
-/// 负责：
-/// - SSE 字节缓冲 + 事件分帧 + UTF-8 解码
-/// - 取消检查
-/// - 调用 `parser.parse_event` 解析每个 data 行
-/// - 将 Delta 转换为前端 `chat-stream` 事件（emit）
-/// - 执行工具调用（`ToolsReady` delta 触发）
-/// - 组装并返回 `ProviderTurnResult`
+// 负责：
+// - SSE 字节缓冲 + 事件分帧 + UTF-8 解码
+// - 取消检查
+// - 调用 `parser.parse_event` 解析每个 data 行
+// - 将 Delta 转换为前端 `chat-stream` 事件（emit）
+// - 执行工具调用（`ToolsReady` delta 触发）
+// - 组装并返回 `ProviderTurnResult`
 /// 流式响应空闲超时：连续该时长未收到任何数据即判定连接挂起。
 const STREAM_IDLE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(180);
 
@@ -292,21 +292,16 @@ pub async fn run_streaming<P: StreamParser>(
             Ok(v) => v,
             Err(e) => {
                 let err_str = e.to_string();
-                let is_decode_or_eof = err_str.contains("error decoding response body")
-                    || err_str.contains("unexpected EOF")
-                    || err_str.contains("connection closed")
-                    || err_str.contains("connection reset")
-                    || err_str.contains("forcibly closed")
-                    || err_str.contains("wsarecv")
-                    || err_str.contains("stream reading error")
-                    || err_str.contains("broken pipe")
-                    || err_str.contains("reset by peer")
-                    || err_str.contains("connection abort")
-                    || err_str.contains("10054");
 
-                // 容错机制：若模型已成功产出内容（文本、思考或工具调用），且流末端因对端/代理粗暴切断产生 decode/EOF/wsarecv 异常，
-                // 视为流自然终止，保全已生成内容与思考块，杜绝因对端/Clash TUN/网关切断导致整轮对话失败与报错。
-                if is_decode_or_eof && assistant_output.has_content() {
+                // 容错机制：仅当**已经收到收尾事件**（stop_reason 已确定）后，
+                // 对端/代理粗暴切断才可视为流自然终止。
+                // 若连 stop 都没见到就断，说明这是一次被截断的响应：
+                // 工具调用 JSON 可能半截、回答可能缺尾，必须如实报错而不是假装成功。
+                if should_treat_eof_as_graceful(
+                    &err_str,
+                    assistant_output.has_content(),
+                    last_stop_reason.as_deref(),
+                ) {
                     tracing::warn!(
                         provider = %provider,
                         error = %err_str,
@@ -509,20 +504,44 @@ pub async fn run_streaming<P: StreamParser>(
 
     let final_stop_reason = last_stop_reason;
 
-    // wire 级响应写入会话事件日志：完整响应 JSON（内容块/文本/stop_reason/用量，流结束后写一次）。
+    // wire 级响应写入脱敏环形缓冲区，并在非空时落库到会话事件日志。
+    let trace_meta = conversation_id.and_then(|cid| core.active_trace_for_conversation(cid));
+    let active_turn_id = trace_meta.as_ref().map(|(tid, _)| tid.clone());
+    let active_trace_id = trace_meta.as_ref().map(|(_, tr)| tr.clone());
+    let body = serde_json::json!({
+        "content": serde_json::to_value(&result_messages[0].content)
+            .unwrap_or(serde_json::Value::Null),
+        "text": assistant_output.full_text(),
+        "stop_reason": final_stop_reason,
+        "input_tokens": current_input_tokens,
+        "output_tokens": current_output_tokens,
+    });
+    let scrubbed_body = nova_protocol::redact::redact_json_value(&body);
+    core.record_redacted_wire(crate::core::RedactedWireRecord {
+        timestamp_ms: chrono::Utc::now().timestamp_millis(),
+        trace_id: active_trace_id.clone(),
+        conversation_id: conversation_id.map(str::to_string),
+        turn_id: active_turn_id.clone(),
+        provider: provider.to_string(),
+        model: model.to_string(),
+        direction: crate::core::WireDirection::Response,
+        url: None,
+        status: Some(200),
+        payload: scrubbed_body.clone(),
+    });
     if !output_blocks_empty {
         if let Some(conv_id) = conversation_id {
-            let body = serde_json::json!({
-                "content": serde_json::to_value(&result_messages[0].content)
-                    .unwrap_or(serde_json::Value::Null),
-                "text": assistant_output.full_text(),
-                "stop_reason": final_stop_reason,
-                "input_tokens": current_input_tokens,
-                "output_tokens": current_output_tokens,
-            });
-            let event = crate::agent::session::SessionEvent::WireResponse { body };
-            if let Err(error) =
-                crate::agent::session::append_event(core, conv_id, None, &event).await
+            let event = crate::agent::session::SessionEvent::WireResponse {
+                body: scrubbed_body,
+                trace_id: active_trace_id,
+            };
+            if let Err(error) = crate::agent::session::append_event(
+                core,
+                conv_id,
+                active_turn_id.as_deref(),
+                &event,
+            )
+            .await
             {
                 tracing::warn!(error = %error, "wire_response event append failed");
             }
@@ -630,9 +649,11 @@ async fn process_delta(
             let is_branch_or_sub = crate::agent::orchestration::branch::is_branch_conversation(conversation_id)
                 || crate::agent::orchestration::subagent::is_subagent_conversation(conversation_id);
             if !is_branch_or_sub {
-                let _ = core.emit_agent(crate::agent::events::AgentDomainEvent::TextDelta {
+                core.emit_agent(crate::agent::events::AgentDomainEvent::TextDelta {
                         turn_id: conversation_id.unwrap_or_default().to_string(),
                         delta: text.clone(),
+                        trace_id: conversation_id
+                            .and_then(|cid| core.active_trace_id(Some(cid), None)),
                     },
                 );
             } else {
@@ -662,9 +683,11 @@ async fn process_delta(
             let is_branch_or_sub = crate::agent::orchestration::branch::is_branch_conversation(conversation_id)
                 || crate::agent::orchestration::subagent::is_subagent_conversation(conversation_id);
             if !is_branch_or_sub {
-                let _ = core.emit_agent(crate::agent::events::AgentDomainEvent::ThinkingDelta {
+                core.emit_agent(crate::agent::events::AgentDomainEvent::ThinkingDelta {
                         turn_id: conversation_id.unwrap_or_default().to_string(),
                         delta: text.clone(),
+                        trace_id: conversation_id
+                            .and_then(|cid| core.active_trace_id(Some(cid), None)),
                     },
                 );
             } else {
@@ -862,4 +885,35 @@ pub fn is_needs_user_input_payload(raw: &str) -> bool {
                 .map(|s| s == "needs_user_input")
         })
         .unwrap_or(false)
+}
+
+pub(crate) fn should_treat_eof_as_graceful(
+    err_str: &str,
+    has_content: bool,
+    last_stop_reason: Option<&str>,
+) -> bool {
+    crate::provider::is_disconnect_error_message(err_str)
+        && has_content
+        && last_stop_reason.is_some()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn eof_before_stop_reason_never_succeeds() {
+        assert!(!should_treat_eof_as_graceful("unexpected EOF", true, None));
+        assert!(!should_treat_eof_as_graceful("wsarecv: 10054", false, Some("end_turn")));
+        assert!(should_treat_eof_as_graceful(
+            "error decoding response body",
+            true,
+            Some("end_turn"),
+        ));
+        assert!(!should_treat_eof_as_graceful(
+            "HTTP 401 unauthorized",
+            true,
+            Some("end_turn"),
+        ));
+    }
 }

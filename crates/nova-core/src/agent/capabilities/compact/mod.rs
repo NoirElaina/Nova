@@ -19,7 +19,8 @@ use crate::provider::token_counter;
 // 旧值 1200 会截断 Read/Grep 返回的代码片段，agent 只看到片段头部+尾部，
 // 丢失中间实现细节，被迫重新 Read 同一文件。提到 8000 可完整保留
 // 约 200 行代码片段（典型文件大小），与 200K 上下文窗口相比成本可接受。
-const TOOL_RESULT_TEXT_TRUNCATE_LIMIT: usize = 8000;
+// 截断值：单次工具输出预算默认 40,000 字节（约 10,000 tokens）。
+const TOOL_RESULT_TEXT_TRUNCATE_LIMIT: usize = 40_000;
 
 // JSON 压缩上限，避免深层数组/对象导致多次迭代爆炸。
 const TOOL_RESULT_JSON_MAX_DEPTH: usize = 3;
@@ -316,36 +317,33 @@ fn maybe_needs_user_input_payload(text: &str) -> bool {
 }
 
 fn truncate_text_by_chars(text: &str, limit: usize) -> String {
-    // len: 原文本字符长度
-    let len = text.chars().count();
-    // 若长度未超限则直接返回原文
+    let len = text.len();
     if len <= limit {
         return text.to_string();
     }
 
-    // 将限制拆分为头部/尾部保留比例，留中间为省略信息
-    let head_len = (limit * 60) / 100;
-    let tail_len = (limit * 30) / 100;
-    // omitted: 被截断省略的字符数（安全 saturating_sub 避免下溢）
-    let omitted = len.saturating_sub(head_len + tail_len);
+    // 保留警告元数据头与行数统计，保留头尾关键上下文
+    let original_token_count = token_counter::count_text(text);
+    let total_lines = text.lines().count();
+    let header = format!(
+        "Warning: truncated output (original token count: {original_token_count})\nTotal output lines: {total_lines}\n\n"
+    );
 
-    // head: 文本前段
-    let head: String = text.chars().take(head_len).collect();
-    // tail: 文本后段，通过反向取并再反过来恢复原顺序
-    let tail: String = text
-        .chars()
-        .rev()
-        .take(tail_len)
-        .collect::<Vec<char>>()
-        .into_iter()
-        .rev()
-        .collect();
+    let left_budget = limit / 2;
+    let right_budget = limit.saturating_sub(left_budget);
 
-    // 最终格式包含 head、省略提示和 tail
-    format!(
-        "{}\n...[micro-compact truncated {} chars]...\n{}",
-        head, omitted, tail
-    )
+    let prefix_end = text.floor_char_boundary(left_budget);
+    let suffix_start = text.ceil_char_boundary(len.saturating_sub(right_budget));
+
+    let prefix = &text[..prefix_end];
+    let suffix = if suffix_start < len {
+        &text[suffix_start..]
+    } else {
+        ""
+    };
+    let omitted_chars = text[prefix_end..suffix_start].chars().count();
+
+    format!("{header}{prefix}\n…{omitted_chars} chars truncated…\n{suffix}")
 }
 
 fn compact_json_value(value: &Value, depth: usize) -> Value {
@@ -406,12 +404,20 @@ fn compact_tool_result_text(text: &str) -> String {
         return text.to_string();
     }
 
-    // 尝试解析为 JSON，并对 JSON 结构进行递归压缩与截断
+    // 尝试解析为 JSON，并对 JSON 结构进行递归压缩
     if let Ok(value) = serde_json::from_str::<Value>(text) {
         let compacted = compact_json_value(&value, 0);
         if let Ok(serialized) = serde_json::to_string(&compacted) {
-            // 将压缩后的 JSON 序列化并截断为可接受长度
-            return truncate_text_by_chars(&serialized, TOOL_RESULT_TEXT_TRUNCATE_LIMIT);
+            // 结构化 JSON 经 compact_json_value 压缩字段后，绝不能再做字符串截断切烂 JSON 括号。
+            if serialized.len() <= TOOL_RESULT_TEXT_TRUNCATE_LIMIT {
+                return serialized;
+            }
+            // 若压缩后依然超出预算，安全包裹为 valid JSON preview，确保下游解析永不抛 SyntaxError
+            return serde_json::to_string(&json!({
+                "_warning": "Truncated structured tool result",
+                "preview": truncate_text_by_chars(&serialized, TOOL_RESULT_TEXT_TRUNCATE_LIMIT),
+            }))
+            .unwrap_or(serialized);
         }
     }
 
@@ -970,4 +976,44 @@ pub fn has_needs_user_input(messages: &[Message]) -> bool {
             })
         })
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_truncate_text_includes_warning_header() {
+        let lines: Vec<String> = (0..500).map(|i| format!("code line {i}")).collect();
+        let source = lines.join("\n");
+        let truncated = truncate_text_by_chars(&source, 1000);
+
+        assert!(truncated.starts_with("Warning: truncated output (original token count: "));
+        assert!(truncated.contains("Total output lines: 500"));
+        assert!(truncated.contains("code line 0"));
+        assert!(truncated.contains("code line 499"));
+        assert!(truncated.contains("chars truncated"));
+    }
+
+    #[test]
+    fn test_compact_tool_result_preserves_valid_json() {
+        // 创建深层大型 JSON 载荷
+        let huge_json = serde_json::json!({
+            "status": "ok",
+            "items": (0..50).map(|i| serde_json::json!({ "id": i, "name": format!("item_{i}") })).collect::<Vec<_>>(),
+            "nested": {
+                "deep": {
+                    "very_deep": {
+                        "level4": "should be truncated by depth"
+                    }
+                }
+            }
+        });
+        let raw_str = serde_json::to_string(&huge_json).unwrap();
+        let compacted = compact_tool_result_text(&raw_str);
+
+        // 核心断言：无论怎么压缩截断，返回的文本必须仍然是 100% 合法的 JSON！
+        let parsed: Result<serde_json::Value, _> = serde_json::from_str(&compacted);
+        assert!(parsed.is_ok(), "Compacted JSON must remain valid JSON syntax: {}", compacted);
+    }
 }

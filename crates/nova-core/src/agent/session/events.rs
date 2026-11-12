@@ -17,8 +17,12 @@ use crate::provider::types::{Content, ContentBlock, Message, Role};
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum SessionEvent {
     /// 回合开始。
-    TurnStart { turn_id: String },
-    /// 回合结束（正常完成/取消/出错都算终态）。
+    TurnStart {
+        turn_id: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        trace_id: Option<String>,
+    },
+    /// 回合结束（正常完成/取消/出错/中断都算终态）。
     TurnEnd {
         turn_id: String,
         stop_reason: Option<String>,
@@ -51,6 +55,8 @@ pub enum SessionEvent {
         input: String,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         turn_id: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        trace_id: Option<String>,
     },
     /// 工具调用结束。
     ToolResult {
@@ -60,6 +66,8 @@ pub enum SessionEvent {
         is_error: bool,
         started_at: i64,
         finished_at: i64,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        trace_id: Option<String>,
     },
 
     /// 压缩检查点：payload 直接携带压缩完成后要发给模型的起点上下文。
@@ -78,13 +86,32 @@ pub enum SessionEvent {
     /// 会话标题变化。
     TitleChanged { title: String },
 
-    /// 发给模型 API 的 wire 级 HTTP 请求报文（含 system prompt/tools/消息数组完整结构）。
-    WireRequest { url: String, body: Value },
+    /// 发给模型 API 的 wire 级 HTTP 请求报文（含 system prompt/tools/消息数组完整结构，已脱敏）。
+    WireRequest {
+        url: String,
+        body: Value,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        trace_id: Option<String>,
+    },
     /// 模型 API 流结束后的完整响应 JSON（内容块/文本/stop_reason/用量）。
-    WireResponse { body: Value },
+    WireResponse {
+        body: Value,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        trace_id: Option<String>,
+    },
 }
 
 impl SessionEvent {
+    pub fn trace_id(&self) -> Option<&str> {
+        match self {
+            SessionEvent::TurnStart { trace_id, .. }
+            | SessionEvent::ToolCall { trace_id, .. }
+            | SessionEvent::ToolResult { trace_id, .. }
+            | SessionEvent::WireRequest { trace_id, .. }
+            | SessionEvent::WireResponse { trace_id, .. } => trace_id.as_deref(),
+            _ => None,
+        }
+    }
     /// 事件类型名（入库的 event_type 列）。
     pub fn type_name(&self) -> &'static str {
         match self {

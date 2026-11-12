@@ -5,24 +5,7 @@
 import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { invoke } from "@tauri-apps/api/core";
 import { SquareTerminal } from "lucide-vue-next";
-
-export interface BackgroundJob {
-  id: string;
-  pid: number;
-  command: string;
-  cwd: string | null;
-  running: boolean;
-  finished: boolean;
-  exitCode: number | null;
-  killed: boolean;
-  timedOut: boolean;
-  stdout: string;
-  stderr: string;
-  truncated: boolean;
-  elapsedMs: number;
-  ttlMs: number;
-  remainingMs: number;
-}
+import type { BackgroundOutput } from "@/lib/protocol";
 
 const props = defineProps<{
   conversationId?: string | null;
@@ -32,7 +15,7 @@ const emit = defineEmits<{
   (e: "open"): void;
 }>();
 
-const jobs = ref<BackgroundJob[]>([]);
+const jobs = ref<BackgroundOutput[]>([]);
 let pollTimer: ReturnType<typeof setInterval> | null = null;
 
 const total = computed(() => jobs.value.length);
@@ -44,7 +27,7 @@ async function fetchJobs() {
     return;
   }
   try {
-    jobs.value = await invoke<BackgroundJob[]>("list_background_jobs", {
+    jobs.value = await invoke<BackgroundOutput[]>("list_background_jobs", {
       conversationId: props.conversationId,
     });
   } catch (err) {
@@ -100,7 +83,7 @@ onBeforeUnmount(stopPolling);
     </span>
     <span
       v-if="running > 0"
-      class="h-1.5 w-1.5 shrink-0 animate-pulse rounded-full bg-[#3b82f6]"
+      class="h-1.5 w-1.5 shrink-0 animate-pulse rounded-full bg-emerald-500"
     />
   </button>
 </template>

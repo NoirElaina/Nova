@@ -14,29 +14,32 @@ pub(super) fn registration() -> ToolRegistration {
 pub fn tool() -> Tool {
     Tool {
         name: "Task".into(),
-        description: r#"Launches a read-only research subagent that explores the codebase (or the web) in its own separate context and returns a final report. The subagent's intermediate steps (searches, file reads) do NOT consume this conversation's context — only its final report comes back.
+        description: r#"Launches an autonomous research subagent that explores the codebase (or web) in its own separate context, broadcasts discoveries to the collaboration board, and returns a final report.
+The subagent has access to: `Read`, `Grep`, `Glob`, `WebSearch`, `WebFetch`, and the built-in collaborative message board (`board_post`, `board_read`, `board_list_channels`).
 
 ## When to use this tool
-- Investigations that require reading many files: "where is X implemented", "which modules depend on Y", "summarize how Z works".
-- Answering questions whose supporting evidence would flood this context (dozens of search hits / large files).
-- Independent research subtasks you can delegate while you keep working on the main task.
-- NOT for: single quick lookups (do those yourself with Grep/Read), or anything requiring writes (the subagent is strictly read-only: Read/Grep/Glob/WebSearch/WebFetch only — no shell, no editing, no MCP).
+- Broad codebase explorations, architectural investigations, and multi-file research tasks.
+- Keep the task prompt bounded: guide the subagent to explore top-down and synthesize within 10-15 tool calls rather than attempting to read every file exhaustively.
+- If collaborative sharing is requested (e.g. posting to `#research`), instruct the subagent in the `task` parameter to call `board_post(channel="research", content=...)` to publish milestones in real-time.
+- NOT for: single quick lookups (use Grep/Read directly), or file write/edit operations (subagents are read-only for filesystem). Built-in board tools require NO LoadTool or MCP.
 
 ## How to use it
-- `task` must be fully self-contained: the subagent sees ONLY this text (plus the workspace path). Include the goal, what to investigate, relevant paths/symbols you already know, and what the report should contain.
-- Do not reference "the conversation above" or earlier tool results — summarize them into the task text instead.
+- `task` must be fully self-contained: the subagent sees ONLY this text (plus the workspace path). Include the goal, what to investigate, relevant paths/symbols you already know, and expected report contents.
+- Instruct the subagent explicitly about pacing: explore top-down (Glob -> entry points -> Grep key symbols -> Read core files) and post key findings to `#research` via `board_post`.
 - Multiple independent Task calls in the same turn run in parallel; prefer one batched call over sequential ones when the subtasks are independent.
-- The subagent cannot ask you or the user questions; if info might be missing, say in the task what to assume or how to proceed.
 
 ## Return value
-The tool result is the subagent's final report (conclusions + file/line references). Treat it as verified findings from this workspace."#
+The tool result is the subagent's final report (conclusions + file/line references). Treat it as verified findings from this workspace.
+
+## Blocking semantics
+This call blocks until the subagent finishes. Use `spawn_agent` + `wait_agent` instead when you want to keep working in parallel while the subagent runs."#
             .into(),
         input_schema: json!({
             "type": "object",
             "properties": {
                 "task": {
                     "type": "string",
-                    "description": "Complete, self-contained instructions for the subagent: goal, scope, known context, expected report contents."
+                    "description": "Complete, self-contained instructions for the subagent: goal, scope, expected report, and instructions to call board_post to publish key discoveries."
                 },
                 "description": {
                     "type": "string",
@@ -98,7 +101,7 @@ async fn execute_async(
         return Err(ToolFailure::hook(err));
     }
 
-    let report = crate::agent::orchestration::subagent::run(core, parent, task_text)
+    let report = crate::agent::orchestration::subagent::run(core, parent, task_text, Some("researcher"), Some(&subagent_name))
         .await
         .map_err(ToolFailure::new)?;
 

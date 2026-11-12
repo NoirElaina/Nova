@@ -1,6 +1,6 @@
 //! 记忆与上下文威胁扫描库
 //!
-//! 移植自 hermes-agent tools/threat_patterns.py
+//! 提供针对 Prompt 注入、环境探测与持久化攻击模式的安全防护。
 //! 三档 scope：all（经典注入/exfil）/ context（加 C2/角色劫持）/ strict（加持久化/密钥）
 //! scope 是包含关系：all → all+context+strict；context → context+strict；strict → strict
 
@@ -8,7 +8,7 @@ use once_cell::sync::Lazy;
 use regex::{Regex, RegexBuilder};
 use std::collections::HashSet;
 
-/// 17 个不可见/双向 unicode 字符，用于注入攻击（对齐 hermes INVISIBLE_CHARS）
+/// 17 个不可见/双向 unicode 字符，用于注入攻击检测
 const INVISIBLE_CHARS: &[char] = &[
     '\u{200B}', // zero-width space
     '\u{200C}', // zero-width non-joiner
@@ -35,7 +35,7 @@ struct PatternDef {
     scope: &'static str,
 }
 
-/// 36 个正则模式（对齐 hermes _PATTERNS）
+/// 36 个正则模式（安全规则集）
 static PATTERNS: &[PatternDef] = &[
     // ── all scope：经典 prompt injection + exfil ──
     PatternDef { regex: r"ignore\s+(?:\w+\s+)*(previous|all|above|prior)\s+(?:\w+\s+)*instructions", id: "prompt_injection", scope: "all" },
@@ -96,12 +96,14 @@ fn compile_scope(target: &str) -> Vec<Compiled> {
     PATTERNS
         .iter()
         .filter(|p| in_scope(p.scope, target))
-        .map(|p| Compiled {
-            regex: RegexBuilder::new(p.regex)
-                .case_insensitive(true)
-                .build()
-                .expect("threat pattern regex must compile"),
-            id: p.id,
+        .filter_map(|p| {
+            match RegexBuilder::new(p.regex).case_insensitive(true).build() {
+                Ok(regex) => Some(Compiled { regex, id: p.id }),
+                Err(error) => {
+                    tracing::error!(id = p.id, error = %error, "threat pattern regex failed to compile");
+                    None
+                }
+            }
         })
         .collect()
 }
@@ -156,7 +158,7 @@ pub fn scan_for_threats(content: &str, scope: &str) -> Vec<String> {
 
 /// 命中第一个威胁时返回人类可读错误串，未命中返回 None。
 ///
-/// 默认 scope 是 "strict"（与 hermes first_threat_message 一致）。
+/// 默认 scope 是 "strict"。
 /// 用于写入路径直接拒绝：命中即返回错误，调用方据此 abort 写入。
 pub fn first_threat_message(content: &str, scope: &str) -> Option<String> {
     let findings = scan_for_threats(content, scope);
@@ -174,5 +176,25 @@ pub fn first_threat_message(content: &str, scope: &str) -> Option<String> {
             "Blocked: content matches threat pattern '{}'. Content is injected into the system prompt and must not contain injection or exfiltration payloads.",
             pid
         ))
+    }
+}
+
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn all_threat_patterns_compile() {
+        for pattern in PATTERNS {
+            assert!(
+                RegexBuilder::new(pattern.regex)
+                    .case_insensitive(true)
+                    .build()
+                    .is_ok(),
+                "pattern '{}' failed to compile",
+                pattern.id
+            );
+        }
     }
 }

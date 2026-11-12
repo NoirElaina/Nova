@@ -1,6 +1,6 @@
-// Git 服务层：纯 git 命令封装 + codex 风格实时 diff 收集 + 会话工作区包装。
+// Git 服务层：纯 git 命令封装 + 实时 diff 收集 + 会话工作区包装。
 //
-// 审查页改为 codex 风格：实时 git diff HEAD + untracked，不再持久化 batch、不再回退。
+// 审查页：实时 git diff HEAD + untracked，不再持久化 batch、不再回退。
 
 use std::path::Path;
 use std::process::Command;
@@ -83,7 +83,7 @@ pub fn ensure_repo(root: &Path) -> Result<(), String> {
 }
 
 // ============================================================================
-// codex 风格：实时 git diff HEAD + untracked 文件
+// 实时 git diff HEAD + untracked 文件
 // ============================================================================
 
 pub use nova_protocol::misc::{FileDiffLine, WorkspaceDiff, WorkspaceFileChange};
@@ -251,7 +251,7 @@ fn read_all_tracked_diffs(root: &Path) -> std::collections::HashMap<String, Vec<
     map
 }
 
-/// 收集工作区相对 HEAD 的全部改动（含 untracked 文件），按 codex 风格实现。
+/// 收集工作区相对 HEAD 的全部改动（含 untracked 文件）。
 ///
 /// 步骤：
 /// 1. `git diff HEAD --numstat` + `--name-status` 拿到已跟踪文件的改动（仓库尚无提交时跳过）。
@@ -427,7 +427,7 @@ pub fn init_conversation_repo(
 
 /// 紧凑版 git 环境摘要：分支 + dirty 文件名（截断），每轮注入用。
 /// 目标是让模型开局即有场景感知（哪些文件已被改动），
-/// 控制在一行左右，细节让模型按需用 Bash 跑 git diff 查。
+/// 控制在一行左右，细节让模型按需用 exec_command 跑 git diff 查。
 /// 仓库未初始化时返回 None。
 pub fn compact_git_summary(root: &Path) -> Option<String> {
     if !is_repo_initialized(root) {

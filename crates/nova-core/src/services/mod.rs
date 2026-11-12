@@ -1,8 +1,9 @@
 pub mod cron_schedule;
+pub mod diagnostics;
 pub mod git_ops;
 pub mod model_catalog;
 pub mod settings;
 pub mod settings_secrets;
-pub mod shell_sessions;
+pub mod unified_exec;
 pub mod terminal_detector;
 pub mod workspace;

@@ -5,17 +5,21 @@ pub async fn send_modern_agent_turn(
     conversation_id: String,
     prompt: String,
     attachments: Option<Vec<nova_protocol::session::HistoryAttachment>>,
-) -> Result<(), String> {
+    mode: Option<nova_protocol::agent::TurnSubmitMode>,
+    idempotency_key: Option<String>,
+) -> Result<nova_protocol::agent::AgentTurnSubmitOutcome, String> {
     crate::daemon::invoke(
         "send_modern_agent_turn",
         serde_json::json!({
             "conversationId": conversation_id,
             "prompt": prompt,
             "attachments": attachments,
+            "mode": mode,
+            "idempotencyKey": idempotency_key,
         }),
     )
     .await
-    .map(|_| ())
+    .and_then(|v| serde_json::from_value(v).map_err(|e| e.to_string()))
 }
 
 #[tauri::command]

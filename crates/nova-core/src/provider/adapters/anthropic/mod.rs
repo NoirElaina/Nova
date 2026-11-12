@@ -64,7 +64,7 @@ impl ApiAdapter for AnthropicAdapter {
         conversation_id: Option<&str>,
     ) -> Result<(RequestBuilder, ProviderPromptEstimate), String> {
         let settings =
-            crate::services::settings::load_settings(&core).map_err(|e| e.to_string())?;
+            crate::services::settings::load_settings(core).map_err(|e| e.to_string())?;
         let profile = settings.active_provider_profile();
         let api_key = profile.api_key;
 

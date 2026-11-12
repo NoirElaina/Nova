@@ -5,17 +5,7 @@ use serde::{Deserialize, Serialize};
 
 // ── 智能体套件 ──
 
-/// 前端智能体配置页展示的可配置工具（勾选清单用）。
-#[derive(Debug, Clone, Serialize, Deserialize, TS)]
-#[serde(rename_all = "camelCase")]
-#[ts(export, export_to = "protocol.ts")]
-pub struct ConfigurableTool {
-    pub name: String,
-    pub description: String,
-    pub read_only: bool,
-    /// 内核流程控制工具（不可移除）。
-    pub always_on: bool,
-}
+// 前端智能体配置页展示的可配置工具（勾选清单用）。
 
 /// 智能体来源：手动创建 / 市场安装 / 导入。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default, TS)]
@@ -67,8 +57,10 @@ pub struct AgentBundle {
     #[serde(default)]
     pub source: AgentSource,
     #[serde(default)]
+    #[ts(type = "number")]
     pub created_at: i64,
     #[serde(default)]
+    #[ts(type = "number")]
     pub updated_at: i64,
 }
 
@@ -87,20 +79,12 @@ fn normalize_name(name: &str) -> String {
 }
 
 impl AgentBundle {
-    /// 内置工具是否对该 bundle 可见（流程控制工具恒可见；默认专属工具恒不可见）。
+    /// 内置基础工具对所有智能体永远全量保障、恒常可用（除 memory 仅默认全局 Nova 可写外）。
     pub fn is_tool_enabled(&self, tool_name: &str) -> bool {
         if DEFAULT_ONLY_TOOLS.contains(&tool_name) {
             return false;
         }
-        if ALWAYS_ON_TOOLS.contains(&tool_name) {
-            return true;
-        }
-        match &self.enabled_tools {
-            None => true,
-            Some(allowed) => {
-                allowed.iter().any(|n| normalize_name(n) == normalize_name(tool_name))
-            }
-        }
+        true
     }
 
     /// 技能是否对该 bundle 可见。
@@ -130,6 +114,7 @@ impl AgentBundle {
 #[ts(export, export_to = "protocol.ts")]
 pub struct AgentFileEntry {
     pub name: String,
+    #[ts(type = "number")]
     pub size_bytes: u64,
     pub is_dir: bool,
 }
@@ -152,6 +137,7 @@ pub struct PermissionRule {
     pub kind: RuleKind,
     /// 操作签名（与审批描述符 signature 同一归一化规则）。
     pub signature: String,
+    #[ts(type = "number")]
     pub created_at_ms: u64,
 }
 
@@ -175,7 +161,9 @@ pub struct ModelCatalogSummary {
     pub id: String,
     pub name: String,
     pub description: Option<String>,
+    #[ts(type = "number")]
     pub context_length: u64,
+    #[ts(type = "number | null")]
     pub max_completion_tokens: Option<u64>,
     pub input_modalities: Vec<String>,
     pub prompt_price_per_m: String,
@@ -189,6 +177,7 @@ pub struct ModelCatalogSummary {
 #[ts(export, export_to = "protocol.ts")]
 pub struct ModelCatalogStats {
     pub total_models: usize,
+    #[ts(type = "number | null")]
     pub last_updated_secs: Option<u64>,
     pub cache_file_exists: bool,
     pub cache_file_path: String,
@@ -220,14 +209,22 @@ pub struct TerminalInfo {
 #[serde(rename_all = "camelCase")]
 #[ts(export, export_to = "protocol.ts")]
 pub struct UsageStats {
+    #[ts(type = "number")]
     pub total_sessions: i64,
+    #[ts(type = "number")]
     pub total_messages: i64,
+    #[ts(type = "number")]
     pub total_tokens: i64,
+    #[ts(type = "number")]
     pub total_input_tokens: i64,
+    #[ts(type = "number")]
     pub total_output_tokens: i64,
     pub total_cost_usd: String,
+    #[ts(type = "number")]
     pub active_days: i64,
+    #[ts(type = "number")]
     pub current_streak: i64,
+    #[ts(type = "number | null")]
     pub peak_hour: Option<i64>,
     pub favorite_model: Option<String>,
     pub heatmap: Vec<HeatmapPoint>,
@@ -239,7 +236,9 @@ pub struct UsageStats {
 #[ts(export, export_to = "protocol.ts")]
 pub struct HeatmapPoint {
     pub date: String,
+    #[ts(type = "number")]
     pub tokens: i64,
+    #[ts(type = "number")]
     pub sessions: i64,
 }
 
@@ -248,7 +247,9 @@ pub struct HeatmapPoint {
 #[ts(export, export_to = "protocol.ts")]
 pub struct ModelBreakdown {
     pub model: String,
+    #[ts(type = "number")]
     pub tokens: i64,
+    #[ts(type = "number")]
     pub calls: i64,
     pub cost_usd: String,
 }
@@ -303,17 +304,24 @@ pub struct InitGitRepoResult {
 #[serde(rename_all = "camelCase")]
 #[ts(export, export_to = "protocol.ts")]
 pub struct TokenUsageRecord {
+    #[ts(type = "number")]
     pub id: i64,
     pub conversation_id: Option<String>,
     pub model: String,
     pub provider: Option<String>,
+    #[ts(type = "number")]
     pub input_tokens: i64,
+    #[ts(type = "number")]
     pub output_tokens: i64,
+    #[ts(type = "number")]
     pub cache_read_tokens: i64,
+    #[ts(type = "number")]
     pub cache_creation_tokens: i64,
+    #[ts(type = "number")]
     pub total_tokens: i64,
     pub cost_usd: Option<String>,
     pub source: Option<String>,
+    #[ts(type = "number")]
     pub created_at: i64,
 }
 
@@ -321,11 +329,17 @@ pub struct TokenUsageRecord {
 #[serde(rename_all = "camelCase")]
 #[ts(export, export_to = "protocol.ts")]
 pub struct ConversationUsageSummary {
+    #[ts(type = "number")]
     pub requests: i64,
+    #[ts(type = "number")]
     pub input_tokens: i64,
+    #[ts(type = "number")]
     pub output_tokens: i64,
+    #[ts(type = "number")]
     pub cache_read_tokens: i64,
+    #[ts(type = "number")]
     pub cache_creation_tokens: i64,
+    #[ts(type = "number")]
     pub total_tokens: i64,
     pub total_cost_usd: String,
 }
@@ -382,21 +396,11 @@ pub struct SessionFileMeta {
     /// 文件名（已 sanitize，不含路径分隔符），同时也是读取时的唯一 key。
     pub filename: String,
     /// 文件大小（字节）。
+    #[ts(type = "number")]
     pub size: u64,
     /// 创建时间（Unix 秒）。
+    #[ts(type = "number")]
     pub created_at: i64,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, TS)]
-#[serde(rename_all = "camelCase")]
-#[ts(export, export_to = "protocol.ts")]
-pub struct ShellSessionStatus {
-    pub exists: bool,
-    pub alive: bool,
-    pub busy: bool,
-    pub cwd: Option<String>,
-    pub background_pids: Vec<u32>,
-    pub background_count: usize,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
@@ -415,8 +419,11 @@ pub struct BackgroundOutput {
     pub stdout: String,
     pub stderr: String,
     pub truncated: bool,
+    #[ts(type = "number")]
     pub elapsed_ms: u64,
+    #[ts(type = "number")]
     pub ttl_ms: u64,
+    #[ts(type = "number")]
     pub remaining_ms: u64,
 }
 
@@ -431,7 +438,9 @@ pub struct WorkspaceEntry {
     pub relative_path: String,
     pub kind: String,
     pub extension: Option<String>,
+    #[ts(type = "number | null")]
     pub size: Option<u64>,
+    #[ts(type = "number | null")]
     pub modified: Option<u64>,
 }
 
@@ -452,6 +461,7 @@ pub struct WorkspaceFileContent {
     pub path: String,
     pub relative_path: String,
     pub content: String,
+    #[ts(type = "number")]
     pub size: u64,
 }
 
@@ -465,6 +475,7 @@ pub struct ConversationPlan {
     /// plan 的 Markdown 全文。
     pub content: String,
     /// plan 文件更新时间（Unix 秒）。
+    #[ts(type = "number")]
     pub updated_at: i64,
 }
 
@@ -474,9 +485,15 @@ pub struct ConversationPlan {
 #[ts(export, export_to = "protocol.ts")]
 pub struct TurnTrace {
     pub turn_id: String,
+    /// 全链路追踪标识（Turn -> Tool -> session_events -> 前端事件）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub trace_id: Option<String>,
     /// 回合在事件流中的序号（排序/定位用）。
+    #[ts(type = "number")]
     pub seq: i64,
+    #[ts(type = "number")]
     pub started_at: i64,
+    #[ts(type = "number | null")]
     pub ended_at: Option<i64>,
     pub stop_reason: Option<String>,
     /// 本回合发给模型 API 的 wire 级请求/响应（按顺序配对）。
@@ -488,6 +505,9 @@ pub struct TurnTrace {
 #[serde(rename_all = "camelCase")]
 #[ts(export, export_to = "protocol.ts")]
 pub struct WireCallTrace {
+    /// 关联的 Turn traceId（如可用）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub trace_id: Option<String>,
     /// 请求报文完整 JSON（含 system prompt/tools/消息数组）。
     pub request: serde_json::Value,
     /// 流结束后的完整响应 JSON（内容块/文本/stop_reason/用量）。
@@ -506,3 +526,20 @@ pub struct ManualCompactOutcome {
 // ── 纯路径显示工具（桌面与内核共用） ──
 
 pub use crate::path_display::{display_path_string, display_path_text};
+
+/// 当前沙箱驱动与策略状态（桌面状态栏与设置项如实展示，不隐藏真实驱动与网络策略）。
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export, export_to = "protocol.ts")]
+pub struct SandboxStatus {
+    /// 实际驱动标识："windows-restricted" / "linux-bubblewrap" / "none"
+    pub driver: String,
+    /// 当前生效策略："read-only" / "workspace-write" / "danger-full-access"
+    pub policy: String,
+    /// 当前是否真正在执行写入与进程隔离。
+    pub enforcing: bool,
+    /// 是否限制联网（双平台均允许联网，恒为 false）。
+    pub network_restricted: bool,
+    /// 状态栏与设置页可读说明。
+    pub summary: String,
+}

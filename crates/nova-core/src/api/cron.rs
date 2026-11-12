@@ -45,7 +45,7 @@ async fn create_bound_conversation_for_task(
     prompt: &str,
 ) -> Result<String, String> {
     let title = build_scheduled_conversation_title(cron, prompt);
-    let conversation = crate::agent::session::history::create_conversation(&core, Some(title), None).await?;
+    let conversation = crate::agent::session::history::create_conversation(core, Some(title), None).await?;
     Ok(conversation.id)
 }
 
@@ -98,7 +98,7 @@ pub async fn run_scheduler_loop(core: &crate::core::Core) {
         let now_utc = Utc::now().to_rfc3339();
         let minute_key = now_local.format("%Y-%m-%d %H:%M").to_string();
 
-        let jobs = match list_jobs(&core) {
+        let jobs = match list_jobs(core) {
             Ok(v) => v,
             Err(e) => {
                 error!(operation = "command.cron.run_scheduler_loop", error = %e, "failed to list scheduled jobs");
@@ -165,7 +165,7 @@ pub async fn run_scheduler_loop(core: &crate::core::Core) {
             core.emit(crate::events::NovaEvent::ScheduledTaskTrigger(serde_json::to_value(&payload).unwrap_or_default()));
             fired_minute_by_id.insert(job.id.clone(), minute_key.clone());
             if !job.recurring {
-                match remove_job(&core, &job.id) {
+                match remove_job(core, &job.id) {
                     Ok(true) => {
                         fired_minute_by_id.remove(&job.id);
                     }
@@ -196,9 +196,9 @@ pub async fn run_scheduler_loop(core: &crate::core::Core) {
 
 pub fn list_scheduled_tasks(core: &crate::core::Core) -> Result<Vec<CronJob>, String> {
     report_backend_result(
-        &core,
+        core,
         "command.cron.list_scheduled_tasks",
-        list_jobs(&core),
+        list_jobs(core),
         None,
     )
 }
@@ -226,7 +226,7 @@ pub async fn create_scheduled_task(
         let id = format!("cron-{}", &raw_uuid[..12]);
 
         let conversation_id =
-            create_bound_conversation_for_task(&core, cron_value, prompt_value).await?;
+            create_bound_conversation_for_task(core, cron_value, prompt_value).await?;
 
         let job = CronJob {
             id,
@@ -238,11 +238,11 @@ pub async fn create_scheduled_task(
             created_at: Utc::now().to_rfc3339(),
         };
 
-        match add_job(&core, job) {
+        match add_job(core, job) {
             Ok(saved) => Ok(saved),
             Err(e) => {
                 if let Err(cleanup_error) =
-                    crate::agent::session::history::delete_conversation(&core, &conversation_id).await
+                    crate::agent::session::history::delete_conversation(core, &conversation_id).await
                 {
                     error!(
                         operation = "command.cron.create_scheduled_task.cleanup",
@@ -256,7 +256,7 @@ pub async fn create_scheduled_task(
         }
     }
     .await;
-    report_backend_result(&core, "command.cron.create_scheduled_task", result, None)
+    report_backend_result(core, "command.cron.create_scheduled_task", result, None)
 }
 
 pub async fn delete_scheduled_task(core: &crate::core::Core, id: String) -> Result<bool, String> {
@@ -267,8 +267,8 @@ pub async fn delete_scheduled_task(core: &crate::core::Core, id: String) -> Resu
         }
 
         // 删除任务并同步清理其绑定会话（避免 "Scheduled [...]" 孤儿会话堆积）。
-        remove_job_with_cleanup(&core, task_id).await
+        remove_job_with_cleanup(core, task_id).await
     }
     .await;
-    report_backend_result(&core, "command.cron.delete_scheduled_task", result, None)
+    report_backend_result(core, "command.cron.delete_scheduled_task", result, None)
 }

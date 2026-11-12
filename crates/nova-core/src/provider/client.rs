@@ -18,6 +18,19 @@ pub struct LlmClient {
     http_client: Client,
 }
 
+const MAX_STREAM_RETRIES: u32 = 3;
+
+pub(crate) fn should_retry_stream_error(
+    err: &ProviderTurnError,
+    retry_attempt: u32,
+    cancelled: bool,
+) -> bool {
+    err.error_info.is_retryable()
+        && err.partial_messages.is_empty()
+        && retry_attempt <= MAX_STREAM_RETRIES
+        && !cancelled
+}
+
 // 桥接 ApiAdapter 到 StreamParser 以便复用 run_streaming
 struct AdapterStreamParser<'a> {
     adapter: &'a mut dyn ApiAdapter,
@@ -42,7 +55,7 @@ impl<'a> StreamParser for AdapterStreamParser<'a> {
 
 impl LlmClient {
     pub fn new(core: &Core) -> Result<Self, String> {
-        let settings = crate::services::settings::load_settings(&core)?;
+        let settings = crate::services::settings::load_settings(core)?;
         let profile = settings.active_provider_profile();
         let api_format = profile.api_format.as_str();
 
@@ -83,93 +96,157 @@ impl LlmClient {
         let provider_name = self.adapter.provider_name();
         let url = resolve_provider_url(&self.base_url, provider_name)?;
 
-        let builder = self.http_client.post(&url);
-        let (req_builder, estimate) =
-            self.adapter
-                .build_request(builder, core, messages, agent_mode, conversation_id)?;
+        let cancel_token = cancellation::get_token(conversation_id);
+        let mut retry_attempt = 0u32;
 
-        let request = req_builder
-            .build()
-            .map_err(|e| ProviderTurnError::new(e.to_string()))?;
+        loop {
+            retry_attempt += 1;
 
-        // wire 级请求报文写入会话事件日志（轨迹面板调试用，含完整 system prompt/tools/消息数组）。
-        if let Some(conv_id) = conversation_id {
+            let builder = self.http_client.post(&url);
+            let (req_builder, estimate) =
+                self.adapter
+                    .build_request(builder, core, messages, agent_mode, conversation_id)?;
+
+            let request = req_builder
+                .build()
+                .map_err(|e| ProviderTurnError::new(e.to_string()))?;
+
+            let trace_meta = conversation_id.and_then(|cid| core.active_trace_for_conversation(cid));
+            let active_turn_id = trace_meta.as_ref().map(|(tid, _)| tid.clone());
+            let active_trace_id = trace_meta.as_ref().map(|(_, tr)| tr.clone());
+            let redacted_url = nova_protocol::redact::redact_secrets(&url);
+
+            // wire 级请求报文写入脱敏环形缓冲区，并于首轮落库到会话事件日志。
             if let Some(body) = request.body() {
                 if let Some(bytes) = body.as_bytes() {
                     if let Ok(wire) = std::str::from_utf8(bytes) {
-                        let body_value = serde_json::from_str::<serde_json::Value>(wire)
-                            .unwrap_or(serde_json::Value::String(wire.to_string()));
-                        let event = crate::agent::session::SessionEvent::WireRequest {
-                            url: url.clone(),
-                            body: body_value,
-                        };
-                        if let Err(error) =
-                            crate::agent::session::append_event(core, conv_id, None, &event).await
-                        {
-                            tracing::warn!(error = %error, "wire_request event append failed");
+                        let raw_value = serde_json::from_str::<serde_json::Value>(wire)
+                            .unwrap_or_else(|_| serde_json::Value::String(wire.to_string()));
+                        let scrubbed_body = nova_protocol::redact::redact_json_value(&raw_value);
+                        core.record_redacted_wire(crate::core::RedactedWireRecord {
+                            timestamp_ms: chrono::Utc::now().timestamp_millis(),
+                            trace_id: active_trace_id.clone(),
+                            conversation_id: conversation_id.map(str::to_string),
+                            turn_id: active_turn_id.clone(),
+                            provider: provider_name.to_string(),
+                            model: self.model.clone(),
+                            direction: crate::core::WireDirection::Request,
+                            url: Some(redacted_url.clone()),
+                            status: None,
+                            payload: scrubbed_body.clone(),
+                        });
+                        if retry_attempt == 1 {
+                            if let Some(conv_id) = conversation_id {
+                                let event = crate::agent::session::SessionEvent::WireRequest {
+                                    url: redacted_url.clone(),
+                                    body: scrubbed_body,
+                                    trace_id: active_trace_id.clone(),
+                                };
+                                if let Err(error) = crate::agent::session::append_event(
+                                    core,
+                                    conv_id,
+                                    active_turn_id.as_deref(),
+                                    &event,
+                                )
+                                .await
+                                {
+                                    tracing::warn!(error = %error, "wire_request event append failed");
+                                }
+                            }
                         }
                     }
                 }
             }
-        }
 
-        let cancel_token = cancellation::get_token(conversation_id);
+            let resp = tokio::select! {
+                res = self.http_client.execute(request) => res,
+                _ = cancel_token.cancelled() => {
+                    return Ok((ProviderTurnResult {
+                        messages: Vec::new(),
+                        tool_calls: Vec::new(),
+                        stop_reason: Some("cancelled".into()),
+                        input_tokens: None,
+                        output_tokens: None,
+                        cache_read_tokens: None,
+                        cache_creation_tokens: None,
+                        cost: None,
+                        prevent_continuation: false,
+                    }, estimate));
+                }
+            };
 
-        let resp = tokio::select! {
-            res = self.http_client.execute(request) => res,
-            _ = cancel_token.cancelled() => {
-                return Ok((ProviderTurnResult {
-                    messages: Vec::new(),
-                    tool_calls: Vec::new(),
-                    stop_reason: Some("cancelled".into()),
-                    input_tokens: None,
-                    output_tokens: None,
-                    cache_read_tokens: None,
-                    cache_creation_tokens: None,
-                    cost: None,
-                    prevent_continuation: false,
-                }, estimate));
-            }
-        };
+            let stream_outcome = match resp {
+                Ok(res) => {
+                    if !res.status().is_success() {
+                        let status = res.status();
+                        let error_text = res.text().await.unwrap_or_default();
+                        core.record_redacted_wire(crate::core::RedactedWireRecord {
+                            timestamp_ms: chrono::Utc::now().timestamp_millis(),
+                            trace_id: active_trace_id.clone(),
+                            conversation_id: conversation_id.map(str::to_string),
+                            turn_id: active_turn_id.clone(),
+                            provider: provider_name.to_string(),
+                            model: self.model.clone(),
+                            direction: crate::core::WireDirection::Error,
+                            url: Some(redacted_url.clone()),
+                            status: Some(status.as_u16()),
+                            payload: serde_json::json!({
+                                "status": status.as_u16(),
+                                "attempt": retry_attempt,
+                                "body": nova_protocol::redact::redact_secrets(&error_text),
+                            }),
+                        });
+                        Err(ProviderTurnError::from_status_and_body(status, &error_text))
+                    } else {
+                        let mut parser = AdapterStreamParser {
+                            adapter: self.adapter.as_mut(),
+                        };
+                        run_streaming(
+                            &mut parser,
+                            core,
+                            res,
+                            conversation_id,
+                            &self.model,
+                            cancel_token.clone(),
+                        )
+                        .await
+                        .map(|result| (result, estimate))
+                    }
+                }
+                Err(e) => {
+                    let msg = e.to_string();
+                    Err(ProviderTurnError::new(msg))
+                }
+            };
 
-        match resp {
-            Ok(res) => {
-                if !res.status().is_success() {
-                    let status = res.status();
-                    let error_text = res.text().await.unwrap_or_default();
-                    let msg = format!("API Error [{}] {} => {}", status, url, error_text);
+            match stream_outcome {
+                Ok(success) => return Ok(success),
+                Err(err) => {
+                    // 只要本次尝试已经把文本/思考流给了前端，就**不能**重试：
+                    // 重发请求会让模型从头再输出一遍，UI 上出现重复段落，
+                    // 而历史里只存最终版本，两侧永久不一致。
+                    if should_retry_stream_error(&err, retry_attempt, cancel_token.is_cancelled()) {
+                        let delay = err.error_info.default_retry_delay(retry_attempt);
+                        tracing::warn!(
+                            provider = %provider_name,
+                            attempt = retry_attempt,
+                            max_retries = MAX_STREAM_RETRIES,
+                            delay_ms = delay.as_millis(),
+                            error = %err.message,
+                            "Stream request encountered retryable error; waiting to retry with exponential backoff"
+                        );
+                        tokio::time::sleep(delay).await;
+                        continue;
+                    }
+
                     emit_backend_error(
                         core,
                         &format!("llm.providers.{}", provider_name),
-                        msg.clone(),
-                        Some("http.non_success"),
+                        err.message.clone(),
+                        Some("stream.failed"),
                     );
-                    return Err(ProviderTurnError::new(msg));
+                    return Err(err);
                 }
-
-                let mut parser = AdapterStreamParser {
-                    adapter: self.adapter.as_mut(),
-                };
-                run_streaming(
-                    &mut parser,
-                    core,
-                    res,
-                    conversation_id,
-                    &self.model,
-                    cancel_token,
-                )
-                .await
-                .map(|result| (result, estimate))
-            }
-            Err(e) => {
-                let msg = e.to_string();
-                emit_backend_error(
-                    core,
-                    &format!("llm.providers.{}", provider_name),
-                    msg.clone(),
-                    Some("http.request"),
-                );
-                Err(ProviderTurnError::new(msg))
             }
         }
     }
@@ -219,7 +296,7 @@ impl LlmClient {
         system_prompt: &str,
         user_prompt: &str,
     ) -> Result<String, String> {
-        let settings = crate::services::settings::load_settings(&core)
+        let settings = crate::services::settings::load_settings(core)
             .map_err(|e| format!("加载配置失败: {}", e))?;
         let profile = settings.active_provider_profile();
         let provider_name = self.adapter.provider_name();
@@ -422,6 +499,29 @@ mod tests {
         assert_eq!(
             resolve_provider_url("https://api.anthropic.com/v1/messages", "anthropic").unwrap(),
             "https://api.anthropic.com/v1/messages"
+        );
+    }
+
+    #[test]
+    fn partial_output_never_retries_even_on_disconnect_error() {
+        let retryable_empty =
+            ProviderTurnError::new("wsarecv: connection reset (os error 10054)".to_string());
+        assert!(should_retry_stream_error(&retryable_empty, 1, false));
+        assert!(!should_retry_stream_error(&retryable_empty, 1, true));
+        assert!(!should_retry_stream_error(&retryable_empty, MAX_STREAM_RETRIES + 1, false));
+
+        let partial = vec![crate::provider::types::Message {
+            role: crate::provider::types::Role::Assistant,
+            content: crate::provider::types::Content::Text("partial text".to_string()),
+        }];
+        let with_partial = ProviderTurnError::with_partial(
+            "anthropic stream chunk error: unexpected EOF".to_string(),
+            partial,
+        );
+        assert!(with_partial.error_info.is_retryable());
+        assert!(
+            !should_retry_stream_error(&with_partial, 1, false),
+            "stream error with emitted partial output must never retry"
         );
     }
 }

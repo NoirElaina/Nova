@@ -24,7 +24,9 @@ use tokio::sync::oneshot;
 use checks::{assess_mcp_operation, truncate_chars};
 
 pub use checks::protected_path_violation;
-pub(crate) use descriptors::{describe_file_write_permission, describe_shell_command_permission};
+pub(crate) use descriptors::{
+    describe_file_write_permission, describe_shell_command_permission, describe_stdin_permission,
+};
 
 const DEFAULT_PERMISSION_SCOPE: &str = "__global__";
 const PENDING_APPROVAL_TTL_MS: u64 = 15 * 60 * 1000;
@@ -57,12 +59,14 @@ struct ProtectedOperation {
 struct PendingApproval {
     operation: ProtectedOperation,
     created_at_ms: u64,
+    client_id: Option<String>,
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 struct RecordedDecision {
     action: PermissionAction,
     decided_at_ms: u64,
+    client_id: Option<String>,
 }
 
 #[derive(Debug, Default)]
@@ -203,6 +207,7 @@ fn prune_resolved_decisions(state: &mut ConversationPermissionState) {
 fn upsert_pending_request_id(
     state: &mut ConversationPermissionState,
     operation: &ProtectedOperation,
+    client_id: Option<String>,
 ) -> String {
     // Reuse an existing pending request for the same operation signature when possible.
     if let Some(existing_id) = state
@@ -211,8 +216,11 @@ fn upsert_pending_request_id(
         .cloned()
     {
         // existing_id: 已记录的 request id。
-        // signature -> request_id 命中且 request 仍在 pending，直接复用。
-        if state.pending.contains_key(&existing_id) {
+        // signature -> request_id 命中且 request 仍在 pending，直接复用并刷新绑定客户端。
+        if let Some(existing) = state.pending.get_mut(&existing_id) {
+            if client_id.is_some() {
+                existing.client_id = client_id;
+            }
             return existing_id;
         }
         // 索引命中但主体缺失，说明是脏索引，先清掉再重建。
@@ -226,6 +234,7 @@ fn upsert_pending_request_id(
         PendingApproval {
             operation: operation.clone(),
             created_at_ms: now_millis(),
+            client_id,
         },
     );
     state
@@ -420,6 +429,7 @@ fn apply_decision(
         RecordedDecision {
             action,
             decided_at_ms: now_millis(),
+            client_id: pending.client_id,
         },
     );
     notify_permission_waiter(request_id, action);
@@ -433,6 +443,17 @@ pub fn submit_permission_decision(
     request_id: &str,
     action: PermissionAction,
 ) -> Result<bool, String> {
+    submit_permission_decision_for_client(core, conversation_id, request_id, action, None)
+}
+
+/// 绑定连接身份的审批提交：若该审批归属另一个活跃连接，拒绝跨窗口误批。
+pub fn submit_permission_decision_for_client(
+    core: &Core,
+    conversation_id: Option<&str>,
+    request_id: &str,
+    action: PermissionAction,
+    caller_client_id: Option<&str>,
+) -> Result<bool, String> {
     let mut guard = permission_state()
         .lock()
         .map_err(|_| "Permission state unavailable due to lock poisoning".to_string())?;
@@ -440,11 +461,71 @@ pub fn submit_permission_decision(
     prune_expired_pending(state);
     prune_resolved_decisions(state);
 
+    if let (Some(caller), Some(pending)) = (caller_client_id, state.pending.get(request_id)) {
+        if let Some(owner) = pending.client_id.as_deref() {
+            if owner != caller {
+                return Err("该审批请求归属另一个已连接窗口，当前连接无权处理。".to_string());
+            }
+        }
+    }
+
     if apply_decision(core, state, action, request_id) {
         return Ok(true);
     }
 
     Ok(state.resolved_by_request.contains_key(request_id))
+}
+
+/// 查询某条待审批（或已裁决）请求绑定的发起连接 ID。
+pub fn pending_approval_client_id(
+    conversation_id: Option<&str>,
+    request_id: &str,
+) -> Option<String> {
+    let guard = permission_state().lock().ok()?;
+    if let Some(scope) = conversation_id.map(str::trim).filter(|s| !s.is_empty()) {
+        let key = conversation_scope_key(Some(scope));
+        if let Some(conv) = guard.conversations.get(&key) {
+            if let Some(pending) = conv.pending.get(request_id) {
+                return pending.client_id.clone();
+            }
+            if let Some(resolved) = conv.resolved_by_request.get(request_id) {
+                return resolved.client_id.clone();
+            }
+        }
+    }
+    for conv in guard.conversations.values() {
+        if let Some(pending) = conv.pending.get(request_id) {
+            return pending.client_id.clone();
+        }
+        if let Some(resolved) = conv.resolved_by_request.get(request_id) {
+            return resolved.client_id.clone();
+        }
+    }
+    None
+}
+
+/// 客户端连接断开时 fail-closed：把该连接持有的全部待审批立即拒绝为 `DenyOnce`。
+pub fn deny_pending_for_client(core: &Core, client_id: &str) -> usize {
+    let Ok(mut guard) = permission_state().lock() else {
+        return 0;
+    };
+    let mut targets: Vec<(String, String)> = Vec::new();
+    for (conv_key, conv) in &guard.conversations {
+        for (request_id, pending) in &conv.pending {
+            if pending.client_id.as_deref() == Some(client_id) {
+                targets.push((conv_key.clone(), request_id.clone()));
+            }
+        }
+    }
+    let mut denied = 0usize;
+    for (conv_key, request_id) in targets {
+        if let Some(conv) = guard.conversations.get_mut(&conv_key) {
+            if apply_decision(core, conv, PermissionAction::DenyOnce, &request_id) {
+                denied += 1;
+            }
+        }
+    }
+    denied
 }
 
 pub async fn await_permission_decision(
@@ -508,7 +589,6 @@ pub async fn await_permission_decision(
             state
                 .resolved_by_request
                 .get(request_id)
-                .copied()
                 .map(|r| r.action)
         };
 
@@ -603,6 +683,7 @@ pub fn enforce_tool_permission(
         ));
     }
 
+    let origin_client_id = crate::agent::session_runtime::active_client_id(conversation_id);
     let mut guard = match permission_state().lock() {
         Ok(g) => g,
         Err(_) => {
@@ -612,7 +693,7 @@ pub fn enforce_tool_permission(
         }
     };
     let state = conversation_state_mut(&mut guard, conversation_id);
-    let request_id = upsert_pending_request_id(state, &operation);
+    let request_id = upsert_pending_request_id(state, &operation, origin_client_id);
     // request_id: 生成或复用的待审批请求 id。
     PermissionEnforcement::AskUser {
         request_id,
@@ -644,21 +725,23 @@ pub async fn request_sandbox_retry(
         risk: RiskLevel::Risky,
     };
 
+    let origin_client_id = crate::agent::session_runtime::active_client_id(conversation_id);
     let (request_id, payload) = {
         let mut guard = permission_state()
             .lock()
             .map_err(|_| "Permission state unavailable due to lock poisoning".to_string())?;
         let state = conversation_state_mut(&mut guard, conversation_id);
         prune_expired_pending(state);
-        let request_id = upsert_pending_request_id(state, &operation);
+        let request_id = upsert_pending_request_id(state, &operation, origin_client_id);
         (request_id, build_permission_prompt_payload(&operation))
     };
 
-    let _ = core.emit_agent(crate::agent::events::AgentDomainEvent::PermissionRequested {
+    core.emit_agent(crate::agent::events::AgentDomainEvent::PermissionRequested {
         turn_id: conversation_id.unwrap_or_default().to_string(),
         request_id: request_id.clone(),
         tool_name: "sandbox_retry".to_string(),
         payload,
+        trace_id: core.active_trace_id(conversation_id, None),
     });
 
     let timeout_ms = std::env::var("NOVA_PERMISSION_WAIT_TIMEOUT_MS")

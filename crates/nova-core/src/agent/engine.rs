@@ -18,71 +18,7 @@ pub struct TurnOutcome {
     pub assistant_text: String,
 }
 
-/// 工具调用循环熔断动作
-enum CircuitAction {
-    None,
-    InjectWarning(String),
-    TripAndHalt(String),
-}
-
-/// 工具调用死循环熔断器
-/// 针对连续相同参数且执行报错/无意义重复的调用进行即时警示或截断，杜绝无脑试错 30 步烧穿 token
-#[derive(Default)]
-struct ToolLoopBreaker {
-    last_signature: Option<String>,
-    consecutive_same_call_count: usize,
-    consecutive_failure_count: usize,
-}
-
-impl ToolLoopBreaker {
-    fn new() -> Self {
-        Self::default()
-    }
-
-    fn signature(name: &str, input: &serde_json::Value) -> String {
-        format!("{}:{}", name, input)
-    }
-
-    fn record_and_evaluate(
-        &mut self,
-        tool_name: &str,
-        input: &serde_json::Value,
-        is_error: bool,
-    ) -> CircuitAction {
-        let sig = Self::signature(tool_name, input);
-        if self.last_signature.as_deref() == Some(&sig) {
-            self.consecutive_same_call_count += 1;
-            if is_error {
-                self.consecutive_failure_count += 1;
-            } else {
-                self.consecutive_failure_count = 0;
-            }
-        } else {
-            self.last_signature = Some(sig);
-            self.consecutive_same_call_count = 1;
-            self.consecutive_failure_count = if is_error { 1 } else { 0 };
-        }
-
-        if self.consecutive_failure_count >= 5 {
-            CircuitAction::TripAndHalt(format!(
-                "[Circuit Breaker Tripped]: Tool '{}' has failed 5 consecutive times with identical parameters. Halting execution to prevent infinite loop.",
-                tool_name
-            ))
-        } else if self.consecutive_failure_count >= 3 {
-            CircuitAction::InjectWarning(format!(
-                "\n\n[Nova Circuit Breaker Warning]: Tool '{}' has failed {} consecutive times with the exact same input. You MUST try a different approach, verify path/arguments, or explain the difficulty to the user instead of retrying this call.",
-                tool_name, self.consecutive_failure_count
-            ))
-        } else if self.consecutive_same_call_count >= 6 {
-            CircuitAction::InjectWarning(format!(
-                "\n\n[Nova Circuit Breaker Warning]: Tool '{}' has been invoked {} consecutive times with identical parameters. Please progress to the next step or synthesize results.",
-                tool_name, self.consecutive_same_call_count
-            ))
-        } else {
-            CircuitAction::None
-        }
-    }
-}
+pub use crate::agent::tools::orchestrator::{CircuitAction, ToolExecutionContext, ToolLoopBreaker, ToolOrchestrator};
 
 /// 从 Assistant 消息中提取纯文本交付物
 fn extract_assistant_text(messages: &[Message]) -> String {
@@ -124,35 +60,16 @@ impl AgentEngine {
         Self { core }
     }
 
-    /// 执行一轮完整的 Agent 认知闭环
-    pub async fn execute_turn(
+    fn build_user_message(
         &self,
         conversation_id: &str,
         user_prompt: &str,
-        attachments: Option<Vec<crate::agent::session::types::HistoryAttachment>>,
-        cancel_token: CancellationToken,
-    ) -> Result<TurnOutcome, String> {
-        let turn_id = Uuid::new_v4().to_string();
-        let timestamp = chrono::Utc::now().timestamp_millis();
-
-        // 1. 发射 TurnStarted 与 AssemblingContext 领域事件
-        let _ = self.core.emit_agent(AgentDomainEvent::TurnStarted {
-                turn_id: turn_id.clone(),
-                conversation_id: conversation_id.to_string(),
-                timestamp,
-            },
-        );
-        let _ = self.core.emit_agent(AgentDomainEvent::StateChanged {
-                turn_id: turn_id.clone(),
-                state: CognitiveState::AssemblingContext,
-            },
-        );
-
-        // 2. 写入事件日志事实源（UserMessage & TurnStart）
+        attachments: Option<&Vec<crate::agent::session::types::HistoryAttachment>>,
+    ) -> Message {
         let mut text_content = user_prompt.to_string();
         let mut content_blocks = Vec::new();
 
-        if let Some(ref atts) = attachments {
+        if let Some(atts) = attachments {
             for att in atts {
                 if att.kind.as_deref() == Some("image") {
                     if let Some(ref data) = att.data {
@@ -178,11 +95,13 @@ impl AgentEngine {
                     }
                     if doc_text.is_none() {
                         if let Some(ref file_path) = att.session_file_path {
-                            if let Ok(extracted) = crate::agent::capabilities::session_files::read_session_file(
-                                &self.core,
-                                conversation_id,
-                                file_path,
-                            ) {
+                            if let Ok(extracted) =
+                                crate::agent::capabilities::session_files::read_session_file(
+                                    &self.core,
+                                    conversation_id,
+                                    file_path,
+                                )
+                            {
                                 doc_text = Some(extracted);
                             }
                         }
@@ -197,7 +116,7 @@ impl AgentEngine {
             }
         }
 
-        let user_msg = if content_blocks.is_empty() {
+        if content_blocks.is_empty() {
             Message {
                 role: Role::User,
                 content: Content::Text(text_content),
@@ -209,7 +128,106 @@ impl AgentEngine {
                 role: Role::User,
                 content: Content::Blocks(all_blocks),
             }
-        };
+        }
+    }
+
+    async fn inject_pending_steers(
+        &self,
+        conversation_id: &str,
+        turn_id: &str,
+        trace_id: &str,
+        current_messages: &mut Vec<Message>,
+    ) -> bool {
+        let steers = crate::agent::session_runtime::drain_steers(Some(conversation_id));
+        if steers.is_empty() {
+            return false;
+        }
+        for steer in steers {
+            let steer_msg = self.build_user_message(
+                conversation_id,
+                &steer.prompt,
+                steer.attachments.as_ref(),
+            );
+            let _ = crate::agent::session::append_event(
+                &self.core,
+                conversation_id,
+                Some(turn_id),
+                &SessionEvent::UserMessage {
+                    message: steer_msg.clone(),
+                    attachments: steer.attachments,
+                },
+            )
+            .await;
+            self.core.emit_agent(AgentDomainEvent::TurnSteered {
+                turn_id: turn_id.to_string(),
+                conversation_id: conversation_id.to_string(),
+                prompt: steer.prompt,
+                trace_id: Some(trace_id.to_string()),
+            });
+            current_messages.push(steer_msg);
+        }
+        true
+    }
+
+    /// 执行一轮完整的 Agent 认知闭环
+    pub async fn execute_turn(
+        &self,
+        conversation_id: &str,
+        user_prompt: &str,
+        attachments: Option<Vec<crate::agent::session::types::HistoryAttachment>>,
+        cancel_token: CancellationToken,
+    ) -> Result<TurnOutcome, crate::NovaCoreError> {
+        let turn_id = Uuid::new_v4().to_string();
+        self.execute_turn_with_id(
+            conversation_id,
+            &turn_id,
+            user_prompt,
+            attachments,
+            cancel_token,
+        )
+        .await
+    }
+
+    /// 使用外部预分配的 `turn_id` 执行一轮完整 Agent 认知闭环（供同步仲裁回传一致 `turnId`）。
+    pub async fn execute_turn_with_id(
+        &self,
+        conversation_id: &str,
+        turn_id: &str,
+        user_prompt: &str,
+        attachments: Option<Vec<crate::agent::session::types::HistoryAttachment>>,
+        cancel_token: CancellationToken,
+    ) -> Result<TurnOutcome, crate::NovaCoreError> {
+        let turn_id = turn_id.to_string();
+        let trace_id = Uuid::new_v4().to_string();
+        let _trace_guard = self
+            .core
+            .begin_turn_trace(conversation_id, &turn_id, &trace_id);
+        let timestamp = chrono::Utc::now().timestamp_millis();
+
+        tracing::info!(
+            conversation_id = %conversation_id,
+            turn_id = %turn_id,
+            trace_id = %trace_id,
+            "Agent turn started"
+        );
+
+        // 1. 发射 TurnStarted 与 AssemblingContext 领域事件
+        self.core.emit_agent(AgentDomainEvent::TurnStarted {
+                turn_id: turn_id.clone(),
+                conversation_id: conversation_id.to_string(),
+                timestamp,
+                trace_id: Some(trace_id.clone()),
+            },
+        );
+        self.core.emit_agent(AgentDomainEvent::StateChanged {
+                turn_id: turn_id.clone(),
+                state: CognitiveState::AssemblingContext,
+                trace_id: Some(trace_id.clone()),
+            },
+        );
+
+        // 2. 写入事件日志事实源（UserMessage & TurnStart）
+        let user_msg = self.build_user_message(conversation_id, user_prompt, attachments.as_ref());
 
         let _ = crate::agent::session::append_event(
             &self.core,
@@ -217,6 +235,7 @@ impl AgentEngine {
             Some(&turn_id),
             &SessionEvent::TurnStart {
                 turn_id: turn_id.clone(),
+                trace_id: Some(trace_id.clone()),
             },
         )
         .await;
@@ -243,10 +262,14 @@ impl AgentEngine {
             Some(conversation_id),
             reconstructed,
         )
-        .await?;
+        .await
+        .map_err(crate::NovaCoreError::Session)?;
+
+        // 3.1 异步刷新 MCP 工具缓存（确保三协议适配器同步读取到最新的 MCP 工具清单）
+        let _ = crate::agent::capabilities::mcp_tools::refresh_mcp_tools_cache(&self.core).await;
 
         // 4. 准备 LLM Client
-        let mut client = LlmClient::new(&self.core).map_err(|e| e.to_string())?;
+        let mut client = LlmClient::new(&self.core).map_err(crate::NovaCoreError::Internal)?;
 
         let mut loop_count = 0;
         const MAX_STEPS: usize = 30;
@@ -270,10 +293,11 @@ impl AgentEngine {
                     },
                 )
                 .await;
-                let _ = self.core.emit_agent(AgentDomainEvent::TurnFinished {
+                self.core.emit_agent(AgentDomainEvent::TurnFinished {
                         turn_id: turn_id.clone(),
                         stop_reason: "cancelled".to_string(),
                         total_tokens: total_turn_tokens,
+                        trace_id: Some(trace_id.clone()),
                     },
                 );
                 let deliverable = if !last_assistant_text.trim().is_empty() {
@@ -287,6 +311,41 @@ impl AgentEngine {
                     total_tokens: total_turn_tokens,
                     assistant_text: deliverable,
                 });
+            }
+
+            // 5.1 消费协同 Mailbox 中的新消息与指导指令（真异步双向通信驱动）
+            if crate::agent::orchestration::subagent::is_subagent_conversation(Some(conversation_id)) {
+                let parent_id = crate::agent::orchestration::subagent::parent_conversation_id(conversation_id);
+                if let Some(handle) = crate::agent::orchestration::registry::global_agent_registry().find(parent_id, conversation_id) {
+                    let mut mb = handle.mailbox.lock().await;
+                    if !mb.is_empty() {
+                        let mut guidance_texts = Vec::new();
+                        while let Some(msg) = mb.pop_front() {
+                            guidance_texts.push(msg);
+                        }
+                        drop(mb);
+                        let combined = guidance_texts.join("\n---\n");
+                        let mailbox_text = format!(
+                            "[Incoming Directive / Mailbox Message from Coordinator]:\n{}\nPlease adjust your ongoing investigation or execution accordingly.",
+                            combined
+                        );
+                        let mailbox_msg = Message {
+                            role: Role::User,
+                            content: Content::Text(mailbox_text),
+                        };
+                        current_messages.push(mailbox_msg.clone());
+                        let _ = crate::agent::session::append_event(
+                            &self.core,
+                            conversation_id,
+                            Some(&turn_id),
+                            &SessionEvent::UserMessage {
+                                message: mailbox_msg,
+                                attachments: None,
+                            },
+                        )
+                        .await;
+                    }
+                }
             }
 
             // 自动上下文压缩检查 (Mid-Turn Compact)
@@ -312,13 +371,14 @@ impl AgentEngine {
             }
 
             // 发射模型推理状态事件
-            let _ = self.core.emit_agent(AgentDomainEvent::StateChanged {
+            self.core.emit_agent(AgentDomainEvent::StateChanged {
                     turn_id: turn_id.clone(),
                     state: CognitiveState::ModelInference,
+                    trace_id: Some(trace_id.clone()),
                 },
             );
 
-            // 发起模型流式请求（支持 prompt_too_long 自愈重试）
+            // 发起模型流式请求（支持 prompt_too_long 自愈重试，与 Codex 一致不向请求上下文重复注入运行中后台进程列表）
             let provider_result = match client
                 .send_request(
                     &self.core,
@@ -330,8 +390,11 @@ impl AgentEngine {
             {
                 Ok((res, _)) => res,
                 Err(err) => {
-                    let err_msg = err.message.clone();
-                    if crate::agent::capabilities::compact::is_prompt_too_long_error(&err_msg) {
+                    let is_context_overflow = matches!(
+                        err.error_info,
+                        crate::provider::NovaErrorInfo::ContextWindowExceeded
+                    ) || crate::agent::capabilities::compact::is_prompt_too_long_error(&err.message);
+                    if is_context_overflow {
                         tracing::warn!(
                             turn_id = %turn_id,
                             "Prompt too long error encountered, attempting reactive compact retry"
@@ -359,19 +422,30 @@ impl AgentEngine {
                                         .handle_turn_error(
                                             conversation_id,
                                             &turn_id,
-                                            &retry_err.message,
+                                            &trace_id,
+                                            retry_err.into(),
                                         )
                                         .await;
                                 }
                             }
                         } else {
                             return self
-                                .handle_turn_error(conversation_id, &turn_id, &err_msg)
+                                .handle_turn_error(
+                                    conversation_id,
+                                    &turn_id,
+                                    &trace_id,
+                                    err.into(),
+                                )
                                 .await;
                         }
                     } else {
                         return self
-                            .handle_turn_error(conversation_id, &turn_id, &err_msg)
+                            .handle_turn_error(
+                                conversation_id,
+                                &turn_id,
+                                &trace_id,
+                                err.into(),
+                            )
                             .await;
                     }
                 }
@@ -390,10 +464,11 @@ impl AgentEngine {
                     },
                 )
                 .await;
-                let _ = self.core.emit_agent(AgentDomainEvent::TurnFinished {
+                self.core.emit_agent(AgentDomainEvent::TurnFinished {
                         turn_id: turn_id.clone(),
                         stop_reason: "cancelled".to_string(),
                         total_tokens: total_turn_tokens,
+                        trace_id: Some(trace_id.clone()),
                     },
                 );
                 let deliverable = if !last_assistant_text.trim().is_empty() {
@@ -416,12 +491,13 @@ impl AgentEngine {
             let cache_create = provider_result.cache_creation_tokens.unwrap_or(0);
             total_turn_tokens += input_tok + output_tok;
 
-            let _ = self.core.emit_agent(AgentDomainEvent::TokenUsageUpdate {
+            self.core.emit_agent(AgentDomainEvent::TokenUsageUpdate {
                     turn_id: turn_id.clone(),
                     input_tokens: input_tok,
                     output_tokens: output_tok,
                     cache_read_tokens: cache_read,
                     cache_creation_tokens: cache_create,
+                    trace_id: Some(trace_id.clone()),
                 },
             );
 
@@ -486,13 +562,26 @@ impl AgentEngine {
             // 检查模型是否发起了工具调用
             let tool_calls = provider_result.tool_calls;
             if tool_calls.is_empty() || provider_result.prevent_continuation {
+                if !provider_result.prevent_continuation
+                    && self
+                        .inject_pending_steers(
+                            conversation_id,
+                            &turn_id,
+                            &trace_id,
+                            &mut current_messages,
+                        )
+                        .await
+                {
+                    continue;
+                }
                 break;
             }
 
             // 发射工具执行状态转移事件
-            let _ = self.core.emit_agent(AgentDomainEvent::StateChanged {
+            self.core.emit_agent(AgentDomainEvent::StateChanged {
                     turn_id: turn_id.clone(),
                     state: CognitiveState::ExecutingTool,
+                    trace_id: Some(trace_id.clone()),
                 },
             );
 
@@ -507,21 +596,28 @@ impl AgentEngine {
                         tool_name: call.name.clone(),
                         input: serde_json::to_string(&call.input).unwrap_or_default(),
                         turn_id: Some(turn_id.clone()),
+                        trace_id: Some(trace_id.clone()),
                     },
                 )
                 .await;
 
-                let _ = self.core.emit_agent(AgentDomainEvent::ToolCallRequested {
+                self.core.emit_agent(AgentDomainEvent::ToolCallRequested {
                         turn_id: turn_id.clone(),
                         call_id: call.id.clone(),
                         tool_name: call.name.clone(),
                         arguments: call.input.clone(),
+                        trace_id: Some(trace_id.clone()),
                     },
                 );
             }
 
             // 在 ReAct 决策循环外层执行工具（支持立即强制取消中断）
-            let exec_start = std::time::Instant::now();
+            let tool_ctx = ToolExecutionContext::new(
+                self.core.clone(),
+                Some(conversation_id.to_string()),
+                Some(turn_id.clone()),
+            )
+            .with_trace_id(trace_id.clone());
             let executed_calls = tokio::select! {
                 biased;
                 _ = cancel_token.cancelled() => {
@@ -536,10 +632,11 @@ impl AgentEngine {
                         },
                     )
                     .await;
-                    let _ = self.core.emit_agent(AgentDomainEvent::TurnFinished {
+                    self.core.emit_agent(AgentDomainEvent::TurnFinished {
                             turn_id: turn_id.clone(),
                             stop_reason: "cancelled".to_string(),
                             total_tokens: total_turn_tokens,
+                            trace_id: Some(trace_id.clone()),
                         },
                     );
                     let deliverable = if !last_assistant_text.trim().is_empty() {
@@ -554,73 +651,18 @@ impl AgentEngine {
                         assistant_text: deliverable,
                     });
                 }
-                calls = crate::agent::tools::execute_tool_calls_with_app(
-                    &self.core,
-                    Some(conversation_id),
+                calls = ToolOrchestrator::run_batch(
+                    &tool_ctx,
                     tool_calls.clone(),
+                    &mut loop_breaker,
                 ) => calls,
             };
-            let duration_ms = exec_start.elapsed().as_millis() as u64;
 
             let mut tool_result_blocks = Vec::new();
             let mut stop_for_user_interaction = false;
-            let mut pending_additional_messages = Vec::new();
+            let mut pending_additional_messages: Vec<crate::provider::types::Message> = Vec::new();
 
-            for mut executed in executed_calls {
-                // 提取本次工具调用原始入参以计算特征指纹
-                let call_input = tool_calls
-                    .iter()
-                    .find(|c| c.id == executed.id)
-                    .map(|c| c.input.clone())
-                    .unwrap_or_default();
-
-                // 接入工具死循环熔断器
-                match loop_breaker.record_and_evaluate(&executed.name, &call_input, executed.is_error) {
-                    CircuitAction::None => {}
-                    CircuitAction::InjectWarning(warning) => {
-                        tracing::warn!(
-                            tool = %executed.name,
-                            "ToolLoopBreaker injected warning for repeated execution"
-                        );
-                        executed.output.push_str(&warning);
-                    }
-                    CircuitAction::TripAndHalt(halt_msg) => {
-                        tracing::error!(
-                            tool = %executed.name,
-                            "ToolLoopBreaker tripped and halted execution"
-                        );
-                        executed.output = halt_msg;
-                        executed.is_error = true;
-                        stop_for_user_interaction = true;
-                    }
-                }
-
-                let now_ms = chrono::Utc::now().timestamp_millis();
-                let _ = crate::agent::session::append_event(
-                    &self.core,
-                    conversation_id,
-                    Some(&turn_id),
-                    &SessionEvent::ToolResult {
-                        call_id: executed.id.clone(),
-                        tool_name: executed.name.clone(),
-                        output: executed.output.clone(),
-                        is_error: executed.is_error,
-                        started_at: now_ms.saturating_sub(duration_ms as i64),
-                        finished_at: now_ms,
-                    },
-                )
-                .await;
-
-                let _ = self.core.emit_agent(AgentDomainEvent::ToolCallCompleted {
-                        turn_id: turn_id.clone(),
-                        call_id: executed.id.clone(),
-                        tool_name: executed.name.clone(),
-                        is_error: executed.is_error,
-                        output: executed.output.clone(),
-                        duration_ms,
-                    },
-                );
-
+            for executed in executed_calls {
                 if crate::provider::stream_runner::is_needs_user_input_payload(&executed.output)
                     || executed.prevent_continuation
                 {
@@ -677,6 +719,10 @@ impl AgentEngine {
             if stop_for_user_interaction {
                 break;
             }
+
+            let _ = self
+                .inject_pending_steers(conversation_id, &turn_id, &trace_id, &mut current_messages)
+                .await;
         }
 
         // 6. 认知循环收尾：终结事件记录与会话元信息同步
@@ -708,20 +754,22 @@ impl AgentEngine {
             .await;
         }
 
-        let _ = self.core.emit_agent(AgentDomainEvent::StateChanged {
+        self.core.emit_agent(AgentDomainEvent::StateChanged {
                 turn_id: turn_id.clone(),
                 state: if cancel_token.is_cancelled() {
                     CognitiveState::Idle
                 } else {
                     CognitiveState::TurnComplete
                 },
+                trace_id: Some(trace_id.clone()),
             },
         );
 
-        let _ = self.core.emit_agent(AgentDomainEvent::TurnFinished {
+        self.core.emit_agent(AgentDomainEvent::TurnFinished {
                 turn_id: turn_id.clone(),
                 stop_reason: final_stop_reason.clone(),
                 total_tokens: total_turn_tokens,
+                trace_id: Some(trace_id.clone()),
             },
         );
 
@@ -743,8 +791,9 @@ impl AgentEngine {
         &self,
         conversation_id: &str,
         turn_id: &str,
-        err_msg: &str,
-    ) -> Result<TurnOutcome, String> {
+        trace_id: &str,
+        error: crate::NovaCoreError,
+    ) -> Result<TurnOutcome, crate::NovaCoreError> {
         let _ = crate::agent::session::append_event(
             &self.core,
             conversation_id,
@@ -755,17 +804,20 @@ impl AgentEngine {
             },
         )
         .await;
-        let _ = self.core.emit_agent(AgentDomainEvent::StateChanged {
+        self.core.emit_agent(AgentDomainEvent::StateChanged {
                 turn_id: turn_id.to_string(),
                 state: CognitiveState::Failed,
+                trace_id: Some(trace_id.to_string()),
             },
         );
-        let _ = self.core.emit_agent(AgentDomainEvent::TurnError {
+        self.core.emit_agent(AgentDomainEvent::TurnError {
                 turn_id: turn_id.to_string(),
-                error: err_msg.to_string(),
+                error: error.to_string(),
+                error_info: Some(error.to_nova_error_info()),
+                trace_id: Some(trace_id.to_string()),
             },
         );
-        Err(err_msg.to_string())
+        Err(error)
     }
 }
 

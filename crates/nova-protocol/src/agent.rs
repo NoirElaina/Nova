@@ -12,22 +12,31 @@ pub enum AgentDomainEvent {
     TurnStarted {
         turn_id: String,
         conversation_id: String,
+        #[ts(type = "number")]
         timestamp: i64,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        trace_id: Option<String>,
     },
     /// 认知状态机流转事件
     StateChanged {
         turn_id: String,
         state: crate::agent::CognitiveState,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        trace_id: Option<String>,
     },
     /// 模型思考/推理流式增量（thinking / reasoning delta）
     ThinkingDelta {
         turn_id: String,
         delta: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        trace_id: Option<String>,
     },
     /// 模型回答正文流式增量
     TextDelta {
         turn_id: String,
         delta: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        trace_id: Option<String>,
     },
     /// 模型发起工具调用请求（参数已完成解析与校验）
     ToolCallRequested {
@@ -35,6 +44,8 @@ pub enum AgentDomainEvent {
         call_id: String,
         tool_name: String,
         arguments: serde_json::Value,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        trace_id: Option<String>,
     },
     /// 工具执行完成（包含执行输出与耗时）
     ToolCallCompleted {
@@ -43,7 +54,10 @@ pub enum AgentDomainEvent {
         tool_name: String,
         is_error: bool,
         output: String,
+        #[ts(type = "number")]
         duration_ms: u64,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        trace_id: Option<String>,
     },
     /// Token 用量与成本更新
     TokenUsageUpdate {
@@ -52,6 +66,8 @@ pub enum AgentDomainEvent {
         output_tokens: u32,
         cache_read_tokens: u32,
         cache_creation_tokens: u32,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        trace_id: Option<String>,
     },
     /// 触发安全审批拦截请求
     PermissionRequested {
@@ -59,18 +75,144 @@ pub enum AgentDomainEvent {
         request_id: String,
         tool_name: String,
         payload: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        trace_id: Option<String>,
     },
     /// 回合成功完成
     TurnFinished {
         turn_id: String,
         stop_reason: String,
         total_tokens: u32,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        trace_id: Option<String>,
     },
     /// 回合异常终止
     TurnError {
         turn_id: String,
         error: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        error_info: Option<crate::errors::NovaErrorInfo>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        trace_id: Option<String>,
     },
+    /// 用户补充 steer 消息已在工具边界注入当前回合
+    TurnSteered {
+        turn_id: String,
+        conversation_id: String,
+        prompt: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        trace_id: Option<String>,
+    },
+    /// 用户消息已进入顺序队列，等待当前回合完成后执行
+    TurnQueued {
+        turn_id: String,
+        conversation_id: String,
+        queue_length: u32,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        trace_id: Option<String>,
+    },
+}
+
+impl AgentDomainEvent {
+    pub fn turn_id(&self) -> &str {
+        match self {
+            Self::TurnStarted { turn_id, .. }
+            | Self::StateChanged { turn_id, .. }
+            | Self::ThinkingDelta { turn_id, .. }
+            | Self::TextDelta { turn_id, .. }
+            | Self::ToolCallRequested { turn_id, .. }
+            | Self::ToolCallCompleted { turn_id, .. }
+            | Self::TokenUsageUpdate { turn_id, .. }
+            | Self::PermissionRequested { turn_id, .. }
+            | Self::TurnFinished { turn_id, .. }
+            | Self::TurnError { turn_id, .. }
+            | Self::TurnSteered { turn_id, .. }
+            | Self::TurnQueued { turn_id, .. } => turn_id,
+        }
+    }
+
+    pub fn conversation_id_hint(&self) -> Option<&str> {
+        match self {
+            Self::TurnStarted {
+                conversation_id, ..
+            }
+            | Self::TurnSteered {
+                conversation_id, ..
+            }
+            | Self::TurnQueued {
+                conversation_id, ..
+            } => Some(conversation_id.as_str()),
+            _ => None,
+        }
+    }
+
+    pub fn trace_id(&self) -> Option<&str> {
+        match self {
+            Self::TurnStarted { trace_id, .. }
+            | Self::StateChanged { trace_id, .. }
+            | Self::ThinkingDelta { trace_id, .. }
+            | Self::TextDelta { trace_id, .. }
+            | Self::ToolCallRequested { trace_id, .. }
+            | Self::ToolCallCompleted { trace_id, .. }
+            | Self::TokenUsageUpdate { trace_id, .. }
+            | Self::PermissionRequested { trace_id, .. }
+            | Self::TurnFinished { trace_id, .. }
+            | Self::TurnError { trace_id, .. }
+            | Self::TurnSteered { trace_id, .. }
+            | Self::TurnQueued { trace_id, .. } => trace_id.as_deref(),
+        }
+    }
+
+    pub fn set_trace_id(&mut self, value: String) {
+        let slot = match self {
+            Self::TurnStarted { trace_id, .. }
+            | Self::StateChanged { trace_id, .. }
+            | Self::ThinkingDelta { trace_id, .. }
+            | Self::TextDelta { trace_id, .. }
+            | Self::ToolCallRequested { trace_id, .. }
+            | Self::ToolCallCompleted { trace_id, .. }
+            | Self::TokenUsageUpdate { trace_id, .. }
+            | Self::PermissionRequested { trace_id, .. }
+            | Self::TurnFinished { trace_id, .. }
+            | Self::TurnError { trace_id, .. }
+            | Self::TurnSteered { trace_id, .. }
+            | Self::TurnQueued { trace_id, .. } => trace_id,
+        };
+        *slot = Some(value);
+    }
+}
+
+/// 回合提交并发策略。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize, TS)]
+#[serde(rename_all = "snake_case")]
+#[ts(export, export_to = "protocol.ts")]
+pub enum TurnSubmitMode {
+    /// 无活跃回合则立即启动；若有活跃回合则作为 steer 注入下一工具批边界。
+    #[default]
+    #[serde(alias = "steer")]
+    StartOrSteer,
+    /// 若有活跃回合则进入顺序队列，等待前序回合结束后依次执行。
+    Queue,
+}
+
+/// 回合提交的同步仲裁结果类型。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "snake_case")]
+#[ts(export, export_to = "protocol.ts")]
+pub enum TurnSubmitOutcomeKind {
+    Started,
+    Steered,
+    Queued,
+}
+
+/// `send_modern_agent_turn` 的同步仲裁回包。
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export, export_to = "protocol.ts")]
+pub struct AgentTurnSubmitOutcome {
+    pub outcome: TurnSubmitOutcomeKind,
+    pub turn_id: String,
+    pub queue_length: u32,
 }
 
 

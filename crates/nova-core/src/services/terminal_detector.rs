@@ -1,6 +1,6 @@
 //! 本机终端与 Shell 自动探测服务。
 //!
-//! 支持自动探测 Windows / macOS / Linux 下已安装的多种终端，
+//! 支持自动探测 Windows / Linux 下已安装的多种终端，
 //! 供用户终端 PTY 与智能体 Shell 会话统一使用，并在系统设置中提供可视化选择。
 
 use std::path::{Path, PathBuf};
@@ -116,7 +116,6 @@ pub fn list_available_terminals() -> Vec<TerminalInfo> {
         let zsh_path = find_first_existing(&[
             PathBuf::from("/bin/zsh"),
             PathBuf::from("/usr/bin/zsh"),
-            PathBuf::from("/opt/homebrew/bin/zsh"),
             PathBuf::from("/usr/local/bin/zsh"),
         ]).or_else(|| find_in_path("zsh"));
         let zsh_available = zsh_path.is_some();
@@ -134,7 +133,6 @@ pub fn list_available_terminals() -> Vec<TerminalInfo> {
         let bash_path = find_first_existing(&[
             PathBuf::from("/bin/bash"),
             PathBuf::from("/usr/bin/bash"),
-            PathBuf::from("/opt/homebrew/bin/bash"),
             PathBuf::from("/usr/local/bin/bash"),
         ]).or_else(|| find_in_path("bash"));
         let bash_available = bash_path.is_some();
@@ -152,7 +150,6 @@ pub fn list_available_terminals() -> Vec<TerminalInfo> {
         let fish_path = find_first_existing(&[
             PathBuf::from("/usr/bin/fish"),
             PathBuf::from("/usr/local/bin/fish"),
-            PathBuf::from("/opt/homebrew/bin/fish"),
         ]).or_else(|| find_in_path("fish"));
         if let Some(path) = fish_path {
             list.push(TerminalInfo {
@@ -260,7 +257,7 @@ pub fn get_current_active_terminal() -> TerminalInfo {
     resolve_active_terminal(configured.as_deref())
 }
 
-/// 专门为 PowerShell 任务执行（如 shell_sessions agent 交互）解析可用的 PowerShell 可执行文件
+/// 专门为 PowerShell 任务执行（如 unified_exec agent 交互）解析可用的 PowerShell 可执行文件
 #[cfg(target_os = "windows")]
 pub fn resolve_powershell_path() -> PathBuf {
     let active = get_current_active_terminal();

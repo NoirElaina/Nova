@@ -103,13 +103,26 @@ export function summarizeToolInfo(toolName: string, rawInput: string): string | 
   const parsed = parseToolInputJson(rawInput);
   const lower = (toolName || "").toLowerCase();
 
-  if (lower === "bash" || lower.includes("shell")) {
+  if (lower === "exec_command" || lower === "bash" || lower.includes("shell")) {
     const command =
-      readStringField(parsed, ["command", "cmd", "script"]) ||
-      extractJsonStringField(rawInput, ["command", "cmd", "script"]);
-    if (!command) return "shell action";
+      readStringField(parsed, ["cmd", "command", "script"]) ||
+      extractJsonStringField(rawInput, ["cmd", "command", "script"]);
+    if (!command) return "exec command";
     const first = command.split(/\s+/).filter(Boolean)[0] || "unknown";
-    return `command=${first}`;
+    return `cmd=${first}`;
+  }
+
+  if (lower === "write_stdin") {
+    const sessionId = parsed?.session_id;
+    const chars =
+      readStringField(parsed, ["chars"]) ??
+      extractJsonStringField(rawInput, ["chars"]) ??
+      "";
+    const sidLabel =
+      sessionId !== undefined && sessionId !== null ? `session=${sessionId}` : "stdin";
+    if (!chars) return `${sidLabel} · poll`;
+    if (chars === "\u0003") return `${sidLabel} · Ctrl+C`;
+    return `${sidLabel} · ${truncateText(chars.replace(/\r?\n/g, "↵"), 36)}`;
   }
 
   if (

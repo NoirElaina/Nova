@@ -30,7 +30,7 @@ pub async fn fetch_available_models(
     });
 
     report_backend_result(
-        &core,
+        core,
         "command.model_fetch.fetch_available_models",
         result,
         None,

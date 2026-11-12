@@ -10,9 +10,9 @@ pub use nova_protocol::misc::SessionFileMeta;
 
 /// 会话文件存储目录：{workspace_root}/{conversation_id}/session/
 ///
-/// 独立工作区下：app_data/workspace/{conv_id}/session/，AI 可直接用 Read/Bash 访问。
+/// 独立工作区下：app_data/workspace/{conv_id}/session/，AI 可直接用 Read/exec_command 访问。
 /// 手动工作区下：app_data/workspace/{conv_id}/session/（仍存独立目录，避免污染用户项目），
-///   AI 通过绝对路径（见 [Session Files] 注入）用 Read/Bash 访问。
+///   AI 通过绝对路径（见 [Session Files] 注入）用 Read/exec_command 访问。
 pub(crate) fn session_files_dir(core: &Core, conversation_id: &str) -> Result<PathBuf, String> {
     let base = crate::services::workspace::default_workspace_root(core)?;
     Ok(base.join(conversation_id).join("session"))
@@ -65,7 +65,9 @@ fn sanitize_filename(filename: &str) -> Result<String, String> {
     }
     // 多级路径（如 "sub/file.txt"）只取最后一段作为文件名
     // 这样即使绕过组件检查传入多级路径，也只保留文件名部分
-    let final_name = clean_parts.last().unwrap().clone();
+    let Some(final_name) = clean_parts.last().cloned() else {
+        return Err("文件名 sanitize 后为空".to_string());
+    };
     if final_name.is_empty() {
         return Err("文件名 sanitize 后为空".to_string());
     }

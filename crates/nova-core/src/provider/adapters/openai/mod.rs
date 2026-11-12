@@ -59,7 +59,7 @@ impl ApiAdapter for OpenAiAdapter {
         conversation_id: Option<&str>,
     ) -> Result<(RequestBuilder, ProviderPromptEstimate), String> {
         let settings =
-            crate::services::settings::load_settings(&core).map_err(|e| e.to_string())?;
+            crate::services::settings::load_settings(core).map_err(|e| e.to_string())?;
         let profile = settings.active_provider_profile();
 
         let built = prompt::build_request(core, messages, agent_mode, conversation_id)
@@ -89,13 +89,10 @@ impl ApiAdapter for OpenAiAdapter {
         let mut deltas: Vec<Delta> = Vec::new();
 
         if let Some(err) = chunk.error {
-            let msg = err.message.unwrap_or_else(|| "Unknown stream error from OpenAI upstream".to_string());
-            let is_socket_cut = msg.contains("forcibly closed")
-                || msg.contains("wsarecv")
-                || msg.contains("stream reading error")
-                || msg.contains("connection reset")
-                || msg.contains("connection closed");
-            if is_socket_cut {
+            let msg = err
+                .message
+                .unwrap_or_else(|| "Unknown stream error from OpenAI upstream".to_string());
+            if crate::provider::is_disconnect_error_message(&msg) {
                 deltas.push(Delta::StreamWarning(format!("Upstream proxy connection cut: {}", msg)));
                 return Ok(deltas);
             }
@@ -376,7 +373,7 @@ mod tests {
         let events = [
             r#"{"id":"gen-1","object":"chat.completion.chunk","created":1,"model":"deepseek/deepseek-v4-pro","provider":"StreamLake","choices":[{"index":0,"delta":{"content":"","role":"assistant","reasoning":"The","reasoning_details":[{"type":"reasoning.text","text":"The","format":"unknown","index":0}]},"finish_reason":null,"native_finish_reason":null}]}"#,
             r#"{"id":"gen-1","object":"chat.completion.chunk","created":1,"model":"deepseek/deepseek-v4-pro","provider":"StreamLake","choices":[{"index":0,"delta":{"content":"","role":"assistant","reasoning":" user wants","reasoning_details":[{"type":"reasoning.text","text":" user wants","format":"unknown","index":0}]},"finish_reason":null,"native_finish_reason":null}]}"#,
-            r#"{"id":"gen-1","object":"chat.completion.chunk","created":1,"model":"deepseek/deepseek-v4-pro","provider":"StreamLake","choices":[{"index":0,"delta":{"content":null,"role":"assistant","tool_calls":[{"index":0,"id":"call_76c41e51ecce48ccb7acc247","type":"function","function":{"name":"Bash","arguments":""}}]},"finish_reason":null,"native_finish_reason":null}]}"#,
+            r#"{"id":"gen-1","object":"chat.completion.chunk","created":1,"model":"deepseek/deepseek-v4-pro","provider":"StreamLake","choices":[{"index":0,"delta":{"content":null,"role":"assistant","tool_calls":[{"index":0,"id":"call_76c41e51ecce48ccb7acc247","type":"function","function":{"name":"exec_command","arguments":""}}]},"finish_reason":null,"native_finish_reason":null}]}"#,
             r#"{"id":"gen-1","object":"chat.completion.chunk","created":1,"model":"deepseek/deepseek-v4-pro","provider":"StreamLake","choices":[{"index":0,"delta":{"content":null,"role":"assistant","tool_calls":[{"index":0,"function":{"arguments":"{\"command\": \"pwd\", \"description\": \"Show current working directory\"}"}}]},"finish_reason":null,"native_finish_reason":null}]}"#,
             // 第一次 finish_reason=tool_calls：排空 pending，产出工具调用。
             r#"{"id":"gen-1","object":"chat.completion.chunk","created":1,"model":"deepseek/deepseek-v4-pro","provider":"StreamLake","choices":[{"index":0,"delta":{"content":"","role":"assistant","reasoning":null},"finish_reason":"tool_calls","native_finish_reason":"tool_calls"}]}"#,
@@ -402,8 +399,8 @@ mod tests {
             }
         }
         // 工具调用恰好产出一次（重复收尾不会重复产出）。
-        assert_eq!(all_ready.len(), 1, "Bash 工具调用应被完整捕获且只产出一次");
-        assert_eq!(all_ready[0].name, "Bash");
+        assert_eq!(all_ready.len(), 1, "exec_command 工具调用应被完整捕获且只产出一次");
+        assert_eq!(all_ready[0].name, "exec_command");
         assert_eq!(all_ready[0].id, "call_76c41e51ecce48ccb7acc247");
         assert_eq!(
             all_ready[0].input.get("command").and_then(|v| v.as_str()),

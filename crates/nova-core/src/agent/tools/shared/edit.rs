@@ -37,7 +37,7 @@ fn find_trimmed_match_range(original: &str, old_string: &str) -> Option<(usize, 
     }
 
     // 如果 original 末尾有 '\n'，split('\n') 最后一个元素是 "" 且代表 EOF，不作为实际代码行
-    if original.ends_with('\n') && orig_lines.last().map(|(l, _, _)| *l == "").unwrap_or(false) {
+    if original.ends_with('\n') && orig_lines.last().map(|(l, _, _)| l.is_empty()).unwrap_or(false) {
         orig_lines.pop();
     }
 
@@ -152,9 +152,14 @@ fn format_closest_match_diagnostic(original: &str, target: &str, file_path: &str
     let end_idx = (center_idx + target_lines.len().max(1) + 2).min(original_lines.len());
 
     let mut snippet = String::new();
-    for i in start_idx..end_idx {
+    for (i, line) in original_lines
+        .iter()
+        .enumerate()
+        .take(end_idx)
+        .skip(start_idx)
+    {
         use std::fmt::Write;
-        let _ = writeln!(snippet, "{:>5} | {}", i + 1, original_lines[i]);
+        let _ = writeln!(snippet, "{:>5} | {}", i + 1, line);
     }
 
     format!(

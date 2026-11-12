@@ -14,6 +14,9 @@ import {
   type DiffLine,
 } from "../../../features/chat/utils/modified-files-summary";
 
+import { subagentsFor } from "../../../features/chat/services/subagents";
+import { useConversationStore } from "../../../stores/conversation";
+
 const props = defineProps<{
   summary: ToolTurnSummary;
 }>();
@@ -25,6 +28,26 @@ const summaryLine = computed(() => renderToolTurnSummaryLine(props.summary));
 const entriesWithHunk = computed(() =>
   props.summary.entries.map((entry) => ({ entry, hunk: buildHunk(entry) })),
 );
+
+const conversationStore = useConversationStore();
+
+function liveSubagentStatus(entry: ToolTurnEntrySnapshot): string | null {
+  if (entry.toolName !== "Task" || entry.status !== "running") return null;
+  const convId = conversationStore.activeConversationId;
+  const list = subagentsFor(convId);
+  const running = list.find((s) => s.phase === "running") || list[0];
+  if (!running) return null;
+  const toolLines = running.lines.filter((l) => l.kind === "tool");
+  const stepCount = toolLines.length;
+  const lastTool = toolLines[toolLines.length - 1];
+  if (lastTool?.toolName) {
+    return `进行中 (${stepCount} 步 · ${lastTool.toolName})`;
+  }
+  if (stepCount > 0) {
+    return `进行中 (${stepCount} 步)`;
+  }
+  return null;
+}
 
 function formatToolName(name: string): string {
   const normalized = name.replace(/_/g, " ").trim();
@@ -95,7 +118,7 @@ function lineMarker(line: DiffLine): string {
           <span
             v-if="entry.status === 'running'"
             class="turn-summary-card__running-tag"
-          >进行中</span>
+          >{{ liveSubagentStatus(entry) || '进行中' }}</span>
           <span class="turn-summary-card__row-chevron">›</span>
         </summary>
         <pre

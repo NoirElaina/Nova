@@ -402,7 +402,7 @@ onMounted(() => {
           <!-- 工具过滤：仅工具类事件显示 -->
           <div v-if="isToolEvent(card.event)" class="space-y-1">
             <label class="text-[11px] font-medium text-[#64748b] dark:text-[#9ca3af]">限定工具（留空 = 全部）</label>
-            <Input v-model="card.matcher" class="h-8 text-[12.5px]" placeholder="如 bash、mcp_*" />
+            <Input v-model="card.matcher" class="h-8 text-[12.5px]" placeholder="如 exec_command、mcp_*" />
           </div>
 
           <!-- 动作类型 -->

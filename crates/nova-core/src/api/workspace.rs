@@ -7,7 +7,7 @@ pub fn workspace_list_directory(
     conversation_id: Option<String>,
     path: Option<String>,
 ) -> Result<WorkspaceDirectoryListing, String> {
-    let root = workspace_root_for_conversation(&core, conversation_id.as_deref())?;
+    let root = workspace_root_for_conversation(core, conversation_id.as_deref())?;
     list_directory_for_root(root, path)
 }
 
@@ -16,7 +16,7 @@ pub fn workspace_read_text_file(
     conversation_id: Option<String>,
     path: String,
 ) -> Result<WorkspaceFileContent, String> {
-    let root = workspace_root_for_conversation(&core, conversation_id.as_deref())?;
+    let root = workspace_root_for_conversation(core, conversation_id.as_deref())?;
     read_text_file(root, path)
 }
 
@@ -25,6 +25,6 @@ pub fn get_workspace_root(
     core: &crate::core::Core,
     conversation_id: Option<String>,
 ) -> Result<String, String> {
-    workspace_root_for_conversation(&core, conversation_id.as_deref())
+    workspace_root_for_conversation(core, conversation_id.as_deref())
         .map(|path| path.display().to_string())
 }

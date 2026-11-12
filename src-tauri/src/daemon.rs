@@ -33,9 +33,15 @@ pub fn init(app: &AppHandle, cli_path: Option<PathBuf>) {
 
         let mut attempt: u32 = 0;
         loop {
-            match Client::spawn_with(&cli_path, build_options(&app)).await {
+            let client_result = match nova_client::uds::default_daemon_socket_path() {
+                Ok(socket_path) => {
+                    Client::connect_or_spawn(&cli_path, &socket_path, build_options(&app)).await
+                }
+                Err(error) => Err(error),
+            };
+            match client_result {
                 Ok(client) => {
-                    info!(pid = client.pid(), "Nova 内核子进程已拉起（stdio）");
+                    info!("Nova 内核已连接（WebSocket over UDS 共享守护进程）");
                     attempt = 0;
                     if let Ok(mut slot) = active().write() {
                         *slot = Some(client.clone());
@@ -43,18 +49,8 @@ pub fn init(app: &AppHandle, cli_path: Option<PathBuf>) {
                     let _ = app.emit("daemon-connected", ());
 
                     let mut events = client.subscribe();
-                    loop {
-                        match events.recv().await {
-                            Ok((name, payload)) => {
-                                let _ = app.emit(&name, payload);
-                            }
-                            // 事件积压时丢弃的只是中间增量，绝不能退出循环——
-                            // 否则连 turn_finished 都收不到，前端会永远停在「进行中」。
-                            Err(tokio::sync::broadcast::error::RecvError::Lagged(skipped)) => {
-                                warn!(skipped, "事件流滞后，跳过部分增量事件");
-                            }
-                            Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
-                        }
+                    while let Some((name, payload)) = events.recv().await {
+                        let _ = app.emit(&name, payload);
                     }
 
                     warn!("内核事件流结束，准备重启");
@@ -93,10 +89,14 @@ pub async fn invoke(method: &str, params: Value) -> Result<Value, String> {
     client.invoke(method, params).await
 }
 
-/// 桌面退出时结束内核子进程（drop Client 触发 kill_on_drop）。
+/// 桌面退出时先通知内核走优雅关闭（回收所有 PTY 进程树与用户终端），再释放 Client。
 pub fn shutdown() {
-    if let Ok(mut slot) = active().write() {
-        *slot = None;
+    let client = active()
+        .write()
+        .ok()
+        .and_then(|mut slot| slot.take());
+    if let Some(client) = client {
+        client.shutdown();
     }
 }
 

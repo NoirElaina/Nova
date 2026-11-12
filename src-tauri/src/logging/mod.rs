@@ -1,8 +1,10 @@
 use std::fs;
 use std::io::{self, Write};
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::OnceLock;
 
+use nova_protocol::redact::format_panic_summary;
 use tauri::{AppHandle, Manager};
 use tracing_appender::non_blocking::WorkerGuard;
 use tracing_subscriber::fmt::writer::MakeWriter;
@@ -98,27 +100,31 @@ fn load_initial_file_logging_enabled(app: &AppHandle) -> bool {
         .unwrap_or(false)
 }
 
-fn install_panic_hook() {
+fn install_panic_hook(log_dir: PathBuf) {
     let previous_hook = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |panic_info| {
-        let location = panic_info
-            .location()
-            .map(|location| format!("{}:{}", location.file(), location.line()))
-            .unwrap_or_else(|| "unknown".to_string());
-
-        let payload = if let Some(message) = panic_info.payload().downcast_ref::<&str>() {
-            (*message).to_string()
-        } else if let Some(message) = panic_info.payload().downcast_ref::<String>() {
-            message.clone()
-        } else {
-            "non-string panic payload".to_string()
-        };
+        let (location, summary) = format_panic_summary(panic_info, 2048);
 
         tracing::error!(
             location = %location,
-            message = %payload,
+            message = %summary,
             "application panic"
         );
+
+        let crash_path = log_dir.join("crash.log");
+        if let Ok(mut file) = fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&crash_path)
+        {
+            let _ = writeln!(
+                file,
+                "[{}] location={} message={}",
+                chrono::Utc::now().to_rfc3339(),
+                location,
+                summary
+            );
+        }
 
         previous_hook(panic_info);
     }));
@@ -158,7 +164,7 @@ pub fn init(app: &AppHandle) -> Result<(), String> {
         .try_init()
         .map_err(|error| format!("Failed to initialize tracing subscriber: {}", error))?;
 
-    install_panic_hook();
+    install_panic_hook(log_dir.clone());
     tracing::info!(
         log_dir = %log_dir.display(),
         file_logging_enabled = is_file_logging_enabled(),

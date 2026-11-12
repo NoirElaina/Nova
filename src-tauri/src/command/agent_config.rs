@@ -2,7 +2,6 @@
 
 use nova_protocol::misc::AgentBundle;
 use nova_protocol::misc::*;
-pub use nova_protocol::misc::ConfigurableTool;
 
 #[tauri::command]
 pub async fn list_agent_bundles() -> Result<Vec<AgentBundle>, String> {
@@ -46,11 +45,6 @@ pub async fn set_conversation_agent(conversation_id: String, bundle_id: Option<S
         .and_then(|v| serde_json::from_value(v).map_err(|e| e.to_string()))
 }
 
-#[tauri::command]
-pub async fn list_configurable_tools() -> Result<Vec<ConfigurableTool>, String> {
-    crate::daemon::invoke("list_configurable_tools", serde_json::json!({})).await
-        .and_then(|v| serde_json::from_value(v).map_err(|e| e.to_string()))
-}
 
 #[tauri::command]
 pub async fn list_agent_private_skills(bundle_id: String) -> Result<Vec<nova_protocol::misc::SkillSummary>, String> {

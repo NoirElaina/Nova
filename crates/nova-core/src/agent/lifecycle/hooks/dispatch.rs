@@ -23,7 +23,18 @@ fn matcher_matches(matcher: Option<&str>, tool_name: &str) -> bool {
         return true;
     }
     let name = tool_name.to_ascii_lowercase();
-    wildcard_match(&pattern, &name)
+    if wildcard_match(&pattern, &name) {
+        return true;
+    }
+    // 兼容层：`exec_command` 的前身是 `Bash`，为它写的 `matcher = "Bash"` /
+    // `matcher = "Bash(*)"` 必须继续命中，否则升级后安全 hook 会静默失效。
+    if name == "exec_command" && wildcard_match(&pattern, "bash") {
+        return true;
+    }
+    if name == "bash" && wildcard_match(&pattern, "exec_command") {
+        return true;
+    }
+    false
 }
 
 /// 简易 `*` 通配匹配：把模式按 `*` 切段后顺序匹配。
@@ -198,7 +209,7 @@ fn event_into_parts(event: HookEvent) -> (&'static str, Value, Option<String>) {
                 "event": "PreToolUse",
                 "conversation_id": conversation_id.unwrap_or_default(),
                 "tool_name": tool_name,
-                "tool_input": input,
+                "tool_input": hook_tool_input(&tool_name, &input),
             }),
             Some(tool_name),
         ),
@@ -208,7 +219,7 @@ fn event_into_parts(event: HookEvent) -> (&'static str, Value, Option<String>) {
                 "event": "PostToolUse",
                 "conversation_id": conversation_id.unwrap_or_default(),
                 "tool_name": tool_name,
-                "tool_input": input,
+                "tool_input": hook_tool_input(&tool_name, &input),
                 "tool_output": output,
             }),
             Some(tool_name),
@@ -219,12 +230,30 @@ fn event_into_parts(event: HookEvent) -> (&'static str, Value, Option<String>) {
                 "event": "PostToolUseFailure",
                 "conversation_id": conversation_id.unwrap_or_default(),
                 "tool_name": tool_name,
-                "tool_input": input,
+                "tool_input": hook_tool_input(&tool_name, &input),
                 "error": error,
             }),
             Some(tool_name),
         ),
     }
+}
+
+/// 生成 hook 侧的 `tool_input`。
+///
+/// `exec_command` 的参数键是 `cmd`，但既有 hook 脚本（Codex / Claude Code 生态）
+/// 一律从 `tool_input.command` 取命令文本。这里补一个只读别名，两边都能用。
+fn hook_tool_input(tool_name: &str, input: &Value) -> Value {
+    let mut value = input.clone();
+    if tool_name.eq_ignore_ascii_case("exec_command") {
+        if let Some(obj) = value.as_object_mut() {
+            if !obj.contains_key("command") {
+                if let Some(cmd) = obj.get("cmd").cloned() {
+                    obj.insert("command".to_string(), cmd);
+                }
+            }
+        }
+    }
+    value
 }
 
 /// 挂钩事件唯一发射入口：按事件名从 hooks.toml 取分组并分发。
@@ -330,9 +359,9 @@ mod tests {
 
     #[test]
     fn matcher_case_insensitive_exact() {
-        assert!(matcher_matches(Some("Bash"), "bash"));
-        assert!(matcher_matches(Some("bash"), "Bash"));
-        assert!(!matcher_matches(Some("bash"), "write"));
+        assert!(matcher_matches(Some("exec_command"), "exec_command"));
+        assert!(matcher_matches(Some("EXEC_COMMAND"), "exec_command"));
+        assert!(!matcher_matches(Some("exec_command"), "write"));
     }
 
     #[test]
@@ -343,14 +372,14 @@ mod tests {
         assert!(matcher_matches(Some("mcp_*"), "mcp_github"));
         assert!(matcher_matches(Some("*_tool"), "search_tool"));
         assert!(matcher_matches(Some("a*c"), "abc"));
-        assert!(!matcher_matches(Some("mcp_*"), "bash"));
+        assert!(!matcher_matches(Some("mcp_*"), "exec_command"));
         assert!(!matcher_matches(Some("a*c"), "ab"));
     }
 
     #[test]
     fn placeholders_substituted() {
-        let payload = json!({ "tool_name": "Bash", "conversation_id": "c1" });
+        let payload = json!({ "tool_name": "exec_command", "conversation_id": "c1" });
         let out = substitute_placeholders("tool={tool_name} cid={conversation_id}", &payload);
-        assert_eq!(out, "tool=Bash cid=c1");
+        assert_eq!(out, "tool=exec_command cid=c1");
     }
 }

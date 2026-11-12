@@ -389,7 +389,7 @@ pub fn render_tool_logs(events: &[StoredEvent]) -> Vec<HistoryToolExecution> {
     let mut logs: Vec<HistoryToolExecution> = Vec::new();
     for stored in events {
         match &stored.event {
-            SessionEvent::ToolCall { call_id, tool_name, input, turn_id } => {
+            SessionEvent::ToolCall { call_id, tool_name, input, turn_id, .. } => {
                 if let Some(existing) = logs.iter_mut().find(|log| log.id == *call_id) {
                     if existing.turn_id.is_none() && turn_id.is_some() {
                         existing.turn_id = turn_id.clone();
@@ -407,7 +407,7 @@ pub fn render_tool_logs(events: &[StoredEvent]) -> Vec<HistoryToolExecution> {
                     });
                 }
             }
-            SessionEvent::ToolResult { call_id, tool_name, output, is_error, started_at, finished_at } => {
+            SessionEvent::ToolResult { call_id, tool_name, output, is_error, started_at, finished_at, .. } => {
                 let mut matched = false;
                 for entry in logs.iter_mut().filter(|log| log.id == *call_id) {
                     matched = true;
@@ -490,9 +490,10 @@ pub fn render_turn_traces(events: &[StoredEvent]) -> Vec<TurnTrace> {
 
     for stored in events {
         match &stored.event {
-            SessionEvent::TurnStart { turn_id } => {
+            SessionEvent::TurnStart { turn_id, trace_id } => {
                 traces.push(TurnTrace {
                     turn_id: turn_id.clone(),
+                    trace_id: trace_id.clone().or_else(|| stored.trace_id.clone()),
                     seq: stored.seq,
                     started_at: stored.created_at,
                     ended_at: None,
@@ -506,9 +507,13 @@ pub fn render_turn_traces(events: &[StoredEvent]) -> Vec<TurnTrace> {
                     trace.stop_reason = stop_reason.clone();
                 }
             }
-            SessionEvent::WireRequest { body, .. } => {
+            SessionEvent::WireRequest { body, trace_id, .. } => {
                 if let Some(trace) = traces.last_mut() {
                     trace.wire_calls.push(WireCallTrace {
+                        trace_id: trace_id
+                            .clone()
+                            .or_else(|| stored.trace_id.clone())
+                            .or_else(|| trace.trace_id.clone()),
                         request: body.clone(),
                         response: None,
                     });
@@ -560,7 +565,7 @@ mod tests {
         assert_eq!(segs[1]["type"], "tools");
         assert_eq!(segs[1]["toolIds"], serde_json::json!(["call_load_tool"]));
 
-        // Round 2: Model outputs text FIRST, then calls Bash 1
+        // Round 2: Model outputs text FIRST, then calls exec_command 1
         let msg2 = Message {
             role: Role::Assistant,
             content: Content::Blocks(vec![
@@ -568,8 +573,8 @@ mod tests {
                     text: "我将先调用工具".to_string(),
                 },
                 ContentBlock::ToolUse {
-                    id: "call_bash_1".to_string(),
-                    name: "Bash".to_string(),
+                    id: "call_exec_1".to_string(),
+                    name: "exec_command".to_string(),
                     input: serde_json::json!({}),
                 },
             ]),
@@ -585,7 +590,7 @@ mod tests {
         assert_eq!(segs[2]["type"], "text");
         assert_eq!(segs[2]["text"], "我将先调用工具");
         assert_eq!(segs[3]["type"], "tools");
-        assert_eq!(segs[3]["toolIds"], serde_json::json!(["call_bash_1"]));
+        assert_eq!(segs[3]["toolIds"], serde_json::json!(["call_exec_1"]));
     }
 
     #[test]
@@ -613,6 +618,49 @@ mod tests {
         assert_eq!(segs.len(), 1);
         assert_eq!(segs[0]["type"], "tools");
         assert_eq!(segs[0]["toolIds"], serde_json::json!(["call_1", "call_2"]));
+    }
+
+    #[test]
+    fn render_turn_traces_preserves_trace_id() {
+        let events = vec![
+            StoredEvent {
+                seq: 1,
+                turn_id: Some("turn-1".to_string()),
+                trace_id: Some("trace-999".to_string()),
+                event: SessionEvent::TurnStart {
+                    turn_id: "turn-1".to_string(),
+                    trace_id: Some("trace-999".to_string()),
+                },
+                created_at: 100,
+            },
+            StoredEvent {
+                seq: 2,
+                turn_id: Some("turn-1".to_string()),
+                trace_id: Some("trace-999".to_string()),
+                event: SessionEvent::WireRequest {
+                    url: "http://localhost/v1/messages".to_string(),
+                    body: serde_json::json!({ "model": "mock" }),
+                    trace_id: Some("trace-999".to_string()),
+                },
+                created_at: 110,
+            },
+            StoredEvent {
+                seq: 3,
+                turn_id: Some("turn-1".to_string()),
+                trace_id: Some("trace-999".to_string()),
+                event: SessionEvent::TurnEnd {
+                    turn_id: "turn-1".to_string(),
+                    stop_reason: Some("end_turn".to_string()),
+                },
+                created_at: 150,
+            },
+        ];
+
+        let traces = render_turn_traces(&events);
+        assert_eq!(traces.len(), 1);
+        assert_eq!(traces[0].trace_id.as_deref(), Some("trace-999"));
+        assert_eq!(traces[0].wire_calls[0].trace_id.as_deref(), Some("trace-999"));
+        assert_eq!(traces[0].stop_reason.as_deref(), Some("end_turn"));
     }
 }
 

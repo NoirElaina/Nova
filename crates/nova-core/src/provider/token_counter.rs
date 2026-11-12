@@ -17,8 +17,13 @@ const IMAGE_TOKEN_MAX: i64 = 8192;
 const IMAGE_TOKEN_FALLBACK: i64 = 1536;
 
 // 进程内只加载一次词表；o200k_base 是现代模型（GPT-4o/5、o 系列）的通用基准编码。
-static BPE: Lazy<tiktoken_rs::CoreBPE> =
-    Lazy::new(|| tiktoken_rs::o200k_base().expect("failed to load o200k_base tokenizer"));
+static BPE: Lazy<Option<tiktoken_rs::CoreBPE>> = Lazy::new(|| match tiktoken_rs::o200k_base() {
+    Ok(bpe) => Some(bpe),
+    Err(error) => {
+        tracing::error!(error = %error, "failed to load o200k_base tokenizer; falling back to byte heuristic");
+        None
+    }
+});
 
 /// 预热词表；core 启动时后台调用一次，避免首次 token 计算时的加载开销。
 pub fn warmup() {
@@ -27,7 +32,13 @@ pub fn warmup() {
 
 /// 纯文本 token 数。
 pub fn count_text(text: &str) -> i64 {
-    BPE.encode_ordinary(text).len() as i64
+    if let Some(bpe) = &*BPE {
+        bpe.encode_ordinary(text).len() as i64
+    } else if text.is_empty() {
+        0
+    } else {
+        ((text.len() / 4) as i64).max(1)
+    }
 }
 
 /// 按目标 token 预算截断文本（二分字符数，保证结果 token 数不超过预算）。

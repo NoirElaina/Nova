@@ -13,7 +13,9 @@ pub const USER_TERMINAL_EVENT: &str = "user-terminal-output";
 #[serde(rename_all = "camelCase")]
 pub struct UserTerminalInfo {
     pub conversation_id: Option<String>,
+    pub terminal_id: String,
     pub session_id: String,
+    pub shell_name: String,
     pub cwd: String,
 }
 
@@ -21,6 +23,7 @@ pub struct UserTerminalInfo {
 #[serde(rename_all = "camelCase")]
 pub struct UserTerminalEvent {
     pub conversation_id: Option<String>,
+    pub terminal_id: String,
     pub session_id: String,
     pub kind: String,
     pub data: Option<String>,
@@ -30,25 +33,54 @@ pub struct UserTerminalEvent {
 
 struct UserTerminalSession {
     conversation_id: Option<String>,
+    terminal_id: String,
     session_id: String,
+    shell_name: String,
     cwd: String,
     master: Mutex<Box<dyn MasterPty + Send>>,
     writer: Mutex<Box<dyn Write + Send>>,
     child: Mutex<Box<dyn Child + Send + Sync>>,
 }
 
-static USER_TERMINALS: OnceLock<Mutex<HashMap<String, Arc<UserTerminalSession>>>> = OnceLock::new();
+type UserTerminalMap = HashMap<(String, String), Arc<UserTerminalSession>>;
 
-fn sessions() -> &'static Mutex<HashMap<String, Arc<UserTerminalSession>>> {
+static USER_TERMINALS: OnceLock<Mutex<UserTerminalMap>> = OnceLock::new();
+
+fn sessions() -> &'static Mutex<UserTerminalMap> {
     USER_TERMINALS.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
-fn session_key(conversation_id: Option<&str>) -> String {
+fn scope_key(conversation_id: Option<&str>) -> String {
     conversation_id
         .map(str::trim)
         .filter(|value| !value.is_empty())
         .unwrap_or("__default__")
         .to_string()
+}
+
+fn normalize_terminal_id(terminal_id: Option<&str>) -> String {
+    terminal_id
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or("main")
+        .to_string()
+}
+
+fn session_key(conversation_id: Option<&str>, terminal_id: Option<&str>) -> (String, String) {
+    (
+        scope_key(conversation_id),
+        normalize_terminal_id(terminal_id),
+    )
+}
+
+fn resolve_shell_display_name(active: &nova_protocol::misc::TerminalInfo) -> String {
+    Path::new(&active.path)
+        .file_name()
+        .and_then(|s| s.to_str())
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string)
+        .unwrap_or_else(|| active.name.clone())
 }
 
 fn normalize_conversation_id(conversation_id: Option<&str>) -> Option<String> {
@@ -93,7 +125,9 @@ fn is_alive(session: &UserTerminalSession) -> bool {
 fn info_from_session(session: &UserTerminalSession) -> UserTerminalInfo {
     UserTerminalInfo {
         conversation_id: session.conversation_id.clone(),
+        terminal_id: session.terminal_id.clone(),
         session_id: session.session_id.clone(),
+        shell_name: session.shell_name.clone(),
         cwd: session.cwd.clone(),
     }
 }
@@ -105,6 +139,7 @@ fn emit_event(app: &AppHandle, payload: UserTerminalEvent) {
 fn spawn_reader(
     app: AppHandle,
     conversation_id: Option<String>,
+    terminal_id: String,
     session_id: String,
     mut reader: Box<dyn Read + Send>,
 ) {
@@ -123,6 +158,7 @@ fn spawn_reader(
                                 &app,
                                 UserTerminalEvent {
                                     conversation_id: conversation_id.clone(),
+                                    terminal_id: terminal_id.clone(),
                                     session_id: session_id.clone(),
                                     kind: "output".to_string(),
                                     data: Some(valid_str.to_string()),
@@ -142,12 +178,13 @@ fn spawn_reader(
                                 emit_event(
                                     &app,
                                     UserTerminalEvent {
-                                       conversation_id: conversation_id.clone(),
-                                       session_id: session_id.clone(),
-                                       kind: "output".to_string(),
-                                       data: Some(valid_str),
-                                       exit_code: None,
-                                       error: None,
+                                        conversation_id: conversation_id.clone(),
+                                        terminal_id: terminal_id.clone(),
+                                        session_id: session_id.clone(),
+                                        kind: "output".to_string(),
+                                        data: Some(valid_str),
+                                        exit_code: None,
+                                        error: None,
                                     },
                                 );
                             }
@@ -165,6 +202,7 @@ fn spawn_reader(
                         &app,
                         UserTerminalEvent {
                             conversation_id: conversation_id.clone(),
+                            terminal_id: terminal_id.clone(),
                             session_id: session_id.clone(),
                             kind: "error".to_string(),
                             data: None,
@@ -183,6 +221,7 @@ fn spawn_reader(
                 &app,
                 UserTerminalEvent {
                     conversation_id: conversation_id.clone(),
+                    terminal_id: terminal_id.clone(),
                     session_id: session_id.clone(),
                     kind: "output".to_string(),
                     data: Some(remaining),
@@ -196,6 +235,7 @@ fn spawn_reader(
             &app,
             UserTerminalEvent {
                 conversation_id,
+                terminal_id,
                 session_id,
                 kind: "exit".to_string(),
                 data: None,
@@ -209,12 +249,14 @@ fn spawn_reader(
 pub fn start_session(
     app: AppHandle,
     conversation_id: Option<&str>,
+    terminal_id: Option<&str>,
     root: &Path,
     active_terminal: &nova_protocol::misc::TerminalInfo,
     rows: Option<u16>,
     cols: Option<u16>,
 ) -> Result<UserTerminalInfo, String> {
-    let key = session_key(conversation_id);
+    let key = session_key(conversation_id, terminal_id);
+    let term_id = key.1.clone();
     let size = pty_size(rows, cols);
 
     let existing = {
@@ -251,6 +293,7 @@ pub fn start_session(
         .slave
         .spawn_command(command)
         .map_err(|error| format!("启动终端进程失败: {}", error))?;
+    drop(pair.slave);
     let reader = pair
         .master
         .try_clone_reader()
@@ -263,7 +306,9 @@ pub fn start_session(
     let conversation_id = normalize_conversation_id(conversation_id);
     let session = Arc::new(UserTerminalSession {
         conversation_id: conversation_id.clone(),
+        terminal_id: term_id.clone(),
         session_id: Uuid::new_v4().to_string(),
+        shell_name: resolve_shell_display_name(active_terminal),
         cwd: nova_protocol::path_display::display_path_string(root),
         master: Mutex::new(pair.master),
         writer: Mutex::new(writer),
@@ -275,13 +320,23 @@ pub fn start_session(
         .map_err(|_| "用户终端会话锁已损坏".to_string())?
         .insert(key, session.clone());
 
-    spawn_reader(app, conversation_id, session.session_id.clone(), reader);
+    spawn_reader(
+        app,
+        conversation_id,
+        term_id,
+        session.session_id.clone(),
+        reader,
+    );
 
     Ok(info_from_session(&session))
 }
 
-pub fn write_session(conversation_id: Option<&str>, data: String) -> Result<(), String> {
-    let key = session_key(conversation_id);
+pub fn write_session(
+    conversation_id: Option<&str>,
+    terminal_id: Option<&str>,
+    data: String,
+) -> Result<(), String> {
+    let key = session_key(conversation_id, terminal_id);
     let session = sessions()
         .lock()
         .map_err(|_| "用户终端会话锁已损坏".to_string())?
@@ -303,10 +358,11 @@ pub fn write_session(conversation_id: Option<&str>, data: String) -> Result<(), 
 
 pub fn resize_session(
     conversation_id: Option<&str>,
+    terminal_id: Option<&str>,
     rows: Option<u16>,
     cols: Option<u16>,
 ) -> Result<(), String> {
-    let key = session_key(conversation_id);
+    let key = session_key(conversation_id, terminal_id);
     let session = sessions()
         .lock()
         .map_err(|_| "用户终端会话锁已损坏".to_string())?
@@ -323,17 +379,43 @@ pub fn resize_session(
     result
 }
 
-pub fn stop_session(conversation_id: Option<&str>) -> Result<(), String> {
-    let key = session_key(conversation_id);
-    let session = sessions()
-        .lock()
-        .map_err(|_| "用户终端会话锁已损坏".to_string())?
-        .remove(&key);
+fn kill_session(session: &UserTerminalSession) {
+    if let Ok(mut child) = session.child.lock() {
+        let _ = child.kill();
+    }
+}
 
-    if let Some(session) = session {
-        if let Ok(mut child) = session.child.lock() {
-            let _ = child.kill();
+pub fn stop_terminal(conversation_id: Option<&str>, terminal_id: Option<&str>) -> Result<(), String> {
+    if let Some(tid) = terminal_id.map(str::trim).filter(|s| !s.is_empty()) {
+        let key = (scope_key(conversation_id), tid.to_string());
+        let session = sessions()
+            .lock()
+            .map_err(|_| "用户终端会话锁已损坏".to_string())?
+            .remove(&key);
+        if let Some(session) = session {
+            kill_session(&session);
         }
+        return Ok(());
+    }
+    stop_session(conversation_id)
+}
+
+pub fn stop_session(conversation_id: Option<&str>) -> Result<(), String> {
+    let scope = scope_key(conversation_id);
+    let removed: Vec<Arc<UserTerminalSession>> = {
+        let mut map = sessions()
+            .lock()
+            .map_err(|_| "用户终端会话锁已损坏".to_string())?;
+        let keys: Vec<(String, String)> = map
+            .keys()
+            .filter(|(s, _)| s == &scope)
+            .cloned()
+            .collect();
+        keys.into_iter().filter_map(|k| map.remove(&k)).collect()
+    };
+
+    for session in removed {
+        kill_session(&session);
     }
 
     Ok(())
@@ -352,8 +434,6 @@ pub fn close_all_sessions() {
         .unwrap_or_default();
 
     for session in sessions {
-        if let Ok(mut child) = session.child.lock() {
-            let _ = child.kill();
-        }
+        kill_session(&session);
     }
 }

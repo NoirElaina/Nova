@@ -20,6 +20,8 @@ tauri-build = { version = "2", features = [] }
 tauri = { version = "2", features = ["unstable"] }
 tauri-plugin-dialog = "2"
 tauri-plugin-opener = "2"
+tauri-plugin-process = "2"
+tauri-plugin-updater = "2"
 webview2-com = "0.39.1"
 
 nova-protocol = { path = "../crates/nova-protocol" }
@@ -42,3 +44,6 @@ image = "0.24"
 
 [target.'cfg(windows)'.dependencies]
 winreg = "0.10"
+
+[lints]
+workspace = true

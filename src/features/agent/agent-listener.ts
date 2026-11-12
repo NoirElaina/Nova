@@ -1,17 +1,20 @@
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
-import type { AgentDomainEvent } from "./agent-events";
+import type { AgentDomainEvent, NovaErrorInfo } from "../../lib/protocol";
+import type { JsonValue } from "../../lib/serde_json/JsonValue";
 
 export interface ModernAgentCallbacks {
   onTurnStarted?: (turnId: string, conversationId: string) => void;
   onStateChanged?: (turnId: string, state: string) => void;
   onThinkingDelta?: (delta: string, turnId?: string) => void;
   onTextDelta?: (delta: string, turnId?: string) => void;
-  onToolRequested?: (callId: string, toolName: string, args: Record<string, unknown>, turnId?: string) => void;
+  onToolRequested?: (callId: string, toolName: string, args: JsonValue, turnId?: string) => void;
   onToolCompleted?: (callId: string, toolName: string, output: string, isError: boolean, durationMs: number, turnId?: string) => void;
   onTokenUsage?: (usage: { input: number; output: number; cacheRead: number; cacheCreate: number }, turnId?: string) => void;
   onPermissionRequested?: (turnId: string, requestId: string, toolName: string, payload: string) => void;
   onTurnFinished?: (turnId: string, stopReason: string) => void;
-  onError?: (error: string, turnId?: string) => void;
+  onError?: (error: string, turnId?: string, errorInfo?: NovaErrorInfo | null) => void;
+  onTurnSteered?: (turnId: string, conversationId: string, prompt: string) => void;
+  onTurnQueued?: (turnId: string, conversationId: string, queueLength: number) => void;
 }
 
 /**
@@ -84,7 +87,15 @@ export async function setupAgentEventListener(
         break;
 
       case "turn_error":
-        callbacks.onError?.(data.payload.error, data.payload.turn_id);
+        callbacks.onError?.(data.payload.error, data.payload.turn_id, data.payload.error_info);
+        break;
+
+      case "turn_steered":
+        callbacks.onTurnSteered?.(data.payload.turn_id, data.payload.conversation_id, data.payload.prompt);
+        break;
+
+      case "turn_queued":
+        callbacks.onTurnQueued?.(data.payload.turn_id, data.payload.conversation_id, data.payload.queue_length);
         break;
     }
   });

@@ -36,15 +36,13 @@ export interface ContextUsage {
 }
 
 /** 按会话聚合的 token 用量统计（来自 token_usage_log 表）。 */
-export interface ConversationUsageSummary {
-  requests: number;
-  inputTokens: number;
-  outputTokens: number;
-  cacheReadTokens: number;
-  cacheCreationTokens: number;
-  totalTokens: number;
-  totalCostUsd: string;
-}
+export type {
+  AgentMode,
+  ConversationMeta,
+  ConversationUsageSummary,
+  TurnTrace,
+  WireCallTrace,
+} from "./protocol";
 
 export interface ToolTurnCategoryCount {
   label: string;
@@ -85,8 +83,6 @@ export type AssistantTranscriptSegment =
 // - agent: 全自主编码模式
 // - plan: 架构规划模式（只读分析、编写计划，禁止修改代码）
 // - ask: 咨询问答模式（纯问答，不执行修改）
-export type AgentMode = "agent" | "plan" | "ask";
-
 export type AttachmentKind = "document" | "image";
 
 export interface ChatAttachment {
@@ -141,34 +137,6 @@ export interface PersistedMessage {
   attachments?: ChatAttachment[];
   tokenUsage?: number;
   cost?: TurnCost;
-}
-
-/** 单次模型 API 的 wire 级请求/响应。 */
-export interface WireCallTrace {
-  /** 请求报文完整 JSON（含 system prompt/tools/消息数组）。 */
-  request: Record<string, unknown> | string;
-  /** 流结束后的完整响应 JSON（内容块/文本/stop_reason/用量）。 */
-  response?: Record<string, unknown> | string | null;
-}
-
-/** 单个回合的轨迹（从会话事件日志投影，仅回合标识与模型收发）。 */
-export interface TurnTrace {
-  turnId: string;
-  seq: number;
-  startedAt: number;
-  endedAt?: number | null;
-  stopReason?: string | null;
-  /** 本回合发给模型 API 的 wire 级请求/响应（按顺序配对）。 */
-  wireCalls: WireCallTrace[];
-}
-
-export interface ConversationMeta {
-  id: string;
-  title: string;
-  updatedAt: number;
-  pinnedAt?: number | null;
-  /** 会话所属工作区路径；会话创建后不可变。 */
-  workspacePath?: string | null;
 }
 
 export interface ScheduledTask {

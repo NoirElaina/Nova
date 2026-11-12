@@ -21,14 +21,14 @@ use crate::agent::utils::fingerprint::FileFingerprint;
 const UTF8_BOM: &[u8] = &[0xEF, 0xBB, 0xBF];
 
 // ─────────────────────────────────────────────
-// 全局文件内容缓存（对标 claude-code fileReadCache 的指纹缓存模式）。
+// 全局文件内容缓存（指纹缓存模式）。
 // 同一轮内 Read→Edit→再 Read 的重复读盘全部命中内存；
 // 写盘后失效对应条目（写失效不写更新，避免编码探测歧义）。
 // ─────────────────────────────────────────────
 
-/// 条目上限（与 claude-code fileReadCache 对齐）。
+/// 条目上限。
 const CONTENT_CACHE_MAX_ENTRIES: usize = 1000;
-/// 总字节上限（对标 fileStateCache 量级），插入超限时从最旧逐条驱逐。
+/// 总字节上限，插入超限时从最旧逐条驱逐。
 const CONTENT_CACHE_MAX_BYTES: usize = 25 * 1024 * 1024;
 
 #[derive(Default)]

@@ -1,0 +1,94 @@
+name: CI
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  verify:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, ubuntu-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+
+      - name: Rust Cache
+        uses: Swatinem/rust-cache@v2
+
+      - name: Install Linux Tauri & X11 system dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            build-essential \
+            curl \
+            wget \
+            file \
+            libxdo-dev \
+            libssl-dev \
+            libayatana-appindicator3-dev \
+            librsvg2-dev \
+            pkg-config \
+            libx11-dev \
+            libxcb-shape0-dev \
+            libxcb-xfixes0-dev
+
+      - name: Install frontend dependencies
+        run: npm ci
+
+      - name: Check TS/Rust protocol contract
+        run: npm run check:contract
+
+      - name: Run frontend unit tests
+        run: npm test
+
+      - name: Typecheck & build frontend
+        run: npm run build
+
+      - name: Install Playwright Chromium browser
+        shell: bash
+        run: |
+          if [ "${{ runner.os }}" = "Linux" ]; then
+            npx playwright install --with-deps chromium
+          else
+            npx playwright install chromium
+          fi
+
+      - name: Run Playwright UI smoke tests
+        run: npm run test:e2e
+
+      - name: Build and stage nova-cli binary for tauri_build
+        shell: bash
+        run: |
+          npm run sync:cli
+          if [ "${{ runner.os }}" = "Linux" ]; then
+            chmod +x src-tauri/bin/nova
+          fi
+
+      - name: Check clippy (zero warnings + non-test unwrap/expect ban)
+        run: cargo clippy --workspace --all-targets -- -D clippy::unwrap_used -D clippy::expect_used -D warnings
+
+      - name: Check desktop crate (src-tauri)
+        run: cargo check --manifest-path src-tauri/Cargo.toml
+
+      - name: Run workspace tests
+        run: cargo test --workspace --no-fail-fast

@@ -77,7 +77,7 @@ type PlanSection = {
 /**
  * 把 plan markdown 拆成「标题 + 引言 + 分节」：
  * `# ` 一行作为面板标题，`## ` 作为可折叠分节（Context/目标/步骤/验证等），
- * 与参考设计的结构化计划面板一致。
+ * 提供清晰的结构化计划面板。
  */
 const parsedPlan = computed(() => {
   const text = planContent.value.trim();
@@ -149,7 +149,7 @@ const hasPlan = computed(() => planContent.value.trim().length > 0);
     </div>
 
     <!-- 结构化计划：纯排版展示（大标题 + 分节加粗标题），
-         与参考应用一致：无外框卡片、无标题栏、无折叠箭头。 -->
+         无外框卡片、无标题栏、无折叠箭头。 -->
     <div v-else class="mx-auto w-full max-w-[760px]">
       <!-- 计划大标题 -->
       <div class="mb-4 flex items-baseline gap-3">

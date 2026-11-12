@@ -9,6 +9,8 @@
 use std::collections::HashMap;
 use std::sync::{Mutex, OnceLock};
 
+use nova_protocol::sync::MutexExt;
+
 pub use nova_protocol::misc::TodoEntry;
 
 pub struct TodoRegistry {
@@ -35,7 +37,7 @@ impl TodoRegistry {
         todos: Vec<TodoEntry>,
     ) -> Vec<TodoEntry> {
         let key = Self::bucket_key(conversation_id);
-        let mut guard = self.inner.lock().unwrap();
+        let mut guard = self.inner.lock_unpoisoned();
         guard.insert(key, todos.clone());
         todos
     }
@@ -43,13 +45,13 @@ impl TodoRegistry {
     /// 读取当前会话的待办列表。没有则返回空。
     pub fn list(&self, conversation_id: Option<&str>) -> Vec<TodoEntry> {
         let key = Self::bucket_key(conversation_id);
-        let guard = self.inner.lock().unwrap();
+        let guard = self.inner.lock_unpoisoned();
         guard.get(&key).cloned().unwrap_or_default()
     }
 
     /// 会话删除时清理对应桶；`None` 表示"清除全部会话"路径，全量清空。
     pub fn clear_session(&self, conversation_id: Option<&str>) {
-        let mut guard = self.inner.lock().unwrap();
+        let mut guard = self.inner.lock_unpoisoned();
         match conversation_id {
             Some(id) => {
                 guard.remove(id);

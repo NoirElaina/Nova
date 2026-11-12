@@ -1,6 +1,6 @@
 //! MemoryStore: 单文件 § 分隔的纯文本记忆库
 //!
-//! 移植自 hermes-agent tools/memory_tool.py，简化为单文件 MEMORY.md：
+//! 纯文本记忆库实现，基于单文件 MEMORY.md：
 //! - 启动时（首次访问）加载 + 生成 snapshot（用于 system prompt 注入）
 //! - 写入实时落盘并同步重建 snapshot，删除记忆后立即生效
 //! - threat scan (strict scope) 写入前 + 加载时双重防护
@@ -12,6 +12,7 @@ use std::fs;
 use std::path::PathBuf;
 use std::sync::Mutex;
 
+use nova_protocol::sync::MutexExt;
 use once_cell::sync::Lazy;
 use crate::core::Core;
 
@@ -205,8 +206,7 @@ fn read_entries_from_file(path: &std::path::Path) -> Vec<String> {
 }
 
 /// 检测外部 drift：返回 Some(error) 当磁盘内容不能干净 round-trip 或单条超限。
-/// Nova 不写 .bak 备份，命中 drift 直接拒绝写入 + log（对齐 hermes _detect_external_drift，
-/// 但简化掉备份逻辑）。
+/// 命中 drift 直接拒绝写入 + log。
 fn detect_drift(path: &std::path::Path) -> Option<String> {
     if !path.exists() {
         return None;
@@ -238,7 +238,7 @@ fn detect_drift(path: &std::path::Path) -> Option<String> {
 }
 
 /// 加载时对每条 entry 做 threat scan，命中则在 snapshot 中替换为 [BLOCKED: ...] 占位符。
-/// 原始 entry 保留在 live state，让用户能看到 + 删除投毒内容（hermes 同款行为）。
+/// 原始 entry 保留在 live state，让用户能看到并删除投毒内容。
 fn sanitize_for_snapshot(entries: &[String]) -> Vec<String> {
     entries
         .iter()
@@ -283,7 +283,7 @@ fn rebuild_snapshot(entries: &[String]) -> String {
 
 /// 首次访问时懒加载 MemoryStore。后续调用直接返回。
 fn ensure_loaded(core: &Core) -> Result<(), String> {
-    let mut guard = STORE.lock().unwrap();
+    let mut guard = STORE.lock_unpoisoned();
     if guard.is_some() {
         return Ok(());
     }
@@ -306,7 +306,7 @@ fn ensure_loaded(core: &Core) -> Result<(), String> {
 pub fn snapshot(core: &Core) -> Option<String> {
     ensure_loaded(core).ok()?;
     {
-        let mut guard = STORE.lock().unwrap();
+        let mut guard = STORE.lock_unpoisoned();
         if let (Some(store), Ok(path)) = (guard.as_mut(), memory_file_path(core)) {
             if detect_drift(&path).is_none() {
                 let mut entries = read_entries_from_file(&path);
@@ -317,7 +317,7 @@ pub fn snapshot(core: &Core) -> Option<String> {
             }
         }
     }
-    let guard = STORE.lock().unwrap();
+    let guard = STORE.lock_unpoisoned();
     guard.as_ref().and_then(|s| {
         if s.snapshot.is_empty() {
             None
@@ -328,7 +328,7 @@ pub fn snapshot(core: &Core) -> Option<String> {
 }
 
 // ── 新 tool-facing API：memory_add/replace/remove ──────────────────────────
-// 给 remember_global_memory 工具调用（实际工具名叫 memory，对齐 hermes 命名）。
+// 给 remember_global_memory 工具调用。
 
 pub async fn memory_add(core: &Core, content: &str) -> Result<(), String> {
     ensure_loaded(core)?;
@@ -358,7 +358,7 @@ fn mutate<F: FnOnce(&mut MemoryStore) -> Result<(), String>>(
     memory_file: &std::path::Path,
     op: F,
 ) -> Result<(), String> {
-    let mut guard = STORE.lock().unwrap();
+    let mut guard = STORE.lock_unpoisoned();
     let store = guard
         .as_mut()
         .ok_or_else(|| "memory store not loaded".to_string())?;
@@ -387,7 +387,7 @@ fn mutate<F: FnOnce(&mut MemoryStore) -> Result<(), String>>(
 
 pub async fn memory_list(core: &Core) -> Result<Vec<String>, String> {
     ensure_loaded(core)?;
-    let guard = STORE.lock().unwrap();
+    let guard = STORE.lock_unpoisoned();
     Ok(guard
         .as_ref()
         .ok_or_else(|| "memory store not loaded".to_string())?
@@ -398,7 +398,7 @@ pub async fn memory_list(core: &Core) -> Result<Vec<String>, String> {
 pub async fn memory_clear(core: &Core) -> Result<(), String> {
     ensure_loaded(core)?;
     let path = memory_file_path(core)?;
-    let mut guard = STORE.lock().unwrap();
+    let mut guard = STORE.lock_unpoisoned();
     let store = guard
         .as_mut()
         .ok_or_else(|| "memory store not loaded".to_string())?;

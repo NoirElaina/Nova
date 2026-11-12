@@ -7,6 +7,7 @@
 //! 所有函数只依赖 Core，不引用任何宿主类型。
 
 pub mod agent_config;
+pub mod collaboration;
 pub mod cron;
 pub mod file_changes;
 pub mod history;

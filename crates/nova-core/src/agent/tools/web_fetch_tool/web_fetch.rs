@@ -2,6 +2,7 @@ use crate::agent::tools::{app_tool, AppExecuteFuture, ToolDisclosure, ToolFailur
 use crate::provider::types::Tool;
 use reqwest::redirect::Policy;
 use serde_json::{json, Value};
+use nova_protocol::sync::MutexExt;
 use std::collections::HashMap;
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
@@ -135,7 +136,7 @@ async fn execute_async(input: Value) -> Result<ToolOutcome, ToolFailure> {
 
     // Check cache.
     {
-        let cache = FETCH_CACHE.lock().unwrap();
+        let cache = FETCH_CACHE.lock_unpoisoned();
         if let Some(entry) = cache.get(url.as_str()) {
             if entry.fetched_at.elapsed() < Duration::from_secs(CACHE_TTL_SECS) {
                 return format_fetch_result(
@@ -217,7 +218,7 @@ async fn execute_async(input: Value) -> Result<ToolOutcome, ToolFailure> {
 
     // Update cache.
     {
-        let mut cache = FETCH_CACHE.lock().unwrap();
+        let mut cache = FETCH_CACHE.lock_unpoisoned();
         // 容量上限：达到上限时淘汰 fetched_at 最旧的条目。
         if cache.len() >= CACHE_MAX_ENTRIES {
             if let Some(oldest_key) = cache

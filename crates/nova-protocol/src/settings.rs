@@ -30,6 +30,20 @@ fn default_approval_policy() -> String {
     "on_request".to_string()
 }
 
+fn default_sandbox_policy() -> String {
+    "danger-full-access".to_string()
+}
+
+/// 归一化沙箱策略名称（非法值回落默认 `danger-full-access`）。
+pub fn normalize_sandbox_policy(raw: &str) -> String {
+    match raw.trim().to_ascii_lowercase().replace('_', "-").as_str() {
+        "read-only" | "readonly" => "read-only".to_string(),
+        "workspace-write" | "workspacewrite" => "workspace-write".to_string(),
+        "danger-full-access" | "full-access" | "unrestricted" => "danger-full-access".to_string(),
+        _ => default_sandbox_policy(),
+    }
+}
+
 fn default_progressive_tool_disclosure() -> bool {
     true
 }
@@ -119,6 +133,8 @@ pub struct AppSettings {
     pub enable_app_log: bool,
     #[serde(default = "default_approval_policy")]
     pub approval_policy: String,
+    #[serde(default = "default_sandbox_policy")]
+    pub sandbox_policy: String,
     #[serde(default = "default_progressive_tool_disclosure")]
     pub progressive_tool_disclosure: bool,
     #[serde(default)]
@@ -138,6 +154,7 @@ impl Default for AppSettings {
             ui_theme: default_ui_theme(),
             enable_app_log: default_enable_app_log(),
             approval_policy: default_approval_policy(),
+            sandbox_policy: default_sandbox_policy(),
             progressive_tool_disclosure: default_progressive_tool_disclosure(),
             terminal_shell: None,
         }
@@ -208,6 +225,7 @@ impl AppSettings {
         if crate::agent::ApprovalPolicy::parse(&self.approval_policy).is_none() {
             self.approval_policy = default_approval_policy();
         }
+        self.sandbox_policy = normalize_sandbox_policy(&self.sandbox_policy);
     }
 
     fn sync_provider_order(&mut self) {

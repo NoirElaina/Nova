@@ -221,7 +221,7 @@ mod tests {
 description = "example"
 
 [[hooks.PreToolUse]]
-matcher = "bash"
+matcher = "exec_command"
 
   [[hooks.PreToolUse.hooks]]
   type = "command"
@@ -244,7 +244,7 @@ matcher = "bash"
         let file: HooksFile = toml::from_str(raw).expect("parse");
         assert_eq!(file.description.as_deref(), Some("example"));
         assert_eq!(file.hooks.pre_tool_use.len(), 1);
-        assert_eq!(file.hooks.pre_tool_use[0].matcher.as_deref(), Some("bash"));
+        assert_eq!(file.hooks.pre_tool_use[0].matcher.as_deref(), Some("exec_command"));
         assert_eq!(file.hooks.pre_tool_use[0].hooks.len(), 3);
         assert_eq!(file.hooks.handler_count(), 4);
     }

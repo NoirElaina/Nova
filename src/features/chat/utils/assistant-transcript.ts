@@ -184,31 +184,87 @@ export function normalizeAssistantTranscript(message: ChatMessage): AssistantTra
   });
 }
 
+function upsertPreferredToolEntry(
+  byId: Map<string, ToolExecutionEntry>,
+  entry: ToolExecutionEntry,
+): void {
+  const existing = byId.get(entry.id);
+  if (!existing || existing.status === "running") {
+    byId.set(entry.id, entry);
+  }
+}
+
+function indexToolEntries(
+  entries: readonly ToolExecutionEntry[],
+  snapshot?: ToolTurnSummary,
+): Map<string, ToolExecutionEntry> {
+  const byId = new Map<string, ToolExecutionEntry>();
+  // 历史持久化快照优先作为基线，再由实时事件（仅允许终态覆盖运行态或补全缺失项）更新。
+  for (const entry of snapshot?.entries ?? []) {
+    upsertPreferredToolEntry(byId, entry);
+  }
+  for (const entry of entries) {
+    upsertPreferredToolEntry(byId, entry);
+  }
+  return byId;
+}
+
+export function collectTranscriptToolIds(
+  segments: readonly AssistantTranscriptSegment[],
+): string[] {
+  const seen = new Set<string>();
+  const ordered: string[] = [];
+  for (const segment of segments) {
+    if (segment.type !== "tools") continue;
+    for (const id of segment.toolIds) {
+      if (id && !seen.has(id)) {
+        seen.add(id);
+        ordered.push(id);
+      }
+    }
+  }
+  return ordered;
+}
+
+export function filterToolEntriesForSegments(
+  entries: readonly ToolExecutionEntry[],
+  segments: readonly AssistantTranscriptSegment[],
+): ToolExecutionEntry[] {
+  const ids = collectTranscriptToolIds(segments);
+  if (ids.length === 0) return [];
+  const byId = indexToolEntries(entries);
+  return ids
+    .map((id) => byId.get(id))
+    .filter((entry): entry is ToolExecutionEntry => !!entry);
+}
+
+export function collectTranscriptToolEntries(
+  segments: readonly AssistantTranscriptSegment[],
+  entries: readonly ToolExecutionEntry[] = [],
+  snapshot?: ToolTurnSummary,
+): ToolExecutionEntry[] {
+  const ids = collectTranscriptToolIds(segments);
+  if (ids.length === 0) {
+    // 无工具段时绝不能读取会话级全量 entries，否则上一轮修改过的文件会泄漏到本轮气泡；
+    // 仅当调用方显式传入单条消息自带的 toolSummary 快照时才回退到快照。
+    return snapshot?.entries ? snapshot.entries.map((entry) => ({ ...entry })) : [];
+  }
+  const byId = indexToolEntries(entries, snapshot);
+  return ids
+    .map((id) => byId.get(id))
+    .filter((entry): entry is ToolExecutionEntry => !!entry);
+}
+
 export function buildToolSummaryForSegment(
   segment: Extract<AssistantTranscriptSegment, { type: "tools" }>,
   entries: ToolExecutionEntry[],
   snapshot?: ToolTurnSummary,
 ): ToolTurnSummary | undefined {
-  const byId = new Map<string, ToolExecutionEntry>();
-  for (const entry of entries) {
-    const existing = byId.get(entry.id);
-    if (!existing || existing.status === "running" || entry.status !== "running") {
-      byId.set(entry.id, entry);
-    }
-  }
-  const liveEntries = segment.toolIds
+  const byId = indexToolEntries(entries, snapshot);
+  const resolved = segment.toolIds
     .map((id) => byId.get(id))
-    .filter((entry): entry is ToolExecutionEntry => !!entry);
-
-  if (liveEntries.length > 0) {
-    return buildToolTurnSummary(liveEntries);
-  }
-
-  const snapshotEntries = snapshot?.entries
-    .filter((entry) => segment.toolIds.includes(entry.id))
+    .filter((entry): entry is ToolExecutionEntry => !!entry)
     .map((entry) => ({ ...entry }));
 
-  return snapshotEntries && snapshotEntries.length > 0
-    ? buildToolTurnSummary(snapshotEntries)
-    : undefined;
+  return resolved.length > 0 ? buildToolTurnSummary(resolved) : undefined;
 }

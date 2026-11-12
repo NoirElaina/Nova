@@ -1,5 +1,5 @@
 use crate::agent::capabilities::plan_files;
-use crate::agent::tools::{app_tool, AppExecuteFuture, ToolDisclosure, ToolOutcome, ToolRegistration};
+use crate::agent::tools::{app_tool, AppExecuteFuture, ToolDisclosure, ToolFailure, ToolOutcome, ToolRegistration};
 use crate::provider::types::Tool;
 use serde_json::{json, Value};
 use crate::core::Core;
@@ -86,13 +86,7 @@ fn execute_with_app_boxed(
     Box::pin(async move {
         match execute_local(&core, conversation_id.as_deref(), input) {
             Ok(text) => Ok(ToolOutcome::text(text)),
-            Err(message) => Ok(ToolOutcome::text(
-                json!({
-                    "type": "error",
-                    "message": message
-                })
-                .to_string(),
-            )),
+            Err(message) => Err(ToolFailure::invalid_input(message)),
         }
     })
 }

@@ -46,29 +46,8 @@ interface SubagentEventPayload {
 
 const entries = reactive(new Map<string, SubagentEntry>());
 
-/** 全屏/面板开关（行内按钮与全屏视图跨组件共享）。 */
-export const panelOpen = ref(false);
-
 /** 当前选中的子代理 ID（为 null 时展示子代理总览列表）。 */
 export const selectedSubagentId = ref<string | null>(null);
-
-/** 打开子代理面板（可直接指定特定子代理 ID）。 */
-export function openSubagentDetail(subId?: string) {
-  if (subId) {
-    selectedSubagentId.value = subId;
-  }
-  panelOpen.value = true;
-}
-
-/** 关闭子代理面板返回主代理。 */
-export function closeSubagentPanel() {
-  panelOpen.value = false;
-}
-
-/** 切换面板。 */
-export function togglePanel() {
-  panelOpen.value = !panelOpen.value;
-}
 
 let listenerReady = false;
 let initPromise: Promise<void> | null = null;

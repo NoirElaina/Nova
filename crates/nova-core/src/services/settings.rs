@@ -9,6 +9,7 @@ pub fn context_window_for_model(settings: &AppSettings, model: &str) -> u32 {
     )
 }
 
+use std::collections::HashMap;
 use std::path::PathBuf;
 use crate::core::Core;
 use tracing::warn;
@@ -46,8 +47,10 @@ pub fn validate_provider_profiles(settings: &AppSettings) -> Result<(), String> 
     Ok(())
 }
 
+const MAX_SETTINGS_CACHE_ENTRIES: usize = 64;
+
 static SETTINGS_CACHE: std::sync::Mutex<
-    Option<(crate::agent::utils::fingerprint::FileFingerprint, AppSettings)>,
+    Option<HashMap<PathBuf, (crate::agent::utils::fingerprint::FileFingerprint, AppSettings)>>,
 > = std::sync::Mutex::new(None);
 
 pub fn invalidate_settings_cache() {
@@ -68,7 +71,9 @@ pub fn load_settings(core: &Core) -> Result<AppSettings, String> {
     let fingerprint = crate::agent::utils::fingerprint::FileFingerprint::of(&path);
     if let Some(fp) = fingerprint {
         if let Ok(guard) = SETTINGS_CACHE.lock() {
-            if let Some((cached_fp, cached_settings)) = guard.as_ref() {
+            if let Some((cached_fp, cached_settings)) =
+                guard.as_ref().and_then(|cache| cache.get(&path))
+            {
                 if *cached_fp == fp {
                     return Ok(cached_settings.clone());
                 }
@@ -104,7 +109,11 @@ pub fn load_settings(core: &Core) -> Result<AppSettings, String> {
 
     if let Some(fp) = crate::agent::utils::fingerprint::FileFingerprint::of(&path) {
         if let Ok(mut guard) = SETTINGS_CACHE.lock() {
-            *guard = Some((fp, settings.clone()));
+            let cache = guard.get_or_insert_with(HashMap::new);
+            if cache.len() >= MAX_SETTINGS_CACHE_ENTRIES && !cache.contains_key(&path) {
+                cache.clear();
+            }
+            cache.insert(path.clone(), (fp, settings.clone()));
         }
     }
     crate::services::terminal_detector::set_configured_terminal(settings.terminal_shell.clone());
@@ -123,8 +132,12 @@ pub fn save_settings_inner(core: &Core, settings: AppSettings) -> Result<(), Str
     validate_provider_profiles(&normalized)?;
     crate::services::settings_secrets::encrypt_provider_api_keys(&mut normalized)?;
     let content = serde_json::to_string_pretty(&normalized).map_err(|e| e.to_string())?;
-    std::fs::write(path, content).map_err(|e| e.to_string())?;
-    invalidate_settings_cache();
+    std::fs::write(&path, content).map_err(|e| e.to_string())?;
+    if let Ok(mut guard) = SETTINGS_CACHE.lock() {
+        if let Some(cache) = guard.as_mut() {
+            cache.remove(&path);
+        }
+    }
     crate::services::terminal_detector::set_configured_terminal(normalized.terminal_shell.clone());
     core.hooks().set_file_logging_enabled(normalized.enable_app_log);
     Ok(())

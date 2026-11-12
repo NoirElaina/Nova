@@ -1,11 +1,6 @@
 <script setup lang="ts">
 import { Card, CardContent } from '@/components/ui/card';
-
-type SessionFileMeta = {
-  filename: string;
-  size: number;
-  createdAt: number;
-};
+import type { SessionFileMeta } from '@/lib/protocol';
 
 const props = defineProps<{
   file: SessionFileMeta;

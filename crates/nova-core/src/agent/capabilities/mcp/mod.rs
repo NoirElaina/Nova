@@ -13,7 +13,7 @@ mod stdio;
 mod streamable_http;
 mod types;
 
-use sse::connect_sse;
+use sse::{connect_sse, SseMcpConnection};
 use stdio::{connect_stdio, StdioMcpConnection};
 use streamable_http::{connect_streamable_http, StreamableHttpMcpConnection};
 
@@ -25,6 +25,7 @@ pub use types::{
 enum ServerConnection {
     Stdio(Box<StdioMcpConnection>),
     StreamableHttp(StreamableHttpMcpConnection),
+    Sse(Box<SseMcpConnection>),
 }
 
 impl ServerConnection {
@@ -32,6 +33,7 @@ impl ServerConnection {
         match self {
             Self::Stdio(conn) => conn.list_tools().await,
             Self::StreamableHttp(conn) => conn.list_tools().await,
+            Self::Sse(conn) => conn.list_tools().await,
         }
     }
 
@@ -39,6 +41,7 @@ impl ServerConnection {
         match self {
             Self::Stdio(conn) => conn.list_resources().await,
             Self::StreamableHttp(conn) => conn.list_resources().await,
+            Self::Sse(conn) => conn.list_resources().await,
         }
     }
 
@@ -46,6 +49,7 @@ impl ServerConnection {
         match self {
             Self::Stdio(conn) => conn.read_resource(uri).await,
             Self::StreamableHttp(conn) => conn.read_resource(uri).await,
+            Self::Sse(conn) => conn.read_resource(uri).await,
         }
     }
 
@@ -53,6 +57,7 @@ impl ServerConnection {
         match self {
             Self::Stdio(conn) => conn.call_tool(tool_name, arguments).await,
             Self::StreamableHttp(conn) => conn.call_tool(tool_name, arguments).await,
+            Self::Sse(conn) => conn.call_tool(tool_name, arguments).await,
         }
     }
 
@@ -60,6 +65,7 @@ impl ServerConnection {
         match self {
             Self::Stdio(conn) => conn.shutdown().await,
             Self::StreamableHttp(conn) => conn.shutdown().await,
+            Self::Sse(conn) => conn.shutdown().await,
         }
     }
 }
@@ -89,6 +95,7 @@ struct PersistedServer {
 static MCP_RUNTIME: OnceLock<Mutex<HashMap<String, RegisteredServer>>> = OnceLock::new();
 static MCP_LOADED: OnceLock<Mutex<bool>> = OnceLock::new();
 const MCP_CONNECT_TIMEOUT: Duration = Duration::from_secs(30);
+const MCP_TOOL_CALL_TIMEOUT: Duration = Duration::from_secs(60);
 
 fn runtime() -> &'static Mutex<HashMap<String, RegisteredServer>> {
     MCP_RUNTIME.get_or_init(|| Mutex::new(HashMap::new()))
@@ -261,7 +268,15 @@ pub struct RegisteredServerSnapshot {
     pub source_agent: Option<String>,
 }
 
-async fn persist_runtime(core: &Core) -> Result<(), String> {
+fn mcp_not_found(name: &str) -> crate::NovaCoreError {
+    crate::NovaCoreError::NotFound(format!("MCP server '{}' not found", name))
+}
+
+fn mcp_err(server: &str, message: impl Into<String>) -> crate::NovaCoreError {
+    crate::NovaCoreError::mcp(server, message)
+}
+
+async fn persist_runtime(core: &Core) -> Result<(), crate::NovaCoreError> {
     let map = runtime().lock().await;
     let mut servers = Vec::with_capacity(map.len());
     for (name, item) in map.iter() {
@@ -273,7 +288,7 @@ async fn persist_runtime(core: &Core) -> Result<(), String> {
         });
     }
     drop(map);
-    save_persisted_servers(core, &servers)
+    save_persisted_servers(core, &servers).map_err(crate::NovaCoreError::Session)
 }
 
 /// 一次性迁移：把各智能体的私有 MCP 配置（agents/<id>/mcp.json）并入全局注册表，
@@ -389,10 +404,39 @@ async fn connect_server(
             }
         }
         McpServerConfig::Sse { url, headers } => {
-            let error = connect_sse(url, headers).err().unwrap_or_else(|| {
-                "SSE MCP runtime not implemented yet. Use stdio for now.".to_string()
-            });
-            (McpRuntimeStatus::Error, 0, Some(error), None)
+            match connect_sse(url, headers).await {
+                Ok(mut conn) => {
+                    let tool_count = match timeout(MCP_CONNECT_TIMEOUT, conn.list_tools()).await {
+                        Err(_) => {
+                            let _ = conn.shutdown().await;
+                            return (
+                                McpRuntimeStatus::Error,
+                                0,
+                                Some("MCP tools/list timeout (30s) over SSE.".to_string()),
+                                None,
+                            );
+                        }
+                        Ok(result) => match result {
+                            Ok(tools) => tools.len(),
+                            Err(e) => {
+                                return (
+                                    McpRuntimeStatus::Connected,
+                                    0,
+                                    Some(e),
+                                    Some(ServerConnection::Sse(Box::new(conn))),
+                                )
+                            }
+                        },
+                    };
+                    (
+                        McpRuntimeStatus::Connected,
+                        tool_count,
+                        None,
+                        Some(ServerConnection::Sse(Box::new(conn))),
+                    )
+                }
+                Err(e) => (McpRuntimeStatus::Error, 0, Some(e), None),
+            }
         }
         McpServerConfig::StreamableHttp { url, headers } => {
             match connect_streamable_http(url, headers).await {
@@ -432,25 +476,21 @@ async fn connect_server(
     }
 }
 
-async fn reconnect_server(core: &Core, name: &str) -> Result<(), String> {
+async fn reconnect_server(core: &Core, name: &str) -> Result<(), crate::NovaCoreError> {
     ensure_runtime_loaded(core).await;
 
     let cfg = {
         let map = runtime().lock().await;
-        let server = map
-            .get(name)
-            .ok_or_else(|| format!("MCP server '{}' not found", name))?;
+        let server = map.get(name).ok_or_else(|| mcp_not_found(name))?;
         if !server.enabled {
-            return Err(format!("MCP server '{}' is disabled", name));
+            return Err(mcp_err(name, format!("MCP server '{}' is disabled", name)));
         }
         server.config.clone()
     };
 
     let (status, tool_count, error, connection) = connect_server(&cfg).await;
     let mut map = runtime().lock().await;
-    let server = map
-        .get_mut(name)
-        .ok_or_else(|| format!("MCP server '{}' not found", name))?;
+    let server = map.get_mut(name).ok_or_else(|| mcp_not_found(name))?;
 
     if let Some(conn) = server.connection.as_mut() {
         conn.shutdown().await;
@@ -464,7 +504,10 @@ async fn reconnect_server(core: &Core, name: &str) -> Result<(), String> {
     if status == McpRuntimeStatus::Connected {
         Ok(())
     } else {
-        Err(error.unwrap_or_else(|| format!("MCP server '{}' failed to reconnect", name)))
+        Err(mcp_err(
+            name,
+            error.unwrap_or_else(|| format!("MCP server '{}' failed to reconnect", name)),
+        ))
     }
 }
 
@@ -544,11 +587,13 @@ pub async fn add_mcp_server(
     name: String,
     config: McpServerConfig,
     source_agent: Option<String>,
-) -> Result<(), String> {
+) -> Result<(), crate::NovaCoreError> {
     ensure_runtime_loaded(&core).await;
 
     if name.trim().is_empty() {
-        return Err("Server name cannot be empty".into());
+        return Err(crate::NovaCoreError::InvalidInput(
+            "Server name cannot be empty".into(),
+        ));
     }
 
     let (status, connected_tools, error, connection) = connect_server(&config).await;
@@ -579,13 +624,14 @@ pub async fn add_mcp_server(
     Ok(())
 }
 
-pub async fn get_mcp_server(core: Core, name: String) -> Result<McpServerEntry, String> {
+pub async fn get_mcp_server(
+    core: Core,
+    name: String,
+) -> Result<McpServerEntry, crate::NovaCoreError> {
     ensure_runtime_loaded(&core).await;
 
     let map = runtime().lock().await;
-    let server = map
-        .get(&name)
-        .ok_or_else(|| format!("MCP server '{}' not found", name))?;
+    let server = map.get(&name).ok_or_else(|| mcp_not_found(&name))?;
 
     Ok(McpServerEntry {
         name,
@@ -599,23 +645,26 @@ pub async fn update_mcp_server(
     old_name: String,
     new_name: String,
     config: McpServerConfig,
-) -> Result<(), String> {
+) -> Result<(), crate::NovaCoreError> {
     ensure_runtime_loaded(&core).await;
 
     let old_name = old_name.trim().to_string();
     let new_name = new_name.trim().to_string();
     if old_name.is_empty() || new_name.is_empty() {
-        return Err("Server name cannot be empty".into());
+        return Err(crate::NovaCoreError::InvalidInput(
+            "Server name cannot be empty".into(),
+        ));
     }
 
     let (enabled, source_agent) = {
         let map = runtime().lock().await;
-        let current = map
-            .get(&old_name)
-            .ok_or_else(|| format!("MCP server '{}' not found", old_name))?;
+        let current = map.get(&old_name).ok_or_else(|| mcp_not_found(&old_name))?;
 
         if old_name != new_name && map.contains_key(&new_name) {
-            return Err(format!("MCP server '{}' already exists", new_name));
+            return Err(crate::NovaCoreError::InvalidInput(format!(
+                "MCP server '{}' already exists",
+                new_name
+            )));
         }
 
         (current.enabled, current.source_agent.clone())
@@ -630,7 +679,7 @@ pub async fn update_mcp_server(
     let mut map = runtime().lock().await;
     let mut old = map
         .remove(&old_name)
-        .ok_or_else(|| format!("MCP server '{}' not found", old_name))?;
+        .ok_or_else(|| mcp_not_found(&old_name))?;
 
     if let Some(conn) = old.connection.as_mut() {
         conn.shutdown().await;
@@ -654,7 +703,7 @@ pub async fn update_mcp_server(
     Ok(())
 }
 
-pub async fn remove_mcp_server(core: Core, name: String) -> Result<(), String> {
+pub async fn remove_mcp_server(core: Core, name: String) -> Result<(), crate::NovaCoreError> {
     ensure_runtime_loaded(&core).await;
 
     let mut map = runtime().lock().await;
@@ -670,7 +719,9 @@ pub async fn remove_mcp_server(core: Core, name: String) -> Result<(), String> {
     Ok(())
 }
 
-pub async fn get_mcp_server_statuses(core: Core) -> Result<Vec<McpServerStatus>, String> {
+pub async fn get_mcp_server_statuses(
+    core: Core,
+) -> Result<Vec<McpServerStatus>, crate::NovaCoreError> {
     ensure_runtime_loaded(&core).await;
 
     let map = runtime().lock().await;
@@ -689,7 +740,7 @@ pub async fn get_mcp_server_statuses(core: Core) -> Result<Vec<McpServerStatus>,
     Ok(result)
 }
 
-pub async fn reload_all_mcp_servers(core: Core) -> Result<(), String> {
+pub async fn reload_all_mcp_servers(core: Core) -> Result<(), crate::NovaCoreError> {
     ensure_runtime_loaded(&core).await;
 
     let configs: Vec<(String, McpServerConfig, bool)> = {
@@ -736,14 +787,12 @@ pub async fn set_mcp_server_enabled(
     core: Core,
     name: String,
     enabled: bool,
-) -> Result<(), String> {
+) -> Result<(), crate::NovaCoreError> {
     ensure_runtime_loaded(&core).await;
 
     let cfg = {
         let map = runtime().lock().await;
-        let server = map
-            .get(&name)
-            .ok_or_else(|| format!("MCP server '{}' not found", name))?;
+        let server = map.get(&name).ok_or_else(|| mcp_not_found(&name))?;
         server.config.clone()
     };
 
@@ -778,29 +827,79 @@ pub async fn set_mcp_server_enabled(
     Ok(())
 }
 
-pub async fn list_mcp_tools(
-    core: Core,
-    server_name: String,
-) -> Result<Vec<McpToolInfo>, String> {
-    ensure_runtime_loaded(&core).await;
+const MCP_MAX_IN_FLIGHT_REQUESTS: usize = 32;
 
+static MCP_IN_FLIGHT_SEMAPHORE: OnceLock<std::sync::Arc<tokio::sync::Semaphore>> = OnceLock::new();
+
+fn mcp_semaphore() -> &'static std::sync::Arc<tokio::sync::Semaphore> {
+    MCP_IN_FLIGHT_SEMAPHORE
+        .get_or_init(|| std::sync::Arc::new(tokio::sync::Semaphore::new(MCP_MAX_IN_FLIGHT_REQUESTS)))
+}
+
+async fn acquire_mcp_permit_with(
+    sem: &std::sync::Arc<tokio::sync::Semaphore>,
+    wait_timeout: Duration,
+    server: &str,
+    operation: &str,
+) -> Result<tokio::sync::OwnedSemaphorePermit, crate::NovaCoreError> {
+    match timeout(wait_timeout, std::sync::Arc::clone(sem).acquire_owned()).await {
+        Ok(Ok(permit)) => Ok(permit),
+        Ok(Err(_)) => Err(mcp_err(
+            server,
+            format!("MCP concurrency semaphore closed during {}", operation),
+        )),
+        Err(_) => Err(mcp_err(
+            server,
+            format!(
+                "MCP concurrency limit ({}) saturated while waiting for {}",
+                MCP_MAX_IN_FLIGHT_REQUESTS, operation
+            ),
+        )),
+    }
+}
+
+async fn acquire_mcp_permit(
+    server: &str,
+    operation: &str,
+) -> Result<tokio::sync::OwnedSemaphorePermit, crate::NovaCoreError> {
+    acquire_mcp_permit_with(mcp_semaphore(), MCP_CONNECT_TIMEOUT, server, operation).await
+}
+
+async fn ensure_server_connected(
+    core: &Core,
+    server_name: &str,
+) -> Result<(), crate::NovaCoreError> {
+    ensure_runtime_loaded(core).await;
     let needs_reconnect = {
         let map = runtime().lock().await;
         let server = map
-            .get(&server_name)
-            .ok_or_else(|| format!("MCP server '{}' not found", server_name))?;
+            .get(server_name)
+            .ok_or_else(|| mcp_not_found(server_name))?;
         server.enabled && server.connection.is_none()
     };
-
     if needs_reconnect {
-        reconnect_server(&core, &server_name).await?;
+        reconnect_server(core, server_name).await?;
     }
+    Ok(())
+}
+
+fn mark_server_connected(server: &mut RegisteredServer) {
+    server.status = McpRuntimeStatus::Connected;
+    server.error = None;
+}
+
+pub async fn list_mcp_tools(
+    core: Core,
+    server_name: String,
+) -> Result<Vec<McpToolInfo>, crate::NovaCoreError> {
+    let _permit = acquire_mcp_permit(&server_name, "list_mcp_tools").await?;
+    ensure_server_connected(&core, &server_name).await?;
 
     let first_attempt = {
         let mut map = runtime().lock().await;
         let server = map
             .get_mut(&server_name)
-            .ok_or_else(|| format!("MCP server '{}' not found", server_name))?;
+            .ok_or_else(|| mcp_not_found(&server_name))?;
 
         match server.connection.as_mut() {
             Some(conn) => conn.list_tools().await,
@@ -817,11 +916,14 @@ pub async fn list_mcp_tools(
             let mut map = runtime().lock().await;
             let server = map
                 .get_mut(&server_name)
-                .ok_or_else(|| format!("MCP server '{}' not found", server_name))?;
+                .ok_or_else(|| mcp_not_found(&server_name))?;
 
             match server.connection.as_mut() {
-                Some(conn) => conn.list_tools().await?,
-                None => return Err("Server is not connected".into()),
+                Some(conn) => conn
+                    .list_tools()
+                    .await
+                    .map_err(|err| mcp_err(&server_name, err))?,
+                None => return Err(mcp_err(&server_name, "Server is not connected")),
             }
         }
     };
@@ -829,36 +931,24 @@ pub async fn list_mcp_tools(
     let mut map = runtime().lock().await;
     let server = map
         .get_mut(&server_name)
-        .ok_or_else(|| format!("MCP server '{}' not found", server_name))?;
+        .ok_or_else(|| mcp_not_found(&server_name))?;
     server.tool_count = tools.len();
-    server.status = McpRuntimeStatus::Connected;
-    server.error = None;
+    mark_server_connected(server);
     Ok(tools)
 }
 
 pub async fn list_mcp_resources(
     core: Core,
     server_name: String,
-) -> Result<Vec<McpResourceInfo>, String> {
-    ensure_runtime_loaded(&core).await;
-
-    let needs_reconnect = {
-        let map = runtime().lock().await;
-        let server = map
-            .get(&server_name)
-            .ok_or_else(|| format!("MCP server '{}' not found", server_name))?;
-        server.enabled && server.connection.is_none()
-    };
-
-    if needs_reconnect {
-        reconnect_server(&core, &server_name).await?;
-    }
+) -> Result<Vec<McpResourceInfo>, crate::NovaCoreError> {
+    let _permit = acquire_mcp_permit(&server_name, "list_mcp_resources").await?;
+    ensure_server_connected(&core, &server_name).await?;
 
     let first_attempt = {
         let mut map = runtime().lock().await;
         let server = map
             .get_mut(&server_name)
-            .ok_or_else(|| format!("MCP server '{}' not found", server_name))?;
+            .ok_or_else(|| mcp_not_found(&server_name))?;
 
         match server.connection.as_mut() {
             Some(conn) => conn.list_resources().await,
@@ -875,11 +965,14 @@ pub async fn list_mcp_resources(
             let mut map = runtime().lock().await;
             let server = map
                 .get_mut(&server_name)
-                .ok_or_else(|| format!("MCP server '{}' not found", server_name))?;
+                .ok_or_else(|| mcp_not_found(&server_name))?;
 
             match server.connection.as_mut() {
-                Some(conn) => conn.list_resources().await?,
-                None => return Err("Server is not connected".into()),
+                Some(conn) => conn
+                    .list_resources()
+                    .await
+                    .map_err(|err| mcp_err(&server_name, err))?,
+                None => return Err(mcp_err(&server_name, "Server is not connected")),
             }
         }
     };
@@ -887,9 +980,8 @@ pub async fn list_mcp_resources(
     let mut map = runtime().lock().await;
     let server = map
         .get_mut(&server_name)
-        .ok_or_else(|| format!("MCP server '{}' not found", server_name))?;
-    server.status = McpRuntimeStatus::Connected;
-    server.error = None;
+        .ok_or_else(|| mcp_not_found(&server_name))?;
+    mark_server_connected(server);
     Ok(resources)
 }
 
@@ -897,26 +989,15 @@ pub async fn read_mcp_resource(
     core: Core,
     server_name: String,
     uri: String,
-) -> Result<Value, String> {
-    ensure_runtime_loaded(&core).await;
-
-    let needs_reconnect = {
-        let map = runtime().lock().await;
-        let server = map
-            .get(&server_name)
-            .ok_or_else(|| format!("MCP server '{}' not found", server_name))?;
-        server.enabled && server.connection.is_none()
-    };
-
-    if needs_reconnect {
-        reconnect_server(&core, &server_name).await?;
-    }
+) -> Result<Value, crate::NovaCoreError> {
+    let _permit = acquire_mcp_permit(&server_name, "read_mcp_resource").await?;
+    ensure_server_connected(&core, &server_name).await?;
 
     let first_attempt = {
         let mut map = runtime().lock().await;
         let server = map
             .get_mut(&server_name)
-            .ok_or_else(|| format!("MCP server '{}' not found", server_name))?;
+            .ok_or_else(|| mcp_not_found(&server_name))?;
 
         match server.connection.as_mut() {
             Some(conn) => conn.read_resource(&uri).await,
@@ -933,11 +1014,14 @@ pub async fn read_mcp_resource(
             let mut map = runtime().lock().await;
             let server = map
                 .get_mut(&server_name)
-                .ok_or_else(|| format!("MCP server '{}' not found", server_name))?;
+                .ok_or_else(|| mcp_not_found(&server_name))?;
 
             match server.connection.as_mut() {
-                Some(conn) => conn.read_resource(&uri).await?,
-                None => return Err("Server is not connected".into()),
+                Some(conn) => conn
+                    .read_resource(&uri)
+                    .await
+                    .map_err(|err| mcp_err(&server_name, err))?,
+                None => return Err(mcp_err(&server_name, "Server is not connected")),
             }
         }
     };
@@ -945,9 +1029,8 @@ pub async fn read_mcp_resource(
     let mut map = runtime().lock().await;
     let server = map
         .get_mut(&server_name)
-        .ok_or_else(|| format!("MCP server '{}' not found", server_name))?;
-    server.status = McpRuntimeStatus::Connected;
-    server.error = None;
+        .ok_or_else(|| mcp_not_found(&server_name))?;
+    mark_server_connected(server);
     Ok(value)
 }
 
@@ -956,29 +1039,28 @@ pub async fn call_mcp_tool(
     server_name: String,
     tool_name: String,
     arguments: Value,
-) -> Result<Value, String> {
-    ensure_runtime_loaded(&core).await;
-
-    let needs_reconnect = {
-        let map = runtime().lock().await;
-        let server = map
-            .get(&server_name)
-            .ok_or_else(|| format!("MCP server '{}' not found", server_name))?;
-        server.enabled && server.connection.is_none()
-    };
-
-    if needs_reconnect {
-        reconnect_server(&core, &server_name).await?;
-    }
+) -> Result<Value, crate::NovaCoreError> {
+    let _permit =
+        acquire_mcp_permit(&server_name, &format!("call_mcp_tool:{}/{}", server_name, tool_name))
+            .await?;
+    ensure_server_connected(&core, &server_name).await?;
 
     let first_attempt = {
         let mut map = runtime().lock().await;
         let server = map
             .get_mut(&server_name)
-            .ok_or_else(|| format!("MCP server '{}' not found", server_name))?;
+            .ok_or_else(|| mcp_not_found(&server_name))?;
 
         match server.connection.as_mut() {
-            Some(conn) => conn.call_tool(&tool_name, arguments.clone()).await,
+            Some(conn) => {
+                match timeout(MCP_TOOL_CALL_TIMEOUT, conn.call_tool(&tool_name, arguments.clone())).await {
+                    Ok(res) => res,
+                    Err(_) => Err(format!(
+                        "MCP tool call '{}/{}' timed out after 60s. Server may be unresponsive.",
+                        server_name, tool_name
+                    )),
+                }
+            }
             None => Err("Server is not connected".into()),
         }
     };
@@ -992,11 +1074,24 @@ pub async fn call_mcp_tool(
             let mut map = runtime().lock().await;
             let server = map
                 .get_mut(&server_name)
-                .ok_or_else(|| format!("MCP server '{}' not found", server_name))?;
+                .ok_or_else(|| mcp_not_found(&server_name))?;
 
             match server.connection.as_mut() {
-                Some(conn) => conn.call_tool(&tool_name, arguments).await?,
-                None => return Err("Server is not connected".into()),
+                Some(conn) => {
+                    match timeout(MCP_TOOL_CALL_TIMEOUT, conn.call_tool(&tool_name, arguments)).await {
+                        Ok(res) => res.map_err(|err| mcp_err(&server_name, err))?,
+                        Err(_) => {
+                            return Err(mcp_err(
+                                &server_name,
+                                format!(
+                                    "MCP tool call '{}/{}' timed out after 60s on retry. Server may be unresponsive.",
+                                    server_name, tool_name
+                                ),
+                            ));
+                        }
+                    }
+                }
+                None => return Err(mcp_err(&server_name, "Server is not connected")),
             }
         }
     };
@@ -1004,13 +1099,12 @@ pub async fn call_mcp_tool(
     let mut map = runtime().lock().await;
     let server = map
         .get_mut(&server_name)
-        .ok_or_else(|| format!("MCP server '{}' not found", server_name))?;
-    server.status = McpRuntimeStatus::Connected;
-    server.error = None;
+        .ok_or_else(|| mcp_not_found(&server_name))?;
+    mark_server_connected(server);
     Ok(result)
 }
 
-pub async fn warmup_runtime(core: Core) -> Result<(), String> {
+pub async fn warmup_runtime(core: Core) -> Result<(), crate::NovaCoreError> {
     ensure_runtime_loaded(&core).await;
 
     let has_enabled = {
@@ -1023,4 +1117,32 @@ pub async fn warmup_runtime(core: Core) -> Result<(), String> {
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn mcp_concurrency_semaphore_rejects_when_saturated() {
+        let sem = std::sync::Arc::new(tokio::sync::Semaphore::new(2));
+        let p1 = acquire_mcp_permit_with(&sem, Duration::from_millis(50), "srv", "op1")
+            .await
+            .expect("first permit");
+        let p2 = acquire_mcp_permit_with(&sem, Duration::from_millis(50), "srv", "op2")
+            .await
+            .expect("second permit");
+
+        let err = acquire_mcp_permit_with(&sem, Duration::from_millis(20), "srv", "op3")
+            .await
+            .expect_err("third concurrent call must time out on semaphore");
+        assert!(err.to_string().contains("saturated"));
+
+        drop(p1);
+        let p3 = acquire_mcp_permit_with(&sem, Duration::from_millis(50), "srv", "op3_retry")
+            .await
+            .expect("permit should succeed after release");
+        drop(p2);
+        drop(p3);
+    }
 }

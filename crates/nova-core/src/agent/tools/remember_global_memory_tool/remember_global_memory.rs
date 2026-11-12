@@ -18,7 +18,7 @@ pub(super) fn registration() -> ToolRegistration {
 }
 
 // 模型可见的 memory 工具元数据。
-// schema 对齐 hermes MEMORY_SCHEMA 的简化版（去掉 target/batch，单文件 MEMORY.md）：
+// 纯文本单文件 MEMORY.md 工具规范：
 // - action: add | replace | remove
 // - content: 新内容（add/replace 必填）
 // - old_text: 子串匹配（replace/remove 必填）

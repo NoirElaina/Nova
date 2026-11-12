@@ -3,10 +3,36 @@ name = "nova-client"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
-description = "Nova 内核客户端：spawn `nova serve` 并经 stdio JSONL 通信（桌面 / TUI / 无头共用）"
+description = "Nova 内核客户端：支持 stdio（单会话）与 UDS+WebSocket（多窗口共享守护进程）"
 publish = false
 
 [dependencies]
 nova-protocol = { path = "../nova-protocol" }
+dirs = "6"
+fs2 = "0.4"
+futures-util = "0.3.32"
 serde_json = { workspace = true }
 tokio = { workspace = true }
+tokio-tungstenite = "0.29"
+tracing = "0.1.44"
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
+[target.'cfg(windows)'.dependencies]
+async-io = "2.6"
+tokio-util = { version = "0.7", features = ["compat"] }
+uds_windows = "1.2"
+windows-sys = { version = "0.61", features = [
+    "Win32_Foundation",
+    "Win32_Networking_WinSock",
+    "Win32_Security",
+    "Win32_Security_Authorization",
+    "Win32_Storage_FileSystem",
+    "Win32_System_IO",
+    "Win32_System_SystemServices",
+    "Win32_System_Threading",
+] }
+
+[lints]
+workspace = true

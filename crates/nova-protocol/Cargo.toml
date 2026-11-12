@@ -9,4 +9,7 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 
 # 类型契约导出：从 Rust 定义生成 TypeScript，避免前端手抄
-ts-rs = { version = "12", features = ["serde-json-impl"] }
+ts-rs = { version = "12", features = ["serde-json-impl", "no-serde-warnings"] }
+
+[lints]
+workspace = true

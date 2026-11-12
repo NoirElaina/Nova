@@ -47,6 +47,44 @@ pub(crate) fn absolute_path_from_tool_arg(raw: &str, field_name: &str) -> Result
     Ok(path)
 }
 
+/// 判断 `path` 是否位于 `root` 之内（兼容 Windows 大小写差异与 \\?\ verbatim 前缀）。
+pub(crate) fn canonical_starts_with(path: &Path, root: &Path) -> bool {
+    let strip_verbatim = |p: &Path| -> PathBuf {
+        let s = p.to_string_lossy();
+        if let Some(rest) = s.strip_prefix(r"\\?\UNC\") {
+            PathBuf::from(format!(r"\\{}", rest))
+        } else if let Some(rest) = s.strip_prefix(r"\\?\") {
+            PathBuf::from(rest)
+        } else {
+            p.to_path_buf()
+        }
+    };
+    let clean_path = strip_verbatim(path);
+    let clean_root = strip_verbatim(root);
+    if clean_path.starts_with(&clean_root) {
+        return true;
+    }
+    #[cfg(target_os = "windows")]
+    {
+        let mut p_comps = clean_path.components();
+        for r_comp in clean_root.components() {
+            let Some(p_comp) = p_comps.next() else {
+                return false;
+            };
+            if !p_comp
+                .as_os_str()
+                .to_string_lossy()
+                .eq_ignore_ascii_case(&r_comp.as_os_str().to_string_lossy())
+            {
+                return false;
+            }
+        }
+        true
+    }
+    #[cfg(not(target_os = "windows"))]
+    false
+}
+
 pub(crate) fn resolve_absolute_path_for_write(
     raw: &str,
     field_name: &str,

@@ -1,7 +1,8 @@
 <script setup lang="ts">
-import { computed, ref, watch } from 'vue';
+import { computed, ref, shallowRef, watch } from 'vue';
 import { Button } from '@/components/ui/button';
-import type { TurnTrace, WireCallTrace } from '../../../lib/chat-types';
+import type { TurnTrace, WireCallTrace } from '../../../lib/protocol';
+import type { JsonValue } from '../../../lib/serde_json/JsonValue';
 import { getConversationTurnTraces } from '../../../features/chat/services/chat-api';
 import JsonTree from './JsonTree.vue';
 
@@ -9,7 +10,7 @@ const props = defineProps<{
   conversationId: string | null;
 }>();
 
-const traces = ref<TurnTrace[]>([]);
+const traces = shallowRef<TurnTrace[]>([]);
 const loading = ref(false);
 const errorText = ref('');
 /** 展开的回合 seq 集合（展开后展示发送/接收两块内容）。 */
@@ -86,7 +87,7 @@ const copyText = async (text: string) => {
 const prettyJson = (value: unknown) => JSON.stringify(value, null, 2);
 
 /** wire 请求报文统一转成可读 JSON 文本。 */
-const wireRequestText = (request: Record<string, unknown> | string) =>
+const wireRequestText = (request: JsonValue) =>
   typeof request === 'string' ? request : prettyJson(request);
 </script>
 

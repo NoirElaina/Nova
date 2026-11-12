@@ -53,8 +53,8 @@ impl JsonRpcNotification {
 /// 不匹配时由宿主显式告警，而不是靠「覆盖二进制」隐式兜底。
 pub const PROTOCOL_VERSION: &str = "1";
 
-/// `initialize` 请求参数（与 Codex App Server 的握手同形）。
-/// 客户端能力声明（结构化，与 Codex 的 `initialize.capabilities` 同形）。
+/// `initialize` 请求参数。
+/// 客户端能力声明（结构化）。
 ///
 /// 桌面声明 `browser: true` 表示能执行浏览器自动化；CLI 宿主声明 false。
 #[derive(Debug, Clone, Default, Serialize, Deserialize, TS)]
@@ -76,7 +76,7 @@ pub struct ServerCapabilities {
     pub browser: bool,
     /// 服务端会下发宿主钩子通知。
     pub hooks: bool,
-    /// 服务端支持沙箱逃逸审批（对齐 Codex 的 with_additional_permissions）。
+    /// 服务端支持沙箱逃逸审批。
     pub escalation: bool,
 }
 

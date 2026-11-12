@@ -2,8 +2,10 @@
 import { computed, onMounted, onUnmounted, ref } from 'vue';
 import { invoke } from '@tauri-apps/api/core';
 import { emitErrorToast } from '@/lib/toast';
+import { getSandboxStatus, type SandboxStatus } from '@/features/chat/services/chat-api';
 
 type ApprovalPolicyValue = 'always_ask' | 'on_request' | 'never';
+type SandboxPolicyValue = 'danger-full-access' | 'workspace-write' | 'read-only';
 
 const props = defineProps<{
   settings: Record<string, any> | null;
@@ -22,10 +24,31 @@ const policyOptions: { value: ApprovalPolicyValue; label: string; desc: string }
   { value: 'never', label: '从不询问', desc: '除硬拒绝项外全部放行（慎用）' },
 ];
 
+const sandboxOptions: { value: SandboxPolicyValue; label: string; desc: string }[] = [
+  { value: 'danger-full-access', label: '不启用沙箱', desc: '直接本机执行（danger-full-access）' },
+  { value: 'workspace-write', label: '仅工作区可写', desc: '只允许写入当前工作区，不限联网' },
+  { value: 'read-only', label: '全局只读', desc: '禁止所有磁盘写入，不限联网' },
+];
+
 const approvalPolicy = computed<ApprovalPolicyValue>(() => {
   const v = props.settings?.approvalPolicy;
   return v === 'always_ask' || v === 'never' ? v : 'on_request';
 });
+
+const sandboxPolicy = computed<SandboxPolicyValue>(() => {
+  const v = props.settings?.sandboxPolicy;
+  return v === 'workspace-write' || v === 'read-only' ? v : 'danger-full-access';
+});
+
+const sandboxStatus = ref<SandboxStatus | null>(null);
+
+const refreshSandboxStatus = async () => {
+  try {
+    sandboxStatus.value = await getSandboxStatus();
+  } catch {
+    sandboxStatus.value = null;
+  }
+};
 
 const disclosureEnabled = computed(() => props.settings?.progressiveToolDisclosure !== false);
 
@@ -45,6 +68,7 @@ const patchSettings = async (patch: Record<string, unknown>) => {
     await invoke('save_settings', { settings: next });
     emit('update:settings', next);
     window.dispatchEvent(new CustomEvent('settings-updated'));
+    await refreshSandboxStatus();
   } catch (error) {
     emitErrorToast('保存设置失败', error, 'policy-switcher');
   }
@@ -53,6 +77,11 @@ const patchSettings = async (patch: Record<string, unknown>) => {
 const setApprovalPolicy = (value: ApprovalPolicyValue) => {
   if (value === approvalPolicy.value) return;
   void patchSettings({ approvalPolicy: value });
+};
+
+const setSandboxPolicy = (value: SandboxPolicyValue) => {
+  if (value === sandboxPolicy.value) return;
+  void patchSettings({ sandboxPolicy: value });
 };
 
 const toggleDisclosure = () => {
@@ -70,12 +99,19 @@ const handleDocumentClick = (e: MouseEvent) => {
   policyMenuOpen.value = false;
 };
 
+const handleSettingsUpdated = () => {
+  void refreshSandboxStatus();
+};
+
 onMounted(() => {
   document.addEventListener('click', handleDocumentClick);
+  window.addEventListener('settings-updated', handleSettingsUpdated);
+  void refreshSandboxStatus();
 });
 
 onUnmounted(() => {
   document.removeEventListener('click', handleDocumentClick);
+  window.removeEventListener('settings-updated', handleSettingsUpdated);
 });
 </script>
 
@@ -120,6 +156,34 @@ onUnmounted(() => {
           <span class="block text-[11px] leading-snug text-muted-foreground">{{ opt.desc }}</span>
         </span>
       </button>
+
+      <div class="my-1.5 border-t border-border" />
+
+      <div class="px-1.5 pb-1 text-[11px] font-medium text-muted-foreground">终端写入沙箱</div>
+      <button
+        v-for="opt in sandboxOptions"
+        :key="opt.value"
+        type="button"
+        class="flex w-full items-start gap-2 rounded-md px-1.5 py-1.5 text-left transition-colors hover:bg-secondary/80"
+        @click="setSandboxPolicy(opt.value)"
+      >
+        <span
+          class="mt-0.5 flex h-3.5 w-3.5 shrink-0 items-center justify-center rounded-full border"
+          :class="sandboxPolicy === opt.value ? 'border-[#2563eb]' : 'border-muted-foreground/40'"
+        >
+          <span v-if="sandboxPolicy === opt.value" class="h-1.5 w-1.5 rounded-full bg-[#2563eb]" />
+        </span>
+        <span class="min-w-0">
+          <span class="block text-xs font-medium">{{ opt.label }}</span>
+          <span class="block text-[11px] leading-snug text-muted-foreground">{{ opt.desc }}</span>
+        </span>
+      </button>
+      <div
+        v-if="sandboxStatus"
+        class="mx-1.5 mt-1 rounded bg-secondary/50 px-2 py-1 text-[10px] leading-snug text-muted-foreground"
+      >
+        {{ sandboxStatus.summary }}
+      </div>
 
       <div class="my-1.5 border-t border-border" />
 

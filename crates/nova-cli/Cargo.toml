@@ -18,12 +18,15 @@ clap = { version = "4.5", features = ["derive", "env"] }
 colored = "3"
 inquire = "0.7"
 ratatui = "0.29"
-crossterm = "0.28"
+crossterm = { version = "0.28", features = ["bracketed-paste"] }
 arboard = "3.4"
+# 终端显示宽度（CJK/emoji 占 2 列）：光标定位与表格对齐都依赖它
+unicode-width = "0.2"
 
 # 嵌入式本地服务 (Daemon / Server)
 axum = { version = "0.8", features = ["ws"] }
 tokio = { workspace = true }
+tokio-tungstenite = "0.29"
 uuid = { workspace = true }
 chrono = { workspace = true }
 serde = { workspace = true }
@@ -39,3 +42,9 @@ fs2 = "0.4"
 tracing = "0.1.44"
 tracing-subscriber = { version = "0.3.23", features = ["env-filter", "fmt"] }
 tracing-appender = "0.2"
+
+[dev-dependencies]
+tempfile = "3"
+
+[lints]
+workspace = true

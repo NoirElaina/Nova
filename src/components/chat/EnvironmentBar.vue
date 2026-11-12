@@ -1,8 +1,12 @@
 <script setup lang="ts">
-import { ref, computed, watch } from 'vue';
+import { ref, computed, watch, onMounted, onUnmounted } from 'vue';
 import { open as openDialog } from '@tauri-apps/plugin-dialog';
 import { emitToast } from '../../lib/toast';
-import { getWorkspaceGitStatus } from '../../features/chat/services/chat-api';
+import {
+  getSandboxStatus,
+  getWorkspaceGitStatus,
+  type SandboxStatus,
+} from '../../features/chat/services/chat-api';
 
 const props = defineProps<{
   workspacePath?: string;
@@ -16,6 +20,37 @@ const emit = defineEmits<{
 const isChangingWorkspace = ref(false);
 const gitBranch = ref<string | null>(null);
 const gitWorktree = ref<string | null>(null);
+const sandboxStatus = ref<SandboxStatus | null>(null);
+
+async function refreshSandboxStatus() {
+  try {
+    sandboxStatus.value = await getSandboxStatus();
+  } catch {
+    sandboxStatus.value = null;
+  }
+}
+
+const sandboxBadgeLabel = computed(() => {
+  const s = sandboxStatus.value;
+  if (!s) return '未开启沙箱';
+  if (!s.enforcing) return '未开启沙箱';
+  if (s.driver === 'windows-restricted') return 'windows-restricted (不限联网)';
+  if (s.driver === 'linux-bubblewrap') return 'linux-bubblewrap (不限联网)';
+  return s.driver;
+});
+
+const handleSettingsUpdated = () => {
+  void refreshSandboxStatus();
+};
+
+onMounted(() => {
+  void refreshSandboxStatus();
+  window.addEventListener('settings-updated', handleSettingsUpdated);
+});
+
+onUnmounted(() => {
+  window.removeEventListener('settings-updated', handleSettingsUpdated);
+});
 
 const workspaceName = computed(() => {
   const path = props.workspacePath?.trim();
@@ -154,6 +189,7 @@ const handleChangeWorkspace = async () => {
       type="button"
       class="ml-1 inline-flex items-center justify-center w-6 h-6 rounded-md hover:bg-black/5 dark:hover:bg-white/8 transition-colors"
       title="刷新"
+      @click="() => { void refreshSandboxStatus(); if (props.workspacePath) void refreshGitStatus(props.workspacePath); }"
     >
       <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
         <polyline points="23 4 23 10 17 10"/>
@@ -162,5 +198,17 @@ const handleChangeWorkspace = async () => {
     </button>
 
     <div class="flex-1"/>
+
+    <span
+      class="inline-flex items-center gap-1.5 rounded-md border px-2 py-0.5 text-[11px]"
+      :class="sandboxStatus?.enforcing ? 'border-emerald-500/30 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300' : 'border-border/60 bg-black/[0.02] text-[#64748b] dark:bg-white/[0.03] dark:text-[#9ca3af]'"
+      :title="sandboxStatus?.summary || '当前未开启沙箱隔离（danger-full-access）'"
+    >
+      <span
+        class="inline-block h-1.5 w-1.5 rounded-full"
+        :class="sandboxStatus?.enforcing ? 'bg-emerald-500' : 'bg-zinc-400'"
+      />
+      <span>{{ sandboxBadgeLabel }}</span>
+    </span>
   </div>
 </template>

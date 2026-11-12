@@ -1,11 +1,13 @@
 import { defineStore } from "pinia";
 import { ref } from "vue";
 import type { AgentMode, PendingUploadFile } from "@/lib/chat-types";
+import type { TurnSubmitMode } from "@/lib/protocol";
 
 export const useComposerStore = defineStore("composer", () => {
   const currentInput = ref<string>("");
   const pendingUploads = ref<PendingUploadFile[]>([]);
   const agentMode = ref<AgentMode>("agent");
+  const submitModeWhileGenerating = ref<TurnSubmitMode>("start_or_steer");
   const isComposing = ref<boolean>(false);
 
   function setInput(text: string) {
@@ -38,6 +40,7 @@ export const useComposerStore = defineStore("composer", () => {
     currentInput,
     pendingUploads,
     agentMode,
+    submitModeWhileGenerating,
     isComposing,
     setInput,
     appendInput,

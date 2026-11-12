@@ -11,8 +11,10 @@ pub struct ConversationMeta {
     // 会话标题。
     pub title: String,
     // 最近更新时间（unix 秒）。
+    #[ts(type = "number")]
     pub updated_at: i64,
     // 置顶时间（unix 秒），为空表示未置顶。
+    #[ts(type = "number | null")]
     pub pinned_at: Option<i64>,
     // 该会话绑定的项目工作区目录绝对路径，为空表示用内置默认工作区。
     pub workspace_path: Option<String>,
@@ -29,6 +31,7 @@ pub struct HistoryAttachment {
     // 可选 mime 类型。
     pub mime_type: Option<String>,
     // 可选文件大小（字节）。
+    #[ts(type = "number | null")]
     pub size: Option<u64>,
     // 附件类型（document/image）。
     pub kind: Option<String>,
@@ -48,6 +51,7 @@ pub struct HistoryAttachment {
 pub struct HistoryMessage {
     // 事件日志中的 seq（稳定唯一，前端作消息键使用）。
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(as = "Option<f64>")]
     pub id: Option<i64>,
     // 消息角色（user/assistant）。
     pub role: String,
@@ -58,6 +62,7 @@ pub struct HistoryMessage {
     // 可选附件列表。
     pub attachments: Option<Vec<HistoryAttachment>>,
     // 可选 token 使用量。
+    #[ts(type = "number | null")]
     pub token_usage: Option<i64>,
     // 可选成本结构（JSON）。
     pub cost: Option<Value>,
@@ -80,7 +85,9 @@ pub struct HistoryToolExecution {
     // 执行状态（running/completed/error/cancelled）。
     pub status: String,
     // 开始时间（unix 毫秒）。
+    #[ts(type = "number")]
     pub started_at: i64,
     // 结束时间（unix 毫秒，可选）。
+    #[ts(type = "number | null")]
     pub finished_at: Option<i64>,
 }

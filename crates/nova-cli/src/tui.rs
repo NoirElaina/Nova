@@ -8,8 +8,9 @@ use std::sync::Arc;
 
 use crossterm::{
     event::{
-        self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEvent, KeyEventKind,
-        KeyModifiers, MouseEvent, MouseEventKind,
+        self, DisableBracketedPaste, DisableMouseCapture, EnableBracketedPaste,
+        EnableMouseCapture, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseEvent,
+        MouseEventKind,
     },
     execute,
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
@@ -158,12 +159,373 @@ const SLASH_COMMANDS: &[SlashCommandDef] = &[
     },
 ];
 
+/// 找 `**...**` 的收尾位置（返回第二个 `*` 的下标）。
+fn find_double_star(chars: &[char], from: usize) -> Option<usize> {
+    (from..chars.len().saturating_sub(1)).find(|&i| chars[i] == '*' && chars[i + 1] == '*')
+}
+
+/// 行内 Markdown 渲染：`**粗体**`、`` `行内代码` ``、`[文字](链接)`。
+///
+/// 只做"看起来对"的轻量解析，不追求 CommonMark 完备；任何不配对的标记
+/// 都原样落回文本，绝不吞字符。
+fn inline_markdown(text: &str, base: Style) -> Vec<Span<'static>> {
+    let chars: Vec<char> = text.chars().collect();
+    let mut spans: Vec<Span<'static>> = Vec::new();
+    let mut buf = String::new();
+    let mut i = 0usize;
+
+    while i < chars.len() {
+        // **bold**
+        if chars[i] == '*' && chars.get(i + 1) == Some(&'*') {
+            if let Some(end) = find_double_star(&chars, i + 2) {
+                if end > i + 2 {
+                    if !buf.is_empty() {
+                        spans.push(Span::styled(std::mem::take(&mut buf), base));
+                    }
+                    let inner: String = chars[i + 2..end].iter().collect();
+                    spans.push(Span::styled(inner, base.add_modifier(Modifier::BOLD)));
+                    i = end + 2;
+                    continue;
+                }
+            }
+        }
+        // `inline code`
+        if chars[i] == '`' {
+            if let Some(rel) = chars[i + 1..].iter().position(|c| *c == '`') {
+                let end = i + 1 + rel;
+                if end > i + 1 {
+                    if !buf.is_empty() {
+                        spans.push(Span::styled(std::mem::take(&mut buf), base));
+                    }
+                    let inner: String = chars[i + 1..end].iter().collect();
+                    spans.push(Span::styled(inner, Style::default().fg(Color::Yellow)));
+                    i = end + 1;
+                    continue;
+                }
+            }
+        }
+        // [text](url)
+        if chars[i] == '[' {
+            if let Some(rel) = chars[i + 1..].iter().position(|c| *c == ']') {
+                let close = i + 1 + rel;
+                if chars.get(close + 1) == Some(&'(') {
+                    if let Some(rel2) = chars[close + 2..].iter().position(|c| *c == ')') {
+                        let end = close + 2 + rel2;
+                        if !buf.is_empty() {
+                            spans.push(Span::styled(std::mem::take(&mut buf), base));
+                        }
+                        let label: String = chars[i + 1..close].iter().collect();
+                        spans.push(Span::styled(label, base.add_modifier(Modifier::UNDERLINED)));
+                        let url: String = chars[close + 2..end].iter().collect();
+                        if !url.is_empty() {
+                            spans.push(Span::styled(
+                                format!(" ({url})"),
+                                Style::default().fg(Color::DarkGray),
+                            ));
+                        }
+                        i = end + 1;
+                        continue;
+                    }
+                }
+            }
+        }
+        buf.push(chars[i]);
+        i += 1;
+    }
+
+    if !buf.is_empty() {
+        spans.push(Span::styled(buf, base));
+    }
+    if spans.is_empty() {
+        spans.push(Span::styled(String::new(), base));
+    }
+    spans
+}
+
+/// 单行 Markdown → ratatui Line（标题/列表/引用/分隔线/行内样式）。
+fn markdown_line(line: &str) -> Line<'static> {
+    let trimmed = line.trim_start();
+    if trimmed.is_empty() {
+        return Line::default();
+    }
+    let indent = line.len().saturating_sub(trimmed.len()).min(8);
+    let pad = " ".repeat(indent);
+
+    if matches!(trimmed, "---" | "***" | "___") {
+        return Line::from(Span::styled(
+            "─".repeat(48),
+            Style::default().fg(Color::DarkGray),
+        ));
+    }
+
+    for (prefix, color) in [
+        ("### ", Color::Cyan),
+        ("## ", Color::Cyan),
+        ("# ", Color::Yellow),
+    ] {
+        if let Some(rest) = trimmed.strip_prefix(prefix) {
+            let mut spans = vec![Span::styled(
+                format!("{pad}{prefix}"),
+                Style::default().fg(color).add_modifier(Modifier::BOLD),
+            )];
+            spans.extend(inline_markdown(
+                rest,
+                Style::default().fg(color).add_modifier(Modifier::BOLD),
+            ));
+            return Line::from(spans);
+        }
+    }
+
+    if let Some(rest) = trimmed.strip_prefix("> ") {
+        let mut spans = vec![Span::styled(
+            format!("{pad}│ "),
+            Style::default().fg(Color::DarkGray),
+        )];
+        spans.extend(inline_markdown(
+            rest,
+            Style::default()
+                .fg(Color::DarkGray)
+                .add_modifier(Modifier::ITALIC),
+        ));
+        return Line::from(spans);
+    }
+
+    for bullet in ["- ", "* ", "+ "] {
+        if let Some(rest) = trimmed.strip_prefix(bullet) {
+            let mut spans = vec![Span::styled(
+                format!("{pad}• "),
+                Style::default().fg(Color::Cyan),
+            )];
+            spans.extend(inline_markdown(rest, Style::default()));
+            return Line::from(spans);
+        }
+    }
+
+    // 有序列表 `12. item`
+    let digits: String = trimmed.chars().take_while(|c| c.is_ascii_digit()).collect();
+    if !digits.is_empty() {
+        let after = &trimmed[digits.len()..];
+        if let Some(rest) = after.strip_prefix(". ") {
+            let mut spans = vec![Span::styled(
+                format!("{pad}{digits}. "),
+                Style::default().fg(Color::Cyan),
+            )];
+            spans.extend(inline_markdown(rest, Style::default()));
+            return Line::from(spans);
+        }
+    }
+
+    Line::from(inline_markdown(line, Style::default()))
+}
+
+/// 单字符显示宽度：CJK / emoji 占 2 列，组合符占 0 列。
+///
+/// 光标定位与表格对齐都必须用显示宽度，而不是 `chars().count()`：
+/// 8 个汉字占 16 列，按字符数算光标会停在文字中间。
+fn char_width(ch: char) -> usize {
+    unicode_width::UnicodeWidthChar::width(ch).unwrap_or(0)
+}
+
+fn display_width(text: &str) -> usize {
+    text.chars().map(char_width).sum()
+}
+
+/// 计算光标布局：返回 (单行水平滚动起点, 光标列（显示宽度）, 光标所在逻辑行)。
+fn cursor_layout(
+    chars: &[char],
+    cursor_pos: usize,
+    inner_width: usize,
+    single_line: bool,
+) -> (usize, usize, usize) {
+    let cursor = cursor_pos.min(chars.len());
+    let line = chars[..cursor].iter().filter(|ch| **ch == '\n').count();
+    // 多行时光标列必须从**当前行行首**算，否则会把前面几行的宽度也算进去。
+    let line_start = chars[..cursor]
+        .iter()
+        .rposition(|ch| *ch == '\n')
+        .map(|index| index + 1)
+        .unwrap_or(0);
+
+    let horizontal_start = if single_line && inner_width > 0 {
+        let mut start = 0usize;
+        while start < cursor {
+            let width: usize = chars[start..cursor].iter().map(|ch| char_width(*ch)).sum();
+            if width < inner_width {
+                break;
+            }
+            start += 1;
+        }
+        start
+    } else {
+        0
+    };
+
+    let col_start = if single_line {
+        horizontal_start.min(cursor)
+    } else {
+        line_start.min(cursor)
+    };
+    let col: usize = chars[col_start..cursor].iter().map(|ch| char_width(*ch)).sum();
+    (horizontal_start, col, line)
+}
+
+/// 按显示宽度截断，超出部分用 `…` 收尾。
+fn truncate_display(text: &str, max_width: usize) -> String {
+    if display_width(text) <= max_width {
+        return text.to_string();
+    }
+    let mut out = String::new();
+    let mut width = 0usize;
+    for ch in text.chars() {
+        let cw = char_width(ch);
+        if width + cw > max_width.saturating_sub(1) {
+            break;
+        }
+        out.push(ch);
+        width += cw;
+    }
+    out.push('…');
+    out
+}
+
+/// 按显示宽度右补空格，保证表格列对齐。
+fn pad_display(text: &str, width: usize) -> String {
+    let w = display_width(text);
+    if w >= width {
+        text.to_string()
+    } else {
+        format!("{}{}", text, " ".repeat(width - w))
+    }
+}
+
+/// `| a | b |` → `["a", "b"]`；不是表格行返回 None。
+fn split_table_row(line: &str) -> Option<Vec<String>> {
+    let trimmed = line.trim();
+    if !trimmed.starts_with('|') || !trimmed.ends_with('|') || trimmed.len() < 2 {
+        return None;
+    }
+    let inner = &trimmed[1..trimmed.len() - 1];
+    Some(inner.split('|').map(|cell| cell.trim().to_string()).collect())
+}
+
+/// 表格分隔行：`|---|:--:|`。
+fn is_table_separator(line: &str) -> bool {
+    let Some(cells) = split_table_row(line) else {
+        return false;
+    };
+    !cells.is_empty()
+        && cells.iter().all(|cell| {
+            let core = cell.trim_matches(':');
+            !core.is_empty() && core.chars().all(|ch| ch == '-')
+        })
+}
+
+/// 把从 `lines[0]` 开始的一张 Markdown 表格渲染成对齐文本。
+///
+/// 边框只用 ASCII（`|` `-` `+`）：`│`/`┌` 是 East Asian Ambiguous 宽度，
+/// 在 CJK 字体下会被终端按 2 列渲染，中文表格必然错位。
+fn render_table_block(
+    lines: &[&str],
+    max_width: usize,
+) -> Option<(Vec<Line<'static>>, usize)> {
+    if lines.len() < 2 || !is_table_separator(lines[1]) {
+        return None;
+    }
+    let header = split_table_row(lines[0])?;
+    if header.is_empty() {
+        return None;
+    }
+
+    let mut consumed = 2usize;
+    let mut body: Vec<Vec<String>> = Vec::new();
+    while consumed < lines.len() {
+        let Some(row) = split_table_row(lines[consumed]) else {
+            break;
+        };
+        if is_table_separator(lines[consumed]) {
+            break;
+        }
+        body.push(row);
+        consumed += 1;
+    }
+
+    const MAX_COL_WIDTH: usize = 28;
+    // 每列固定开销：`| ` + ` `。
+    const COL_OVERHEAD: usize = 3;
+
+    let cols = header
+        .len()
+        .max(body.iter().map(Vec::len).max().unwrap_or(0));
+    if cols == 0 {
+        return None;
+    }
+
+    // 先按内容算自然宽度，再按终端可用宽度收缩，避免 Paragraph 折行把表格撕开。
+    let width_cap = {
+        let usable = max_width.saturating_sub(cols * COL_OVERHEAD + 1);
+        (usable / cols).clamp(3, MAX_COL_WIDTH)
+    };
+
+    let mut widths = vec![3usize; cols];
+    for (i, cell) in header.iter().enumerate() {
+        widths[i] = widths[i].max(display_width(cell).min(width_cap));
+    }
+    for row in &body {
+        for (i, cell) in row.iter().enumerate() {
+            if i < cols {
+                widths[i] = widths[i].max(display_width(cell).min(width_cap));
+            }
+        }
+    }
+
+    let border = |left: char, mid: char, right: char| -> Line<'static> {
+        let body: String = widths
+            .iter()
+            .map(|w| "-".repeat(w + 2))
+            .collect::<Vec<_>>()
+            .join(&mid.to_string());
+        Line::from(Span::styled(
+            format!("{left}{body}{right}"),
+            Style::default().fg(Color::DarkGray),
+        ))
+    };
+
+    let mut out = vec![border('+', '+', '+')];
+
+    let render_row = |cells: &[String], bold: bool| -> Line<'static> {
+        let mut spans: Vec<Span<'static>> = Vec::new();
+        for (i, width) in widths.iter().enumerate() {
+            let raw = cells.get(i).map(String::as_str).unwrap_or("");
+            let text = pad_display(&truncate_display(raw, width_cap), *width);
+            let style = if bold {
+                Style::default().add_modifier(Modifier::BOLD)
+            } else {
+                Style::default()
+            };
+            spans.push(Span::styled("| ", Style::default().fg(Color::DarkGray)));
+            spans.push(Span::styled(text, style));
+            spans.push(Span::styled(" ", Style::default().fg(Color::DarkGray)));
+        }
+        spans.push(Span::styled("|", Style::default().fg(Color::DarkGray)));
+        Line::from(spans)
+    };
+
+    out.push(render_row(&header, true));
+    out.push(border('+', '+', '+'));
+    for row in &body {
+        out.push(render_row(row, false));
+    }
+    out.push(border('+', '+', '+'));
+
+    Some((out, consumed))
+}
+
 pub struct TuiApp {
     client: Arc<nova_client::Client>,
     /// 设置缓存：渲染路径是同步的，不能在渲染时就地 await RPC。
     settings: Option<nova_core::services::settings::AppSettings>,
     conversation_id: String,
-    events: mpsc::UnboundedReceiver<(String, Value)>,
+    events: mpsc::Receiver<(String, Value)>,
     messages: Vec<ChatItem>,
     // 输入编辑状态
     input: String,
@@ -232,19 +594,17 @@ impl TuiApp {
             })
             .unwrap_or_default();
 
-        // 内核事件 → TUI 通道（事件泵任务）。
-        let (tx, rx) = mpsc::unbounded_channel();
+        // 内核事件 → TUI 有界通道（事件泵任务）。
+        let (tx, rx) = mpsc::channel(4096);
         let mut source = client.subscribe();
         tokio::spawn(async move {
-            loop {
-                match source.recv().await {
-                    Ok(event) => {
-                        if tx.send(event).is_err() {
-                            break;
-                        }
+            while let Some(event) = source.recv().await {
+                match tx.try_send(event) {
+                    Ok(()) => {}
+                    Err(mpsc::error::TrySendError::Full((name, _))) => {
+                        tracing::warn!(event = %name, "TUI event queue full; dropping event due to backpressure");
                     }
-                    Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
-                    Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+                    Err(mpsc::error::TrySendError::Closed(_)) => break,
                 }
             }
         });
@@ -280,7 +640,14 @@ impl TuiApp {
     pub async fn run(mut self) -> anyhow::Result<()> {
         enable_raw_mode()?;
         let mut stdout = io::stdout();
-        execute!(stdout, EnterAlternateScreen, EnableMouseCapture)?;
+        // Bracketed paste：不开的话，粘贴多行文本会被终端拆成一串回车，
+        // 每行都被当成一次提交；开了之后整段粘贴只会触发一个 Event::Paste。
+        execute!(
+            stdout,
+            EnterAlternateScreen,
+            EnableMouseCapture,
+            EnableBracketedPaste
+        )?;
         let backend = CrosstermBackend::new(stdout);
         let mut terminal = Terminal::new(backend)?;
 
@@ -290,7 +657,8 @@ impl TuiApp {
         execute!(
             terminal.backend_mut(),
             LeaveAlternateScreen,
-            DisableMouseCapture
+            DisableMouseCapture,
+            DisableBracketedPaste
         )?;
         terminal.show_cursor()?;
         result
@@ -300,17 +668,35 @@ impl TuiApp {
         &mut self,
         terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
     ) -> anyhow::Result<()> {
+        // 只在"状态真的变了"时重绘：原先每 40ms 无条件 draw，长会话下
+        // 每帧都要把整段 transcript 重新排版，空闲时也持续吃 CPU。
+        let mut dirty = true;
         while !self.should_exit {
-            self.drain_events();
-            terminal.draw(|frame| self.render(frame))?;
+            if self.drain_events() {
+                dirty = true;
+            }
+            if dirty {
+                terminal.draw(|frame| self.render(frame))?;
+                dirty = false;
+            }
 
             if event::poll(Duration::from_millis(40))? {
                 match event::read()? {
                     Event::Key(key) if key.kind == KeyEventKind::Press => {
                         self.handle_key(key).await;
+                        dirty = true;
                     }
                     Event::Mouse(mouse) => {
                         self.handle_mouse(mouse);
+                        dirty = true;
+                    }
+                    Event::Paste(text) => {
+                        // 统一换行，避免 \r\n 在输入框里留下 ^M。
+                        self.insert_str(&text.replace("\r\n", "\n").replace('\r', "\n"));
+                        dirty = true;
+                    }
+                    Event::Resize(_, _) => {
+                        dirty = true;
                     }
                     _ => {}
                 }
@@ -331,10 +717,14 @@ impl TuiApp {
         }
     }
 
-    fn drain_events(&mut self) {
+    /// 把已到达的事件全部消化掉，返回是否真的改变了界面状态。
+    fn drain_events(&mut self) -> bool {
+        let mut changed = false;
         while let Ok((name, payload)) = self.events.try_recv() {
             self.apply_event(&name, payload);
+            changed = true;
         }
+        changed
     }
 
     /// 统一 RPC 入口：调用内核方法并把 JSON 还原成强类型。
@@ -467,6 +857,15 @@ impl TuiApp {
                 self.status = "idle".to_string();
                 self.messages
                     .push(ChatItem::Note(format!("[error] {}", error)));
+            }
+            AgentDomainEvent::TurnSteered { prompt, .. } => {
+                self.status = "steering".to_string();
+                self.messages
+                    .push(ChatItem::Note(format!("[steer] {}", prompt)));
+            }
+            AgentDomainEvent::TurnQueued { queue_length, .. } => {
+                self.messages
+                    .push(ChatItem::Note(format!("[queued] #{}", queue_length)));
             }
             AgentDomainEvent::TurnStarted { .. } => {}
         }
@@ -649,10 +1048,10 @@ impl TuiApp {
                 let mut items = Vec::new();
                 for (name, desc) in candidates {
                     let lower = name.to_lowercase();
-                    if seen.insert(lower.clone()) {
-                        if query.is_empty()
+                    if seen.insert(lower.clone())
+                        && (query.is_empty()
                             || lower.contains(&query)
-                            || desc.to_lowercase().contains(&query)
+                            || desc.to_lowercase().contains(&query))
                         {
                             items.push(PopupDisplayItem {
                                 name,
@@ -660,7 +1059,6 @@ impl TuiApp {
                                 desc,
                             });
                         }
-                    }
                 }
                 ("选择 AI 模型", items)
             }
@@ -700,10 +1098,10 @@ impl TuiApp {
                 let mut items = Vec::new();
                 for (name, desc) in candidates {
                     let lower = name.to_lowercase();
-                    if seen.insert(lower.clone()) {
-                        if query.is_empty()
+                    if seen.insert(lower.clone())
+                        && (query.is_empty()
                             || lower.contains(&query)
-                            || desc.to_lowercase().contains(&query)
+                            || desc.to_lowercase().contains(&query))
                         {
                             items.push(PopupDisplayItem {
                                 name,
@@ -711,7 +1109,6 @@ impl TuiApp {
                                 desc,
                             });
                         }
-                    }
                 }
                 ("选择模型提供商", items)
             }
@@ -761,7 +1158,9 @@ impl TuiApp {
                 _ => None,
             };
             if let Some(action) = action {
-                let prompt = self.permission.take().expect("permission checked");
+                let Some(prompt) = self.permission.take() else {
+                    return;
+                };
                 let result = self
                     .client
                     .invoke(
@@ -1582,43 +1981,40 @@ impl TuiApp {
                         }
                     }
                     if !content.is_empty() {
+                        let content_lines: Vec<&str> = content.lines().collect();
                         let mut in_code_block = false;
-                        for line in content.lines() {
+                        let mut index = 0usize;
+                        while index < content_lines.len() {
+                            let line = content_lines[index];
                             if line.starts_with("```") {
                                 in_code_block = !in_code_block;
                                 lines.push(Line::from(Span::styled(
                                     line.to_string(),
                                     Style::default().fg(Color::Yellow),
                                 )));
-                            } else if in_code_block {
+                                index += 1;
+                                continue;
+                            }
+                            if in_code_block {
                                 lines.push(Line::from(vec![
                                     Span::styled(" │ ", Style::default().fg(Color::DarkGray)),
                                     Span::styled(line.to_string(), Style::default().fg(Color::Green)),
                                 ]));
-                            } else if line.starts_with("# ") {
-                                lines.push(Line::from(Span::styled(
-                                    line.to_string(),
-                                    Style::default()
-                                        .fg(Color::Yellow)
-                                        .add_modifier(Modifier::BOLD),
-                                )));
-                            } else if line.starts_with("## ") || line.starts_with("### ") {
-                                lines.push(Line::from(Span::styled(
-                                    line.to_string(),
-                                    Style::default()
-                                        .fg(Color::Cyan)
-                                        .add_modifier(Modifier::BOLD),
-                                )));
-                            } else if line.starts_with("> ") {
-                                lines.push(Line::from(Span::styled(
-                                    line.to_string(),
-                                    Style::default()
-                                        .fg(Color::DarkGray)
-                                        .add_modifier(Modifier::ITALIC),
-                                )));
-                            } else {
-                                lines.push(Line::from(line.to_string()));
+                                index += 1;
+                                continue;
                             }
+                            // 表格必须整块消费，并按消息区宽度收缩列宽。
+                            if let Some((table, consumed)) = render_table_block(
+                                &content_lines[index..],
+                                chunks[0].width as usize,
+                            ) {
+                                lines.extend(table);
+                                index += consumed;
+                                continue;
+                            }
+                            // 标题/列表/引用/行内粗体与代码统一走 markdown_line。
+                            lines.push(markdown_line(line));
+                            index += 1;
                         }
                     }
                     lines.push(Line::default());
@@ -1709,16 +2105,24 @@ impl TuiApp {
 
         // ── 输入区 ──
         let inner_width = chunks[1].width.saturating_sub(2) as usize;
+
+        // 光标与水平滚动一律按**显示宽度**算（CJK/emoji 占 2 列）。
+        let input_chars: Vec<char> = self.input.chars().collect();
+        let (horizontal_start, cursor_col, cursor_line) =
+            cursor_layout(&input_chars, self.cursor_pos, inner_width, line_count == 1);
+
         let input_widget = if line_count == 1 {
-            let chars: Vec<char> = self.input.chars().collect();
-            let display_start = if self.cursor_pos >= inner_width {
-                self.cursor_pos - inner_width + 1
-            } else {
-                0
-            };
-            let visible_input: String =
-                chars.iter().skip(display_start).take(inner_width).collect();
-            Paragraph::new(visible_input)
+            let mut visible = String::new();
+            let mut width = 0usize;
+            for ch in input_chars.iter().skip(horizontal_start) {
+                let cw = char_width(*ch);
+                if width + cw > inner_width {
+                    break;
+                }
+                visible.push(*ch);
+                width += cw;
+            }
+            Paragraph::new(visible)
         } else {
             Paragraph::new(self.input.as_str()).wrap(Wrap { trim: false })
         };
@@ -1738,32 +2142,9 @@ impl TuiApp {
 
         // 光标锚定真实输入位置（支持多行与单行水平平移）
         if self.permission.is_none() {
-            let mut cur_line: u16 = 0;
-            let mut cur_col: u16 = 0;
-            for (i, ch) in self.input.chars().enumerate() {
-                if i == self.cursor_pos {
-                    break;
-                }
-                if ch == '\n' {
-                    cur_line += 1;
-                    cur_col = 0;
-                } else {
-                    cur_col += 1;
-                }
-            }
-            let effective_col = if line_count == 1 {
-                let display_start = if self.cursor_pos >= inner_width {
-                    self.cursor_pos - inner_width + 1
-                } else {
-                    0
-                };
-                (self.cursor_pos - display_start) as u16
-            } else {
-                cur_col
-            };
-            let cursor_x = (chunks[1].x + 1 + effective_col)
+            let cursor_x = (chunks[1].x + 1 + cursor_col as u16)
                 .min(chunks[1].x + chunks[1].width.saturating_sub(2));
-            let cursor_y = (chunks[1].y + 1 + cur_line)
+            let cursor_y = (chunks[1].y + 1 + cursor_line as u16)
                 .min(chunks[1].y + chunks[1].height.saturating_sub(2));
             frame.set_cursor_position((cursor_x, cursor_y));
         }
@@ -1885,5 +2266,129 @@ impl TuiApp {
         };
         let status_line = Paragraph::new(status).style(Style::default().fg(Color::DarkGray));
         frame.render_widget(status_line, chunks[2]);
+    }
+}
+
+#[cfg(test)]
+mod markdown_tests {
+    use super::*;
+
+    fn flatten(spans: &[Span<'static>]) -> String {
+        spans
+            .iter()
+            .map(|span| span.content.as_ref().to_string())
+            .collect()
+    }
+
+    #[test]
+    fn inline_markdown_splits_bold_code_and_link() {
+        let spans = inline_markdown("a **b** `c` [d](http://e)", Style::default());
+        assert_eq!(flatten(&spans), "a b c d (http://e)");
+        assert!(spans
+            .iter()
+            .any(|span| span.style.add_modifier.contains(Modifier::BOLD)));
+        assert!(spans.iter().any(|span| span.style.fg == Some(Color::Yellow)));
+    }
+
+    #[test]
+    fn inline_markdown_keeps_unbalanced_markers() {
+        assert_eq!(flatten(&inline_markdown("a ** b", Style::default())), "a ** b");
+        assert_eq!(flatten(&inline_markdown("a ` b", Style::default())), "a ` b");
+        assert_eq!(flatten(&inline_markdown("[x](", Style::default())), "[x](");
+    }
+
+    #[test]
+    fn display_width_counts_cjk_as_two_columns() {
+        assert_eq!(display_width("阿凡达"), 6);
+        assert_eq!(display_width("ab"), 2);
+        assert_eq!(display_width("a阿"), 3);
+        assert_eq!(char_width('阿'), 2);
+    }
+
+    #[test]
+    fn cursor_layout_uses_display_width_for_cjk() {
+        let chars: Vec<char> = "阿凡达沱寨地方".chars().collect();
+        // 每个汉字占 2 列；按字符数算光标会停在文字中间。
+        assert_eq!(
+            cursor_layout(&chars, chars.len(), 60, true),
+            (0, chars.len() * 2, 0)
+        );
+
+        // 单行超宽时按列滚动：内宽 4，6 个 ASCII 字符应丢掉前 3 个。
+        let ascii: Vec<char> = "abcdef".chars().collect();
+        assert_eq!(cursor_layout(&ascii, 6, 4, true), (3, 3, 0));
+
+        // 多行只算当前行的列，行号按换行累计。
+        let multi: Vec<char> = "ab\ncd".chars().collect();
+        assert_eq!(cursor_layout(&multi, multi.len(), 60, false), (0, 2, 1));
+    }
+
+    #[test]
+    fn table_block_aligns_cjk_cells() {
+        let lines = [
+            "| 序号 | 名称 |",
+            "| --- | --- |",
+            "| 1 | 需求梳理 |",
+            "| 2 | 编码 |",
+            "",
+            "尾巴",
+        ];
+        let (rendered, consumed) =
+            render_table_block(&lines, 100).expect("should parse as table");
+        assert_eq!(consumed, 4);
+        // 上边框 + 表头 + 分隔 + 两行数据 + 下边框
+        assert_eq!(rendered.len(), 6);
+        let text: Vec<String> = rendered
+            .iter()
+            .map(|line| {
+                line.spans
+                    .iter()
+                    .map(|span| span.content.as_ref())
+                    .collect::<String>()
+            })
+            .collect();
+        assert!(text[0].starts_with('+'));
+        assert!(text[5].starts_with('+'));
+        assert!(text[1].contains("序号"));
+        assert!(text[3].contains("需求梳理"));
+        // 中文列宽按 2 列计算后，每条数据行的竖线数量必须一致
+        let bars: Vec<usize> = [1usize, 3, 4]
+            .iter()
+            .map(|index| text[*index].chars().filter(|c| *c == '|').count())
+            .collect();
+        assert!(bars.iter().all(|count| *count == 3), "bars={bars:?}");
+    }
+
+    #[test]
+    fn table_block_shrinks_to_terminal_width() {
+        let lines = [
+            "| 序号 | 名称 | 类型 | 状态 |",
+            "| --- | --- | --- | --- |",
+            "| 1 | 一个非常非常非常长的中文单元格 | 分析 | 已完成 |",
+        ];
+        let (rendered, _) = render_table_block(&lines, 40).expect("table");
+        for line in &rendered {
+            let width: usize = line
+                .spans
+                .iter()
+                .map(|span| display_width(span.content.as_ref()))
+                .sum();
+            assert!(width <= 40, "row should fit 40 cols, got {width}");
+        }
+    }
+
+    #[test]
+    fn table_block_rejects_non_table() {
+        assert!(render_table_block(&["| a | b |", "| c | d |"], 80).is_none());
+        assert!(render_table_block(&["普通文本"], 80).is_none());
+    }
+
+    #[test]
+    fn markdown_line_handles_bullets_headings_and_rules() {
+        assert!(markdown_line("- item").spans[0].content.starts_with('•'));
+        assert!(markdown_line("1. item").spans[0].content.starts_with("1."));
+        assert_eq!(markdown_line("## Title").spans[0].content.as_ref(), "## ");
+        assert!(markdown_line("---").spans[0].content.starts_with('─'));
+        assert!(markdown_line("").spans.is_empty());
     }
 }

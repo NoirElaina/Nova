@@ -37,6 +37,7 @@ pub mod plan;
 pub mod hooks;
 // 持久化权限规则管理命令入口。
 pub mod permission_rules;
+pub mod collaboration;
 
 use tauri::{AppHandle, Manager};
 

@@ -5,6 +5,7 @@ use tauri::AppHandle;
 pub async fn user_terminal_start(
     app: AppHandle,
     conversation_id: Option<String>,
+    terminal_id: Option<String>,
     rows: Option<u16>,
     cols: Option<u16>,
 ) -> Result<UserTerminalInfo, String> {
@@ -23,6 +24,7 @@ pub async fn user_terminal_start(
     user_terminal::start_session(
         app,
         conversation_id.as_deref(),
+        terminal_id.as_deref(),
         std::path::Path::new(&workspace_root),
         &active_terminal,
         rows,
@@ -31,20 +33,28 @@ pub async fn user_terminal_start(
 }
 
 #[tauri::command]
-pub fn user_terminal_write(conversation_id: Option<String>, data: String) -> Result<(), String> {
-    user_terminal::write_session(conversation_id.as_deref(), data)
+pub fn user_terminal_write(
+    conversation_id: Option<String>,
+    terminal_id: Option<String>,
+    data: String,
+) -> Result<(), String> {
+    user_terminal::write_session(conversation_id.as_deref(), terminal_id.as_deref(), data)
 }
 
 #[tauri::command]
 pub fn user_terminal_resize(
     conversation_id: Option<String>,
+    terminal_id: Option<String>,
     rows: Option<u16>,
     cols: Option<u16>,
 ) -> Result<(), String> {
-    user_terminal::resize_session(conversation_id.as_deref(), rows, cols)
+    user_terminal::resize_session(conversation_id.as_deref(), terminal_id.as_deref(), rows, cols)
 }
 
 #[tauri::command]
-pub fn user_terminal_stop(conversation_id: Option<String>) -> Result<(), String> {
-    user_terminal::stop_session(conversation_id.as_deref())
+pub fn user_terminal_stop(
+    conversation_id: Option<String>,
+    terminal_id: Option<String>,
+) -> Result<(), String> {
+    user_terminal::stop_terminal(conversation_id.as_deref(), terminal_id.as_deref())
 }

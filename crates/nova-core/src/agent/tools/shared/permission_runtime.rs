@@ -30,11 +30,12 @@ pub async fn await_permission_and_recheck(
     request_id: String,
     payload: String,
 ) -> Result<(), String> {
-    let _ = core.emit_agent(crate::agent::events::AgentDomainEvent::PermissionRequested {
+    core.emit_agent(crate::agent::events::AgentDomainEvent::PermissionRequested {
             turn_id: conversation_id.unwrap_or_default().to_string(),
             request_id: request_id.clone(),
             tool_name: tool_name.to_string(),
             payload: payload.clone(),
+            trace_id: core.active_trace_id(conversation_id, None),
         },
     );
 

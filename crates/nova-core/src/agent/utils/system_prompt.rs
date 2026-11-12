@@ -139,21 +139,31 @@ pub fn load_system_prompt(
 
     let bundle = agent_bundles::active_bundle(core, conversation_id);
 
-    // 基础提示词：挂载了带提示词的智能体套件时**完整替换**默认系统提示词——
-    // 用户定义的是独立智能体，不叠加 Nova 默认的工程协议；为空时回落默认 system_prompt.md。
-    let prompt = match &bundle {
-        Some(b) if !b.prompt.trim().is_empty() => b.prompt.trim().to_string(),
-        _ => {
-            #[cfg(debug_assertions)]
-            {
-                let path = main_prompt_path();
-                read_non_empty_file(&path).unwrap_or_else(|| DEFAULT_SYSTEM_PROMPT.trim().to_string())
-            }
-            #[cfg(not(debug_assertions))]
-            {
-                DEFAULT_SYSTEM_PROMPT.trim().to_string()
-            }
+    // 基础系统提示词：保留 Nova 默认的核心工程协议、操作规范与工具定义。
+    let base_prompt = {
+        #[cfg(debug_assertions)]
+        {
+            let path = main_prompt_path();
+            read_non_empty_file(&path).unwrap_or_else(|| DEFAULT_SYSTEM_PROMPT.trim().to_string())
         }
+        #[cfg(not(debug_assertions))]
+        {
+            DEFAULT_SYSTEM_PROMPT.trim().to_string()
+        }
+    };
+
+    // 智能体套件提示词以 Overlay（叠加）模式注入：
+    // 底座工具协议与行为准则恒常自洽，专项人设与指令作为特化目标附加在核心协议之后。
+    let prompt = match &bundle {
+        Some(b) if !b.prompt.trim().is_empty() => {
+            format!(
+                "{}\n\n# Active Agent Persona & Objectives\nYou are currently operating under the specialized Agent Profile: **{}**.\n\n## Custom Directives & Guidelines:\n{}\n",
+                base_prompt,
+                b.name,
+                b.prompt.trim()
+            )
+        }
+        _ => base_prompt,
     };
 
     // 将 workspace 路径注入提示词（bundle 提示词同样支持占位符）。
@@ -163,8 +173,6 @@ pub fn load_system_prompt(
     // 将平台信息注入提示词。
     let platform = if cfg!(target_os = "windows") {
         "Windows"
-    } else if cfg!(target_os = "macos") {
-        "macOS"
     } else {
         "Linux"
     };

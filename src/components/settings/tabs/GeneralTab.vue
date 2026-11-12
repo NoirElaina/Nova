@@ -1,6 +1,7 @@
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue'
+import { computed, onMounted, onUnmounted, ref } from 'vue'
 import { invoke } from '@tauri-apps/api/core'
+import { getSandboxStatus, type SandboxStatus } from '@/features/chat/services/chat-api'
 import { Button } from '@/components/ui/button'
 import { Checkbox } from '@/components/ui/checkbox'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
@@ -31,6 +32,8 @@ const theme = ref<UiTheme>(getStoredUiTheme())
 const language = ref<UiLanguage>(getStoredUiLanguage())
 const enableAppLog = ref(false)
 const approvalPolicy = ref<'always_ask' | 'on_request' | 'never'>('on_request')
+const sandboxPolicy = ref<'danger-full-access' | 'workspace-write' | 'read-only'>('danger-full-access')
+const sandboxStatus = ref<SandboxStatus | null>(null)
 const progressiveToolDisclosure = ref(true)
 const permissionRules = ref<{ kind: string; signature: string; createdAtMs: number }[]>([])
 const availableTerminals = ref<TerminalInfo[]>([])
@@ -60,6 +63,11 @@ const localeTexts = {
     approvalPolicyAlwaysAsk: '每次都问（严格）',
     approvalPolicyOnRequest: '仅风险操作询问（推荐）',
     approvalPolicyNever: '从不询问（完全自动）',
+    sandboxPolicyLabel: '终端写入沙箱',
+    sandboxPolicyDanger: '不启用沙箱（danger-full-access）',
+    sandboxPolicyWorkspace: '仅工作区可写（workspace-write，不限联网）',
+    sandboxPolicyReadOnly: '全局只读（read-only，不限联网）',
+    sandboxDriverActive: '当前生效驱动：',
     disclosureLabel: '渐进式工具披露',
     disclosureDesc: '低频工具不默认进入模型工具清单，由 AI 通过 LoadTool 按需加载，节省上下文。',
     rulesTitle: '已记住的权限规则',
@@ -93,6 +101,11 @@ const localeTexts = {
     approvalPolicyAlwaysAsk: 'Always ask (strict)',
     approvalPolicyOnRequest: 'Ask for risky only (recommended)',
     approvalPolicyNever: 'Never ask (fully automatic)',
+    sandboxPolicyLabel: 'Terminal write sandbox',
+    sandboxPolicyDanger: 'Disabled (danger-full-access)',
+    sandboxPolicyWorkspace: 'Workspace write only (network unrestricted)',
+    sandboxPolicyReadOnly: 'Read-only (network unrestricted)',
+    sandboxDriverActive: 'Active driver: ',
     disclosureLabel: 'Progressive tool disclosure',
     disclosureDesc: 'Low-frequency tools stay out of the default tool list; the AI loads them on demand via LoadTool, saving context.',
     rulesTitle: 'Remembered permission rules',
@@ -151,7 +164,11 @@ const loadSettings = async () => {
     const policy = settings.approvalPolicy
     approvalPolicy.value =
       policy === 'always_ask' || policy === 'never' ? policy : 'on_request'
+    const sbPolicy = settings.sandboxPolicy
+    sandboxPolicy.value =
+      sbPolicy === 'workspace-write' || sbPolicy === 'read-only' ? sbPolicy : 'danger-full-access'
     progressiveToolDisclosure.value = settings.progressiveToolDisclosure !== false
+    await refreshSandboxStatus()
 
     setStoredUiLanguage(nextLanguage)
     setStoredUiTheme(nextTheme)
@@ -199,11 +216,13 @@ const persistPreferences = async () => {
       enableAppLog: enableAppLog.value,
       terminalShell: terminalShell.value === 'auto' ? null : terminalShell.value,
       approvalPolicy: approvalPolicy.value,
+      sandboxPolicy: sandboxPolicy.value,
       progressiveToolDisclosure: progressiveToolDisclosure.value,
     }
 
     cachedSettings.value = nextSettings
     await invoke('save_settings', { settings: nextSettings })
+    await refreshSandboxStatus()
     window.dispatchEvent(new CustomEvent('settings-updated'))
   } catch (error) {
     console.error('Failed to save general settings:', error)
@@ -243,9 +262,23 @@ const onEnableAppLogChange = (checked: boolean | 'indeterminate') => {
   void persistPreferences()
 }
 
+const refreshSandboxStatus = async () => {
+  try {
+    sandboxStatus.value = await getSandboxStatus()
+  } catch {
+    sandboxStatus.value = null
+  }
+}
+
 const onApprovalPolicySelect = (value: string) => {
   approvalPolicy.value =
     value === 'always_ask' || value === 'never' ? value : 'on_request'
+  void persistPreferences()
+}
+
+const onSandboxPolicySelect = (value: string) => {
+  sandboxPolicy.value =
+    value === 'workspace-write' || value === 'read-only' ? value : 'danger-full-access'
   void persistPreferences()
 }
 
@@ -254,9 +287,18 @@ const onDisclosureChange = (checked: boolean | 'indeterminate') => {
   void persistPreferences()
 }
 
+const handleExternalSettingsUpdate = () => {
+  void loadSettings()
+}
+
 onMounted(() => {
   void loadSettings()
   void loadPermissionRules()
+  window.addEventListener('settings-updated', handleExternalSettingsUpdate)
+})
+
+onUnmounted(() => {
+  window.removeEventListener('settings-updated', handleExternalSettingsUpdate)
 })
 </script>
 
@@ -362,6 +404,25 @@ onMounted(() => {
               <SelectItem value="never">{{ t.approvalPolicyNever }}</SelectItem>
             </SelectContent>
           </Select>
+        </div>
+        <!-- 终端写入沙箱 -->
+        <div class="flex flex-col gap-1.5 border-t border-[#eef0f3] py-2.5 dark:border-[#2c2c2c]">
+          <div class="flex items-center justify-between gap-4">
+            <span class="text-[0.9rem] text-[#374151] dark:text-[#d7d7d7]">{{ t.sandboxPolicyLabel }}</span>
+            <Select :model-value="sandboxPolicy" @update:model-value="(value) => onSandboxPolicySelect(String(value))">
+              <SelectTrigger class="h-8 w-[240px] shrink-0">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="danger-full-access">{{ t.sandboxPolicyDanger }}</SelectItem>
+                <SelectItem value="workspace-write">{{ t.sandboxPolicyWorkspace }}</SelectItem>
+                <SelectItem value="read-only">{{ t.sandboxPolicyReadOnly }}</SelectItem>
+              </SelectContent>
+            </Select>
+          </div>
+          <p v-if="sandboxStatus" class="text-xs text-[#7b8494] dark:text-[#9ca3af]">
+            {{ t.sandboxDriverActive }}{{ sandboxStatus.driver }} — {{ sandboxStatus.summary }}
+          </p>
         </div>
         <!-- 渐进式工具披露 -->
         <div class="flex items-center justify-between gap-4 border-t border-[#eef0f3] py-2.5 dark:border-[#2c2c2c]">

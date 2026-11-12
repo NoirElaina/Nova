@@ -5,7 +5,7 @@ use crate::agent::lifecycle::hooks;
 
 /// 读取 hooks.toml 原文；文件不存在返回空串。
 pub fn get_hooks_toml(core: &crate::core::Core) -> Result<String, String> {
-    let path = hooks::hooks_file_path(&core)?;
+    let path = hooks::hooks_file_path(core)?;
     if !path.exists() {
         return Ok(String::new());
     }
@@ -16,7 +16,7 @@ pub fn get_hooks_toml(core: &crate::core::Core) -> Result<String, String> {
 /// 读取 hooks.toml 的结构化 JSON（表单式配置页用）；
 /// 文件不存在返回空配置。解析失败时返回错误，不静默吞掉。
 pub fn get_hooks_structured(core: &crate::core::Core) -> Result<serde_json::Value, String> {
-    let path = hooks::hooks_file_path(&core)?;
+    let path = hooks::hooks_file_path(core)?;
     if !path.exists() {
         let empty = hooks::HooksFile::default();
         return serde_json::to_value(&empty).map_err(|e| e.to_string());
@@ -32,7 +32,7 @@ pub fn get_hooks_structured(core: &crate::core::Core) -> Result<serde_json::Valu
 /// 空内容视为清空（删除文件）。
 pub fn save_hooks_toml(core: &crate::core::Core, content: String) -> Result<usize, String> {
     let handler_count = hooks::validate_hooks_toml(&content)?;
-    let path = hooks::hooks_file_path(&core)?;
+    let path = hooks::hooks_file_path(core)?;
 
     if content.trim().is_empty() {
         if path.exists() {

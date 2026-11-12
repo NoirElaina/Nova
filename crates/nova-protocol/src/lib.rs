@@ -4,6 +4,7 @@
 //! 桌面端只依赖本 crate，不链接任何内核实现。
 
 pub mod agent;
+pub mod errors;
 pub mod llm;
 pub mod mcp;
 pub mod misc;
@@ -11,3 +12,6 @@ pub mod path_display;
 pub mod rpc;
 pub mod session;
 pub mod settings;
+
+pub mod redact;
+pub mod sync;

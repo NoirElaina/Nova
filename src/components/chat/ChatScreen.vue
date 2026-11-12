@@ -15,9 +15,12 @@ import ChatActiveTurnBar from './ChatActiveTurnBar.vue';
 import BranchSidebar from './branch/BranchSidebar.vue';
 import MessageTimelineNavigator from './MessageTimelineNavigator.vue';
 import SelectionActionPopover from './SelectionActionPopover.vue';
-import SubagentPanel from './SubagentPanel.vue';
+
 import UserMessageBubble from './messages/UserMessageBubble.vue';
-import { buildAssistantTranscriptSegments } from '../../features/chat/utils/assistant-transcript';
+import {
+  buildAssistantTranscriptSegments,
+  filterToolEntriesForSegments,
+} from '../../features/chat/utils/assistant-transcript';
 import { estimateTextTokens } from '../../features/chat/services/chat-api';
 import { initBranchEvents } from '../../features/branch/branch-chat';
 
@@ -45,13 +48,139 @@ const assistantReasoning = computed(() => sessionStore.activeSession.assistantRe
 const assistantSegments = computed(() => sessionStore.activeSession.assistantSegments);
 const assistantTokenUsage = computed(() => sessionStore.activeSession.assistantTokenUsage);
 const turnStartedAt = computed(() => sessionStore.activeSession.currentTurnStartedAt);
-const currentTurnToolEntries = computed(() => sessionStore.activeSession.toolExecutionLogs);
+const allToolEntries = computed(() => sessionStore.activeSession.toolExecutionLogs);
+const currentTurnToolEntries = computed(() =>
+  filterToolEntriesForSegments(allToolEntries.value, assistantSegments.value),
+);
 const pendingQuestion = computed(() => sessionStore.activeSession.pendingQuestion);
 const pendingPermissionRequestId = computed(() => sessionStore.activeSession.pendingPermissionRequestId);
 const contextUsage = computed(() => sessionStore.activeSession.contextUsage);
 const contextCompacts = computed(() => sessionStore.activeSession.contextCompacts);
 const contextTokens = computed(() => sessionStore.activeSession.contextTokens);
 const chatError = computed(() => sessionStore.activeSession.chatError);
+const chatErrorInfo = computed(() => sessionStore.activeSession.chatErrorInfo);
+
+const errorDetails = computed(() => {
+  const info = chatErrorInfo.value;
+  if (!info) return null;
+
+  if (typeof info === "string") {
+    switch (info) {
+      case "contextWindowExceeded":
+        return {
+          badge: "上下文溢出",
+          title: "模型上下文窗口已满",
+          suggestion: "建议使用 /compact 压缩当前会话历史，或开启新会话继续任务。",
+          canCompact: true,
+        };
+      case "usageLimitExceeded":
+        return {
+          badge: "配额耗尽",
+          title: "模型服务用量达到上限",
+          suggestion: "请检查您的模型服务提供商额度或账单状态。",
+        };
+      case "modelNotFound":
+        return {
+          badge: "模型不存在",
+          title: "请求的模型不存在或无权访问",
+          suggestion: "请前往设置核对模型名称（Model ID）与提供商配置。",
+        };
+      case "unauthorized":
+        return {
+          badge: "鉴权失败",
+          title: "API 密钥无效或未授权 (401)",
+          suggestion: "请前往设置检查 API Key 与 Base URL 是否正确。",
+        };
+      case "badRequest":
+        return {
+          badge: "请求无效",
+          title: "发送的请求参数格式不被支持 (400)",
+          suggestion: "可能是系统提示词或工具参数格式不被该模型支持。",
+        };
+      case "internalServerError":
+        return {
+          badge: "服务端错误",
+          title: "模型提供商服务内部异常 (500)",
+          suggestion: "服务提供商暂时不可用，建议稍后重试或切换备用模型。",
+        };
+      case "cancelled":
+        return {
+          badge: "已取消",
+          title: "任务已被用户或系统取消",
+          suggestion: "",
+        };
+    }
+  }
+
+  if (typeof info === "object") {
+    if ("rateLimitExceeded" in info) {
+      const retryMs = (info as { rateLimitExceeded: { retry_after_ms: bigint | null } }).rateLimitExceeded.retry_after_ms;
+      const secHint = retryMs ? ` (建议等待约 ${Math.ceil(Number(retryMs) / 1000)} 秒)` : "";
+      return {
+        badge: "频率超限",
+        title: `触发服务提供商请求限流 (429)${secHint}`,
+        suggestion: "已达到 API 速率限制，稍等片刻后再次发送即可。",
+      };
+    }
+    if ("serverOverloaded" in info) {
+      const retryMs = (info as { serverOverloaded: { retry_after_ms: bigint | null } }).serverOverloaded.retry_after_ms;
+      const secHint = retryMs ? ` (建议等待约 ${Math.ceil(Number(retryMs) / 1000)} 秒)` : "";
+      return {
+        badge: "服务过载",
+        title: `模型服务提供商过载 (503)${secHint}`,
+        suggestion: "服务器正承受高负载，请稍后重试。",
+      };
+    }
+    if ("httpConnectionFailed" in info) {
+      const code = (info as { httpConnectionFailed: { http_status_code: number | null } }).httpConnectionFailed.http_status_code;
+      return {
+        badge: "网络异常",
+        title: `HTTP 连接失败${code ? ` [Status ${code}]` : ""}`,
+        suggestion: "请检查网络连接、代理设置或 API Base URL 地址是否可达。",
+      };
+    }
+    if ("responseStreamConnectionFailed" in info) {
+      return {
+        badge: "流式连接失败",
+        title: "未能建立流式响应连接",
+        suggestion: "流式 SSE/HTTP 握手中断，请检查网络稳定性及代理配置。",
+      };
+    }
+    if ("responseStreamDisconnected" in info) {
+      return {
+        badge: "连接中断",
+        title: "模型生成过程中网络中断",
+        suggestion: "连接在流式传输期间非正常断开，可直接重试生成。",
+      };
+    }
+    if ("responseTooManyFailedAttempts" in info) {
+      return {
+        badge: "重试超限",
+        title: "连续重试多次均失败",
+        suggestion: "瞬态重试已达最大上限，请核对网络与模型状态后重试。",
+      };
+    }
+    if ("toolExecutionFailed" in info) {
+      const toolName = (info as { toolExecutionFailed: { tool_name: string } }).toolExecutionFailed.tool_name;
+      return {
+        badge: "工具异常",
+        title: `工具 [${toolName}] 执行失败`,
+        suggestion: "底层工具执行返回错误，模型会根据报错自愈或请求人工协助。",
+      };
+    }
+    if ("permissionDenied" in info) {
+      const reason = (info as { permissionDenied: { reason: string } }).permissionDenied.reason;
+      return {
+        badge: "权限拒绝",
+        title: "安全规则拒绝执行该操作",
+        suggestion: reason || "当前操作被安全沙箱或权限策略阻止。",
+      };
+    }
+  }
+
+  return null;
+});
+
 const conversationId = computed(() => conversationStore.activeConversationId);
 
 const emit = defineEmits<{
@@ -486,7 +615,7 @@ const liveStatusText = computed(() => {
       return '正在读文件';
     }
     if (
-      name.includes('bash') ||
+      name === 'exec_command' || name === 'write_stdin' ||
       name.includes('powershell') ||
       name.includes('shell') ||
       name.includes('command')
@@ -577,7 +706,7 @@ defineExpose({
                 v-else
                 :message="messageRowAt(vItem.index)!.message"
                 :index="messageRowAt(vItem.index)!.index"
-                :entries="currentTurnToolEntries"
+                :entries="allToolEntries"
                 :copied="!!copiedMap[`assistant-${messageRowAt(vItem.index)!.index}`]"
                 :conversationTokenUsage="conversationTokenUsage(messageRowAt(vItem.index)!.index)"
                 :reaction="reactionMap[messageRowAt(vItem.index)!.index]"
@@ -611,7 +740,7 @@ defineExpose({
       </div>
     </div>
 
-    <SubagentPanel :conversation-id="conversationId" />
+
 
     <button
       v-if="showScrollToBottom"
@@ -627,26 +756,49 @@ defineExpose({
       </svg>
     </button>
 
-    <div
+        <div
       v-if="chatError"
       class="w-full px-4 pt-3"
     >
-      <div class="mx-auto w-full max-w-[900px] rounded-lg border border-red-300 bg-red-50 px-4 py-3 text-red-700 dark:border-red-900/60 dark:bg-red-950/40 dark:text-red-300">
+      <div class="mx-auto w-full max-w-[900px] rounded-lg border border-red-300 bg-red-50 p-4 text-red-700 shadow-sm dark:border-red-900/60 dark:bg-red-950/40 dark:text-red-300">
         <div class="flex items-start justify-between gap-3">
-          <div class="min-w-0 flex-1">
-            <div class="mb-1 flex items-center gap-1.5 text-xs font-semibold">
-              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-                <circle cx="12" cy="12" r="10" />
-                <path d="M12 8v4" />
-                <path d="M12 16h.01" />
-              </svg>
-              报错
+          <div class="min-w-0 flex-1 space-y-2">
+            <div class="flex flex-wrap items-center gap-2 text-xs font-semibold">
+              <span
+                v-if="errorDetails?.badge"
+                class="inline-flex items-center rounded bg-red-100 px-2 py-0.5 text-xs font-medium text-red-800 dark:bg-red-900/50 dark:text-red-200"
+              >
+                {{ errorDetails.badge }}
+              </span>
+              <span class="flex items-center gap-1.5 font-medium">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                  <circle cx="12" cy="12" r="10" />
+                  <path d="M12 8v4" />
+                  <path d="M12 16h.01" />
+                </svg>
+                {{ errorDetails?.title || '报错' }}
+              </span>
             </div>
-            <pre class="whitespace-pre-wrap break-words font-mono text-xs leading-relaxed">{{ chatError }}</pre>
+
+            <p v-if="errorDetails?.suggestion" class="text-xs text-red-600/90 dark:text-red-400">
+              💡 {{ errorDetails.suggestion }}
+            </p>
+
+            <pre class="max-h-40 overflow-y-auto rounded bg-red-100/60 p-2 font-mono text-xs leading-relaxed text-red-900 break-words whitespace-pre-wrap dark:bg-red-900/30 dark:text-red-200">{{ chatError }}</pre>
+
+            <div v-if="errorDetails?.canCompact" class="pt-1">
+              <button
+                type="button"
+                class="inline-flex items-center gap-1.5 rounded bg-red-600 px-2.5 py-1 text-xs font-medium text-white shadow-sm hover:bg-red-500 transition-colors"
+                @click="emit('compact')"
+              >
+                立即压缩上下文
+              </button>
+            </div>
           </div>
           <button
             type="button"
-            class="shrink-0 rounded p-0.5 opacity-70 transition-opacity hover:opacity-100"
+            class="shrink-0 rounded p-1 opacity-70 transition-opacity hover:opacity-100 hover:bg-red-100 dark:hover:bg-red-900/40"
             title="关闭"
             aria-label="关闭错误提示"
             @click="emit('dismiss-error')"

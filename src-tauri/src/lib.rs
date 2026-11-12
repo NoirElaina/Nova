@@ -17,6 +17,8 @@ pub fn run() {
     let app = tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_process::init())
+        .plugin(tauri_plugin_updater::Builder::new().build())
         .setup(|app| {
             if let Err(error) = crate::logging::init(app.handle()) {
                 eprintln!("[logging.init] {}", error);
@@ -47,7 +49,6 @@ pub fn run() {
             command::agent_config::delete_agent_bundle,
             command::agent_config::get_conversation_agent,
             command::agent_config::set_conversation_agent,
-            command::agent_config::list_configurable_tools,
             command::agent_config::list_agent_private_skills,
             command::agent_config::list_agent_files,
             command::agent_config::import_agent_file,
@@ -89,9 +90,9 @@ pub fn run() {
             command::session_files::save_session_file,
             command::session_files::list_session_files,
             command::session_files::read_session_file,
-            command::shell::get_shell_session_status,
             command::shell::list_background_jobs,
             command::shell::read_background_job_output,
+            command::shell::kill_background_job,
             command::user_terminal::user_terminal_start,
             command::user_terminal::user_terminal_write,
             command::user_terminal::user_terminal_resize,
@@ -107,6 +108,8 @@ pub fn run() {
             command::settings::refresh_model_catalog,
             command::settings::get_model_catalog_stats,
             command::settings::get_model_catalog,
+            command::settings::get_sandbox_status,
+            command::settings::export_diagnostic_bundle,
             command::model_fetch::fetch_available_models,
             command::browser::browser_navigate_window,
             command::browser::browser_reload_window,
@@ -131,10 +134,24 @@ pub fn run() {
             command::hooks::get_hooks_structured,
             command::hooks::save_hooks_toml,
             command::permission_rules::list_permission_rules,
-            command::permission_rules::delete_permission_rule
+            command::permission_rules::delete_permission_rule,
+            command::collaboration::get_agent_graph,
+            command::collaboration::get_board_channels,
+            command::collaboration::get_board_posts,
+            command::collaboration::post_board_message,
+            command::collaboration::interrupt_agent,
+            command::collaboration::send_agent_message
         ])
-        .build(tauri::generate_context!())
-        .expect("error while building tauri application");
+        .build(tauri::generate_context!());
+
+    let app = match app {
+        Ok(app) => app,
+        Err(error) => {
+            tracing::error!(error = %error, "error while building tauri application");
+            eprintln!("error while building tauri application: {error}");
+            return;
+        }
+    };
 
     app.run(|_app_handle, event| {
         if matches!(event, tauri::RunEvent::Exit) {

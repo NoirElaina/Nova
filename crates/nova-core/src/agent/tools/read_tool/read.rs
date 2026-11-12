@@ -21,12 +21,12 @@ pub(super) fn registration() -> ToolRegistration {
 /// - 其他路径 → 无需审批（返回 None）
 ///
 /// 注意：此函数只决定"是否需要审批"，不阻止读取。
-/// 受保护路径的 deny 逻辑由 check_file_path 在 BashTool 层处理；
+/// 受保护路径的检查复用 permissions::protected_path_violation；
 /// 这里对 read 操作改为 ask（而非 deny），允许用户审批后读取合法需求。
 fn read_permission(input: &Value) -> Option<ToolPermissionDescriptor> {
     let file_path = input.get("file_path")?.as_str()?;
 
-    // 1. 受保护路径检查（复用 BashTool 的 PROTECTED_PATH_CONTAINS）
+    // 1. 受保护路径检查（复用 permissions::protected_path_violation）
     if protected_path_violation(file_path).is_err() {
         return Some(ToolPermissionDescriptor {
             signature: format!("read:sensitive:{}", file_path),

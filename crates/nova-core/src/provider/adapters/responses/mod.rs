@@ -146,7 +146,7 @@ impl ApiAdapter for ResponsesAdapter {
         conversation_id: Option<&str>,
     ) -> Result<(RequestBuilder, ProviderPromptEstimate), String> {
         let settings =
-            crate::services::settings::load_settings(&core).map_err(|e| e.to_string())?;
+            crate::services::settings::load_settings(core).map_err(|e| e.to_string())?;
         let profile = settings.active_provider_profile();
 
         let built = prompt::build_request(core, messages, agent_mode, conversation_id)
@@ -417,6 +417,15 @@ impl ApiAdapter for ResponsesAdapter {
     }
 }
 
+pub fn estimate_prompt_tokens(
+    core: &crate::core::Core,
+    messages: &[Message],
+    agent_mode: AgentMode,
+    conversation_id: Option<&str>,
+) -> Result<ProviderPromptEstimate, ProviderTurnError> {
+    prompt::build_request(core, messages, agent_mode, conversation_id).map(|built| built.estimate)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -453,13 +462,4 @@ mod tests {
         let second = adapter.parse_event(data).expect("未知事件应被容忍");
         assert!(second.is_empty());
     }
-}
-
-pub fn estimate_prompt_tokens(
-    core: &crate::core::Core,
-    messages: &[Message],
-    agent_mode: AgentMode,
-    conversation_id: Option<&str>,
-) -> Result<ProviderPromptEstimate, ProviderTurnError> {
-    prompt::build_request(core, messages, agent_mode, conversation_id).map(|built| built.estimate)
 }

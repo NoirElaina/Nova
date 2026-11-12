@@ -6,7 +6,6 @@ import WelcomeScreen from "@/components/chat/WelcomeScreen.vue";
 import ChatScreen from "@/components/chat/ChatScreen.vue";
 import WorkspaceDrawer from "@/components/chat/WorkspaceDrawer.vue";
 import PlanPanel from "@/components/chat/PlanPanel.vue";
-import BackgroundJobsPanel from "@/components/chat/BackgroundJobsPanel.vue";
 import { useChatController } from "@/features/chat/controllers/useChatController";
 import { useLayoutStore } from "@/stores/layout";
 import { useConversationAgentBinding } from "@/features/agent/composables/useConversationAgentBinding";
@@ -199,7 +198,7 @@ onBeforeUnmount(() => {
         :activeAgent="displayAgent"
         :drawerOpen="layoutStore.isDrawerOpen"
         @open-plan="layoutStore.isPlanPanelOpen = true"
-        @open-background-jobs="layoutStore.isBgJobsPanelOpen = true"
+        @open-background-jobs="layoutStore.openBackgroundJobs()"
         @remove-agent="removeConversationAgent"
         @send="handleSendMessage"
         @save-user-edit="handleEditMessage($event)"
@@ -233,12 +232,6 @@ onBeforeUnmount(() => {
       @close="layoutStore.isPlanPanelOpen = false"
     />
 
-    <BackgroundJobsPanel
-      :open="layoutStore.isBgJobsPanelOpen"
-      :conversationId="activeConversationId || null"
-      @close="layoutStore.isBgJobsPanelOpen = false"
-    />
-
     <WorkspaceDrawer
       :open="layoutStore.isDrawerOpen"
       :activeTab="layoutStore.activeWorkspaceTab"
@@ -249,6 +242,7 @@ onBeforeUnmount(() => {
       :assistantTurnCost="assistantTurnCost"
       :conversationId="activeConversationId || null"
       :browserOpenRequestKey="browserOpenRequestKey"
+      :terminalBgFocusKey="layoutStore.terminalBgFocusKey"
       :width="layoutStore.drawerWidth"
       @close="layoutStore.isDrawerOpen = false"
       @resize="layoutStore.handleDrawerResize"

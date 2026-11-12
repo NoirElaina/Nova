@@ -246,7 +246,7 @@ pub(crate) fn build_request(
     conversation_id: Option<&str>,
 ) -> Result<BuiltResponsesRequest, ProviderTurnError> {
     let settings =
-        crate::services::settings::load_settings(&core).map_err(ProviderTurnError::new)?;
+        crate::services::settings::load_settings(core).map_err(ProviderTurnError::new)?;
     let profile = settings.active_provider_profile();
     let builtin_tools = tools::get_available_tools_for_agent(core, conversation_id);
     let tool_count = builtin_tools.len();
@@ -290,7 +290,7 @@ pub(crate) fn build_request(
             },
         },
         stream: true,
-        // 会话级缓存亲和键：同一会话的所有请求共用一个 key（对标 codex 用 session_id）。
+        // 会话级缓存亲和键：同一会话的所有请求共用一个 key。
         prompt_cache_key: conversation_id.map(|id| format!("nova:{}", id)),
     };
 

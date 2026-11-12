@@ -63,7 +63,7 @@ pub fn tool() -> Tool {
 - Unescaped metacharacters when searching literal text (e.g. `foo.bar` also matches `fooxbar`).
 - Searching a single directory when the symbol may live elsewhere — default to the workspace root.
 - Requesting content mode on patterns with thousands of hits without a `head_limit`.
-- Using shell grep via Bash instead of this tool."#
+- Using shell grep via exec_command instead of this tool."#
             .into(),
         input_schema: json!({
             "type": "object",

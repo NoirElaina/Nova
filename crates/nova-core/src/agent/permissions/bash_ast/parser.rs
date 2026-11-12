@@ -46,20 +46,22 @@ thread_local! {
     static PARSER: std::cell::RefCell<Option<Parser>> = const { std::cell::RefCell::new(None) };
 }
 
-/// 初始化或复用 Parser。
-fn with_parser<F, R>(f: F) -> R
+/// 初始化或复用 Parser；若语法语言加载失败返回 `None`（交由上层按 ParseUnavailable 降级处理）。
+fn with_parser<F, R>(f: F) -> Option<R>
 where
     F: FnOnce(&mut Parser) -> R,
 {
     PARSER.with(|cell| {
         let mut borrow = cell.borrow_mut();
-        let parser = borrow.get_or_insert_with(|| {
-            let mut p = Parser::new();
-            p.set_language(&LANGUAGE.into())
-                .expect("tree-sitter-bash language load failed");
-            p
-        });
-        f(parser)
+        if borrow.is_none() {
+            let mut parser = Parser::new();
+            if let Err(error) = parser.set_language(&LANGUAGE.into()) {
+                tracing::error!(error = %error, "tree-sitter-bash language load failed");
+                return None;
+            }
+            *borrow = Some(parser);
+        }
+        borrow.as_mut().map(f)
     })
 }
 
@@ -146,7 +148,7 @@ pub fn parse_for_security(cmd: &str) -> ParseForSecurityResult {
     }
 
     // tree-sitter 解析
-    let tree = with_parser(|parser| parser.parse(cmd, None));
+    let tree = with_parser(|parser| parser.parse(cmd, None)).flatten();
     let Some(tree) = tree else {
         return ParseForSecurityResult::ParseUnavailable;
     };

@@ -35,6 +35,7 @@ const sessionStore = useAgentSessionStore();
 const composerStore = useComposerStore();
 
 const isGenerating = computed(() => sessionStore.activeSession.isGenerating);
+const queuedCount = computed(() => sessionStore.activeSession.queuedCount);
 const compacting = computed(() => sessionStore.activeSession.isCompacting);
 const conversationId = computed(() => conversationStore.activeConversationId);
 const latestPromptTokens = computed(() => {
@@ -263,10 +264,16 @@ const onTextareaKeydown = (e: KeyboardEvent) => {
   }
 };
 
+const sendWithMode = (mode: 'start_or_steer' | 'queue', e?: KeyboardEvent) => {
+  composerStore.submitModeWhileGenerating = mode;
+  sendMessage(e);
+  composerStore.submitModeWhileGenerating = 'start_or_steer';
+};
+
 const sendMessage = (e?: KeyboardEvent) => {
   if (e && e.shiftKey) return;
   e?.preventDefault();
-  if ((!currentInput.value.trim() && !hasPendingUploads.value) || isGenerating.value) return;
+  if (!currentInput.value.trim() && !hasPendingUploads.value) return;
 
   const trimmed = currentInput.value.trim();
   const parsed = parseSlashCommand(trimmed);
@@ -454,29 +461,56 @@ defineExpose({
             />
           </div>
         </div>
-        <button
-          class="w-8 h-8 shrink-0 rounded-full flex items-center justify-center transition-colors shadow-sm"
-          :class="isGenerating
-            ? 'bg-[#fee2e2] text-[#b91c1c] hover:bg-[#fecaca]'
-            : (canSend ? 'bg-[#111827] text-white hover:bg-[#1f2937]' : 'bg-[#f1f5f9] dark:bg-[#333] text-muted-foreground')"
-          :disabled="!isGenerating && !canSend"
-          @click="isGenerating ? emit('cancel') : sendMessage()"
-        >
-          <svg v-if="isGenerating" width="14" height="14" viewBox="0 0 24 24" fill="currentColor">
-            <rect x="6" y="6" width="12" height="12" rx="2" ry="2" />
-          </svg>
-          <svg v-else-if="!canSend" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor"
-            stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-            <path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3Z" />
-            <path d="M19 10v2a7 7 0 0 1-14 0v-2" />
-            <line x1="12" y1="19" x2="12" y2="22" />
-          </svg>
-          <svg v-else width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
-            stroke-linecap="round" stroke-linejoin="round">
-            <line x1="12" y1="19" x2="12" y2="5" />
-            <polyline points="5 12 12 5 19 12" />
-          </svg>
-        </button>
+        <div class="flex items-center gap-1.5 shrink-0">
+          <span
+            v-if="queuedCount > 0"
+            class="px-2 py-0.5 text-[11px] font-medium rounded-full bg-[#f1f5f9] dark:bg-[#2a2a2e] text-muted-foreground"
+            title="当前顺序队列中等待执行的回合数"
+          >
+            队列 {{ queuedCount }}
+          </span>
+          <button
+            v-if="isGenerating && canSend"
+            type="button"
+            class="h-8 px-2.5 shrink-0 rounded-full text-xs font-medium bg-[#111827] text-white hover:bg-[#1f2937] transition-colors shadow-sm"
+            title="立即引导当前回合 (Enter)"
+            @click="sendWithMode('start_or_steer')"
+          >
+            引导
+          </button>
+          <button
+            v-if="isGenerating && canSend"
+            type="button"
+            class="h-8 px-2.5 shrink-0 rounded-full text-xs font-medium bg-[#f1f5f9] dark:bg-[#333] text-foreground hover:bg-[#e2e8f0] dark:hover:bg-[#444] transition-colors"
+            title="加入顺序队列，待当前回合完成后执行"
+            @click="sendWithMode('queue')"
+          >
+            排队
+          </button>
+          <button
+            class="w-8 h-8 shrink-0 rounded-full flex items-center justify-center transition-colors shadow-sm"
+            :class="isGenerating
+              ? 'bg-[#fee2e2] text-[#b91c1c] hover:bg-[#fecaca]'
+              : (canSend ? 'bg-[#111827] text-white hover:bg-[#1f2937]' : 'bg-[#f1f5f9] dark:bg-[#333] text-muted-foreground')"
+            :disabled="!isGenerating && !canSend"
+            @click="isGenerating ? emit('cancel') : sendMessage()"
+          >
+            <svg v-if="isGenerating" width="14" height="14" viewBox="0 0 24 24" fill="currentColor">
+              <rect x="6" y="6" width="12" height="12" rx="2" ry="2" />
+            </svg>
+            <svg v-else-if="!canSend" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+              stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3Z" />
+              <path d="M19 10v2a7 7 0 0 1-14 0v-2" />
+              <line x1="12" y1="19" x2="12" y2="22" />
+            </svg>
+            <svg v-else width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+              stroke-linecap="round" stroke-linejoin="round">
+              <line x1="12" y1="19" x2="12" y2="5" />
+              <polyline points="5 12 12 5 19 12" />
+            </svg>
+          </button>
+        </div>
       </div>
     </div>
 

@@ -2,9 +2,17 @@
 
 use nova_core::{Core, CoreConfig};
 
-/// 构建独立内核（数据目录与桌面端同源）。
+/// 构建独立内核（优先使用 `NOVA_DATA_DIR`，否则与桌面端同源）。
 pub fn build_core() -> anyhow::Result<Core> {
-    let config = CoreConfig::standalone().map_err(anyhow::Error::msg)?;
+    let config = match std::env::var_os("NOVA_DATA_DIR").filter(|value| !value.is_empty()) {
+        Some(dir) => {
+            let root = std::path::PathBuf::from(dir);
+            CoreConfig::new(root.clone())
+                .with_cache_dir(root.join("cache"))
+                .with_download_dir(root.join("downloads"))
+        }
+        None => CoreConfig::standalone().map_err(anyhow::Error::msg)?,
+    };
     Ok(Core::new(config, 4096))
 }
 

@@ -8,6 +8,7 @@ import type {
 import {
   buildAssistantTranscriptSegments,
   buildToolSummaryForSegment,
+  collectTranscriptToolEntries,
 } from "../../../features/chat/utils/assistant-transcript";
 import MarkdownRenderer from "../MarkdownRenderer.vue";
 import TurnActivitySummaryCard from "./TurnActivitySummaryCard.vue";
@@ -30,23 +31,14 @@ const renderSegments = computed(() => {
   return buildAssistantTranscriptSegments(props.segments);
 });
 
+// 仅收集属于当前这条助手消息（renderSegments 内 toolIds）的工具日志，
+// 防止会话级 toolExecutionLogs 里的历史轮次文件修改漏进后续每条回复底部。
 const aggregatedToolEntries = computed<ToolExecutionEntry[]>(() => {
-  const byId = new Map<string, ToolExecutionEntry>();
-  for (const entry of props.entries ?? []) {
-    const existing = byId.get(entry.id);
-    if (!existing || existing.status === "running" || entry.status !== "running") {
-      byId.set(entry.id, entry);
-    }
-  }
-  if (props.toolSummary) {
-    for (const entry of props.toolSummary.entries) {
-      const existing = byId.get(entry.id);
-      if (!existing || existing.status === "running" || entry.status !== "running") {
-        byId.set(entry.id, entry);
-      }
-    }
-  }
-  return [...byId.values()];
+  return collectTranscriptToolEntries(
+    renderSegments.value,
+    props.entries ?? [],
+    props.toolSummary,
+  );
 });
 
 function segmentKey(segment: AssistantTranscriptSegment, index: number): string {

@@ -4,20 +4,20 @@ use crate::agent::utils::error_event::report_backend_result;
 pub use crate::services::settings::*;
 
 pub fn get_settings(core: &crate::core::Core) -> Result<AppSettings, String> {
-    let result = load_settings(&core);
-    report_backend_result(&core, "command.settings.get_settings", result, None)
+    let result = load_settings(core);
+    report_backend_result(core, "command.settings.get_settings", result, None)
 }
 
 pub fn save_settings(core: &crate::core::Core, settings: AppSettings) -> Result<(), String> {
-    let result = save_settings_inner(&core, settings);
-    report_backend_result(&core, "command.settings.save_settings", result, None)
+    let result = save_settings_inner(core, settings);
+    report_backend_result(core, "command.settings.save_settings", result, None)
 }
 
 /// 返回指定模型名对应的上下文窗口大小（token 数）。
 /// 优先级：用户设置覆盖 > 内置 models.json > 默认 200K。
 /// 前端在无活跃对话时用此命令初始化 ContextUsageIndicator 的分母。
 pub fn get_model_window_tokens(core: &crate::core::Core, model: String) -> u32 {
-    match load_settings(&core) {
+    match load_settings(core) {
         Ok(settings) => crate::services::settings::context_window_for_model(&settings, &model),
         Err(_) => crate::agent::utils::model_context::get_context_window_tokens(&model),
     }
@@ -41,12 +41,12 @@ pub fn get_active_terminal() -> crate::services::terminal_detector::TerminalInfo
 
 /// 立即从 OpenRouter 刷新模型元数据与定价数据库
 pub async fn refresh_model_catalog(core: &crate::core::Core) -> Result<crate::services::model_catalog::ModelCatalogStats, String> {
-    crate::services::model_catalog::force_refresh(&core).await
+    crate::services::model_catalog::force_refresh(core).await
 }
 
 /// 获取当前模型元数据数据库的状态统计
 pub fn get_model_catalog_stats(core: &crate::core::Core) -> crate::services::model_catalog::ModelCatalogStats {
-    crate::services::model_catalog::get_catalog_stats(&core)
+    crate::services::model_catalog::get_catalog_stats(core)
 }
 
 /// 查询模型列表（支持关键字搜索与模态过滤）
@@ -55,5 +55,18 @@ pub fn get_model_catalog(
     modality: Option<String>,
 ) -> Vec<crate::services::model_catalog::ModelCatalogSummary> {
     crate::services::model_catalog::list_models(search.as_deref(), modality.as_deref())
+}
+
+/// 获取当前运行环境真实生效的沙箱驱动与策略状态（诚实反映平台隔离边界）。
+pub fn get_sandbox_status(core: &crate::core::Core) -> nova_protocol::misc::SandboxStatus {
+    crate::agent::sandbox::active_status(core)
+}
+
+/// 导出脱敏本地诊断包（设置、沙箱状态、Wire Trace、最新日志）到指定路径或默认诊断目录。
+pub fn export_diagnostic_bundle(
+    core: &crate::core::Core,
+    target_path: Option<String>,
+) -> Result<String, String> {
+    crate::services::diagnostics::export_diagnostic_bundle(core, target_path)
 }
 

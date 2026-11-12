@@ -315,7 +315,7 @@ impl StreamableHttpMcpConnection {
     }
 }
 
-fn build_header_map(headers: &HashMap<String, String>) -> Result<HeaderMap, String> {
+pub(super) fn build_header_map(headers: &HashMap<String, String>) -> Result<HeaderMap, String> {
     let mut map = HeaderMap::new();
     for (key, value) in headers {
         let trimmed_key = key.trim();

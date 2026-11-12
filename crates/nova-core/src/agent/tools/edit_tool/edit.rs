@@ -96,6 +96,22 @@ async fn execute_async(
         .and_then(Value::as_bool)
         .unwrap_or(false);
 
+    // 若模型向 Edit 工具传入了标准补丁格式，自动路由至 apply_patch 引擎
+    if old_string.contains("*** Begin Patch") || new_string.contains("*** Begin Patch") {
+        let patch_text = if old_string.contains("*** Begin Patch") {
+            old_string
+        } else {
+            new_string
+        };
+        if let Ok(parsed) = crate::agent::tools::apply_patch::parse_patch(patch_text) {
+            let ws = std::env::current_dir().unwrap_or_else(|_| std::path::Path::new(".").to_path_buf());
+            let report = crate::agent::tools::apply_patch::execute_patch_hunks(&ws, &parsed.hunks)
+                .await
+                .map_err(ToolFailure::new)?;
+            return Ok(ToolOutcome::json(report.to_json()));
+        }
+    }
+
     let res = crate::agent::tools::shared::edit::execute_exact_edit(file_path, old_string, new_string, replace_all)
         .await
         .map_err(ToolFailure::new)?;

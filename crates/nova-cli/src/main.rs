@@ -31,6 +31,10 @@ enum Commands {
     /// 缺省以 stdio JSONL 提供服务（由桌面壳 spawn 并持有管道，不监听端口）；
     /// 加 --listen 切换为 WebSocket 远程模式。
     Serve {
+        /// 启用 Unix Domain Socket（本地多窗口共享守护进程模式）
+        #[arg(long)]
+        uds: Option<std::path::PathBuf>,
+
         /// 启用 WebSocket 监听（远程 / 多客户端模式）
         #[arg(long)]
         listen: bool,
@@ -80,11 +84,29 @@ fn init_tracing() -> Option<tracing_appender::non_blocking::WorkerGuard> {
         .with(file_layer)
         .init();
 
+    install_kernel_panic_hook();
     guard
+}
+
+fn install_kernel_panic_hook() {
+    let previous_hook = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |panic_info| {
+        let (location, summary) = nova_protocol::redact::format_panic_summary(panic_info, 2048);
+        tracing::error!(location = %location, message = %summary, "nova kernel panic");
+        previous_hook(panic_info);
+    }));
 }
 
 /// 内核日志路径：与应用数据目录同源。
 fn kernel_log_path() -> Option<std::path::PathBuf> {
+    if let Some(dir) = std::env::var_os("NOVA_DATA_DIR").filter(|value| !value.is_empty()) {
+        return Some(
+            std::path::PathBuf::from(dir)
+                .join("logs")
+                .join("kernel.log"),
+        );
+    }
+
     #[cfg(target_os = "windows")]
     let base = std::env::var_os("APPDATA").map(std::path::PathBuf::from);
     #[cfg(not(target_os = "windows"))]
@@ -103,9 +125,11 @@ async fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
 
     match cli.command {
-        Some(Commands::Serve { listen, host, port }) => {
+        Some(Commands::Serve { uds, listen, host, port }) => {
             let _log_guard = init_tracing();
-            if listen {
+            if let Some(socket_path) = uds {
+                serve::run_uds(&socket_path).await
+            } else if listen {
                 serve::run(&host, port).await
             } else {
                 serve::run_stdio().await

@@ -2,13 +2,8 @@
 import { onBeforeUnmount, onMounted, ref } from "vue";
 import { Button } from "@/components/ui/button";
 import type { PendingUploadFile } from "../../../lib/chat-types";
+import type { SessionFileMeta } from "@/lib/protocol";
 import SessionFileItem from "./SessionFileItem.vue";
-
-type SessionFileMeta = {
-  filename: string;
-  size: number;
-  createdAt: number;
-};
 
 const props = defineProps<{
   files: SessionFileMeta[];

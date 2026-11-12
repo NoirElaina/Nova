@@ -44,3 +44,9 @@ crates/nova-protocol/bindings/
 
 # Windows 保留设备名，由 shell 重定向误创建；常规方式无法删除，忽略即可
 /NUL
+
+# Playwright 测试产物
+playwright-report/
+test-results/
+blob-report/
+playwright/.cache/

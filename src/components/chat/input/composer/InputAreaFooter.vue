@@ -2,11 +2,9 @@
 import { computed } from 'vue';
 import type { ConversationUsageSummary } from '@/lib/chat-types';
 import ConversationUsageBar from '../ConversationUsageBar.vue';
-import {
-  panelOpen as subagentPanelOpen,
-  subagentsFor,
-  togglePanel as toggleSubagentPanel,
-} from '@/features/chat/services/subagents';
+import { subagentsFor } from '@/features/chat/services/subagents';
+import { useLayoutStore } from '@/stores/layout';
+import { Bot } from 'lucide-vue-next';
 
 const props = defineProps<{
   activeAgent?: { id: string; name: string; description?: string } | null;
@@ -18,13 +16,22 @@ const emit = defineEmits<{
   (e: 'remove-agent'): void;
 }>();
 
-// 子代理状态（行内按钮）：当前会话的子代理计数 + 抽屉开关。
+const layoutStore = useLayoutStore();
+
+// 子代理状态（行内按钮）：当前会话的子代理计数 + 协同工作区开关。
 const subagentEntries = computed(() => subagentsFor(props.conversationId ?? null));
 const subagentCount = computed(() => subagentEntries.value.length);
 const subagentRunning = computed(
   () => subagentEntries.value.filter((entry) => entry.phase === 'running').length,
 );
-const panelOpen = subagentPanelOpen;
+
+const isCollabOpen = computed(
+  () => layoutStore.isDrawerOpen && layoutStore.activeWorkspaceTab === 'collab',
+);
+
+const handleClickSubagent = () => {
+  layoutStore.toggleCollaborationTab();
+};
 </script>
 
 <template>
@@ -71,23 +78,20 @@ const panelOpen = subagentPanelOpen;
       </span>
     </div>
     <div class="ml-auto min-w-0 shrink-0 flex items-center gap-2">
-      <!-- 子代理按钮：当前会话有记录时显示 -->
+      <!-- 协同网络与子代理入口：当前会话有记录时显示，直接联动展开协同工作区面板 -->
       <button
         v-if="subagentCount > 0"
         type="button"
-        class="inline-flex shrink-0 cursor-pointer items-center gap-1.5 rounded-md px-1.5 py-0.5 text-[12px] leading-tight transition-colors hover:bg-[#f1f5f9] dark:hover:bg-[#2a2a2a]"
-        :class="panelOpen ? 'text-[#1a7f37] dark:text-[#4ade80]' : 'text-[#4f5f73] dark:text-[#d5dbe3]'"
-        :title="panelOpen ? '收起子代理面板' : '查看子代理运行详情'"
-        @click="toggleSubagentPanel"
+        class="inline-flex shrink-0 cursor-pointer items-center gap-1.5 rounded-md px-1.5 py-0.5 text-[12px] leading-tight transition-colors hover:bg-muted"
+        :class="isCollabOpen ? 'text-primary font-medium bg-muted' : 'text-muted-foreground'"
+        :title="isCollabOpen ? '收起协同面板' : '查看协同与子代理执行详情'"
+        @click="handleClickSubagent"
       >
-        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-          <circle cx="11" cy="11" r="7" />
-          <path d="m21 21-4.3-4.3" />
-        </svg>
+        <Bot class="h-3.5 w-3.5" />
         <span class="font-medium">子代理</span>
         <span v-if="subagentRunning > 0" class="inline-flex items-center gap-1">
-          <span class="inline-block h-1.5 w-1.5 rounded-full bg-[#22c55e] animate-pulse" />
-          <span class="tabular-nums">{{ subagentRunning }}</span>
+          <span class="inline-block h-1.5 w-1.5 rounded-full bg-emerald-500 animate-pulse" />
+          <span class="tabular-nums text-emerald-600 dark:text-emerald-400">{{ subagentRunning }}</span>
         </span>
         <span v-else class="tabular-nums opacity-70">{{ subagentCount }}</span>
       </button>

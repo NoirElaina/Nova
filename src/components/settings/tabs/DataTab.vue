@@ -1,6 +1,8 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref } from 'vue'
 import { invoke } from '@tauri-apps/api/core'
+import { save as saveDialog } from '@tauri-apps/plugin-dialog'
+import { exportDiagnosticBundle } from '@/features/chat/services/chat-api'
 import { emitToast } from '@/lib/toast'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
@@ -28,6 +30,7 @@ type PendingConfirmAction = 'clear-history' | 'clear-api-keys' | null
 const uiLanguage = ref<UiLanguage>(getStoredUiLanguage())
 const isClearingHistory = ref(false)
 const isClearingApiKeys = ref(false)
+const isExportingDiagnostics = ref(false)
 const pendingConfirmAction = ref<PendingConfirmAction>(null)
 
 const localeTexts = {
@@ -51,6 +54,12 @@ const localeTexts = {
     apiDoneNone: '当前没有可移除的 API Key。',
     apiDoneSome: '已移除 {count} 个已保存的 API Key。',
     apiFailed: '移除 API Key 失败：',
+    diagTitle: '脱敏诊断包',
+    diagDesc: '导出脱敏后的配置、沙箱驱动状态、Wire Trace 与最新应用日志，自动抹除 API Key 与授权令牌，便于排查问题。',
+    diagButton: '导出脱敏诊断包',
+    diagWorking: '导出中...',
+    diagDone: '诊断包已导出到：',
+    diagFailed: '导出诊断包失败：',
     cancel: '取消',
     confirm: '确认',
   },
@@ -74,6 +83,12 @@ const localeTexts = {
     apiDoneNone: 'No saved API keys were found.',
     apiDoneSome: 'Removed {count} saved API key(s).',
     apiFailed: 'Failed to remove API keys: ',
+    diagTitle: 'Redacted Diagnostic Bundle',
+    diagDesc: 'Export settings, active sandbox driver status, wire traces, and recent logs with API keys and auth tokens scrubbed.',
+    diagButton: 'Export Diagnostic Bundle',
+    diagWorking: 'Exporting...',
+    diagDone: 'Diagnostic bundle saved to: ',
+    diagFailed: 'Failed to export diagnostic bundle: ',
     cancel: 'Cancel',
     confirm: 'Confirm',
   },
@@ -199,6 +214,38 @@ const handleConfirmAction = () => {
   }
 }
 
+const exportDiagnostics = async () => {
+  if (isExportingDiagnostics.value) return
+  let chosenPath: string | undefined
+  try {
+    const selected = await saveDialog({
+      defaultPath: 'nova-diagnostics.json',
+      filters: [{ name: 'JSON', extensions: ['json'] }],
+      title: t.value.diagButton,
+    })
+    if (selected === null) return
+    chosenPath = selected
+  } catch {
+    chosenPath = undefined
+  }
+
+  isExportingDiagnostics.value = true
+  try {
+    const savedPath = await exportDiagnosticBundle(chosenPath)
+    emitToast({
+      variant: 'success',
+      message: `${t.value.diagDone}${savedPath}`,
+    })
+  } catch (error) {
+    emitToast({
+      variant: 'error',
+      message: `${t.value.diagFailed}${error instanceof Error ? error.message : String(error)}`,
+    })
+  } finally {
+    isExportingDiagnostics.value = false
+  }
+}
+
 onMounted(() => {
   window.addEventListener('ui-language-updated', handleUiLanguageUpdated as EventListener)
 })
@@ -259,6 +306,23 @@ onUnmounted(() => {
           @click="requestClearApiKeys"
         >
           {{ isClearingApiKeys ? t.apiWorking : t.apiButton }}
+        </Button>
+      </CardContent>
+    </Card>
+
+    <Card class="mb-3 border-[#e5e7eb] dark:border-[#333]">
+      <CardHeader class="px-4 pb-2">
+        <CardTitle class="text-[13.5px] text-[#111827] dark:text-[#f3f4f6]">{{ t.diagTitle }}</CardTitle>
+        <CardDescription class="text-[12px]">{{ t.diagDesc }}</CardDescription>
+      </CardHeader>
+      <CardContent class="px-4 pt-0">
+        <Button
+          variant="outline"
+          size="sm"
+          :disabled="isExportingDiagnostics"
+          @click="exportDiagnostics"
+        >
+          {{ isExportingDiagnostics ? t.diagWorking : t.diagButton }}
         </Button>
       </CardContent>
     </Card>

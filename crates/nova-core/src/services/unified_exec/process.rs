@@ -32,11 +32,11 @@ pub const MAX_UNIFIED_EXEC_PROCESSES: usize = 64;
 /// 子进程退出后等待读取线程排干尾部缓冲的最大时间。
 pub const EXIT_DRAIN_MS: u64 = 80;
 /// Windows 上 `exec_command` 的最小让出窗口：ConPTY 冷启动本身就要数百毫秒，
-/// 低于 10s 的 yield 会让几乎所有命令先 yield 一次再被 poll（对齐 Codex）。
+/// 低于 10s 的 yield 会让几乎所有命令先 yield 一次再被 poll。
 pub const WINDOWS_INITIAL_EXEC_YIELD_TIME_FLOOR_MS: u64 = 10_000;
-/// 空 `write_stdin`（纯轮询）的最小等待：避免 250ms 级轮询风暴（对齐 Codex）。
+/// 空 `write_stdin`（纯轮询）的最小等待：避免 250ms 级轮询风暴。
 pub const MIN_EMPTY_YIELD_TIME_MS: u64 = 5_000;
-/// 空 `write_stdin` 的最大等待：允许一次 poll 覆盖长构建（对齐 Codex 的 5 分钟）。
+/// 空 `write_stdin` 的最大等待：允许一次 poll 覆盖长达 5 分钟的长构建。
 pub const MAX_EMPTY_YIELD_TIME_MS: u64 = 300_000;
 /// 已完成会话在"后台任务"列表中的保留时长，超时后不再展示（防止陈旧条目堆积）。
 pub const COMPLETED_JOB_TTL_MS: u64 = 5 * 60 * 1000;
@@ -51,7 +51,7 @@ pub struct ExitStatusSnapshot {
     pub finished_at: Instant,
 }
 
-/// 头尾双段有界输出缓冲（对齐 Codex `HeadTailBuffer`）。
+/// 头尾双段有界输出缓冲。
 ///
 /// 为什么不是纯尾部环形缓冲：编译/测试日志的**第一条错误**往往在最前面，
 /// 后续再刷几 MB 警告时，纯尾环会把开头整段挤掉，模型永远看不到真正的失败原因。
@@ -328,7 +328,7 @@ pub struct ManagedProcess {
     pub buffer: Arc<StdMutex<RollingOutputBuffer>>,
     pub model_cursor: StdMutex<u64>,
     pub stdin: Arc<StdinSink>,
-    /// 串行化同一会话上的 `write_stdin` 写-等交互，对齐 Codex `interaction_lock`。
+    /// 串行化同一会话上的 `write_stdin` 写-等交互，避免并发写入交错。
     pub interaction_lock: Arc<AsyncMutex<()>>,
     pub output_notify: Arc<Notify>,
     pub exit_tx: watch::Sender<Option<ExitStatusSnapshot>>,

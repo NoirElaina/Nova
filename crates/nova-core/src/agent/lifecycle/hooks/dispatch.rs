@@ -240,8 +240,8 @@ fn event_into_parts(event: HookEvent) -> (&'static str, Value, Option<String>) {
 
 /// 生成 hook 侧的 `tool_input`。
 ///
-/// `exec_command` 的参数键是 `cmd`，但既有 hook 脚本（Codex / Claude Code 生态）
-/// 一律从 `tool_input.command` 取命令文本。这里补一个只读别名，两边都能用。
+/// `exec_command` 的参数键是 `cmd`，但既有外部 hook 脚本通常从 `tool_input.command`
+/// 取命令文本。这里补一个只读别名，兼容两种读取方式。
 fn hook_tool_input(tool_name: &str, input: &Value) -> Value {
     let mut value = input.clone();
     if tool_name.eq_ignore_ascii_case("exec_command") {

@@ -1,6 +1,6 @@
 //! Windows 沙箱驱动：write-restricted token + 合成 SID + ACL + 私有桌面 + JobObject + ConPTY/Pipe。
 //!
-//! 设计（对齐 Codex `windows-sandbox-rs`）：
+//! 设计要点：
 //! - `WRITE_RESTRICTED` 受限令牌只在写操作时校验 Restricting SID 的 ACL，读取全局系统 DLL/工具不受影响；
 //! - 工作区（及沙箱专用 `TEMP`/`TMP`）在 `WorkspaceWrite` 下授予合成 SID 读写权限，并对 `.git/hooks`、
 //!   `.git/config`、`.nova` 叠加写拒绝 ACE；`ReadOnly` 下使用未授权的只读 SID，禁止一切写入；
@@ -54,7 +54,7 @@ use super::SandboxPolicy;
 
 /// `WRITE_RESTRICTED` 未在 windows-sys 中导出，取 Win32 头文件定义。
 const WRITE_RESTRICTED: u32 = 0x8;
-/// 仅拒绝写/改/删，不拒绝读与 `SYNCHRONIZE`（对齐 Codex `STANDARD_USER_MUTATION_MASK`）。
+/// 仅拒绝写/改/删，不拒绝读与 `SYNCHRONIZE`。
 const DENY_WRITE_MASK: u32 = 0x0002 // FILE_WRITE_DATA
     | 0x0004 // FILE_APPEND_DATA
     | 0x0010 // FILE_WRITE_EA
@@ -193,7 +193,7 @@ pub fn create_write_restricted_token(restricting_sids: &[String]) -> Result<HAND
             return Err(format!("CreateRestrictedToken failed: {}", GetLastError()));
         }
 
-        // 设置 TokenDefaultDacl 为当前 Logon SID + OWNER RIGHTS 读控制（对齐 Codex `token.rs`），
+        // 设置 TokenDefaultDacl 为当前 Logon SID + OWNER RIGHTS 读控制，
         // 并将 `SeChangeNotifyPrivilege` 重新启用，防止受限进程无法初始化 `conhost`/`user32` (`0xC0000142`)。
         if let Err(error) = set_default_dacl(token, logon.as_mut_ptr() as *mut std::ffi::c_void)
             .and_then(|()| enable_privilege(token, "SeChangeNotifyPrivilege"))
@@ -959,7 +959,7 @@ fn launch_restricted_process(spec: RestrictedLaunchSpec<'_>) -> Result<(OwnedHan
     )?;
 
     let mut cmdline = to_wide(&build_cmdline(spec.program, spec.args));
-    // 对齐 Codex `desktop.rs`：使用向 Logon SID 显式赋权的私有桌面，避免受限令牌下 `0xC0000142`。
+    // 使用向 Logon SID 显式赋权的私有桌面，避免受限令牌下 `0xC0000142`。
     let mut desktop = to_wide(ensure_private_desktop_name()?);
     let cwd_wide = to_wide(&spec.cwd.to_string_lossy());
 

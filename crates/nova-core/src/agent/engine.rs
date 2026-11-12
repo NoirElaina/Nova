@@ -402,7 +402,7 @@ impl AgentEngine {
                 },
             );
 
-            // 发起模型流式请求（支持 prompt_too_long 自愈重试，与 Codex 一致不向请求上下文重复注入运行中后台进程列表）
+            // 发起模型流式请求（支持 prompt_too_long 自愈重试，不向请求上下文重复注入运行中后台进程列表）
             let provider_result = match client
                 .send_request(
                     &self.core,

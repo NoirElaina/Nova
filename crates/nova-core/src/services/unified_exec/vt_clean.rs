@@ -411,7 +411,7 @@ pub struct TruncatedOutput {
     pub truncated: bool,
 }
 
-/// 按 token 预算执行头尾保留截断（对齐 Codex unified_exec：每 token 约 4 字节）。
+/// 按 token 预算执行头尾保留截断（每 token 约按 4 字节估算）。
 pub fn truncate_output_tokens(text: &str, max_output_tokens: usize) -> TruncatedOutput {
     let original_bytes = text.len();
     let approx_original_tokens = original_bytes.div_ceil(4);

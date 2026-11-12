@@ -8,7 +8,7 @@ use tokio::sync::{watch, Mutex};
 use tokio_util::sync::CancellationToken;
 use serde::{Deserialize, Serialize};
 
-/// 智能体运行态生命周期状态（对应 Codex AgentStatus 7 变体体系）。
+/// 智能体运行态生命周期状态。
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum AgentLifecycleStatus {

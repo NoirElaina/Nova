@@ -52,9 +52,9 @@ pub(crate) fn describe_shell_command_permission(
 
 /// 交互式终端写入（`write_stdin`）的权限描述。
 ///
-/// 这是 Codex `stdin_approval` 的等价物：一旦某个会话被批准，后续写入可以
-/// 把任意命令送进仍在运行的 shell/REPL，因此非空写入必须归类为 Risky，
-/// 只有空字符串（纯轮询）与 Ctrl+C（`\u0003`）才允许不打扰用户。
+/// 一旦某个会话被批准，后续写入可以把任意命令送进仍在运行的 shell/REPL，
+/// 因此非空写入必须归类为 Risky，只有空字符串（纯轮询）与 Ctrl+C（`\u0003`）
+/// 才允许不打扰用户。
 pub(crate) fn describe_stdin_permission(
     tool_name: &str,
     input: &Value,

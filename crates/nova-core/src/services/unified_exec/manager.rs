@@ -1,4 +1,4 @@
-//! Codex `unified_exec` 核心调度管理器（PTY + 管道双模式、增量轮询、进程树回收）。
+//! `unified_exec` 核心调度管理器（PTY + 管道双模式、增量轮询、进程树回收）。
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -263,8 +263,8 @@ fn build_shell_args(kind: ShellKind, cmd: &str, login: bool) -> Vec<String> {
             }
             let encoded = BASE64.encode(utf16);
             let mut args = vec!["-NoLogo".to_string()];
-            // 对齐 Codex：只有 `login=false` 才跳过 profile；`login` 默认 true 时
-            // 必须让用户 profile 生效，否则 alias / 自定义函数在 Nova 里凭空消失。
+            // 只有 `login=false` 才跳过 profile；`login` 默认 true 时
+            // 必须让用户 profile 生效，否则 alias / 自定义函数在会话中无法加载。
             if !login {
                 args.push("-NoProfile".to_string());
             }
@@ -1237,8 +1237,8 @@ pub async fn write_stdin(
         proc.touch_activity();
 
         if !proc.tty {
-            // 非 TTY（纯管道）无终端行规程：仅 "\u{3}" 触发中断并结束进程（对齐 Codex pipe.rs）；
-            // 其它任意非空写入一律以 StdinClosed 拒绝。
+            // 非 TTY（纯管道）无终端行规程：仅 "\u{3}" 触发中断并结束进程；
+            // 其它任意非空写入一律以 InvalidInput 拒绝。
             if req.chars == "\u{3}" {
                 proc.kill_tree().await;
             } else {
@@ -1248,7 +1248,7 @@ pub async fn write_stdin(
                 )));
             }
         } else {
-            // TTY 会话（对齐 Codex process_manager.rs）：包括 "\u{3}" (0x03) 在内按字节写入 PTY，
+            // TTY 会话：包括 "\u{3}" (0x03) 在内按字节写入 PTY，
             // 让交互式 shell 只中断前台任务而不销毁外层会话。
             let payload_bytes: Vec<u8> = if cfg!(target_os = "windows") {
                 // Windows ConPTY 仅把 CR(\r) 识别为 Enter 键提交输入；0x03 原样透传。
@@ -1610,8 +1610,8 @@ mod tests {
 
         let sid = spawned.session_id.expect("interactive shell should yield session_id");
 
-        // Windows 在 cargo test 下会继承忽略 Ctrl+C 属性：只在最内层前台子进程内复位 SetConsoleCtrlHandler(0, false)
-        // （对齐 Codex windows_tests.rs）。用 -EncodedCommand 避免引号嵌套问题且杜绝 PTY 回显伪命中 FG_42。
+        // Windows 在 cargo test 下会继承忽略 Ctrl+C 属性：只在最内层前台子进程内复位 SetConsoleCtrlHandler(0, false)，
+        // 并用 -EncodedCommand 避免引号嵌套问题且杜绝 PTY 回显伪命中 FG_42。
         let fg_cmd = if cfg!(target_os = "windows") {
             let child_script = concat!(
                 "Add-Type 'using System; using System.Runtime.InteropServices; ",

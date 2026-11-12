@@ -1,10 +1,9 @@
 //! 工具调度执行管线统一协调器（Tool Execution Orchestrator）
 //!
-//! **职责边界（别按 Codex 的同名类型理解）**：本模块只负责
+//! **职责边界**：本模块只负责
 //! 「批量调度 + 只读并发 + 死循环熔断 + 结果落库/事件广播」。
 //! 审批、沙箱选择与沙箱失败重试都在 `execute_single_tool_call` →
-//! `execute_tool_with_app` 内完成，不在这里。Codex 的 `ToolOrchestrator`
-//! 是审批/沙箱/重试的编排器，两者不是一回事。
+//! `execute_tool_with_app` 内完成，不在此处实现。
 //!
 //! 单次调用依次经过：
 //! 1. 预检查与生命周期 Hook (PreToolUseHooks)

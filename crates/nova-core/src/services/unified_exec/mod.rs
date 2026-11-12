@@ -1,4 +1,4 @@
-//! Codex `unified_exec` 交互式终端与持久化进程执行子系统。
+//! `unified_exec` 交互式终端与持久化进程执行子系统。
 
 pub mod manager;
 pub mod process;

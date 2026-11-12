@@ -115,11 +115,11 @@ function createChatController() {
     try {
       const outcome = await manualCompactConversation(conversationId);
       await conversationOps.loadConversation(conversationId);
-      activeSession.value.contextTokens = outcome.afterTokens;
+      agentSessionStore.getSession(conversationId).contextTokens = outcome.after_tokens;
       emitToast({
         variant: "success",
         source: "compact",
-        message: `上下文已压缩：节省约 ${outcome.savedTokens} tokens (${outcome.beforeTokens} -> ${outcome.afterTokens})`,
+        message: `上下文已压缩：节省约 ${outcome.saved_tokens} tokens (${outcome.before_tokens} -> ${outcome.after_tokens})`,
       });
     } catch (err: unknown) {
       const rawMsg = err instanceof Error ? err.message : String(err);
@@ -142,18 +142,21 @@ function createChatController() {
     hasConversationContent,
   });
 
-  async function finalizeActiveTurnOnError() {
-    const content = assistantResponse.value.trim();
-    if (content && activeConversationId.value) {
+  async function finalizeActiveTurnOnError(targetConversationId?: string) {
+    const convId = targetConversationId || activeConversationId.value;
+    if (!convId) return;
+    const session = agentSessionStore.getSession(convId);
+    const content = session.assistantResponse.trim();
+    if (content) {
       await conversationOps.persistMessage(
         {
           id: `msg-${Date.now()}`,
           role: "assistant",
           content: `${content}\n\n（本轮因错误中断）`,
-          reasoning: assistantReasoning.value.trim() || undefined,
+          reasoning: session.assistantReasoning.trim() || undefined,
           createdAt: Date.now(),
         },
-        activeConversationId.value,
+        convId,
       );
     }
   }
@@ -297,13 +300,12 @@ function createChatController() {
           agentSessionStore.handlePermissionRequested(requestId, toolName, payload, turnId);
         },
         onTurnFinished: async (_turnId, _stopReason) => {
+          const targetConversationId = activeConversationId.value;
           await agentSessionStore.handleTurnFinished(_turnId, _stopReason, _turnId);
-          if (activeConversationId.value) {
-            void getConversationUsage(activeConversationId.value)
+          if (targetConversationId) {
+            void getConversationUsage(targetConversationId)
               .then((usage) => {
-                if (activeConversationId.value) {
-                  agentSessionStore.activeSession.conversationUsage = usage;
-                }
+                agentSessionStore.getSession(targetConversationId).conversationUsage = usage;
               })
               .catch(() => {});
           }

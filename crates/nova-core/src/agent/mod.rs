@@ -100,7 +100,7 @@ struct TurnSlotGuard(Option<String>);
 impl Drop for TurnSlotGuard {
     fn drop(&mut self) {
         if let Some(conv_id) = self.0.take() {
-            let _ = session_runtime::complete_turn_and_take_next(Some(&conv_id));
+            session_runtime::abort_turn_slot(Some(&conv_id));
         }
     }
 }

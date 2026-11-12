@@ -3,13 +3,16 @@ use crate::events::NovaEvent;
 use nova_protocol::mcp::McpElicitationDecision;
 use rmcp::model::{ElicitRequestParams, ElicitResult, ElicitationAction, ErrorData as McpError};
 use serde_json::Value;
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::future::Future;
 use std::sync::{Mutex, OnceLock};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use tokio::sync::oneshot;
+use tokio_util::sync::CancellationToken;
 
 const MCP_ELICITATION_TIMEOUT: Duration = Duration::from_secs(300);
+const ELICITATION_OWNER_TTL: Duration = Duration::from_secs(3600);
+const MAX_TRACKED_ELICITATION_OWNERS: usize = 512;
 
 tokio::task_local! {
     static ACTIVE_CONVERSATION_ID: Option<String>;
@@ -27,13 +30,47 @@ struct ServerInvocationContext {
     client_id: Option<String>,
 }
 
-static PENDING_ELICITATIONS: OnceLock<Mutex<HashMap<String, PendingElicitation>>> = OnceLock::new();
+#[derive(Default)]
+struct ElicitationRegistry {
+    pending: HashMap<String, PendingElicitation>,
+    owners: HashMap<String, (Option<String>, Instant)>,
+    owner_order: VecDeque<String>,
+}
+
+impl ElicitationRegistry {
+    fn record_owner(&mut self, request_id: &str, client_id: Option<String>) {
+        let now = Instant::now();
+        while self.owners.len() >= MAX_TRACKED_ELICITATION_OWNERS {
+            let Some(oldest) = self.owner_order.pop_front() else {
+                break;
+            };
+            self.owners.remove(&oldest);
+        }
+        self.owners.retain(|_, (_, ts)| now.saturating_duration_since(*ts) <= ELICITATION_OWNER_TTL);
+        self.owners.insert(request_id.to_string(), (client_id, now));
+        self.owner_order.push_back(request_id.to_string());
+    }
+}
+
+static PENDING_ELICITATIONS: OnceLock<Mutex<ElicitationRegistry>> = OnceLock::new();
 static ACTIVE_SERVER_SCOPES: OnceLock<Mutex<HashMap<String, Vec<ServerInvocationContext>>>> =
     OnceLock::new();
 static NEXT_SCOPE_ID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
 
-fn pending_map() -> &'static Mutex<HashMap<String, PendingElicitation>> {
-    PENDING_ELICITATIONS.get_or_init(|| Mutex::new(HashMap::new()))
+fn pending_map() -> &'static Mutex<ElicitationRegistry> {
+    PENDING_ELICITATIONS.get_or_init(|| Mutex::new(ElicitationRegistry::default()))
+}
+
+struct PendingElicitationGuard {
+    request_id: String,
+}
+
+impl Drop for PendingElicitationGuard {
+    fn drop(&mut self) {
+        if let Ok(mut guard) = pending_map().lock() {
+            guard.pending.remove(&self.request_id);
+        }
+    }
 }
 
 fn server_scopes_map() -> &'static Mutex<HashMap<String, Vec<ServerInvocationContext>>> {
@@ -87,33 +124,38 @@ where
     ACTIVE_CONVERSATION_ID.scope(conversation_id, fut).await
 }
 
-fn resolve_invocation_context(server_name: &str) -> (Option<String>, Option<String>) {
+fn resolve_invocation_context(
+    server_name: &str,
+) -> Result<(Option<String>, Option<String>), McpError> {
     if let Some(conv_id) = ACTIVE_CONVERSATION_ID
         .try_with(|id| id.clone())
         .ok()
         .flatten()
     {
         let client_id = crate::agent::session_runtime::active_client_id(Some(&conv_id));
-        return (Some(conv_id), client_id);
+        return Ok((Some(conv_id), client_id));
     }
 
     let Ok(guard) = server_scopes_map().lock() else {
-        return (None, None);
+        return Ok((None, None));
     };
     let Some(entries) = guard.get(server_name) else {
-        return (None, None);
+        return Ok((None, None));
     };
     let Some(last) = entries.last() else {
-        return (None, None);
+        return Ok((None, None));
     };
-    // 仅当全部活跃调用归属同一 client_id（含单并发场景）时直接绑定，避免跨窗口串线。
+    // 仅当全部活跃调用归属同一 client_id（含单并发场景）时直接绑定，拒绝跨窗口模糊归属。
     let single_owner = entries
         .iter()
         .all(|entry| entry.client_id == last.client_id);
     if single_owner {
-        (last.conversation_id.clone(), last.client_id.clone())
+        Ok((last.conversation_id.clone(), last.client_id.clone()))
     } else {
-        (None, None)
+        Err(McpError::invalid_request(
+            "Ambiguous concurrent MCP tool calls across multiple client windows; cannot route elicitation safely",
+            None,
+        ))
     }
 }
 
@@ -121,8 +163,15 @@ fn resolve_invocation_context(server_name: &str) -> (Option<String>, Option<Stri
 pub fn pending_elicitation_client_id(request_id: &str) -> Option<String> {
     let guard = pending_map().lock().ok()?;
     guard
+        .pending
         .get(request_id)
         .and_then(|entry| entry.client_id.clone())
+        .or_else(|| {
+            guard
+                .owners
+                .get(request_id)
+                .and_then(|(cid, _)| cid.clone())
+        })
 }
 
 /// 客户端连接断开时 fail-closed：把该连接持有的全部待处理 Elicitation 立即取消。
@@ -133,6 +182,7 @@ pub fn cancel_elicitations_for_client(client_id: &str) -> usize {
             return 0;
         };
         let keys: Vec<String> = guard
+            .pending
             .iter()
             .filter_map(|(req_id, entry)| {
                 if entry.client_id.as_deref() == Some(client_id) {
@@ -143,7 +193,7 @@ pub fn cancel_elicitations_for_client(client_id: &str) -> usize {
             })
             .collect();
         for key in keys {
-            if let Some(entry) = guard.remove(&key) {
+            if let Some(entry) = guard.pending.remove(&key) {
                 senders.push(entry.sender);
             }
         }
@@ -168,14 +218,14 @@ pub fn submit_elicitation_decision(
         let mut guard = pending_map()
             .lock()
             .map_err(|_| "MCP elicitation state unavailable".to_string())?;
-        if let (Some(caller), Some(entry)) = (caller_client_id, guard.get(request_id)) {
+        if let Some(entry) = guard.pending.get(request_id) {
             if let Some(owner) = entry.client_id.as_deref() {
-                if owner != caller {
+                if caller_client_id != Some(owner) {
                     return Err("该交互请求归属另一个已连接窗口，当前连接无权处理。".to_string());
                 }
             }
         }
-        guard.remove(request_id).map(|entry| entry.sender)
+        guard.pending.remove(request_id).map(|entry| entry.sender)
     };
     let Some(sender) = sender else {
         return Ok(false);
@@ -213,6 +263,7 @@ pub(super) async fn request_elicitation(
     core: &Core,
     server_name: &str,
     params: ElicitRequestParams,
+    ct: CancellationToken,
 ) -> Result<ElicitResult, McpError> {
     let (mode, message, url, requested_schema) = match params {
         ElicitRequestParams::FormElicitationParams {
@@ -235,7 +286,13 @@ pub(super) async fn request_elicitation(
         }
     };
 
-    let (conversation_id, owner_client_id) = resolve_invocation_context(server_name);
+    let (conversation_id, owner_client_id) = resolve_invocation_context(server_name)?;
+    if let Some(owner) = owner_client_id.as_deref() {
+        if crate::agent::session_runtime::is_client_disconnected(owner) {
+            return Ok(ElicitResult::new(ElicitationAction::Cancel));
+        }
+    }
+
     let request_id = format!("mcp-elicit-{}", uuid::Uuid::new_v4());
     let (tx, rx) = oneshot::channel::<McpElicitationDecision>();
 
@@ -243,7 +300,8 @@ pub(super) async fn request_elicitation(
         let mut guard = pending_map()
             .lock()
             .map_err(|_| McpError::internal_error("Elicitation state poisoned", None))?;
-        guard.insert(
+        guard.record_owner(&request_id, owner_client_id.clone());
+        guard.pending.insert(
             request_id.clone(),
             PendingElicitation {
                 client_id: owner_client_id,
@@ -251,6 +309,9 @@ pub(super) async fn request_elicitation(
             },
         );
     }
+    let _pending_guard = PendingElicitationGuard {
+        request_id: request_id.clone(),
+    };
 
     core.emit(NovaEvent::McpElicitationRequested {
         request_id: request_id.clone(),
@@ -262,10 +323,13 @@ pub(super) async fn request_elicitation(
         conversation_id,
     });
 
-    let outcome = tokio::time::timeout(MCP_ELICITATION_TIMEOUT, rx).await;
-    if let Ok(mut guard) = pending_map().lock() {
-        guard.remove(&request_id);
-    }
+    let outcome = tokio::select! {
+        biased;
+        _ = ct.cancelled() => {
+            return Ok(ElicitResult::new(ElicitationAction::Cancel));
+        }
+        res = tokio::time::timeout(MCP_ELICITATION_TIMEOUT, rx) => res,
+    };
 
     match outcome {
         Ok(Ok(decision)) => {

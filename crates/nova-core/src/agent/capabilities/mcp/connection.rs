@@ -22,13 +22,17 @@ use tokio_util::sync::CancellationToken;
 pub(super) enum McpCallError {
     Timeout(String),
     Cancelled(String),
+    Protocol(String),
     Transport(String),
 }
 
 impl McpCallError {
     pub(super) fn into_message(self) -> String {
         match self {
-            Self::Timeout(msg) | Self::Cancelled(msg) | Self::Transport(msg) => msg,
+            Self::Timeout(msg)
+            | Self::Cancelled(msg)
+            | Self::Protocol(msg)
+            | Self::Transport(msg) => msg,
         }
     }
 
@@ -86,9 +90,9 @@ impl ClientHandler for NovaMcpHandler {
     async fn create_elicitation(
         &self,
         request: ElicitRequestParams,
-        _context: RequestContext<RoleClient>,
+        context: RequestContext<RoleClient>,
     ) -> Result<ElicitResult, McpError> {
-        elicitation::request_elicitation(&self.core, &self.server_name, request).await
+        elicitation::request_elicitation(&self.core, &self.server_name, request, context.ct).await
     }
 
     async fn on_tool_list_changed(&self, context: NotificationContext<RoleClient>) {
@@ -223,7 +227,7 @@ impl McpConnection for RmcpConnection {
         call_timeout: Duration,
     ) -> Result<Value, McpCallError> {
         let mut params = CallToolRequestParams::new(tool_name.to_string());
-        if let Some(args) = normalize_tool_arguments(arguments).map_err(McpCallError::Transport)? {
+        if let Some(args) = normalize_tool_arguments(arguments).map_err(McpCallError::Protocol)? {
             params = params.with_arguments(args);
         }
 
@@ -234,7 +238,10 @@ impl McpConnection for RmcpConnection {
                 PeerRequestOptions::no_options(),
             )
             .await
-            .map_err(|e| McpCallError::Transport(format_service_error(e)))?;
+            .map_err(|e| match e {
+                ServiceError::McpError(_) => McpCallError::Protocol(format_service_error(e)),
+                other => McpCallError::Transport(format_service_error(other)),
+            })?;
 
         let response = tokio::select! {
             biased;
@@ -259,7 +266,12 @@ impl McpConnection for RmcpConnection {
                 match res {
                     Ok(Ok(server_res)) => server_res,
                     Ok(Err(service_err)) => {
-                        return Err(McpCallError::Transport(format_service_error(service_err)));
+                        return Err(match service_err {
+                            ServiceError::McpError(_) => {
+                                McpCallError::Protocol(format_service_error(service_err))
+                            }
+                            other => McpCallError::Transport(format_service_error(other)),
+                        });
                     }
                     Err(_) => {
                         return Err(McpCallError::Transport(
@@ -272,9 +284,9 @@ impl McpConnection for RmcpConnection {
 
         match response {
             ServerResult::CallToolResult(res) => map_call_tool_result(res)
-                .map_err(|e| McpCallError::Transport(format!("Invalid MCP tool result: {e}"))),
+                .map_err(|e| McpCallError::Protocol(format!("Invalid MCP tool result: {e}"))),
             other => serde_json::to_value(other)
-                .map_err(|e| McpCallError::Transport(format!("Unexpected MCP response: {e}"))),
+                .map_err(|e| McpCallError::Protocol(format!("Unexpected MCP response: {e}"))),
         }
     }
 

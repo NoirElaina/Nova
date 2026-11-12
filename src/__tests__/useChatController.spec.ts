@@ -68,7 +68,7 @@ describe("useChatController", () => {
     resetChatControllerForTesting();
   });
 
-  it("cancels running turn immediately and falls back to global cancel_modern_agent_turn when needed", async () => {
+  it("cancels only the active conversation turn without global fallback", async () => {
     const cancelCalls: Array<{ conversationId: string | null }> = [];
     invokeMock.mockImplementation(async (cmd: string, args?: Record<string, unknown>) => {
       switch (cmd) {
@@ -104,10 +104,7 @@ describe("useChatController", () => {
 
     expect(controller.isGenerating.value).toBe(false);
     expect(controller.toolExecutionLogs.value[0].status).toBe("cancelled");
-    expect(cancelCalls).toEqual([
-      { conversationId: "conv-cancel" },
-      { conversationId: null },
-    ]);
+    expect(cancelCalls).toEqual([{ conversationId: "conv-cancel" }]);
   });
 
   it("guards against stale out-of-order conversation loads and clears draft state on handleNewChat", async () => {
@@ -188,5 +185,36 @@ describe("useChatController", () => {
     expect(controller.activeConversationId.value).toBe("");
     expect(controller.messages.value).toEqual([]);
     expect(controller.isGenerating.value).toBe(false);
+  });
+
+  it("updates contextTokens from ManualCompactOutcome snake_case fields", async () => {
+    invokeMock.mockImplementation(async (cmd: string) => {
+      switch (cmd) {
+        case "list_conversations":
+        case "list_session_files":
+        case "load_history":
+        case "load_conversation_tool_logs":
+          return [];
+        case "get_conversation_usage":
+          return null;
+        case "manual_compact_conversation":
+          return {
+            before_tokens: 12000,
+            after_tokens: 3400,
+            saved_tokens: 8600,
+            summary: "compacted summary",
+          };
+        default:
+          return null;
+      }
+    });
+
+    const controller = mountController();
+    const conversationStore = useConversationStore();
+    const sessionStore = useAgentSessionStore();
+    conversationStore.selectConversation("conv-compact");
+
+    await controller.handleCompactConversation();
+    expect(sessionStore.getSession("conv-compact").contextTokens).toBe(3400);
   });
 });

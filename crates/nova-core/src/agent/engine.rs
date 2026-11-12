@@ -257,19 +257,43 @@ impl AgentEngine {
         let reconstructed =
             crate::agent::session::projection::reconstruct_model_context(&raw_events);
 
-        let mut current_messages = ContextAssembler::assemble(
+        let mut current_messages = match ContextAssembler::assemble(
             &self.core,
             Some(conversation_id),
             reconstructed,
         )
         .await
-        .map_err(crate::NovaCoreError::Session)?;
+        {
+            Ok(messages) => messages,
+            Err(err) => {
+                return self
+                    .handle_turn_error(
+                        conversation_id,
+                        &turn_id,
+                        &trace_id,
+                        crate::NovaCoreError::Session(err),
+                    )
+                    .await;
+            }
+        };
 
         // 3.1 异步刷新 MCP 工具缓存（确保三协议适配器同步读取到最新的 MCP 工具清单）
         let _ = crate::agent::capabilities::mcp_tools::refresh_mcp_tools_cache(&self.core).await;
 
         // 4. 准备 LLM Client
-        let mut client = LlmClient::new(&self.core).map_err(crate::NovaCoreError::Internal)?;
+        let mut client = match LlmClient::new(&self.core) {
+            Ok(client) => client,
+            Err(err) => {
+                return self
+                    .handle_turn_error(
+                        conversation_id,
+                        &turn_id,
+                        &trace_id,
+                        crate::NovaCoreError::Internal(err),
+                    )
+                    .await;
+            }
+        };
 
         let mut loop_count = 0;
         const MAX_STEPS: usize = 30;

@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref } from 'vue'
+import { onUnmounted, ref } from 'vue'
 import { check } from '@tauri-apps/plugin-updater'
 import { relaunch } from '@tauri-apps/plugin-process'
 import { Button } from '@/components/ui/button'
@@ -11,12 +11,24 @@ const updateStatus = ref<string | null>(null)
 const pendingVersion = ref<string | null>(null)
 let pendingUpdateHandle: Awaited<ReturnType<typeof check>> = null
 
+const closePendingUpdateHandle = async () => {
+  const handle = pendingUpdateHandle
+  pendingUpdateHandle = null
+  if (handle) {
+    await handle.close().catch(() => {})
+  }
+}
+
+onUnmounted(() => {
+  void closePendingUpdateHandle()
+})
+
 const handleCheckUpdate = async () => {
   if (checkingUpdate.value || installingUpdate.value) return
   checkingUpdate.value = true
   updateStatus.value = '正在检查 GitHub Releases 最新版本...'
   pendingVersion.value = null
-  pendingUpdateHandle = null
+  await closePendingUpdateHandle()
   try {
     const update = await check()
     if (!update) {
@@ -34,15 +46,23 @@ const handleCheckUpdate = async () => {
 }
 
 const handleInstallUpdate = async () => {
-  if (!pendingUpdateHandle || installingUpdate.value) return
+  const handle = pendingUpdateHandle
+  if (!handle || installingUpdate.value) return
   installingUpdate.value = true
-  updateStatus.value = `正在下载并校验 v${pendingUpdateHandle.version} 更新包...`
+  updateStatus.value = `正在下载并校验 v${handle.version} 更新包...`
   try {
-    await pendingUpdateHandle.downloadAndInstall()
+    await handle.downloadAndInstall()
+    pendingVersion.value = null
+    await closePendingUpdateHandle()
     updateStatus.value = '更新已安装，正在重启应用...'
-    await relaunch()
+    try {
+      await relaunch()
+    } catch (error) {
+      updateStatus.value = `更新已安装完成，请手动重启应用以生效（自动重启失败：${error instanceof Error ? error.message : String(error)}）。`
+    }
   } catch (error) {
     updateStatus.value = `安装更新失败：${error instanceof Error ? error.message : String(error)}`
+  } finally {
     installingUpdate.value = false
   }
 }

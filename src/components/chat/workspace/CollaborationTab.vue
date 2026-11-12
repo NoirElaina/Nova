@@ -110,6 +110,9 @@ const traceScrollRef = ref<HTMLElement | null>(null);
 let unlistenGraph: UnlistenFn | null = null;
 let unlistenPost: UnlistenFn | null = null;
 let unlistenChannel: UnlistenFn | null = null;
+let isDisposed = false;
+let loadDataSeq = 0;
+let switchChannelSeq = 0;
 
 // 从 subagents 响应式模块中获取当前会话的实时子代理
 const subagents = computed<SubagentEntry[]>(() => subagentsFor(props.conversationId));
@@ -194,35 +197,56 @@ const closedAgentCount = computed(() => unifiedNodes.value.filter((n) => n.statu
 const totalAgentCount = computed(() => unifiedNodes.value.length);
 
 const loadData = async () => {
-  if (!props.conversationId) {
+  const seq = ++loadDataSeq;
+  const targetConversationId = props.conversationId;
+  if (!targetConversationId) {
     graphNodes.value = [];
     channels.value = [];
     posts.value = [];
+    loading.value = false;
     return;
   }
 
   loading.value = true;
   try {
     const [graphRes, channelsRes, postsRes] = await Promise.all([
-      getAgentGraph(props.conversationId),
-      getBoardChannels(props.conversationId),
-      getBoardPosts(props.conversationId, activeChannel.value),
+      getAgentGraph(targetConversationId),
+      getBoardChannels(targetConversationId),
+      getBoardPosts(targetConversationId, activeChannel.value),
     ]);
+    if (isDisposed || seq !== loadDataSeq || props.conversationId !== targetConversationId) {
+      return;
+    }
     graphNodes.value = graphRes;
     channels.value = channelsRes;
     posts.value = postsRes;
   } catch (err) {
-    console.warn('Failed to load collaboration data:', err);
+    if (!isDisposed && seq === loadDataSeq) {
+      console.warn('Failed to load collaboration data:', err);
+    }
   } finally {
-    loading.value = false;
+    if (!isDisposed && seq === loadDataSeq) {
+      loading.value = false;
+    }
   }
 };
 
 const switchChannel = async (channelName: string) => {
   activeChannel.value = channelName;
-  if (!props.conversationId) return;
+  const seq = ++switchChannelSeq;
+  const targetConversationId = props.conversationId;
+  if (!targetConversationId) return;
   try {
-    posts.value = await getBoardPosts(props.conversationId, channelName);
+    const res = await getBoardPosts(targetConversationId, channelName);
+    if (
+      isDisposed ||
+      seq !== switchChannelSeq ||
+      props.conversationId !== targetConversationId ||
+      activeChannel.value !== channelName
+    ) {
+      return;
+    }
+    posts.value = res;
     scrollToBottom();
   } catch (err) {
     console.warn('Failed to load posts for channel:', channelName, err);
@@ -331,6 +355,7 @@ watch(
 );
 
 onMounted(() => {
+  isDisposed = false;
   void initSubagentEvents();
 
   void listen<{ conversationId: string; node: AgentNode }>('agent-graph-updated', (event) => {
@@ -344,6 +369,10 @@ onMounted(() => {
       }
     }
   }).then((unlisten) => {
+    if (isDisposed) {
+      unlisten();
+      return;
+    }
     unlistenGraph = unlisten;
   });
 
@@ -360,25 +389,41 @@ onMounted(() => {
       }
     }
   }).then((unlisten) => {
+    if (isDisposed) {
+      unlisten();
+      return;
+    }
     unlistenPost = unlisten;
   });
 
   void listen<{ conversationId: string; channel: BoardChannel }>('board-channel-created', (event) => {
-    if (props.conversationId && event.payload.channel) {
+    if (
+      props.conversationId &&
+      event.payload.channel &&
+      event.payload.conversationId === props.conversationId
+    ) {
       const ch = event.payload.channel;
       if (!channels.value.some((c) => c.name === ch.name)) {
         channels.value.push(ch);
       }
     }
   }).then((unlisten) => {
+    if (isDisposed) {
+      unlisten();
+      return;
+    }
     unlistenChannel = unlisten;
   });
 });
 
 onBeforeUnmount(() => {
+  isDisposed = true;
   unlistenGraph?.();
   unlistenPost?.();
   unlistenChannel?.();
+  unlistenGraph = null;
+  unlistenPost = null;
+  unlistenChannel = null;
 });
 </script>
 

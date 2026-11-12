@@ -1164,8 +1164,12 @@ pub async fn exec_command(
         Ok(resp) => {
             if resp.session_id.is_none() {
                 // 在首次让出窗口内即执行结束的短命令，不污染长期交互式/后台任务表。
-                let mut map = registry().lock().unwrap_or_else(|e| e.into_inner());
-                map.remove(&session_id);
+                {
+                    let mut map = registry().lock().unwrap_or_else(|e| e.into_inner());
+                    map.remove(&session_id);
+                }
+                // 清理残留 Job / 孙进程与 ConPTY 句柄，防止非 PTY 孙进程继承句柄长期滞留。
+                process.kill_tree().await;
             }
             Ok(resp)
         }

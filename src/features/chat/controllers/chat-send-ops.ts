@@ -37,7 +37,7 @@ export type SendOpsDeps = {
   chatScreenRef: Ref<ChatScreenHandle | null>;
   createNewConversation: (seedTitle?: string) => Promise<string | null>;
   refreshConversationFiles: (conversationId: string) => Promise<void>;
-  finalizeActiveTurnOnError: () => Promise<void>;
+  finalizeActiveTurnOnError: (targetConversationId?: string) => Promise<void>;
 };
 
 export function createSendOperations(deps: SendOpsDeps) {
@@ -116,7 +116,7 @@ export function createSendOperations(deps: SendOpsDeps) {
           session.assistantResponse.trim().length > 0 ||
           session.assistantReasoning.trim().length > 0
         ) {
-          await finalizeActiveTurnOnError();
+          await finalizeActiveTurnOnError(sendingConversationId);
         }
         sessionStore.handleTurnError(raw || "Turn execution failed", sendingConversationId);
       }
@@ -155,11 +155,9 @@ export function createSendOperations(deps: SendOpsDeps) {
         }
       }
 
-      // 2. 向后端发送强制取消指令
-      const hit = await cancelChatMessage(activeConversationId.value || null);
-      if (!hit) {
-        // 兜底：若带 ID 未命中，尝试全局取消
-        await cancelChatMessage(null);
+      // 2. 向后端发送精准取消指令（禁止无 ID 全局取消误伤其他窗口并发会话）
+      if (activeConversationId.value) {
+        await cancelChatMessage(activeConversationId.value);
       }
     } catch (err) {
       console.error("Failed to cancel generation:", err);
@@ -246,13 +244,14 @@ export function createSendOperations(deps: SendOpsDeps) {
       createdAt: Date.now(),
     };
 
-    const nextMessages = [...sessionStore.activeSession.messages, userMessage];
+    const targetSession = sessionStore.getSession(sendingConversationId);
+    const nextMessages = [...targetSession.messages, userMessage];
 
     if (filesToSend.length > 0) {
       composerStore.clearUploads();
     }
 
-    sessionStore.activeSession.messages = nextMessages;
+    targetSession.messages = nextMessages;
     await dispatchConversationMessages(sendingConversationId, nextMessages, { wasGenerating });
 
   }

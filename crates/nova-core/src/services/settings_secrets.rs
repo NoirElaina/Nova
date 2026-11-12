@@ -359,7 +359,10 @@ fn aes_decrypt(blob: &[u8]) -> Result<Vec<u8>, String> {
 pub fn encrypt_provider_api_keys(settings: &mut AppSettings) -> Result<(), String> {
     for (provider, profile) in settings.provider_profiles.iter_mut() {
         let api_key = profile.api_key.trim();
-        if api_key.is_empty() || is_encrypted_secret_value(api_key) {
+        if api_key.is_empty()
+            || is_encrypted_secret_value(api_key)
+            || api_key.starts_with(LEGACY_DPAPI_PREFIX)
+        {
             continue;
         }
         profile.api_key = encrypt_secret_value(api_key)
@@ -402,7 +405,9 @@ pub fn decrypt_provider_api_keys(settings: &mut AppSettings) {
 pub fn has_plaintext_provider_api_keys(settings: &AppSettings) -> bool {
     settings.provider_profiles.values().any(|profile| {
         let api_key = profile.api_key.trim();
-        !api_key.is_empty() && !is_encrypted_secret_value(api_key)
+        !api_key.is_empty()
+            && !is_encrypted_secret_value(api_key)
+            && !api_key.starts_with(LEGACY_DPAPI_PREFIX)
     })
 }
 
@@ -551,6 +556,28 @@ mod tests {
         assert_ne!(
             master_key_account(dir_a.path()),
             master_key_account(dir_b.path())
+        );
+    }
+
+    #[test]
+    fn legacy_dpapi_prefix_is_not_treated_as_plaintext_or_double_encrypted() {
+        let mut settings = AppSettings::default();
+        let legacy = format!("{LEGACY_DPAPI_PREFIX}AQAAANCMnd8BFdERjHoAwE");
+        settings.provider_profiles.insert(
+            "legacy".to_string(),
+            nova_protocol::settings::ProviderProfile {
+                display_name: "Legacy".to_string(),
+                api_key: legacy.clone(),
+                base_url: "https://api.example.com".to_string(),
+                model: "gpt-4o".to_string(),
+                ..Default::default()
+            },
+        );
+        assert!(!has_plaintext_provider_api_keys(&settings));
+        encrypt_provider_api_keys(&mut settings).expect("legacy dpapi key should be skipped cleanly");
+        assert_eq!(
+            settings.provider_profiles.get("legacy").map(|p| p.api_key.as_str()),
+            Some(legacy.as_str())
         );
     }
 }

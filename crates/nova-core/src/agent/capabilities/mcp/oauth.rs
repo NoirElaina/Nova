@@ -247,7 +247,9 @@ async fn probe_www_authenticate(client: &reqwest::Client, url: &str) -> Option<S
         .map(str::to_string)
 }
 
-async fn accept_loopback_oauth_callback(listener: TcpListener) -> Result<(String, String), String> {
+async fn accept_loopback_oauth_callback(
+    listener: TcpListener,
+) -> Result<(String, String, Option<String>), String> {
     let (mut stream, _) = listener
         .accept()
         .await
@@ -269,12 +271,14 @@ async fn accept_loopback_oauth_callback(listener: TcpListener) -> Result<(String
 
     let mut code = None;
     let mut state = None;
+    let mut issuer = None;
     let mut error = None;
     let mut error_description = None;
     for (k, v) in parsed.query_pairs() {
         match k.as_ref() {
             "code" => code = Some(v.into_owned()),
             "state" => state = Some(v.into_owned()),
+            "iss" => issuer = Some(v.into_owned()),
             "error" => error = Some(v.into_owned()),
             "error_description" => error_description = Some(v.into_owned()),
             _ => {}
@@ -306,7 +310,22 @@ async fn accept_loopback_oauth_callback(listener: TcpListener) -> Result<(String
 
     let code = code.ok_or_else(|| "OAuth callback missing 'code' parameter".to_string())?;
     let state = state.ok_or_else(|| "OAuth callback missing 'state' parameter".to_string())?;
-    Ok((code, state))
+    Ok((code, state, issuer))
+}
+
+fn validate_http_authorization_url(raw_url: &str) -> Result<(), String> {
+    let parsed = reqwest::Url::parse(raw_url)
+        .map_err(|e| format!("Invalid OAuth authorization URL '{raw_url}': {e}"))?;
+    if !matches!(parsed.scheme(), "http" | "https") {
+        return Err(format!(
+            "Unsupported OAuth authorization URL scheme '{}'; only http/https allowed",
+            parsed.scheme()
+        ));
+    }
+    if parsed.host_str().is_none_or(str::is_empty) {
+        return Err("OAuth authorization URL must contain a non-empty host".to_string());
+    }
+    Ok(())
 }
 
 /// 启动 OAuth 2.1 Authorization Code + PKCE 完整授权流程（供 API 与集成测试共用）。
@@ -376,6 +395,7 @@ where
         .await
         .map_err(|(_, e)| format!("MCP OAuth client registration/session setup failed: {e}"))?;
     let auth_url = session.get_authorization_url().to_string();
+    validate_http_authorization_url(&auth_url)?;
 
     let callback_handle = tokio::spawn(async move {
         tokio::time::timeout(OAUTH_LOGIN_TIMEOUT, accept_loopback_oauth_callback(listener)).await
@@ -383,15 +403,15 @@ where
 
     open_auth_url(auth_url).await?;
 
-    let (code, state) = match callback_handle.await {
-        Ok(Ok(Ok(pair))) => pair,
+    let (code, state, issuer) = match callback_handle.await {
+        Ok(Ok(Ok(tuple))) => tuple,
         Ok(Ok(Err(err))) => return Err(err),
         Ok(Err(_)) => return Err("OAuth authorization timed out after 120s".to_string()),
         Err(join_err) => return Err(format!("OAuth callback task failed: {join_err}")),
     };
 
     session
-        .handle_callback(&code, &state)
+        .handle_callback_with_issuer(&code, &state, issuer.as_deref())
         .await
         .map_err(|e| format!("OAuth code-to-token exchange failed: {e}"))?;
 
@@ -679,5 +699,15 @@ mod tests {
 
         server_task.abort();
         Ok(())
+    }
+
+    #[test]
+    fn validate_http_authorization_url_rejects_dangerous_schemes() {
+        assert!(validate_http_authorization_url("https://auth.example.com/authorize?state=1").is_ok());
+        assert!(validate_http_authorization_url("http://127.0.0.1:8080/auth").is_ok());
+        assert!(validate_http_authorization_url("file:///C:/Windows/System32/calc.exe").is_err());
+        assert!(validate_http_authorization_url("javascript:alert(1)").is_err());
+        assert!(validate_http_authorization_url("ms-msdt:/id").is_err());
+        assert!(validate_http_authorization_url("https://").is_err());
     }
 }

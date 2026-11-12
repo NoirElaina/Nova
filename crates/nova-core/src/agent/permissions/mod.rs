@@ -13,6 +13,7 @@ pub mod descriptors;
 pub mod rules;
 
 use std::collections::{HashMap, HashSet};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Mutex, OnceLock};
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -99,29 +100,48 @@ pub enum PermissionEnforcement {
     AskUser { request_id: String, payload: String },
 }
 
-fn permission_waiters() -> &'static Mutex<HashMap<String, oneshot::Sender<PermissionAction>>> {
-    static WAITERS: OnceLock<Mutex<HashMap<String, oneshot::Sender<PermissionAction>>>> =
-        OnceLock::new();
+type PermissionWaiterMap = HashMap<String, Vec<(u64, oneshot::Sender<PermissionAction>)>>;
+
+fn permission_waiters() -> &'static Mutex<PermissionWaiterMap> {
+    static WAITERS: OnceLock<Mutex<PermissionWaiterMap>> = OnceLock::new();
     WAITERS.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
-fn register_permission_waiter(request_id: &str) -> oneshot::Receiver<PermissionAction> {
-    let (tx, rx) = oneshot::channel();
-    if let Ok(mut guard) = permission_waiters().lock() {
-        guard.insert(request_id.to_string(), tx);
-    }
-    rx
+fn next_waiter_id() -> u64 {
+    static NEXT_WAITER_ID: AtomicU64 = AtomicU64::new(1);
+    NEXT_WAITER_ID.fetch_add(1, Ordering::Relaxed)
 }
 
-fn unregister_permission_waiter(request_id: &str) {
+fn register_permission_waiter(request_id: &str) -> (u64, oneshot::Receiver<PermissionAction>) {
+    let waiter_id = next_waiter_id();
+    let (tx, rx) = oneshot::channel();
     if let Ok(mut guard) = permission_waiters().lock() {
-        guard.remove(request_id);
+        guard
+            .entry(request_id.to_string())
+            .or_default()
+            .push((waiter_id, tx));
+    }
+    (waiter_id, rx)
+}
+
+fn unregister_permission_waiter(request_id: &str, waiter_id: u64) {
+    if let Ok(mut guard) = permission_waiters().lock() {
+        if let Some(waiters) = guard.get_mut(request_id) {
+            waiters.retain(|(id, _)| *id != waiter_id);
+            if waiters.is_empty() {
+                guard.remove(request_id);
+            }
+        }
     }
 }
 
 fn notify_permission_waiter(request_id: &str, action: PermissionAction) {
-    if let Ok(mut guard) = permission_waiters().lock() {
-        if let Some(sender) = guard.remove(request_id) {
+    let waiters = permission_waiters()
+        .lock()
+        .ok()
+        .and_then(|mut guard| guard.remove(request_id));
+    if let Some(waiters) = waiters {
+        for (_, sender) in waiters {
             let _ = sender.send(action);
         }
     }
@@ -555,7 +575,7 @@ pub async fn await_permission_decision(
         }
     }
 
-    let mut receiver = register_permission_waiter(request_id);
+    let (waiter_id, mut receiver) = register_permission_waiter(request_id);
     let started_at = now_millis();
     let timeout_ms = timeout_ms.max(1);
 
@@ -570,12 +590,12 @@ pub async fn await_permission_decision(
         }
 
         if crate::agent::cancellation::is_cancelled(conversation_scope.as_deref()) {
-            unregister_permission_waiter(request_id);
+            unregister_permission_waiter(request_id, waiter_id);
             return Err("Permission approval cancelled".to_string());
         }
 
         if now_millis().saturating_sub(started_at) > timeout_ms {
-            unregister_permission_waiter(request_id);
+            unregister_permission_waiter(request_id, waiter_id);
             return Err("Permission approval timed out".to_string());
         }
 
@@ -593,7 +613,7 @@ pub async fn await_permission_decision(
         };
 
         if let Some(action) = resolved {
-            unregister_permission_waiter(request_id);
+            unregister_permission_waiter(request_id, waiter_id);
             return Ok(action);
         }
     }
@@ -684,6 +704,14 @@ pub fn enforce_tool_permission(
     }
 
     let origin_client_id = crate::agent::session_runtime::active_client_id(conversation_id);
+    if origin_client_id
+        .as_deref()
+        .is_some_and(crate::agent::session_runtime::is_client_disconnected)
+    {
+        return PermissionEnforcement::Deny(
+            "Originating client disconnected before permission approval".to_string(),
+        );
+    }
     let mut guard = match permission_state().lock() {
         Ok(g) => g,
         Err(_) => {
@@ -726,6 +754,12 @@ pub async fn request_sandbox_retry(
     };
 
     let origin_client_id = crate::agent::session_runtime::active_client_id(conversation_id);
+    if origin_client_id
+        .as_deref()
+        .is_some_and(crate::agent::session_runtime::is_client_disconnected)
+    {
+        return Ok(false);
+    }
     let (request_id, payload) = {
         let mut guard = permission_state()
             .lock()
@@ -792,5 +826,22 @@ mod tests {
             "Blocked by permission gate: writing protected path 'c:/windows/x'.",
         );
         assert!(out.contains("受保护目录"));
+    }
+
+    #[test]
+    fn multiple_waiters_for_same_request_id_all_receive_decision() {
+        let req_id = format!("req-multi-{}", uuid::Uuid::new_v4());
+        let (id1, mut rx1) = register_permission_waiter(&req_id);
+        let (_id2, mut rx2) = register_permission_waiter(&req_id);
+        let (id3, mut rx3) = register_permission_waiter(&req_id);
+
+        // 取消 id1 不应影响 id2 和 id3
+        unregister_permission_waiter(&req_id, id1);
+        assert!(rx1.try_recv().is_err());
+
+        notify_permission_waiter(&req_id, PermissionAction::AllowSession);
+        assert_eq!(rx2.try_recv().ok(), Some(PermissionAction::AllowSession));
+        assert_eq!(rx3.try_recv().ok(), Some(PermissionAction::AllowSession));
+        let _ = id3;
     }
 }

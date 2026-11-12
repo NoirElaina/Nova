@@ -501,8 +501,16 @@ pub fn render_turn_traces(events: &[StoredEvent]) -> Vec<TurnTrace> {
                     wire_calls: Vec::new(),
                 });
             }
-            SessionEvent::TurnEnd { stop_reason, .. } => {
-                if let Some(trace) = traces.last_mut() {
+            SessionEvent::TurnEnd {
+                turn_id,
+                stop_reason,
+            } => {
+                let target = if turn_id.is_empty() {
+                    traces.last_mut()
+                } else {
+                    traces.iter_mut().rev().find(|t| t.turn_id == *turn_id)
+                };
+                if let Some(trace) = target {
                     trace.ended_at = Some(stored.created_at);
                     trace.stop_reason = stop_reason.clone();
                 }
@@ -661,6 +669,51 @@ mod tests {
         assert_eq!(traces[0].trace_id.as_deref(), Some("trace-999"));
         assert_eq!(traces[0].wire_calls[0].trace_id.as_deref(), Some("trace-999"));
         assert_eq!(traces[0].stop_reason.as_deref(), Some("end_turn"));
+    }
+
+    #[test]
+    fn render_turn_traces_matches_turn_end_by_turn_id() {
+        let events = vec![
+            StoredEvent {
+                seq: 1,
+                turn_id: Some("turn-a".to_string()),
+                trace_id: None,
+                event: SessionEvent::TurnStart {
+                    turn_id: "turn-a".to_string(),
+                    trace_id: Some("trace-a".to_string()),
+                },
+                created_at: 100,
+            },
+            StoredEvent {
+                seq: 2,
+                turn_id: Some("turn-b".to_string()),
+                trace_id: None,
+                event: SessionEvent::TurnStart {
+                    turn_id: "turn-b".to_string(),
+                    trace_id: Some("trace-b".to_string()),
+                },
+                created_at: 110,
+            },
+            StoredEvent {
+                seq: 3,
+                turn_id: Some("turn-a".to_string()),
+                trace_id: None,
+                event: SessionEvent::TurnEnd {
+                    turn_id: "turn-a".to_string(),
+                    stop_reason: Some("cancelled".to_string()),
+                },
+                created_at: 150,
+            },
+        ];
+
+        let traces = render_turn_traces(&events);
+        assert_eq!(traces.len(), 2);
+        assert_eq!(traces[0].turn_id, "turn-a");
+        assert_eq!(traces[0].stop_reason.as_deref(), Some("cancelled"));
+        assert_eq!(traces[0].ended_at, Some(150));
+        assert_eq!(traces[1].turn_id, "turn-b");
+        assert_eq!(traces[1].stop_reason, None);
+        assert_eq!(traces[1].ended_at, None);
     }
 }
 

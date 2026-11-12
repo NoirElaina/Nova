@@ -2,19 +2,39 @@
 
 use std::collections::{HashMap, VecDeque};
 use std::future::Future;
-use std::sync::{Arc, Mutex};
+use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
 use serde::{de::DeserializeOwned, Serialize};
 use serde_json::Value;
-use tokio::sync::Notify;
+use tokio::sync::watch;
 
 const MAX_ENTRIES: usize = 256;
 const ENTRY_TTL: Duration = Duration::from_secs(300);
 
 enum Entry {
-    InFlight(Arc<Notify>),
+    InFlight(watch::Receiver<bool>),
     Completed { expires_at: Instant, value: Value },
+}
+
+struct InFlightDropGuard<'a> {
+    cache: &'a IdempotencyCache,
+    cache_key: String,
+    done_tx: watch::Sender<bool>,
+    settled: bool,
+}
+
+impl Drop for InFlightDropGuard<'_> {
+    fn drop(&mut self) {
+        if !self.settled {
+            let mut guard = self.cache.lock_state();
+            if matches!(guard.entries.get(&self.cache_key), Some(Entry::InFlight(_))) {
+                guard.entries.remove(&self.cache_key);
+            }
+            drop(guard);
+            let _ = self.done_tx.send(true);
+        }
+    }
 }
 
 #[derive(Default)]
@@ -69,33 +89,8 @@ impl IdempotencyCache {
         format!("{}:{}", scope, key.trim())
     }
 
-    /// 抢占一个“即发即忘（fire-and-forget）”操作的幂等槽位。
-    /// 返回 `true` 表示首次调用可执行；返回 `false` 表示近期已受理相同幂等键，调用方应直接返回成功。
-    pub(crate) fn claim_once(&self, scope: &str, key: Option<&str>) -> bool {
-        let Some(raw) = key.map(str::trim).filter(|k| !k.is_empty()) else {
-            return true;
-        };
-        let cache_key = Self::composite_key(scope, raw);
-        let now = Instant::now();
-        let mut guard = self.lock_state();
-        Self::prune_expired(&mut guard, now);
-        if guard.entries.contains_key(&cache_key) {
-            return false;
-        }
-        guard.entries.insert(
-            cache_key.clone(),
-            Entry::Completed {
-                expires_at: now + ENTRY_TTL,
-                value: Value::Bool(true),
-            },
-        );
-        guard.order.push_back(cache_key);
-        Self::prune_expired(&mut guard, now);
-        true
-    }
-
     /// 执行可返回结果的幂等操作：相同 `idempotency_key` 并发只执行一次并共享同一结果；
-    /// 若首次执行失败则释放占位允许调用方重试。
+    /// 若首次执行失败、被取消或 panic，则自动释放占位并唤醒并发等待者。
     pub(crate) async fn run<T, E, F, Fut>(
         &self,
         scope: &str,
@@ -112,8 +107,10 @@ impl IdempotencyCache {
         };
         let cache_key = Self::composite_key(scope, raw);
 
-        loop {
-            let waiter = {
+        let mut flight_guard = loop {
+            let mut waiter = None;
+            let mut leader_guard = None;
+            {
                 let now = Instant::now();
                 let mut guard = self.lock_state();
                 Self::prune_expired(&mut guard, now);
@@ -122,47 +119,64 @@ impl IdempotencyCache {
                         if let Ok(parsed) = serde_json::from_value::<T>(value.clone()) {
                             return Ok(parsed);
                         }
-                        None
                     }
-                    Some(Entry::InFlight(notify)) => Some(notify.clone()),
-                    _ => {
-                        let notify = Arc::new(Notify::new());
-                        guard.entries.insert(cache_key.clone(), Entry::InFlight(notify));
-                        guard.order.push_back(cache_key.clone());
-                        None
+                    Some(Entry::InFlight(rx)) => {
+                        waiter = Some(rx.clone());
+                    }
+                    _ => {}
+                }
+                if waiter.is_none() {
+                    let (done_tx, done_rx) = watch::channel(false);
+                    guard.entries.insert(cache_key.clone(), Entry::InFlight(done_rx));
+                    guard.order.push_back(cache_key.clone());
+                    leader_guard = Some(InFlightDropGuard {
+                        cache: self,
+                        cache_key: cache_key.clone(),
+                        done_tx,
+                        settled: false,
+                    });
+                }
+            }
+
+            if let Some(guard) = leader_guard {
+                break guard;
+            }
+
+            if let Some(mut rx) = waiter {
+                while !*rx.borrow_and_update() {
+                    if rx.changed().await.is_err() {
+                        break;
                     }
                 }
-            };
-
-            if let Some(notify) = waiter {
-                notify.notified().await;
-                continue;
             }
-            break;
-        }
+        };
 
         let outcome = op().await;
-        let mut guard = self.lock_state();
-        let waiter = match outcome {
-            Ok(ref value) => match serde_json::to_value(value) {
-                Ok(json) => {
-                    let prev = guard.entries.insert(
-                        cache_key,
-                        Entry::Completed {
-                            expires_at: Instant::now() + ENTRY_TTL,
-                            value: json,
-                        },
-                    );
-                    Self::prune_expired(&mut guard, Instant::now());
-                    prev
+        {
+            let mut guard = self.lock_state();
+            match outcome {
+                Ok(ref value) => match serde_json::to_value(value) {
+                    Ok(json) => {
+                        guard.entries.insert(
+                            cache_key,
+                            Entry::Completed {
+                                expires_at: Instant::now() + ENTRY_TTL,
+                                value: json,
+                            },
+                        );
+                        Self::prune_expired(&mut guard, Instant::now());
+                    }
+                    Err(_) => {
+                        guard.entries.remove(&cache_key);
+                    }
+                },
+                Err(_) => {
+                    guard.entries.remove(&cache_key);
                 }
-                Err(_) => guard.entries.remove(&cache_key),
-            },
-            Err(_) => guard.entries.remove(&cache_key),
-        };
-        if let Some(Entry::InFlight(notify)) = waiter {
-            notify.notify_waiters();
+            }
         }
+        flight_guard.settled = true;
+        let _ = flight_guard.done_tx.send(true);
         outcome
     }
 }
@@ -207,12 +221,85 @@ mod tests {
         assert_eq!(runs.load(Ordering::SeqCst), 2);
     }
 
-    #[test]
-    fn claim_once_blocks_duplicate_keys_and_allows_blank_keys() {
-        let cache = IdempotencyCache::default();
-        assert!(cache.claim_once("turn", Some("abc")));
-        assert!(!cache.claim_once("turn", Some("abc")));
-        assert!(cache.claim_once("turn", None));
-        assert!(cache.claim_once("turn", Some("  ")));
+    #[tokio::test]
+    async fn aborted_leader_releases_inflight_and_wakes_waiter() {
+        let cache = Arc::new(IdempotencyCache::default());
+        let (entered_tx, entered_rx) = tokio::sync::oneshot::channel::<()>();
+
+        let cache_leader = Arc::clone(&cache);
+        let leader = tokio::spawn(async move {
+            let _: Result<String, String> = cache_leader
+                .run("turn", Some("abort-key"), || async move {
+                    let _ = entered_tx.send(());
+                    std::future::pending::<Result<String, String>>().await
+                })
+                .await;
+        });
+        let _ = entered_rx.await;
+
+        let cache_waiter = Arc::clone(&cache);
+        let waiter = tokio::spawn(async move {
+            cache_waiter
+                .run("turn", Some("abort-key"), || async {
+                    Ok::<_, String>("recovered-from-waiter".to_string())
+                })
+                .await
+        });
+
+        tokio::task::yield_now().await;
+        leader.abort();
+
+        let res = tokio::time::timeout(std::time::Duration::from_secs(2), waiter)
+            .await
+            .expect("waiter must wake up promptly")
+            .expect("waiter join")
+            .expect("waiter should recover slot");
+        assert_eq!(res, "recovered-from-waiter");
+    }
+
+    #[tokio::test]
+    async fn concurrent_waiters_all_receive_cached_outcome() {
+        let cache = Arc::new(IdempotencyCache::default());
+        let runs = Arc::new(AtomicUsize::new(0));
+        let (gate_tx, mut gate_rx) = tokio::sync::watch::channel(false);
+
+        let c1 = Arc::clone(&cache);
+        let r1 = Arc::clone(&runs);
+        let t1 = tokio::spawn(async move {
+            c1.run("turn", Some("shared-key"), || async move {
+                let n = r1.fetch_add(1, Ordering::SeqCst) + 1;
+                let _ = gate_rx.changed().await;
+                Ok::<_, String>(format!("val-{n}"))
+            })
+            .await
+        });
+
+        tokio::task::yield_now().await;
+        let c2 = Arc::clone(&cache);
+        let r2 = Arc::clone(&runs);
+        let t2 = tokio::spawn(async move {
+            c2.run("turn", Some("shared-key"), || async move {
+                r2.fetch_add(1, Ordering::SeqCst);
+                Ok::<_, String>("duplicate".to_string())
+            })
+            .await
+        });
+        let c3 = Arc::clone(&cache);
+        let r3 = Arc::clone(&runs);
+        let t3 = tokio::spawn(async move {
+            c3.run("turn", Some("shared-key"), || async move {
+                r3.fetch_add(1, Ordering::SeqCst);
+                Ok::<_, String>("duplicate".to_string())
+            })
+            .await
+        });
+
+        tokio::task::yield_now().await;
+        let _ = gate_tx.send(true);
+
+        assert_eq!(t1.await.expect("t1").expect("ok"), "val-1");
+        assert_eq!(t2.await.expect("t2").expect("ok"), "val-1");
+        assert_eq!(t3.await.expect("t3").expect("ok"), "val-1");
+        assert_eq!(runs.load(Ordering::SeqCst), 1);
     }
 }

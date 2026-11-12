@@ -32,6 +32,7 @@ pub use types::{
 
 struct RegisteredServer {
     config: McpServerConfig,
+    config_revision: u64,
     enabled: bool,
     status: McpRuntimeStatus,
     tool_count: usize,
@@ -41,6 +42,19 @@ struct RegisteredServer {
     capabilities: Option<McpNegotiatedCapabilities>,
     /// 来源标注：由智能体配置页迁入/创建的 server 记录其智能体名，仅展示用。
     source_agent: Option<String>,
+}
+
+static NEXT_CONFIG_REVISION: std::sync::atomic::AtomicU64 =
+    std::sync::atomic::AtomicU64::new(1);
+
+fn next_config_revision() -> u64 {
+    NEXT_CONFIG_REVISION.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+}
+
+async fn shutdown_outcome_if_unused(outcome: ConnectOutcome) {
+    if let Some(conn) = outcome.connection {
+        conn.shutdown().await;
+    }
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -304,6 +318,7 @@ fn migrate_agent_mcp_configs(
                 unique,
                 RegisteredServer {
                     config: item.config,
+                    config_revision: next_config_revision(),
                     enabled: item.enabled,
                     status: McpRuntimeStatus::Disconnected,
                     tool_count: 0,
@@ -439,26 +454,39 @@ async fn apply_connect_outcome(
 async fn reconnect_server(core: &Core, name: &str) -> Result<(), crate::NovaCoreError> {
     ensure_runtime_loaded(core).await;
 
-    let cfg = {
+    let (cfg, rev) = {
         let map = runtime().lock().await;
         let server = map.get(name).ok_or_else(|| mcp_not_found(name))?;
         if !server.enabled {
             return Err(mcp_err(name, format!("MCP server '{}' is disabled", name)));
         }
-        server.config.clone()
+        (server.config.clone(), server.config_revision)
     };
 
     let outcome = connect_server(core, name, &cfg).await;
     let is_connected = outcome.status == McpRuntimeStatus::Connected;
     let err_msg = outcome.error.clone();
 
-    let old_conn = {
+    let (old_conn, stale_outcome) = {
         let mut map = runtime().lock().await;
-        let server = map.get_mut(name).ok_or_else(|| mcp_not_found(name))?;
-        apply_connect_outcome(server, outcome).await
+        match map.get_mut(name) {
+            Some(server) if server.enabled && server.config_revision == rev => {
+                (apply_connect_outcome(server, outcome).await, None)
+            }
+            Some(_) => {
+                (None, Some((outcome, Some(mcp_err(name, "MCP server configuration changed during reconnect")))))
+            }
+            None => (None, Some((outcome, Some(mcp_not_found(name))))),
+        }
     };
     if let Some(conn) = old_conn {
         conn.shutdown().await;
+    }
+    if let Some((unused, err)) = stale_outcome {
+        shutdown_outcome_if_unused(unused).await;
+        if let Some(e) = err {
+            return Err(e);
+        }
     }
 
     if is_connected {
@@ -526,6 +554,7 @@ async fn ensure_runtime_loaded(core: &Core) {
                 item.name,
                 RegisteredServer {
                     config: item.config,
+                    config_revision: next_config_revision(),
                     enabled: item.enabled,
                     status: McpRuntimeStatus::Disconnected,
                     tool_count: 0,
@@ -595,6 +624,7 @@ pub async fn add_mcp_server(
             name,
             RegisteredServer {
                 config,
+                config_revision: next_config_revision(),
                 enabled: true,
                 status: outcome.status,
                 tool_count: outcome.tool_count,
@@ -648,7 +678,7 @@ pub async fn update_mcp_server(
         ));
     }
 
-    let (enabled, source_agent) = {
+    let (enabled, source_agent, rev) = {
         let map = runtime().lock().await;
         let current = map.get(&old_name).ok_or_else(|| mcp_not_found(&old_name))?;
 
@@ -659,7 +689,7 @@ pub async fn update_mcp_server(
             )));
         }
 
-        (current.enabled, current.source_agent.clone())
+        (current.enabled, current.source_agent.clone(), current.config_revision)
     };
 
     let outcome = if enabled {
@@ -668,30 +698,38 @@ pub async fn update_mcp_server(
         ConnectOutcome::disconnected()
     };
 
-    let old_conn = {
+    let (old_conn, stale_outcome) = {
         let mut map = runtime().lock().await;
-        let mut old = map
-            .remove(&old_name)
-            .ok_or_else(|| mcp_not_found(&old_name))?;
-        let prev = old.connection.take();
-        map.insert(
-            new_name,
-            RegisteredServer {
-                config,
-                enabled,
-                status: outcome.status,
-                tool_count: outcome.tool_count,
-                error: outcome.error,
-                connection: outcome.connection,
-                protocol_version: outcome.protocol_version,
-                capabilities: outcome.capabilities,
-                source_agent,
-            },
-        );
-        prev
+        if map.get(&old_name).is_none_or(|s| s.config_revision != rev) {
+            (None, Some(outcome))
+        } else if let Some(mut old) = map.remove(&old_name) {
+            let prev = old.connection.take();
+            map.insert(
+                new_name,
+                RegisteredServer {
+                    config,
+                    config_revision: next_config_revision(),
+                    enabled,
+                    status: outcome.status,
+                    tool_count: outcome.tool_count,
+                    error: outcome.error,
+                    connection: outcome.connection,
+                    protocol_version: outcome.protocol_version,
+                    capabilities: outcome.capabilities,
+                    source_agent,
+                },
+            );
+            (prev, None)
+        } else {
+            (None, Some(outcome))
+        }
     };
     if let Some(conn) = old_conn {
         conn.shutdown().await;
+    }
+    if let Some(unused) = stale_outcome {
+        shutdown_outcome_if_unused(unused).await;
+        return Err(mcp_not_found(&old_name));
     }
 
     persist_runtime(&core).await?;
@@ -744,29 +782,33 @@ pub async fn get_mcp_server_statuses(
 pub async fn reload_all_mcp_servers(core: Core) -> Result<(), crate::NovaCoreError> {
     ensure_runtime_loaded(&core).await;
 
-    let configs: Vec<(String, McpServerConfig, bool)> = {
+    let configs: Vec<(String, McpServerConfig, bool, u64)> = {
         let map = runtime().lock().await;
         map.iter()
-            .map(|(k, v)| (k.clone(), v.config.clone(), v.enabled))
+            .map(|(k, v)| (k.clone(), v.config.clone(), v.enabled, v.config_revision))
             .collect()
     };
 
-    for (name, cfg, enabled) in configs {
+    for (name, cfg, enabled, rev) in configs {
         let outcome = if enabled {
             connect_server(&core, &name, &cfg).await
         } else {
             ConnectOutcome::disconnected()
         };
-        let old_conn = {
+        let (old_conn, stale_outcome) = {
             let mut map = runtime().lock().await;
-            if let Some(server) = map.get_mut(&name) {
-                apply_connect_outcome(server, outcome).await
-            } else {
-                None
+            match map.get_mut(&name) {
+                Some(server) if server.config_revision == rev && server.enabled == enabled => {
+                    (apply_connect_outcome(server, outcome).await, None)
+                }
+                _ => (None, Some(outcome)),
             }
         };
         if let Some(conn) = old_conn {
             conn.shutdown().await;
+        }
+        if let Some(unused) = stale_outcome {
+            shutdown_outcome_if_unused(unused).await;
         }
     }
 
@@ -782,10 +824,12 @@ pub async fn set_mcp_server_enabled(
 ) -> Result<(), crate::NovaCoreError> {
     ensure_runtime_loaded(&core).await;
 
-    let cfg = {
-        let map = runtime().lock().await;
-        let server = map.get(&name).ok_or_else(|| mcp_not_found(&name))?;
-        server.config.clone()
+    let (cfg, rev) = {
+        let mut map = runtime().lock().await;
+        let server = map.get_mut(&name).ok_or_else(|| mcp_not_found(&name))?;
+        server.enabled = enabled;
+        server.config_revision = next_config_revision();
+        (server.config.clone(), server.config_revision)
     };
 
     let outcome = if enabled {
@@ -794,17 +838,20 @@ pub async fn set_mcp_server_enabled(
         ConnectOutcome::disconnected()
     };
 
-    let old_conn = {
+    let (old_conn, stale_outcome) = {
         let mut map = runtime().lock().await;
-        if let Some(server) = map.get_mut(&name) {
-            server.enabled = enabled;
-            apply_connect_outcome(server, outcome).await
-        } else {
-            None
+        match map.get_mut(&name) {
+            Some(server) if server.config_revision == rev => {
+                (apply_connect_outcome(server, outcome).await, None)
+            }
+            _ => (None, Some(outcome)),
         }
     };
     if let Some(conn) = old_conn {
         conn.shutdown().await;
+    }
+    if let Some(unused) = stale_outcome {
+        shutdown_outcome_if_unused(unused).await;
     }
 
     persist_runtime(&core).await?;
@@ -1122,6 +1169,23 @@ pub async fn warmup_runtime(core: Core) -> Result<(), crate::NovaCoreError> {
     }
 
     Ok(())
+}
+
+/// 关闭全部活跃 MCP 连接与子进程（供守护进程优雅停机调用）。
+pub async fn shutdown_all() {
+    let conns: Vec<Arc<dyn McpConnection>> = {
+        let mut map = runtime().lock().await;
+        map.values_mut()
+            .filter_map(|server| {
+                server.status = McpRuntimeStatus::Disconnected;
+                server.tool_count = 0;
+                server.connection.take()
+            })
+            .collect()
+    };
+    for conn in conns {
+        conn.shutdown().await;
+    }
 }
 
 #[cfg(test)]

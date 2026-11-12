@@ -212,7 +212,7 @@ impl Client {
         match try_connect_uds(socket_path, &options).await {
             Ok(client) => Ok(client),
             Err(ProbeError::IncompatibleVersion { client, detail }) => {
-                drop(client);
+                client.shutdown();
                 Err(detail)
             }
             Err(ProbeError::NotRunning(err) | ProbeError::Fatal(err)) => Err(err),
@@ -228,11 +228,7 @@ impl Client {
         match try_connect_uds(socket_path, &options).await {
             Ok(client) => return Ok(client),
             Err(ProbeError::Fatal(err)) => return Err(err),
-            Err(ProbeError::IncompatibleVersion { client, detail }) => {
-                tracing::warn!(%detail, "stale daemon version detected; requesting graceful shutdown");
-                shutdown_stale_daemon(&client, socket_path, &detail).await?;
-            }
-            Err(ProbeError::NotRunning(_)) => {}
+            Err(ProbeError::IncompatibleVersion { .. } | ProbeError::NotRunning(_)) => {}
         }
 
         let socket_dir = socket_path
@@ -452,10 +448,23 @@ fn apply_windows_no_window(command: &mut Command) {
     let _ = command;
 }
 
+enum InitError {
+    IncompatibleProtocol(String),
+    Transport(String),
+}
+
+impl From<InitError> for String {
+    fn from(value: InitError) -> Self {
+        match value {
+            InitError::IncompatibleProtocol(msg) | InitError::Transport(msg) => msg,
+        }
+    }
+}
+
 async fn send_initialize_and_ack(
     client: &Client,
     options: &ClientOptions,
-) -> Result<InitializeResult, String> {
+) -> Result<InitializeResult, InitError> {
     let result_val = client
         .invoke_once(
             "initialize",
@@ -474,10 +483,16 @@ async fn send_initialize_and_ack(
             Duration::from_secs(5),
         )
         .await
-        .map_err(|e| format!("initialize 握手失败: {}", e.message))?;
+        .map_err(|e| {
+            if e.code == -32600 {
+                InitError::IncompatibleProtocol(e.message)
+            } else {
+                InitError::Transport(format!("initialize 握手失败: {}", e.message))
+            }
+        })?;
 
     let init: InitializeResult = serde_json::from_value(result_val)
-        .map_err(|e| format!("initialize 响应格式不兼容: {e}"))?;
+        .map_err(|e| InitError::Transport(format!("initialize 响应格式不兼容: {e}")))?;
 
     Ok(init)
 }
@@ -594,7 +609,10 @@ async fn try_connect_uds(socket_path: &Path, options: &ClientOptions) -> Result<
 
     let init = match send_initialize_and_ack(&client, options).await {
         Ok(init) => init,
-        Err(err) => {
+        Err(InitError::IncompatibleProtocol(detail)) => {
+            return Err(ProbeError::IncompatibleVersion { client, detail });
+        }
+        Err(InitError::Transport(err)) => {
             client.shutdown();
             return Err(ProbeError::NotRunning(err));
         }
@@ -868,5 +886,41 @@ mod tests {
         let (name, _) = sub2_rx.recv().await.expect("sub2 must receive");
         assert_eq!(name, "turn_finished");
         assert_eq!(subscribers.lock_unpoisoned().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn test_send_initialize_distinguishes_protocol_mismatch_from_transport_error() {
+        let (out_tx, mut out_rx) = mpsc::channel::<Value>(4);
+        let pending: Pending = Arc::new(Mutex::new(HashMap::new()));
+        let subscribers: Subscribers = Arc::new(Mutex::new(Vec::new()));
+        let client = Arc::new(Client {
+            out: out_tx,
+            pending: pending.clone(),
+            subscribers,
+            counter: AtomicU64::new(0),
+            pid: 0,
+            shutting_down: AtomicBool::new(false),
+            backend: ClientBackend::SharedSocket {
+                close_tx: Mutex::new(None),
+            },
+        });
+
+        let pending_reply = pending.clone();
+        let responder = tokio::spawn(async move {
+            if let Some(req) = out_rx.recv().await {
+                if let Some(id) = req.get("id").and_then(Value::as_str) {
+                    if let Some(tx) = pending_reply.lock_unpoisoned().remove(id) {
+                        let _ = tx.send(Err(RpcError {
+                            code: -32600,
+                            message: "protocol version mismatch: client=99, server=1".to_string(),
+                        }));
+                    }
+                }
+            }
+        });
+
+        let res = send_initialize_and_ack(&client, &ClientOptions::default()).await;
+        assert!(matches!(res, Err(InitError::IncompatibleProtocol(_))));
+        let _ = responder.await;
     }
 }

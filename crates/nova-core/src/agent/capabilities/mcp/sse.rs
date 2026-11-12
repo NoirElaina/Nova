@@ -48,14 +48,29 @@ impl LegacySseHttp {
         if trimmed.is_empty() {
             return Err("SSE endpoint event returned empty URL".to_string());
         }
-        if trimmed.starts_with("http://") || trimmed.starts_with("https://") {
-            return Ok(trimmed.to_string());
-        }
         let base = Url::parse(base_url).map_err(|e| format!("Invalid SSE base URL: {e}"))?;
-        let joined = base
-            .join(trimmed)
-            .map_err(|e| format!("Invalid SSE endpoint path '{}': {e}", trimmed))?;
-        Ok(joined.to_string())
+        let resolved = if trimmed.starts_with("http://") || trimmed.starts_with("https://") {
+            Url::parse(trimmed).map_err(|e| format!("Invalid SSE endpoint URL '{trimmed}': {e}"))?
+        } else {
+            base.join(trimmed)
+                .map_err(|e| format!("Invalid SSE endpoint path '{trimmed}': {e}"))?
+        };
+        if !matches!(resolved.scheme(), "http" | "https") {
+            return Err(format!(
+                "SSE endpoint rejected unsupported scheme '{}'",
+                resolved.scheme()
+            ));
+        }
+        let same_origin = resolved.scheme() == base.scheme()
+            && resolved.host_str() == base.host_str()
+            && resolved.port_or_known_default() == base.port_or_known_default();
+        if !same_origin {
+            return Err(format!(
+                "SSE endpoint '{}' rejected because it crosses origin from '{}'",
+                resolved, base
+            ));
+        }
+        Ok(resolved.to_string())
     }
 
     async fn resolve_auth_token(&self) -> Result<Option<String>, LegacySseError> {
@@ -95,6 +110,7 @@ impl LegacySseHttp {
         let mut builder = self
             .client
             .post(&self.post_url)
+            .timeout(std::time::Duration::from_secs(60))
             .header(CONTENT_TYPE, "application/json")
             .header(ACCEPT, "application/json, text/event-stream")
             .body(body);
@@ -105,11 +121,22 @@ impl LegacySseHttp {
             builder = builder.header(AUTHORIZATION, format!("Bearer {token}"));
         }
 
-        let resp = match builder.send().await {
-            Ok(r) => r,
-            Err(e) => {
-                let _ = req.responder.send(Err(LegacySseError::Message(e.to_string())));
-                return Ok(());
+        let resp = tokio::select! {
+            biased;
+            _ = context.cancellation_token.cancelled() => {
+                let _ = req.responder.send(Err(LegacySseError::Message(
+                    "MCP SSE POST cancelled".to_string(),
+                )));
+                return Err(WorkerQuitReason::Cancelled);
+            }
+            res = builder.send() => match res {
+                Ok(r) => r,
+                Err(e) => {
+                    let _ = req.responder.send(Err(LegacySseError::Message(format!(
+                        "SSE HTTP POST failed: {e}"
+                    ))));
+                    return Ok(());
+                }
             }
         };
 
@@ -328,4 +355,39 @@ pub(super) async fn connect_sse(
         .map_err(|e| format!("MCP SSE initialize failed: {e}"))?;
 
     Ok(RmcpConnection::from_running_service(running))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::LegacySseHttp;
+
+    #[test]
+    fn resolve_endpoint_enforces_same_origin_and_http_scheme() {
+        assert_eq!(
+            LegacySseHttp::resolve_endpoint("https://mcp.example.com/sse", "/messages?sessionId=1")
+                .expect("relative same-origin"),
+            "https://mcp.example.com/messages?sessionId=1"
+        );
+        assert_eq!(
+            LegacySseHttp::resolve_endpoint("https://mcp.example.com/sse", "https://mcp.example.com:443/post")
+                .expect("explicit same-origin default port"),
+            "https://mcp.example.com/post"
+        );
+        assert!(
+            LegacySseHttp::resolve_endpoint("https://mcp.example.com/sse", "https://evil.example.com/post")
+                .is_err()
+        );
+        assert!(
+            LegacySseHttp::resolve_endpoint("https://mcp.example.com/sse", "//evil.example.com/post")
+                .is_err()
+        );
+        assert!(
+            LegacySseHttp::resolve_endpoint("https://mcp.example.com/sse", "http://mcp.example.com/post")
+                .is_err()
+        );
+        assert!(
+            LegacySseHttp::resolve_endpoint("https://mcp.example.com/sse", "javascript:alert(1)")
+                .is_err()
+        );
+    }
 }

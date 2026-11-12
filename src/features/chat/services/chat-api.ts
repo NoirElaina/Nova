@@ -407,17 +407,14 @@ export async function deleteScheduledTask(id: string): Promise<boolean> {
   return ipcInvoke<boolean>("delete_scheduled_task", { id });
 }
 
-export type CompactOutcome = {
-  beforeTokens: number;
-  afterTokens: number;
-  savedTokens: number;
-  summary: string;
-};
+import type { ManualCompactOutcome } from "@/lib/protocol";
+
+export type CompactOutcome = ManualCompactOutcome;
 
 export async function manualCompactConversation(
   conversationId: string,
-): Promise<CompactOutcome> {
-  return ipcInvoke<CompactOutcome>("manual_compact_conversation", { conversationId });
+): Promise<ManualCompactOutcome> {
+  return ipcInvoke<ManualCompactOutcome>("manual_compact_conversation", { conversationId });
 }
 
 export type AgentNode = {

@@ -24,19 +24,27 @@ fn now_unix_secs() -> u64 {
 fn read_redacted_log_tail(path: &Path) -> Option<Value> {
     let bytes = fs::read(path).ok()?;
     let slice = if bytes.len() > MAX_LOG_BYTES {
-        &bytes[bytes.len() - MAX_LOG_BYTES..]
+        let start = bytes.len() - MAX_LOG_BYTES;
+        if let Some(pos) = bytes[start..].iter().position(|b| *b == b'\n') {
+            &bytes[start + pos + 1..]
+        } else {
+            &bytes[start..]
+        }
     } else {
         &bytes[..]
     };
     let text = String::from_utf8_lossy(slice);
-    let lines: Vec<String> = text
+    // 先对完整尾部文本做跨行/单行脱敏（例如多行 PEM 私钥），再截取最后 MAX_LOG_LINES 行，
+    // 防止截断边界切开跨行密钥头部导致脱敏正则失效。
+    let redacted = redact_secrets(&text);
+    let lines: Vec<String> = redacted
         .lines()
         .rev()
         .take(MAX_LOG_LINES)
+        .map(str::to_string)
         .collect::<Vec<_>>()
         .into_iter()
         .rev()
-        .map(redact_secrets)
         .collect();
     let name = path
         .file_name()
@@ -90,7 +98,7 @@ pub fn export_diagnostic_bundle(core: &Core, target_path: Option<String>) -> Res
             .join(format!("nova-diagnostics-{}.json", now_unix_secs())),
     };
 
-    if let Some(parent) = out_path.parent() {
+    if let Some(parent) = out_path.parent().filter(|p| !p.as_os_str().is_empty()) {
         fs::create_dir_all(parent)
             .map_err(|e| format!("Failed to create diagnostic directory: {e}"))?;
     }
@@ -177,5 +185,27 @@ mod tests {
         assert!(!content.contains("secret-bearer-token-99999"));
         assert!(content.contains("[REDACTED]"));
         assert!(content.contains("\"sandbox\""));
+    }
+
+    #[test]
+    fn read_redacted_log_tail_redacts_multiline_pem_and_skips_partial_truncated_line() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let log_path = dir.path().join("app.log");
+        let filler = "INFO normal-line\n".repeat((MAX_LOG_BYTES / 17) + 32);
+        let payload = format!(
+            "{filler}-----BEGIN PRIVATE KEY-----\nSECRET_KEY_BODY_LINE_1\nSECRET_KEY_BODY_LINE_2\n-----END PRIVATE KEY-----\nINFO end\n"
+        );
+        fs::write(&log_path, payload).expect("write log");
+
+        let parsed = read_redacted_log_tail(&log_path).expect("log tail");
+        let lines = parsed["lines"].as_array().expect("lines array");
+        let joined = lines
+            .iter()
+            .filter_map(|v| v.as_str())
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(!joined.contains("SECRET_KEY_BODY_LINE_1"));
+        assert!(!joined.contains("SECRET_KEY_BODY_LINE_2"));
+        assert!(joined.contains("INFO end"));
     }
 }

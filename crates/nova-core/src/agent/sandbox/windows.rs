@@ -41,7 +41,7 @@ use windows_sys::Win32::System::JobObjects::{
     TerminateJobObject, JOBOBJECT_EXTENDED_LIMIT_INFORMATION, JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
 };
 use windows_sys::Win32::System::Pipes::CreatePipe;
-use windows_sys::Win32::System::StationsAndDesktops::{CreateDesktopW, HDESK};
+use windows_sys::Win32::System::StationsAndDesktops::{CloseDesktop, CreateDesktopW, HDESK};
 use windows_sys::Win32::System::Threading::{
     CreateProcessAsUserW, DeleteProcThreadAttributeList, GetCurrentProcess, GetExitCodeProcess,
     InitializeProcThreadAttributeList, OpenProcessToken, UpdateProcThreadAttribute,
@@ -61,6 +61,10 @@ const DENY_WRITE_MASK: u32 = 0x0002 // FILE_WRITE_DATA
     | 0x0040 // FILE_DELETE_CHILD
     | 0x0100 // FILE_WRITE_ATTRIBUTES
     | 0x0001_0000 // DELETE
+    | 0x0004_0000 // WRITE_DAC
+    | 0x0008_0000; // WRITE_OWNER
+/// 仅阻止改名/删除 `.git` 目录自身或修改其 ACL（不继承到子项，避免与已有只读或目录语义冲突）。
+const DENY_DELETE_AND_ACL_MASK: u32 = 0x0001_0000 // DELETE
     | 0x0004_0000 // WRITE_DAC
     | 0x0008_0000; // WRITE_OWNER
 /// ReadOnly 模式使用的固定未授权合成 SID：仅作约束占位，绝不对任何目录授予写 ACL。
@@ -141,6 +145,8 @@ pub fn create_write_restricted_token(restricting_sids: &[String]) -> Result<HAND
         if OpenProcessToken(GetCurrentProcess(), desired, &mut base) == 0 {
             return Err(format!("OpenProcessToken failed: {}", GetLastError()));
         }
+        let base_guard = OwnedHandle::from_raw_handle(base as _);
+        let base = base_guard.as_raw_handle() as HANDLE;
 
         // Everyone + 传入的合成 SID 一起作为限制 SID。
         let mut everyone = everyone_sid_bytes()?;
@@ -181,7 +187,7 @@ pub fn create_write_restricted_token(restricting_sids: &[String]) -> Result<HAND
             entries.as_mut_ptr(),
             &mut token,
         );
-        CloseHandle(base);
+        drop(base_guard);
 
         if ok == 0 {
             return Err(format!("CreateRestrictedToken failed: {}", GetLastError()));
@@ -384,6 +390,22 @@ fn apply_path_dacl(
     access_mode: i32,
     permissions: u32,
 ) -> Result<(), String> {
+    apply_path_dacl_with_inheritance(
+        path,
+        cap_sid,
+        access_mode,
+        permissions,
+        SUB_CONTAINERS_AND_OBJECTS_INHERIT,
+    )
+}
+
+fn apply_path_dacl_with_inheritance(
+    path: &Path,
+    cap_sid: &str,
+    access_mode: i32,
+    permissions: u32,
+    grf_inheritance: u32,
+) -> Result<(), String> {
     unsafe {
         let mut sid_bytes = string_sid_bytes(cap_sid)?;
         let sid_ptr = sid_bytes.as_mut_ptr() as *mut std::ffi::c_void;
@@ -412,7 +434,7 @@ fn apply_path_dacl(
         let explicit = EXPLICIT_ACCESS_W {
             grfAccessPermissions: permissions,
             grfAccessMode: access_mode,
-            grfInheritance: SUB_CONTAINERS_AND_OBJECTS_INHERIT,
+            grfInheritance: grf_inheritance,
             Trustee: TRUSTEE_W {
                 pMultipleTrustee: std::ptr::null_mut(),
                 MultipleTrusteeOperation: 0,
@@ -461,6 +483,11 @@ pub fn grant_workspace_write(workspace: &Path, cap_sid: &str) -> Result<(), Stri
 /// 在指定路径上给合成 SID 加 DENY 写 ACE（用于 `.git/hooks`、`.git/config`、`.nova` 等敏感路径）。
 pub fn deny_write(path: &Path, cap_sid: &str) -> Result<(), String> {
     apply_path_dacl(path, cap_sid, DENY_ACCESS, DENY_WRITE_MASK)
+}
+
+/// 在目录本身加非继承 DENY `DELETE | WRITE_DAC | WRITE_OWNER` ACE（防止改名 `.git` 绕过子目录 DENY）。
+pub fn deny_delete_and_acl(path: &Path, cap_sid: &str) -> Result<(), String> {
+    apply_path_dacl_with_inheritance(path, cap_sid, DENY_ACCESS, DENY_DELETE_AND_ACL_MASK, 0)
 }
 
 /// Windows Job Object RAII 句柄：`JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE` 确保关闭或终止时清空整棵子进程树。
@@ -706,6 +733,10 @@ fn prepare_sandbox(
         SandboxPolicy::WorkspaceWrite => {
             let cap_sid = workspace_write_sid(data_dir, workspace)?;
             grant_workspace_write(workspace, &cap_sid)?;
+            let git_dir = workspace.join(".git");
+            if git_dir.exists() {
+                deny_delete_and_acl(&git_dir, &cap_sid)?;
+            }
             for protected in [
                 workspace.join(".git").join("hooks"),
                 workspace.join(".git").join("config"),
@@ -891,6 +922,7 @@ fn ensure_private_desktop_name() -> Result<&'static str, String> {
         let mut updated_dacl: *mut ACL = std::ptr::null_mut();
         let code = SetEntriesInAclW(1, &explicit, std::ptr::null_mut(), &mut updated_dacl);
         if code != ERROR_SUCCESS {
+            let _ = CloseDesktop(hdesk);
             return Err(format!("SetEntriesInAclW(desktop) failed: {code}"));
         }
         let set_code = SetSecurityInfo(
@@ -904,6 +936,7 @@ fn ensure_private_desktop_name() -> Result<&'static str, String> {
         );
         LocalFree(updated_dacl as *mut _);
         if set_code != ERROR_SUCCESS {
+            let _ = CloseDesktop(hdesk);
             return Err(format!("SetSecurityInfo(desktop) failed: {set_code}"));
         }
 

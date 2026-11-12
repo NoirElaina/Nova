@@ -35,38 +35,44 @@ pub async fn dispatch(
                 arg::<Option<nova_protocol::agent::TurnSubmitMode>>(&params, "mode")?
                     .unwrap_or_default();
             let idempotency_key: Option<String> = arg(&params, "idempotencyKey")?;
-            if !core.claim_idempotent("send_modern_agent_turn", idempotency_key.as_deref()) {
-                return Ok(json!({
-                    "outcome": "started",
-                    "turnId": "",
-                    "queueLength": 0,
-                    "deduplicated": true,
-                }));
-            }
-            let launch = nova_core::agent::prepare_modern_agent_turn(
-                core,
-                &conversation_id,
-                &prompt,
-                attachments,
-                mode,
-                client_id.map(str::to_string),
-            )
-            .map_err(|err| (INVALID_PARAMS, err))?;
-            let outcome_json =
-                serde_json::to_value(&launch.outcome).map_err(|e| (INTERNAL_ERROR, e.to_string()))?;
-
-            let core = core.clone();
-            tokio::spawn(async move {
-                if let Err(error) = nova_core::agent::run_prepared_turn_sequence(
-                    core,
-                    conversation_id,
-                    launch,
+            let mut pending_launch: Option<nova_core::agent::PreparedTurnLaunch> = None;
+            let outcome = core
+                .run_idempotent(
+                    "send_modern_agent_turn",
+                    idempotency_key.as_deref(),
+                    || async {
+                        let launch = nova_core::agent::prepare_modern_agent_turn(
+                            core,
+                            &conversation_id,
+                            &prompt,
+                            attachments,
+                            mode,
+                            client_id.map(str::to_string),
+                        )?;
+                        let outcome = launch.outcome.clone();
+                        pending_launch = Some(launch);
+                        Ok::<_, String>(outcome)
+                    },
                 )
                 .await
-                {
-                    tracing::error!(%error, "agent turn sequence failed");
-                }
-            });
+                .map_err(|err| (INVALID_PARAMS, err))?;
+            let outcome_json =
+                serde_json::to_value(&outcome).map_err(|e| (INTERNAL_ERROR, e.to_string()))?;
+
+            if let Some(launch) = pending_launch {
+                let core = core.clone();
+                tokio::spawn(async move {
+                    if let Err(error) = nova_core::agent::run_prepared_turn_sequence(
+                        core,
+                        conversation_id,
+                        launch,
+                    )
+                    .await
+                    {
+                        tracing::error!(%error, "agent turn sequence failed");
+                    }
+                });
+            }
             Ok(outcome_json)
         }
         "cancel_modern_agent_turn" => result(nova_core::agent::cancel_modern_agent_turn(

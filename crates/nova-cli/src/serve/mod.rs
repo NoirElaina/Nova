@@ -162,6 +162,7 @@ impl ClientHub {
         if has_browser {
             inner.desktop_order.push(client_id.clone());
         }
+        nova_core::agent::session_runtime::register_connected_client(&client_id);
         client_id
     }
 
@@ -205,6 +206,7 @@ impl ClientHub {
             }));
         }
 
+        nova_core::agent::session_runtime::mark_client_disconnected(client_id);
         let denied = nova_core::agent::permissions::deny_pending_for_client(core, client_id);
         let cancelled_elicitations =
             nova_core::agent::capabilities::mcp::cancel_elicitations_for_client(client_id);
@@ -460,18 +462,20 @@ async fn handle_message(
             if !client_protocol.is_empty()
                 && client_protocol != nova_protocol::rpc::PROTOCOL_VERSION
             {
-                let _ = out_tx.try_send(json!({
-                    "jsonrpc": "2.0",
-                    "id": id,
-                    "error": {
-                        "code": -32600,
-                        "message": format!(
-                            "protocol version mismatch: client={}, server={}",
-                            client_protocol,
-                            nova_protocol::rpc::PROTOCOL_VERSION
-                        ),
-                    },
-                }));
+                let _ = out_tx
+                    .send(json!({
+                        "jsonrpc": "2.0",
+                        "id": id,
+                        "error": {
+                            "code": -32600,
+                            "message": format!(
+                                "protocol version mismatch: client={}, server={}",
+                                client_protocol,
+                                nova_protocol::rpc::PROTOCOL_VERSION
+                            ),
+                        },
+                    }))
+                    .await;
                 return;
             }
 
@@ -502,11 +506,13 @@ async fn handle_message(
             })
             .unwrap_or(Value::Null);
 
-            let _ = out_tx.try_send(json!({
-                "jsonrpc": "2.0",
-                "id": id,
-                "result": result,
-            }));
+            let _ = out_tx
+                .send(json!({
+                    "jsonrpc": "2.0",
+                    "id": id,
+                    "result": result,
+                }))
+                .await;
         }
         "initialized" => {
             info!(client_id = %client_id, "client initialized");
@@ -520,11 +526,13 @@ async fn handle_message(
             if is_desktop {
                 state.hub.update_capabilities(client_id, true, true);
             }
-            let _ = out_tx.try_send(json!({
-                "jsonrpc": "2.0",
-                "id": id,
-                "result": { "ok": true },
-            }));
+            let _ = out_tx
+                .send(json!({
+                    "jsonrpc": "2.0",
+                    "id": id,
+                    "result": { "ok": true },
+                }))
+                .await;
         }
         "shutdown" => {
             let _ = out_tx
@@ -540,11 +548,13 @@ async fn handle_message(
             let permit = match state.inflight.clone().try_acquire_owned() {
                 Ok(permit) => permit,
                 Err(_) => {
-                    let _ = out_tx.try_send(json!({
-                        "jsonrpc": "2.0",
-                        "id": id,
-                        "error": { "code": -32001, "message": "Server overloaded; retry later." },
-                    }));
+                    let _ = out_tx
+                        .send(json!({
+                            "jsonrpc": "2.0",
+                            "id": id,
+                            "error": { "code": -32001, "message": "Server overloaded; retry later." },
+                        }))
+                        .await;
                     return;
                 }
             };
@@ -565,7 +575,7 @@ async fn handle_message(
                         "error": { "code": code, "message": message },
                     }),
                 };
-                let _ = out_tx.try_send(response);
+                let _ = out_tx.send(response).await;
             });
         }
     }
@@ -585,12 +595,32 @@ pub async fn run_stdio() -> anyhow::Result<()> {
         shutdown_tx,
     });
 
-    let (out_tx, mut out_rx) = mpsc::channel::<Value>(OUTBOUND_QUEUE_CAPACITY);
-    let client_id = state.hub.register_connection(out_tx.clone(), true, true);
+    let (rpc_tx, mut rpc_rx) = mpsc::channel::<Value>(OUTBOUND_QUEUE_CAPACITY);
+    let (event_tx, mut event_rx) = mpsc::channel::<Value>(OUTBOUND_QUEUE_CAPACITY);
+    let client_id = state.hub.register_connection(rpc_tx.clone(), true, true);
 
     let writer = tokio::spawn(async move {
         let mut stdout = tokio::io::stdout();
-        while let Some(message) = out_rx.recv().await {
+        let mut rpc_open = true;
+        let mut event_open = true;
+        while rpc_open || event_open {
+            let message = tokio::select! {
+                biased;
+                msg = rpc_rx.recv(), if rpc_open => match msg {
+                    Some(v) => v,
+                    None => {
+                        rpc_open = false;
+                        continue;
+                    }
+                },
+                msg = event_rx.recv(), if event_open => match msg {
+                    Some(v) => v,
+                    None => {
+                        event_open = false;
+                        continue;
+                    }
+                },
+            };
             let Ok(mut line) = serde_json::to_vec(&message) else {
                 continue;
             };
@@ -604,7 +634,7 @@ pub async fn run_stdio() -> anyhow::Result<()> {
     let pump = tokio::spawn(event_pump(
         state.core.clone(),
         client_id.clone(),
-        out_tx.clone(),
+        event_tx.clone(),
     ));
 
     info!("nova daemon serving over stdio");
@@ -628,7 +658,7 @@ pub async fn run_stdio() -> anyhow::Result<()> {
                     let Ok(envelope) = serde_json::from_str::<Value>(&line) else {
                         continue;
                     };
-                    handle_message(&state, &client_id, envelope, &out_tx).await;
+                    handle_message(&state, &client_id, envelope, &rpc_tx).await;
                 }
                 Ok(None) => break,
                 Err(error) => {
@@ -639,12 +669,14 @@ pub async fn run_stdio() -> anyhow::Result<()> {
         }
     }
 
+    nova_core::agent::capabilities::mcp::shutdown_all().await;
     nova_core::services::unified_exec::close_all().await;
     state.core.hooks().close_all_user_terminal_sessions();
 
     pump.abort();
     state.hub.unregister_connection(&state.core, &client_id);
-    drop(out_tx);
+    drop(event_tx);
+    drop(rpc_tx);
     let _ = tokio::time::timeout(std::time::Duration::from_secs(2), writer).await;
     info!("nova daemon stdio channel closed, exiting");
     Ok(())
@@ -703,6 +735,7 @@ pub async fn run_uds(socket_path: &Path) -> anyhow::Result<()> {
         }
     }
 
+    nova_core::agent::capabilities::mcp::shutdown_all().await;
     nova_core::services::unified_exec::close_all().await;
     core.hooks().close_all_user_terminal_sessions();
     let _ = tokio::fs::remove_file(socket_path).await;
@@ -722,11 +755,31 @@ async fn drive_ws_connection<M, E, Si, St>(
     Si: futures_util::Sink<M> + Unpin + Send + 'static,
     St: futures_util::Stream<Item = Result<M, E>> + Unpin + Send + 'static,
 {
-    let (out_tx, mut out_rx) = mpsc::channel::<Value>(OUTBOUND_QUEUE_CAPACITY);
-    let client_id = state.hub.register_connection(out_tx.clone(), false, false);
+    let (rpc_tx, mut rpc_rx) = mpsc::channel::<Value>(OUTBOUND_QUEUE_CAPACITY);
+    let (event_tx, mut event_rx) = mpsc::channel::<Value>(OUTBOUND_QUEUE_CAPACITY);
+    let client_id = state.hub.register_connection(rpc_tx.clone(), false, false);
 
     let writer = tokio::spawn(async move {
-        while let Some(message) = out_rx.recv().await {
+        let mut rpc_open = true;
+        let mut event_open = true;
+        while rpc_open || event_open {
+            let message = tokio::select! {
+                biased;
+                msg = rpc_rx.recv(), if rpc_open => match msg {
+                    Some(v) => v,
+                    None => {
+                        rpc_open = false;
+                        continue;
+                    }
+                },
+                msg = event_rx.recv(), if event_open => match msg {
+                    Some(v) => v,
+                    None => {
+                        event_open = false;
+                        continue;
+                    }
+                },
+            };
             let Ok(text) = serde_json::to_string(&message) else {
                 continue;
             };
@@ -739,12 +792,12 @@ async fn drive_ws_connection<M, E, Si, St>(
     let pump = tokio::spawn(event_pump(
         state.core.clone(),
         client_id.clone(),
-        out_tx.clone(),
+        event_tx.clone(),
     ));
 
     let reader_state = Arc::clone(&state);
     let reader_client_id = client_id.clone();
-    let reader_out = out_tx.clone();
+    let reader_out = rpc_tx.clone();
     let reader = tokio::spawn(async move {
         while let Some(Ok(message)) = stream.next().await {
             let Some(text) = extract_text(message) else {
@@ -818,6 +871,7 @@ pub async fn run(host_addr: &str, port: u16) -> anyhow::Result<()> {
             }
         })
         .await?;
+    nova_core::agent::capabilities::mcp::shutdown_all().await;
     nova_core::services::unified_exec::close_all().await;
     core.hooks().close_all_user_terminal_sessions();
     Ok(())

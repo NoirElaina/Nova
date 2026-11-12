@@ -257,7 +257,7 @@ mod platform {
             prepare_private_socket_directory(parent).await?;
         }
         let (validated_path, _guard) = validate_private_socket_path(socket_path)?;
-        if tokio::fs::try_exists(&validated_path).await.unwrap_or(false) {
+        if tokio::fs::symlink_metadata(&validated_path).await.is_ok() {
             let _ = tokio::fs::remove_file(&validated_path).await;
         }
         let listener =

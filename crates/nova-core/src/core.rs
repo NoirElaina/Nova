@@ -120,12 +120,7 @@ impl Core {
         }
     }
 
-    /// 抢占一个即发即忘（如异步发起回合）操作的幂等槽位。
-    pub fn claim_idempotent(&self, scope: &str, key: Option<&str>) -> bool {
-        self.inner.idempotency.claim_once(scope, key)
-    }
-
-    pub(crate) async fn run_idempotent<T, E, F, Fut>(
+    pub async fn run_idempotent<T, E, F, Fut>(
         &self,
         scope: &str,
         key: Option<&str>,

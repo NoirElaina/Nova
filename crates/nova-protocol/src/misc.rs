@@ -81,10 +81,7 @@ fn normalize_name(name: &str) -> String {
 impl AgentBundle {
     /// 内置基础工具对所有智能体永远全量保障、恒常可用（除 memory 仅默认全局 Nova 可写外）。
     pub fn is_tool_enabled(&self, tool_name: &str) -> bool {
-        if DEFAULT_ONLY_TOOLS.contains(&tool_name) {
-            return false;
-        }
-        true
+        !DEFAULT_ONLY_TOOLS.contains(&tool_name)
     }
 
     /// 技能是否对该 bundle 可见。
